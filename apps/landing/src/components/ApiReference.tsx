@@ -29,8 +29,11 @@ export function ApiReference() {
         src={REDOC_SRC}
         strategy="afterInteractive"
         onLoad={() => {
+          // Prefix with the base path so the spec resolves under a subpath host
+          // (GitHub Pages /litegen) as well as at the domain root (Cloudflare).
+          const base = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
           window.Redoc?.init(
-            '/openapi.json',
+            `${base}/openapi.json`,
             {
               hideDownloadButton: false,
               expandResponses: '200,201',
