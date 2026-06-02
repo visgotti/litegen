@@ -1,3 +1,5 @@
+📖 **Docs, SDKs & API reference → [visgotti.github.io/litegen](https://visgotti.github.io/litegen/)**
+
 # LiteGen
 
 > The universal proxy for AI image and video generation. Like LiteLLM, but for multimedia.
