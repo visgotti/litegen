@@ -1,0 +1,118 @@
+models:
+  - id: openai/dall-e-3
+    provider: openai
+    media_type: image
+    display_name: DALL-E 3
+    description: OpenAI's high-quality text-to-image model.
+    pricing: { base_cost_usd: 0.04 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      size:
+        kind: size
+        mode: enum
+        values:
+          - [1024, 1024]
+          - [1792, 1024]
+          - [1024, 1792]
+      quality:
+        kind: string
+        enum_values: [standard, hd]
+        default: standard
+      style:
+        kind: string
+        enum_values: [vivid, natural]
+        default: vivid
+    extra_allowlist: []
+    tags: [text-to-image]
+
+  - id: openai/dall-e-2
+    provider: openai
+    media_type: image
+    display_name: DALL-E 2
+    description: OpenAI's older text-to-image model. Supports edits.
+    pricing: { base_cost_usd: 0.02 }
+    capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      size:
+        kind: size
+        mode: enum
+        values:
+          - [256, 256]
+          - [512, 512]
+          - [1024, 1024]
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image, mask: mask } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image, inpainting]
+
+  - id: openai/sora
+    provider: openai
+    media_type: video
+    display_name: Sora 2
+    description: OpenAI Sora 2 text-to-video and image-to-video (maps to the `sora-2` model).
+    pricing: { base_cost_usd: 0.50 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      # Sora accepts only clip lengths of 4, 8, or 12s; other values snap to the nearest.
+      duration_seconds:
+        kind: float
+        min: 4.0
+        max: 12.0
+        default: 4.0
+      # aspect_ratio + resolution select the Sora `size` (e.g. 1280x720 / 720x1280).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16"]
+        default: "16:9"
+      resolution:
+        kind: string
+        enum_values: [720p]
+        default: 720p
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      # Image-to-video uploads the first frame as a multipart `input_reference` part.
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  - id: openai/sora-2-pro
+    provider: openai
+    media_type: video
+    display_name: Sora 2 Pro
+    description: Higher-fidelity Sora 2 Pro (maps to the `sora-2-pro` model); adds 1080p sizes.
+    pricing: { base_cost_usd: 1.00 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      duration_seconds:
+        kind: float
+        min: 4.0
+        max: 12.0
+        default: 4.0
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16"]
+        default: "16:9"
+      resolution:
+        kind: string
+        enum_values: [720p, 1080p]
+        default: 1080p
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, premium]

@@ -1,0 +1,87 @@
+models:
+  # ─── Gen-4 image ──────────────────────────────────────────────────────────
+  # Async: POST /text_to_image -> poll GET /tasks/{id}. ratio is pixel WxH.
+  - id: runway/gen4_image
+    provider: runway
+    media_type: image
+    display_name: Runway Gen-4 Image
+    description: Runway Gen-4 text-to-image with @tag reference images.
+    pricing: { base_cost_usd: 0.08 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 5500 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1","4:3","3:4","21:9","3:2","2:3"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 3
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 3 }
+    extra_allowlist: [contentModeration]
+    tags: [text-to-image, image-to-image]
+
+  - id: runway/gen4_image_turbo
+    provider: runway
+    media_type: image
+    display_name: Runway Gen-4 Image Turbo
+    description: Faster, cheaper Gen-4 image (requires at least one reference image).
+    pricing: { base_cost_usd: 0.02 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 5500 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1","4:3","3:4","21:9","3:2","2:3"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 3
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 1, max_count: 3 }
+    extra_allowlist: [contentModeration]
+    tags: [text-to-image, image-to-image, fast]
+
+  - id: runway/gen-3
+    provider: runway
+    media_type: video
+    display_name: Runway Gen-3
+    description: Runway Gen-3.
+    pricing: { base_cost_usd: 0.50 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: int, min: 5, max: 10, default: 5 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  - id: runway/gen-3-turbo
+    provider: runway
+    media_type: video
+    display_name: Runway Gen-3 Turbo
+    pricing: { base_cost_usd: 0.25 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: int, min: 5, max: 10, default: 5 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, fast]

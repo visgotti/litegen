@@ -1,0 +1,143 @@
+{
+  "meta": {
+    "title": "LiteGen — Una API para todos los modelos de imagen y vídeo con IA",
+    "description": "LiteGen es un proxy de código abierto y compatible con OpenAI para la generación de imágenes y vídeo con IA. Enruta entre OpenAI, Stability, Replicate, Google, Fal, Runway y Luma con failover automático, balanceo de carga, caché y seguimiento de costes."
+  },
+  "nav": {
+    "howItWorks": "Cómo funciona",
+    "features": "Funciones",
+    "providers": "Proveedores",
+    "quickstart": "Inicio rápido",
+    "reference": "Referencia",
+    "github": "GitHub"
+  },
+  "hero": {
+    "badge": "Código abierto",
+    "title": "Una API para todos los modelos de imagen y vídeo con IA",
+    "subtitle": "LiteGen es el proxy universal para la generación de imágenes y vídeo con IA. Como LiteLLM, pero para multimedia: enruta entre todos los proveedores con failover automático, balanceo de carga, caché y seguimiento de costes.",
+    "ctaPrimary": "Empezar",
+    "ctaSecondary": "Ver en GitHub",
+    "codeCaption": "Compatible con OpenAI: apunta tu cliente actual a LiteGen."
+  },
+  "howItWorks": {
+    "heading": "Un prompt. Todos los modelos de imagen y vídeo.",
+    "subheading": "Envía una única petición estilo OpenAI. LiteGen la reparte al modelo que quieras — DALL·E, FLUX, Imagen, Veo, Ray —, hace failover cuando uno cae y te devuelve la imagen o el vídeo terminado. Pasa por un modelo para iluminar su ruta.",
+    "app": "Tu prompt",
+    "hint": "Pasa por un modelo para iluminar su ruta",
+    "pillsLabel": "Capacidades de la pasarela",
+    "providersLabel": "Modelos de imagen y vídeo",
+    "figcaption": "Diagrama: un único prompt estilo OpenAI entra en la pasarela de LiteGen, que aplica enrutado, failover, caché, esquemas por modelo, gestión de claves y webhooks, y luego lo despacha a modelos de imagen (OpenAI DALL·E 3, Stability SDXL, Replicate FLUX) y de vídeo (Runway Gen-4, Luma Ray 2) y te devuelve el contenido generado.",
+    "pills": {
+      "routing": "Enrutado",
+      "fallback": "Failover",
+      "cache": "Caché",
+      "cost": "Costes",
+      "schemas": "Esquemas por modelo",
+      "ratelimit": "Límite de tasa",
+      "keys": "Gestión de claves",
+      "logging": "Registro",
+      "webhooks": "Webhooks"
+    },
+    "kinds": {
+      "image": "Imagen",
+      "video": "Vídeo"
+    }
+  },
+  "features": {
+    "heading": "Todo lo que necesitas para escalar la generación",
+    "subheading": "Una única pasarela autoalojada frente a todos los proveedores.",
+    "items": {
+      "unified": {
+        "title": "API unificada",
+        "desc": "Endpoints REST compatibles con OpenAI para imagen y vídeo en todos los proveedores."
+      },
+      "routing": {
+        "title": "Enrutado inteligente",
+        "desc": "Cadenas de failover, round-robin ponderado y estrategias de menor coste y latencia."
+      },
+      "caching": {
+        "title": "Caché",
+        "desc": "Caché en memoria con TTL configurable para evitar generaciones duplicadas."
+      },
+      "cost": {
+        "title": "Seguimiento de costes",
+        "desc": "Estimación de coste por petición y analíticas de gasto agregadas."
+      },
+      "keys": {
+        "title": "Gestión de claves API",
+        "desc": "Crea y revoca claves, con grupos ponderados y cuotas por clave."
+      },
+      "observability": {
+        "title": "Observabilidad",
+        "desc": "Registro de peticiones, métricas Prometheus y trazas estructuradas integradas."
+      },
+      "dashboard": {
+        "title": "Panel en tiempo real",
+        "desc": "Supervisa proveedores, peticiones y gasto desde un panel en React."
+      },
+      "selfhosted": {
+        "title": "Autoalojado",
+        "desc": "Un único binario o Docker, con SQLite o Postgres."
+      }
+    }
+  },
+  "providers": {
+    "heading": "Funciona con los proveedores que ya usas",
+    "subheading": "18 proveedores de imagen y vídeo y subiendo: cámbialos o combínalos sin tocar tu código.",
+    "image": "Imagen",
+    "video": "Vídeo",
+    "more": "+ autoalojado y compatible con OpenAI"
+  },
+  "quickstart": {
+    "heading": "Funcionando en minutos",
+    "subheading": "Apunta tu cliente estilo OpenAI a LiteGen y empieza a generar.",
+    "copy": "Copiar",
+    "copied": "Copiado"
+  },
+  "sdks": {
+    "heading": "SDKs oficiales",
+    "subheading": "Clientes tipados para TypeScript y Python: instala, apunta a tu pasarela y genera.",
+    "typescript": "TypeScript",
+    "python": "Python",
+    "tablistLabel": "Elige un lenguaje de SDK",
+    "installLabel": "Instalación",
+    "useLabel": "Genera una imagen o un vídeo",
+    "copy": "Copiar",
+    "copied": "Copiado"
+  },
+  "apiPage": {
+    "title": "Referencia de la API"
+  },
+  "reference": {
+    "title": "Referencia",
+    "sdkSectionTitle": "Uso del SDK",
+    "modelsHeading": "Modelos y capacidades",
+    "modelsSub": "Todos los modelos que LiteGen integra y exactamente lo que cada uno acepta — generado a partir del registro de capacidades que impulsa la pasarela.",
+    "searchPlaceholder": "Busca modelos, proveedores, etiquetas…",
+    "noResults": "Ningún modelo coincide con tu búsqueda.",
+    "sizes": "Tamaños",
+    "aspectRatios": "Relaciones de aspecto",
+    "referenceImages": "Imágenes de referencia",
+    "none": "Ninguna",
+    "prompt": "Prompt",
+    "params": "Parámetros",
+    "tags": "Etiquetas",
+    "docsLabel": "Referencia",
+    "viewDocs": "Documentación de la API del proveedor ↗",
+    "required": "obligatorio",
+    "optional": "opcional",
+    "maxChars": "hasta {n} caracteres",
+    "refsShort": "{n, plural, one {# ref} other {# refs}}",
+    "refsRoles": "hasta {n} ({roles})",
+    "defaultEq": "predet. {v}",
+    "restHeading": "API REST",
+    "restSub": "El contrato HTTP completo, generado a partir de la especificación OpenAPI — para llamar a LiteGen directamente sin un SDK."
+  },
+  "footer": {
+    "tagline": "El proxy universal para la generación de imágenes y vídeo con IA.",
+    "docs": "Documentación",
+    "github": "GitHub",
+    "license": "Licencia",
+    "rights": "Código abierto bajo la licencia MIT."
+  }
+}

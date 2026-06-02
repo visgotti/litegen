@@ -1,0 +1,33 @@
+{
+  "name": "@litegen/landing",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Marketing landing site for LiteGen — Next.js (App Router) + next-intl, SSG + SEO + i18n.",
+  "scripts": {
+    "dev": "next dev -p 8019",
+    "build": "next build",
+    "start": "next start -p 8019",
+    "lint": "next lint",
+    "sync-capabilities": "node scripts/sync-capabilities.mjs",
+    "sync-openapi": "node scripts/sync-openapi.mjs",
+    "sync-models": "node scripts/sync-models.mjs",
+    "test:scripts": "node --test scripts/*.test.mjs",
+    "prebuild": "node scripts/sync-capabilities.mjs && node scripts/sync-openapi.mjs && node scripts/sync-models.mjs"
+  },
+  "dependencies": {
+    "highlight.js": "^11.11.1",
+    "lucide-react": "^0.469.0",
+    "next": "^15.1.6",
+    "next-intl": "^3.26.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.0.7",
+    "@types/react-dom": "^19.0.3",
+    "@webgpu/types": "^0.1.70",
+    "typescript": "^5.7.3",
+    "yaml": "^2.9.0"
+  }
+}

@@ -1,0 +1,128 @@
+[package]
+name = "litegen"
+version = "0.1.0"
+edition = "2021"
+description = "LiteGen — The universal proxy for AI image and video generation. Like LiteLLM, but for multimedia."
+license = "MIT"
+repository = "https://github.com/litegen/litegen"
+readme = "README.md"
+keywords = ["ai", "image-generation", "video-generation", "proxy", "openai"]
+
+[[bin]]
+name = "litegen"
+path = "src/main.rs"
+
+[lib]
+name = "litegen"
+path = "src/lib.rs"
+
+[dependencies]
+# Web framework
+axum = { version = "0.8", features = ["json", "multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "timeout"] }
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# YAML parsing for capability schemas
+serde_yaml = "0.9"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+
+# OpenAPI / Documentation
+# (utoipa-swagger-ui removed: its build script downloads from GitHub at compile
+# time, which fails in network-restricted CI/sandboxes. We expose the OpenAPI
+# JSON via utoipa::OpenApi instead; pair with any standalone Swagger/Scalar UI.)
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "sqlite", "postgres", "migrate", "chrono", "uuid"] }
+
+# Caching
+moka = { version = "0.12", features = ["future"] }
+
+# Configuration
+config = "0.14"
+dotenvy = "0.15"
+
+# Logging / Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# OpenTelemetry / distributed tracing
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"] }
+tracing-opentelemetry = "0.28"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Async traits
+async-trait = "0.1"
+
+# Base64
+base64 = "0.22"
+
+# Bytes
+bytes = "1"
+
+# Metrics / Observability
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
+# Password hashing for API keys
+sha2 = "0.10"
+# HMAC for webhook signing
+hmac = "0.12"
+
+# Password hashing (user accounts)
+argon2 = { version = "0.5", features = ["password-hash", "rand"] }
+subtle = "2"
+once_cell = "1"
+
+# Random / weights
+rand = "0.8"
+
+# Image generation (for visual mock provider)
+image = { version = "0.25", default-features = false, features = ["png", "gif"] }
+
+# Multipart parsing
+multer = "3"
+futures = "0.3"
+
+# Hex encoding
+hex = "0.4"
+
+# CSV serialization
+csv = "1.3"
+
+# S3-compatible object storage
+rust-s3 = { version = "0.35", default-features = false, features = ["tokio-rustls-tls"] }
+
+# OAuth2 / OIDC
+oauth2 = "4"
+openidconnect = "3"
+
+# URL encoding (used in OAuth redirect URLs)
+urlencoding = "2"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+axum-test = "16"
+tempfile = "3"
+# HTTP mocking for provider integration tests
+wiremock = "0.6"

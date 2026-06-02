@@ -1,0 +1,105 @@
+.wrap {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.copy {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.copy:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.pre {
+  margin: 0;
+  padding: 22px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+@media (max-width: 560px) {
+  .pre {
+    font-size: 0.8rem;
+  }
+}
+
+/* highlight.js token colors (Palenight-ish, tuned to the site's dark surface).
+   highlight.js emits global `.hljs-*` classes, so target them with :global. */
+.pre :global(.hljs) {
+  color: var(--text);
+  background: transparent;
+}
+
+.pre :global(.hljs-comment),
+.pre :global(.hljs-quote) {
+  color: #707888;
+  font-style: italic;
+}
+
+.pre :global(.hljs-keyword),
+.pre :global(.hljs-literal),
+.pre :global(.hljs-type),
+.pre :global(.hljs-name),
+.pre :global(.hljs-selector-tag) {
+  color: #c792ea;
+}
+
+.pre :global(.hljs-string),
+.pre :global(.hljs-meta .hljs-string),
+.pre :global(.hljs-regexp),
+.pre :global(.hljs-addition) {
+  color: #c3e88d;
+}
+
+.pre :global(.hljs-number),
+.pre :global(.hljs-symbol),
+.pre :global(.hljs-bullet) {
+  color: #f78c6c;
+}
+
+.pre :global(.hljs-title),
+.pre :global(.hljs-title.function_),
+.pre :global(.hljs-section),
+.pre :global(.hljs-built_in) {
+  color: #82aaff;
+}
+
+.pre :global(.hljs-attr),
+.pre :global(.hljs-attribute),
+.pre :global(.hljs-property),
+.pre :global(.hljs-variable),
+.pre :global(.hljs-template-variable) {
+  color: #ffcb6b;
+}
+
+.pre :global(.hljs-params) {
+  color: var(--text);
+}
+
+.pre :global(.hljs-meta),
+.pre :global(.hljs-punctuation),
+.pre :global(.hljs-comment .hljs-doctag) {
+  color: var(--muted);
+}

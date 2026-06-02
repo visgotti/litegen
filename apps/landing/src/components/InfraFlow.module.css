@@ -1,0 +1,517 @@
+.section {
+  position: relative;
+  padding: 72px 0;
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.head {
+  max-width: 640px;
+  margin-bottom: 32px;
+}
+
+.heading {
+  font-size: clamp(1.6rem, 3.5vw, 2.3rem);
+  font-weight: 800;
+}
+
+.sub {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 1.05rem;
+}
+
+.figure {
+  margin: 0;
+}
+
+/* Visually-hidden text alternative describing the flow topology for AT. */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- Stage: the framed diagram panel ---- */
+.stage {
+  position: relative;
+  width: 100%;
+  /* Tall enough for the radial provider web — the gateway hub plus 18 spokes
+     fanning out across both hemispheres (nodes reach y≈10–90%). */
+  min-height: clamp(720px, 72vw, 880px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #0b0c12;
+  overflow: hidden;
+  box-shadow: 0 30px 80px -40px rgba(0, 0, 0, 0.85);
+}
+
+.canvas,
+.fallback {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Cross-fade between fallback wires and the live canvas. The accessible label
+   overlay (.overlay / .hint) always sits above both via a higher z-index. */
+.canvas {
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+.fallback {
+  z-index: 2;
+  opacity: 1;
+  transition: opacity 0.6s ease;
+}
+.stage[data-gpu='on'] .canvas {
+  z-index: 2;
+  opacity: 1;
+}
+/* visibility flips to hidden only after the fade so an interrupted transition
+   can never leave the dashed fallback wires overlaying the live GPU scene. */
+.stage[data-gpu='on'] .fallback {
+  z-index: 1;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.6s ease, visibility 0s linear 0.6s;
+}
+
+/* ---- Fallback SVG wiring ---- */
+.wire {
+  fill: none;
+  stroke-width: 0.45;
+  stroke-linecap: round;
+  stroke-dasharray: 2 3;
+  animation: infraflow-dash 1.6s linear infinite;
+  opacity: 0.7;
+}
+
+@keyframes infraflow-dash {
+  to {
+    stroke-dashoffset: -10;
+  }
+}
+
+.wiresMobile {
+  display: none;
+}
+
+/* ---- Overlay + nodes ---- */
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.node {
+  position: absolute;
+  /* --sx/--sy are the "spread away from the pinned node" offset (stage %); 0 by
+     default. Transitioning left/top gives the fluid parting motion. */
+  left: calc(var(--x) + var(--sx, 0%));
+  top: calc(var(--y) + var(--sy, 0%));
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  user-select: none;
+  transition: left 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+    top 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* App / client node */
+.appNode {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 104px;
+  height: 104px;
+  border: 1px solid var(--border-strong);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  backdrop-filter: blur(3px);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.appNode:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 30px -6px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.appIcon {
+  color: var(--accent);
+}
+.appLabel {
+  font-size: 0.86rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+/* Gateway card */
+.gateway {
+  width: 330px;
+  max-width: 78vw;
+  padding: 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  backdrop-filter: blur(7px);
+  box-shadow: 0 24px 60px -30px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  font-size: 1.1rem;
+  font-weight: 750;
+  margin-bottom: 14px;
+}
+.brandMark {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  color: var(--accent-contrast);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+.pills {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  padding: 7px 6px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--text);
+  /* wrap (no nowrap): long localized labels must not overflow the narrow
+     2-column grid — Spanish "Gestión de claves" clips otherwise. */
+  overflow-wrap: anywhere;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+}
+.pill:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  transform: translateY(-1px);
+}
+
+/* Provider list wrapper — purely semantic; children are absolutely positioned
+   so it contributes no layout box of its own. */
+.providerList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Provider nodes */
+.provider {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  width: 86px;
+  text-align: center;
+}
+.pmark {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  font-size: 0.82rem;
+  font-weight: 800;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  backdrop-filter: blur(3px);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.provider:hover .pmark {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow: 0 0 26px -4px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.pname {
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+.pbadge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.7rem;
+  max-width: 100%;
+}
+.pkinds {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+}
+.pkind {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.pkind[data-kind='image'] {
+  color: #f7b8ee;
+  background: color-mix(in srgb, #f7b8ee 16%, transparent);
+}
+.pkind[data-kind='video'] {
+  color: #8fe3ff;
+  background: color-mix(in srgb, #8fe3ff 16%, transparent);
+}
+
+/* Provider node hint + pinned/expanded state */
+.provider {
+  cursor: pointer;
+}
+.provider[data-selected='true'] {
+  z-index: 6;
+}
+.provider[data-selected='true'] .pmark {
+  border-color: var(--accent);
+  transform: scale(1.14);
+  box-shadow: 0 0 34px -4px color-mix(in srgb, var(--accent) 78%, transparent);
+}
+
+/* Model detail popover that opens from the pinned node. Absolutely positioned
+   so opening it doesn't reflow the node's mark/name. */
+.panel {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 10px);
+  transform: translateX(-50%);
+  width: 190px;
+  max-width: 46vw;
+  padding: 10px 12px;
+  text-align: left;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 18px 44px -18px rgba(0, 0, 0, 0.85);
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  animation: panelIn 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* Open upward for nodes in the lower half so the popover stays on-stage. */
+.provider[data-side='up'] .panel {
+  top: auto;
+  bottom: calc(100% + 10px);
+}
+@keyframes panelIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+.panelGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.panelHead {
+  align-self: flex-start;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.panelHead[data-kind='image'] {
+  color: #f7b8ee;
+  background: color-mix(in srgb, #f7b8ee 16%, transparent);
+}
+.panelHead[data-kind='video'] {
+  color: #8fe3ff;
+  background: color-mix(in srgb, #8fe3ff 16%, transparent);
+}
+.panelList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.72rem;
+  line-height: 1.3;
+  color: var(--text);
+}
+.pmodel {
+  color: var(--muted);
+  max-width: 96px;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+/* Hint line */
+.hint {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  /* --muted (not --muted-2): the hint overlays the live canvas, and --muted-2
+     fails WCAG AA for small text (~3.8:1). A backing plate guarantees contrast
+     regardless of what the shader paints underneath. */
+  font-size: 0.78rem;
+  color: var(--muted);
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #0b0c12 68%, transparent);
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ---- Hover: light the active route, dim the rest ----
+   This is the DOM/SVG counterpart to the shader's focus bloom, so "trace its
+   route" works even when WebGPU is unavailable. The app→gateway trunk and the
+   gateway sit on every route, so they stay lit whenever anything is focused;
+   each provider's own wire lights via the matching data-focus / data-link pair. */
+.overlay .node {
+  transition: opacity 0.22s ease, transform 0.2s ease;
+}
+.wire {
+  transition: opacity 0.22s ease, stroke-width 0.22s ease, filter 0.22s ease;
+}
+
+.stage[data-focus]:not([data-focus='']) .wire {
+  opacity: 0.12;
+}
+.stage[data-focus]:not([data-focus='']) .node {
+  opacity: 0.5;
+}
+
+.stage[data-focus]:not([data-focus='']) .wire[data-link='app'],
+.stage[data-focus='gateway']:not([data-focus='']) .wire,
+.stage[data-focus='openai'] .wire[data-link='openai'],
+.stage[data-focus='stability'] .wire[data-link='stability'],
+.stage[data-focus='replicate'] .wire[data-link='replicate'],
+.stage[data-focus='bfl'] .wire[data-link='bfl'],
+.stage[data-focus='ideogram'] .wire[data-link='ideogram'],
+.stage[data-focus='recraft'] .wire[data-link='recraft'],
+.stage[data-focus='leonardo'] .wire[data-link='leonardo'],
+.stage[data-focus='google'] .wire[data-link='google'],
+.stage[data-focus='fal'] .wire[data-link='fal'],
+.stage[data-focus='runway'] .wire[data-link='runway'],
+.stage[data-focus='luma'] .wire[data-link='luma'],
+.stage[data-focus='kling'] .wire[data-link='kling'],
+.stage[data-focus='minimax'] .wire[data-link='minimax'],
+.stage[data-focus='bytedance'] .wire[data-link='bytedance'],
+.stage[data-focus='bedrock'] .wire[data-link='bedrock'],
+.stage[data-focus='hunyuan'] .wire[data-link='hunyuan'],
+.stage[data-focus='vidu'] .wire[data-link='vidu'],
+.stage[data-focus='pixverse'] .wire[data-link='pixverse'] {
+  opacity: 0.95;
+  stroke-width: 0.85;
+  filter: drop-shadow(0 0 2.5px var(--accent));
+}
+
+.stage[data-focus]:not([data-focus='']) [data-node='app'],
+.stage[data-focus]:not([data-focus='']) [data-node='gateway'],
+.overlay .node[data-node]:hover {
+  opacity: 1;
+}
+
+/* ---- Stacked / mobile layout ----
+   The radial web doesn't fit narrow screens, so below 920px we fall back to a
+   stack: app on top, gateway below it, then all 18 providers in a 3-column grid
+   — three image rows, then three video rows — so the hemisphere split still
+   reads top-to-bottom. */
+@media (max-width: 920px) {
+  .node {
+    left: var(--mx);
+    top: var(--my);
+  }
+  .stage {
+    /* Six provider rows (3 image + 3 video) below the app + gateway stack. */
+    min-height: 1180px;
+  }
+  .wiresDesktop {
+    display: none;
+  }
+  .wiresMobile {
+    display: block;
+  }
+  .gateway {
+    width: min(330px, 88vw);
+  }
+  /* 64px boxes centered on the posMobile percentages stay clear of the stage
+     walls down to a ~272px stage (≈320px viewport). */
+  .provider {
+    width: 64px;
+  }
+  .pmark {
+    width: 34px;
+    height: 34px;
+    font-size: 0.76rem;
+  }
+  .pname {
+    font-size: 0.74rem;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .pbadge {
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.62rem;
+  }
+  .pmodel {
+    max-width: 66px;
+    overflow-wrap: anywhere;
+  }
+  .hint {
+    bottom: 12px;
+    font-size: 0.72rem;
+    text-align: center;
+    max-width: 92%;
+    white-space: normal;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wire {
+    animation: none;
+  }
+  /* No sliding/parting motion — nodes jump straight to their spread positions. */
+  .node {
+    transition: none;
+  }
+  .panel {
+    animation: none;
+  }
+}

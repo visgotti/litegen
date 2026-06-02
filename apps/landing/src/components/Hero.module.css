@@ -1,0 +1,124 @@
+.hero {
+  position: relative;
+  padding: 96px 0 72px;
+  overflow: hidden;
+}
+
+/* Soft glow behind the hero. */
+.hero::before {
+  content: '';
+  position: absolute;
+  inset: -200px 0 auto 0;
+  height: 480px;
+  background: radial-gradient(
+    600px 320px at 30% 20%,
+    color-mix(in srgb, var(--accent) 22%, transparent),
+    transparent 70%
+  );
+  pointer-events: none;
+}
+
+.grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 48px;
+  align-items: center;
+}
+
+.copy {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.title {
+  font-size: clamp(2.2rem, 5vw, 3.6rem);
+  font-weight: 800;
+  background: linear-gradient(180deg, #fff, #b9c0cf);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.subtitle {
+  font-size: 1.12rem;
+  color: var(--muted);
+  max-width: 36ch;
+}
+
+.ctas {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.terminal {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 24px 60px -30px rgba(0, 0, 0, 0.8);
+  overflow: hidden;
+}
+
+.chrome {
+  display: flex;
+  gap: 7px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.chrome span {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+
+.code {
+  margin: 0;
+  padding: 18px 18px 8px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.7;
+  color: var(--text);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.prompt {
+  color: var(--accent);
+  font-weight: 700;
+}
+.key {
+  color: #7fd1ff;
+}
+.str {
+  color: #9be39b;
+}
+.num {
+  color: #f0a868;
+}
+
+.caption {
+  padding: 10px 18px 16px;
+  font-size: 0.82rem;
+  color: var(--muted-2);
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 880px) {
+  .grid {
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+  .subtitle {
+    max-width: none;
+  }
+  .hero {
+    padding: 64px 0 48px;
+  }
+}

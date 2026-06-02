@@ -1,0 +1,172 @@
+models:
+  # ─── Photon (image) ───────────────────────────────────────────────────────
+  # Async: POST /generations/image -> poll GET /generations/{id}.
+  # Reference images are CDN URLs only (materializer uploads base64/blob first).
+  - id: luma/photon-1
+    provider: luma
+    media_type: image
+    display_name: Luma Photon
+    description: Luma Photon text-to-image with image/style/character references.
+    pricing: { base_cost_usd: 0.015 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","3:4","4:3","9:16","16:9","9:21","21:9"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 4
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init:      { required: false, min_count: 0, max_count: 4 }
+        style:     { required: false, min_count: 0, max_count: 4 }
+        character: { required: false, min_count: 0, max_count: 4 }
+        modify:    { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [format]
+    tags: [text-to-image, image-to-image]
+
+  - id: luma/photon-flash-1
+    provider: luma
+    media_type: image
+    display_name: Luma Photon Flash
+    description: Faster, cheaper Photon variant.
+    pricing: { base_cost_usd: 0.002 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","3:4","4:3","9:16","16:9","9:21","21:9"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 4
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init:      { required: false, min_count: 0, max_count: 4 }
+        style:     { required: false, min_count: 0, max_count: 4 }
+        character: { required: false, min_count: 0, max_count: 4 }
+        modify:    { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [format]
+    tags: [text-to-image, image-to-image, fast]
+
+  - id: luma/dream-machine
+    provider: luma
+    media_type: video
+    display_name: Luma Dream Machine
+    pricing: { base_cost_usd: 0.35 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: float, min: 3.0, max: 9.0 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","9:16","4:3","3:4","21:9","9:21"]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [loop, callback_url]
+    tags: [text-to-video, image-to-video]
+
+  - id: luma/ray-2
+    provider: luma
+    media_type: video
+    display_name: Luma Ray 2
+    pricing: { base_cost_usd: 0.40 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: float, min: 5.0, max: 9.0 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","9:16","4:3","3:4","21:9","9:21"]
+      resolution:
+        kind: string
+        enum_values: [540p, 720p, 1080p]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  - id: luma/ray-3
+    provider: luma
+    media_type: video
+    display_name: Luma Ray 3
+    pricing: { base_cost_usd: 0.50 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: float, min: 5.0, max: 9.0 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","9:16","4:3","3:4","21:9","9:21"]
+      resolution:
+        kind: string
+        enum_values: [720p, 1080p, 4k]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, premium]
+
+  - id: luma/ray-flash-2
+    provider: luma
+    media_type: video
+    display_name: Luma Ray Flash 2
+    pricing: { base_cost_usd: 0.20 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: float, min: 5.0, max: 9.0 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","9:16","4:3","3:4"]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, fast]
+
+  - id: luma/ray-hdr-3
+    provider: luma
+    media_type: video
+    display_name: Luma Ray HDR 3
+    pricing: { base_cost_usd: 0.65 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: float, min: 5.0, max: 9.0 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","21:9"]
+      resolution:
+        kind: string
+        enum_values: [1080p, 4k]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video, hdr]

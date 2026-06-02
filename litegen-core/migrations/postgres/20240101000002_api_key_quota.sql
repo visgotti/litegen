@@ -1,0 +1,6 @@
+-- Add quota/scopes/rpm/webhook columns to api_keys
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS token_quota DOUBLE PRECISION;
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS tokens_used DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS rpm_limit INTEGER;
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT NOT NULL DEFAULT 'generate,read';
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS webhook_url TEXT;

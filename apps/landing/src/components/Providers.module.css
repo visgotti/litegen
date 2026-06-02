@@ -1,0 +1,94 @@
+.section {
+  padding: 72px 0;
+  border-top: 1px solid var(--border);
+}
+
+.head {
+  max-width: 640px;
+  margin-bottom: 32px;
+}
+
+.heading {
+  font-size: clamp(1.6rem, 3.5vw, 2.3rem);
+  font-weight: 800;
+}
+
+.sub {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 1.05rem;
+}
+
+.grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px 9px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-weight: 600;
+  font-size: 0.95rem;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.chip:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+
+.dot {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: var(--accent-contrast);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+
+.name {
+  white-space: nowrap;
+}
+
+/* Capability tags (Image / Video) on the right of each chip. */
+.tags {
+  display: inline-flex;
+  gap: 5px;
+  margin-left: 3px;
+}
+
+.tag {
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: var(--fg, inherit);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.tagVideo {
+  background: color-mix(in srgb, var(--accent-2) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent-2) 32%, transparent);
+}
+
+.more {
+  color: var(--muted);
+  padding-left: 18px;
+  font-style: italic;
+  border-style: dashed;
+}

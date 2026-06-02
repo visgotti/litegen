@@ -1,0 +1,8 @@
+package_name_override: _generated
+project_name_override: _generated
+use_path_prefixes_for_title_model_names: false
+# Use ruff post-hooks to keep generated code deterministic (sorted imports,
+# stable formatting). The CI drift check depends on stable output.
+post_hooks:
+  - "ruff check . --fix --extend-select=I --quiet"
+  - "ruff format . --quiet"

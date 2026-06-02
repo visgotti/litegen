@@ -1,0 +1,83 @@
+models:
+  # Vidu (api.vidu.com). Async: POST /ent/v2/{text2video,img2video,reference2video,
+  # start-end2video} -> poll GET /ent/v2/tasks/{id}/creations. Auth: Authorization: Token.
+  - id: vidu/viduq1
+    provider: vidu
+    media_type: video
+    display_name: Vidu Q1
+    description: Vidu Q1 text/image/reference/start-end to video.
+    pricing: { base_cost_usd: 0.30 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      duration_seconds: { kind: float, min: 4.0, max: 5.0, default: 5.0 }
+      resolution:
+        kind: string
+        enum_values: [360p, 720p, 1080p]
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1","3:4","4:3"]
+    ref_inputs:
+      max_total: 7
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        reference:   { required: false, min_count: 0, max_count: 7 }
+    extra_allowlist: [movement_amplitude, style, bgm, off_peak, callback_url]
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: vidu/vidu2.0
+    provider: vidu
+    media_type: video
+    display_name: Vidu 2.0
+    description: Vidu 2.0 text/image/reference to video.
+    pricing: { base_cost_usd: 0.20 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      duration_seconds: { kind: float, min: 4.0, max: 8.0, default: 4.0 }
+      resolution:
+        kind: string
+        enum_values: [360p, 720p, 1080p]
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1","3:4","4:3"]
+    ref_inputs:
+      max_total: 7
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        reference:   { required: false, min_count: 0, max_count: 7 }
+    extra_allowlist: [movement_amplitude, style, bgm, off_peak, callback_url]
+    tags: [text-to-video, image-to-video, reference-to-video]
+
+  - id: vidu/viduq2-pro
+    provider: vidu
+    media_type: video
+    display_name: Vidu Q2 Pro
+    description: Vidu Q2 Pro high-quality text/image/reference to video.
+    pricing: { base_cost_usd: 0.40 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      duration_seconds: { kind: float, min: 4.0, max: 8.0, default: 5.0 }
+      resolution:
+        kind: string
+        enum_values: [720p, 1080p]
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1","3:4","4:3"]
+    ref_inputs:
+      max_total: 7
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        reference:   { required: false, min_count: 0, max_count: 7 }
+    extra_allowlist: [movement_amplitude, bgm, off_peak, callback_url]
+    tags: [text-to-video, image-to-video, reference-to-video, premium]

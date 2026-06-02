@@ -1,0 +1,121 @@
+models:
+  # Recraft (external.api.recraft.ai/v1). Sync, OpenAI-compatible. Bearer auth.
+  # `style` selects the recraft style family; `size` is WxH (1024-2048).
+  - id: recraft/recraftv3
+    provider: recraft
+    media_type: image
+    display_name: Recraft V3
+    description: Recraft V3 raster image generation.
+    pricing: { base_cost_usd: 0.04 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      negative_prompt: { kind: string, max_length: 1000 }
+      style:
+        kind: string
+        enum_values: [realistic_image, digital_illustration, vector_illustration, icon, any]
+        default: realistic_image
+      size:
+        kind: size
+        mode: freeform
+        min_width: 1024
+        max_width: 2048
+        min_height: 1024
+        max_height: 2048
+    extra_allowlist: [style_id, controls, text_layout, substyle]
+    tags: [text-to-image]
+
+  - id: recraft/recraftv3_vector
+    provider: recraft
+    media_type: image
+    display_name: Recraft V3 Vector
+    description: Recraft V3 vector (SVG) image generation.
+    pricing: { base_cost_usd: 0.08 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      negative_prompt: { kind: string, max_length: 1000 }
+      style:
+        kind: string
+        enum_values: [vector_illustration, icon]
+        default: vector_illustration
+      size:
+        kind: size
+        mode: freeform
+        min_width: 1024
+        max_width: 2048
+        min_height: 1024
+        max_height: 2048
+    extra_allowlist: [style_id, controls, substyle]
+    tags: [text-to-image, vector]
+
+  - id: recraft/recraftv2
+    provider: recraft
+    media_type: image
+    display_name: Recraft V2
+    description: Recraft V2 raster image generation.
+    pricing: { base_cost_usd: 0.022 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      style:
+        kind: string
+        enum_values: [realistic_image, digital_illustration, vector_illustration, icon, any]
+        default: realistic_image
+      size:
+        kind: size
+        mode: freeform
+        min_width: 1024
+        max_width: 2048
+        min_height: 1024
+        max_height: 2048
+    extra_allowlist: [style_id, controls, substyle]
+    tags: [text-to-image]
+
+  - id: recraft/recraftv4_1
+    provider: recraft
+    media_type: image
+    display_name: Recraft V4.1
+    description: Recraft V4.1 raster image generation (current default).
+    pricing: { base_cost_usd: 0.04 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      negative_prompt: { kind: string, max_length: 1000 }
+      style:
+        kind: string
+        enum_values: [realistic_image, digital_illustration, vector_illustration, icon, any]
+        default: realistic_image
+      size:
+        kind: size
+        mode: freeform
+        min_width: 1024
+        max_width: 2048
+        min_height: 1024
+        max_height: 2048
+    extra_allowlist: [style_id, controls, text_layout, substyle]
+    tags: [text-to-image]
+
+  - id: recraft/recraftv4_1_pro
+    provider: recraft
+    media_type: image
+    display_name: Recraft V4.1 Pro
+    description: Recraft V4.1 Pro raster image generation.
+    pricing: { base_cost_usd: 0.25 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      negative_prompt: { kind: string, max_length: 1000 }
+      style:
+        kind: string
+        enum_values: [realistic_image, digital_illustration, vector_illustration, icon, any]
+        default: realistic_image
+      size:
+        kind: size
+        mode: freeform
+        min_width: 1024
+        max_width: 2048
+        min_height: 1024
+        max_height: 2048
+    extra_allowlist: [style_id, controls, text_layout, substyle]
+    tags: [text-to-image]

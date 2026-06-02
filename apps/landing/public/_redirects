@@ -1,0 +1,3 @@
+# Locale entrypoint redirect — replaces the next-intl middleware that the
+# static export can no longer run. CF Pages serves /en as the default locale.
+/    /en    302

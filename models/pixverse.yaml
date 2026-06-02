@@ -1,0 +1,95 @@
+models:
+  # PixVerse (app-api.pixverse.ai). Async; API-KEY header + per-request Ai-trace-id.
+  # Refs are pre-uploaded (multipart) to /image/upload -> img_id, then referenced.
+  - id: pixverse/v4.5
+    provider: pixverse
+    media_type: video
+    display_name: PixVerse v4.5
+    description: PixVerse v4.5 text/image-to-video + first/last-frame transition.
+    pricing: { base_cost_usd: 0.45 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      duration_seconds: { kind: float, min: 5.0, max: 8.0, default: 5.0 }
+      resolution:
+        kind: string
+        enum_values: [360p, 540p, 720p, 1080p]
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","4:3","1:1","3:4","9:16"]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format:
+        form: multipart
+        field_map:
+          first_frame: image
+          last_frame: image
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [motion_mode, style, template_id, negative_prompt]
+    tags: [text-to-video, image-to-video]
+
+  - id: pixverse/v5
+    provider: pixverse
+    media_type: video
+    display_name: PixVerse v5
+    description: PixVerse v5 text/image-to-video.
+    pricing: { base_cost_usd: 0.45 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      duration_seconds: { kind: float, min: 5.0, max: 8.0, default: 5.0 }
+      resolution:
+        kind: string
+        enum_values: [360p, 540p, 720p, 1080p]
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","4:3","1:1","3:4","9:16"]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format:
+        form: multipart
+        field_map:
+          first_frame: image
+          last_frame: image
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [motion_mode, generate_audio_switch, negative_prompt]
+    tags: [text-to-video, image-to-video]
+
+  - id: pixverse/v3.5
+    provider: pixverse
+    media_type: video
+    display_name: PixVerse v3.5
+    description: PixVerse v3.5 text/image-to-video + transition.
+    pricing: { base_cost_usd: 0.30 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      duration_seconds: { kind: float, min: 5.0, max: 8.0, default: 5.0 }
+      resolution:
+        kind: string
+        enum_values: [360p, 540p, 720p, 1080p]
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","4:3","1:1","3:4","9:16"]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format:
+        form: multipart
+        field_map:
+          first_frame: image
+          last_frame: image
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [motion_mode, style, template_id, negative_prompt]
+    tags: [text-to-video, image-to-video]
