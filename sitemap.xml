@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+<url>
+<loc>https://litegen.dev/en</loc>
+<xhtml:link rel="alternate" hreflang="en" href="https://litegen.dev/en" />
+<xhtml:link rel="alternate" hreflang="es" href="https://litegen.dev/es" />
+<lastmod>2026-06-02T13:00:29.878Z</lastmod>
+<changefreq>weekly</changefreq>
+<priority>1</priority>
+</url>
+<url>
+<loc>https://litegen.dev/es</loc>
+<xhtml:link rel="alternate" hreflang="en" href="https://litegen.dev/en" />
+<xhtml:link rel="alternate" hreflang="es" href="https://litegen.dev/es" />
+<lastmod>2026-06-02T13:00:29.878Z</lastmod>
+<changefreq>weekly</changefreq>
+<priority>0.8</priority>
+</url>
+</urlset>

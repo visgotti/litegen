@@ -1,0 +1,5 @@
+User-Agent: *
+Allow: /
+
+Host: https://litegen.dev
+Sitemap: https://litegen.dev/sitemap.xml
