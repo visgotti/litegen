@@ -1,0 +1,109 @@
+models:
+  - id: stability/sd3-large
+    provider: stability
+    media_type: image
+    display_name: Stable Diffusion 3 Large
+    description: Latest Stability AI model with excellent prompt adherence.
+    pricing: { base_cost_usd: 0.065 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      negative_prompt: { kind: string, max_length: 10000 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "16:9", "9:16", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"]
+        default: "1:1"
+      strength: { kind: float, min: 0.0, max: 1.0 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [output_format, style_preset]
+    tags: [text-to-image, image-to-image]
+
+  - id: stability/sd3-turbo
+    provider: stability
+    media_type: image
+    display_name: Stable Diffusion 3 Turbo
+    description: Faster, cheaper SD3 variant.
+    pricing: { base_cost_usd: 0.04 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      negative_prompt: { kind: string, max_length: 10000 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1"]
+        default: "1:1"
+    extra_allowlist: [output_format]
+    tags: [text-to-image, fast]
+
+  - id: stability/core
+    provider: stability
+    media_type: image
+    display_name: Stable Image Core
+    description: Fast, affordable image generation.
+    pricing: { base_cost_usd: 0.03 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      negative_prompt: { kind: string, max_length: 10000 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "16:9", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"]
+        default: "1:1"
+      style:
+        kind: string
+        enum_values: [3d-model, analog-film, anime, cinematic, comic-book, digital-art, enhance, fantasy-art, isometric, line-art, low-poly, modeling-compound, neon-punk, origami, photographic, pixel-art, tile-texture]
+    extra_allowlist: [output_format]
+    tags: [text-to-image, fast, affordable]
+
+  - id: stability/ultra
+    provider: stability
+    media_type: image
+    display_name: Stable Image Ultra
+    description: Highest-quality Stability generation.
+    pricing: { base_cost_usd: 0.08 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      negative_prompt: { kind: string, max_length: 10000 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "16:9", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"]
+        default: "1:1"
+    extra_allowlist: [output_format]
+    tags: [text-to-image, premium, photorealistic]
+
+  - id: stability/sdxl
+    provider: stability
+    media_type: image
+    display_name: Stable Diffusion XL
+    description: High-quality general purpose image generation.
+    pricing: { base_cost_usd: 0.002 }
+    capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      negative_prompt: { kind: string, max_length: 2000 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      steps: { kind: int, min: 10, max: 50, default: 30 }
+      guidance_scale: { kind: float, min: 0.0, max: 35.0, default: 7.0 }
+      size:
+        kind: size
+        mode: enum
+        values: [[512,512],[1024,1024]]
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: init_image, mask: mask_image } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image, inpainting]

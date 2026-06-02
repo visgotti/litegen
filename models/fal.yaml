@@ -1,0 +1,153 @@
+models:
+  - id: fal/flux-pro
+    provider: fal
+    media_type: image
+    display_name: Flux Pro (Fal)
+    description: Flux Pro hosted on Fal.
+    pricing: { base_cost_usd: 0.05 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      guidance_scale: { kind: float, min: 1.5, max: 5.0, default: 3.0 }
+      steps: { kind: int, min: 1, max: 50, default: 25 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 512
+        max_width: 2048
+        min_height: 512
+        max_height: 2048
+        multiple_of: 8
+    extra_allowlist: [safety_tolerance, output_format]
+    tags: [text-to-image]
+
+  - id: fal/flux-dev
+    provider: fal
+    media_type: image
+    display_name: Flux Dev (Fal)
+    description: Flux Dev on Fal.
+    pricing: { base_cost_usd: 0.025 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      guidance_scale: { kind: float, min: 0.0, max: 10.0, default: 3.5 }
+      steps: { kind: int, min: 1, max: 50, default: 28 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 512
+        max_width: 2048
+        min_height: 512
+        max_height: 2048
+        multiple_of: 8
+    extra_allowlist: []
+    tags: [text-to-image]
+
+  - id: fal/flux-schnell
+    provider: fal
+    media_type: image
+    display_name: Flux Schnell (Fal)
+    description: Fast Flux on Fal.
+    pricing: { base_cost_usd: 0.003 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      steps: { kind: int, min: 1, max: 4, default: 4 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 512
+        max_width: 1536
+        min_height: 512
+        max_height: 1536
+        multiple_of: 8
+    extra_allowlist: []
+    tags: [text-to-image, fast]
+
+  - id: fal/sdxl
+    provider: fal
+    media_type: image
+    display_name: SDXL (Fal)
+    pricing: { base_cost_usd: 0.015 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      negative_prompt: { kind: string, max_length: 2000 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      steps: { kind: int, min: 10, max: 100, default: 50 }
+      guidance_scale: { kind: float, min: 1.0, max: 20.0, default: 7.5 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 512
+        max_width: 1536
+        min_height: 512
+        max_height: 1536
+        multiple_of: 8
+    extra_allowlist: []
+    tags: [text-to-image]
+
+  - id: fal/sd35-medium
+    provider: fal
+    media_type: image
+    display_name: SD 3.5 Medium (Fal)
+    pricing: { base_cost_usd: 0.025 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      negative_prompt: { kind: string, max_length: 5000 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      steps: { kind: int, min: 10, max: 50, default: 28 }
+      guidance_scale: { kind: float, min: 0.0, max: 10.0, default: 4.5 }
+    extra_allowlist: []
+    tags: [text-to-image]
+
+  - id: fal/recraft-v3
+    provider: fal
+    media_type: image
+    display_name: Recraft V3 (Fal)
+    pricing: { base_cost_usd: 0.04 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      style:
+        kind: string
+        enum_values: [realistic_image, digital_illustration, vector_illustration]
+    extra_allowlist: []
+    tags: [text-to-image, styled]
+
+  - id: fal/auraflow
+    provider: fal
+    media_type: image
+    display_name: AuraFlow (Fal)
+    pricing: { base_cost_usd: 0.02 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      steps: { kind: int, min: 10, max: 50, default: 25 }
+      guidance_scale: { kind: float, min: 0.0, max: 10.0, default: 3.5 }
+    extra_allowlist: []
+    tags: [text-to-image]
+
+  - id: fal/video
+    provider: fal
+    media_type: video
+    display_name: Fal Video (generic)
+    pricing: { base_cost_usd: 0.20 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      duration_seconds: { kind: float, min: 2.0, max: 10.0 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]

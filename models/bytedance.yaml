@@ -1,0 +1,102 @@
+models:
+  # ByteDance Seedream/Seedance via Volcengine Ark / BytePlus ModelArk. Bearer (Ark key).
+  # Host via api_base: ark.ap-southeast.bytepluses.com (intl) | ark.cn-beijing.volces.com (China).
+  # ─── Seedream (image, sync, OpenAI-compatible) ────────────────────────────
+  - id: bytedance/seedream-4-0-250828
+    provider: bytedance
+    media_type: image
+    display_name: Seedream 4.0
+    description: ByteDance Seedream 4.0 text-to-image + multi-reference edit.
+    pricing: { base_cost_usd: 0.03 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 3000 }
+    params:
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 512
+        max_width: 4096
+        min_height: 512
+        max_height: 4096
+    ref_inputs:
+      max_total: 6
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 6 }
+    extra_allowlist: [watermark, response_format]
+    tags: [text-to-image, image-to-image]
+
+  - id: bytedance/seedream-3-0-t2i-250415
+    provider: bytedance
+    media_type: image
+    display_name: Seedream 3.0
+    description: ByteDance Seedream 3.0 text-to-image.
+    pricing: { base_cost_usd: 0.03 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 3000 }
+    params:
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 512
+        max_width: 2048
+        min_height: 512
+        max_height: 2048
+    extra_allowlist: [watermark, response_format]
+    tags: [text-to-image]
+
+  # ─── Seedance (video, async task) ─────────────────────────────────────────
+  - id: bytedance/doubao-seedance-1-0-pro-250528
+    provider: bytedance
+    media_type: video
+    display_name: Seedance 1.0 Pro
+    description: ByteDance Seedance 1.0 Pro text/image-to-video (first/last frame).
+    pricing: { base_cost_usd: 0.50 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 3000 }
+    params:
+      duration_seconds: { kind: float, min: 3.0, max: 12.0, default: 5.0 }
+      resolution:
+        kind: string
+        enum_values: [480p, 720p, 1080p]
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1","4:3","3:4","21:9"]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [watermark, camerafixed, callback_url]
+    tags: [text-to-video, image-to-video]
+
+  - id: bytedance/doubao-seedance-1-0-lite-i2v-250428
+    provider: bytedance
+    media_type: video
+    display_name: Seedance 1.0 Lite (i2v)
+    description: ByteDance Seedance 1.0 Lite image-to-video.
+    pricing: { base_cost_usd: 0.18 }
+    capabilities: { image_to_video: true, text_to_video: true }
+    prompt: { required: true, max_length: 3000 }
+    params:
+      duration_seconds: { kind: float, min: 3.0, max: 12.0, default: 5.0 }
+      resolution:
+        kind: string
+        enum_values: [480p, 720p]
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1","4:3","3:4"]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [watermark, camerafixed, callback_url]
+    tags: [image-to-video, text-to-video, fast]

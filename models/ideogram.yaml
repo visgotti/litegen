@@ -1,0 +1,98 @@
+models:
+  # Ideogram 3.0 (api.ideogram.ai). Sync. Auth: Api-Key header.
+  # aspect_ratio is sent as "WxH" by the provider; refs are multipart files.
+  - id: ideogram/ideogram-v3
+    provider: ideogram
+    media_type: image
+    display_name: Ideogram 3.0
+    description: Ideogram 3.0 text-to-image with style/character reference images.
+    pricing: { base_cost_usd: 0.06 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      negative_prompt: { kind: string, max_length: 10000 }
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","9:16","3:2","2:3","4:3","3:4","4:5","5:4","16:10","10:16","3:1","1:3"]
+        default: "1:1"
+      style:
+        kind: string
+        enum_values: [AUTO, GENERAL, REALISTIC, DESIGN, FICTION]
+    ref_inputs:
+      max_total: 3
+      default_role: style
+      provider_format:
+        form: multipart
+        field_map:
+          style: style_reference_images
+          character: character_reference_images
+      roles:
+        style:     { required: false, min_count: 0, max_count: 3 }
+        character: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [magic_prompt, style_codes, style_preset, color_palette]
+    tags: [text-to-image, image-to-image]
+
+  - id: ideogram/ideogram-v3-turbo
+    provider: ideogram
+    media_type: image
+    display_name: Ideogram 3.0 Turbo
+    description: Ideogram 3.0 with TURBO rendering speed (faster, cheaper).
+    pricing: { base_cost_usd: 0.03 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      negative_prompt: { kind: string, max_length: 10000 }
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","9:16","3:2","2:3","4:3","3:4","4:5","5:4","16:10","10:16","3:1","1:3"]
+        default: "1:1"
+      style:
+        kind: string
+        enum_values: [AUTO, GENERAL, REALISTIC, DESIGN, FICTION]
+    ref_inputs:
+      max_total: 3
+      default_role: style
+      provider_format:
+        form: multipart
+        field_map:
+          style: style_reference_images
+          character: character_reference_images
+      roles:
+        style:     { required: false, min_count: 0, max_count: 3 }
+        character: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [magic_prompt, style_codes, style_preset, color_palette]
+    tags: [text-to-image, fast]
+
+  - id: ideogram/ideogram-v3-quality
+    provider: ideogram
+    media_type: image
+    display_name: Ideogram 3.0 Quality
+    description: Ideogram 3.0 with QUALITY rendering speed.
+    pricing: { base_cost_usd: 0.09 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      negative_prompt: { kind: string, max_length: 10000 }
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","9:16","3:2","2:3","4:3","3:4","4:5","5:4","16:10","10:16","3:1","1:3"]
+        default: "1:1"
+      style:
+        kind: string
+        enum_values: [AUTO, GENERAL, REALISTIC, DESIGN, FICTION]
+    ref_inputs:
+      max_total: 3
+      default_role: style
+      provider_format:
+        form: multipart
+        field_map:
+          style: style_reference_images
+          character: character_reference_images
+      roles:
+        style:     { required: false, min_count: 0, max_count: 3 }
+        character: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [magic_prompt, style_codes, style_preset, color_palette]
+    tags: [text-to-image, quality]

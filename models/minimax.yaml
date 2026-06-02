@@ -1,0 +1,102 @@
+models:
+  # MiniMax (api.minimax.io/v1; api.minimaxi.com for China via api_base). Bearer.
+  - id: minimax/image-01
+    provider: minimax
+    media_type: image
+    display_name: MiniMax image-01
+    description: MiniMax image-01 text-to-image with subject reference.
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 1500 }
+    params:
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","4:3","3:2","2:3","3:4","9:16","21:9"]
+        default: "1:1"
+    ref_inputs:
+      max_total: 1
+      default_role: subject
+      provider_format: { form: base64 }
+      roles:
+        subject: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [prompt_optimizer]
+    tags: [text-to-image, image-to-image]
+
+  # ─── Hailuo video ─────────────────────────────────────────────────────────
+  - id: minimax/MiniMax-Hailuo-02
+    provider: minimax
+    media_type: video
+    display_name: MiniMax Hailuo 02
+    description: Hailuo 02 text-to-video and image-to-video (first/last frame).
+    pricing: { base_cost_usd: 0.43 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      duration_seconds: { kind: float, min: 6.0, max: 10.0, default: 6.0 }
+      resolution:
+        kind: string
+        enum_values: [512P, 768P, 1080P]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [prompt_optimizer, callback_url]
+    tags: [text-to-video, image-to-video]
+
+  - id: minimax/MiniMax-Hailuo-2.3
+    provider: minimax
+    media_type: video
+    display_name: MiniMax Hailuo 2.3
+    description: Hailuo 2.3 text-to-video and image-to-video.
+    pricing: { base_cost_usd: 0.49 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      duration_seconds: { kind: float, min: 6.0, max: 10.0, default: 6.0 }
+      resolution:
+        kind: string
+        enum_values: [768P, 1080P]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [prompt_optimizer, callback_url]
+    tags: [text-to-video, image-to-video]
+
+  - id: minimax/T2V-01-Director
+    provider: minimax
+    media_type: video
+    display_name: MiniMax T2V-01 Director
+    description: Text-to-video with camera-movement instructions.
+    pricing: { base_cost_usd: 0.43 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      duration_seconds: { kind: float, min: 6.0, max: 6.0, default: 6.0 }
+    extra_allowlist: [prompt_optimizer, callback_url]
+    tags: [text-to-video]
+
+  - id: minimax/S2V-01
+    provider: minimax
+    media_type: video
+    display_name: MiniMax S2V-01
+    description: Subject-reference video (character consistency from a face photo).
+    pricing: { base_cost_usd: 0.65 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      duration_seconds: { kind: float, min: 6.0, max: 6.0, default: 6.0 }
+    ref_inputs:
+      max_total: 1
+      default_role: subject
+      provider_format: { form: base64 }
+      roles:
+        subject: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [prompt_optimizer, callback_url]
+    tags: [text-to-video, subject-reference]

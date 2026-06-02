@@ -1,0 +1,278 @@
+models:
+  - id: mock/image-gen
+    provider: mock
+    media_type: image
+    display_name: Mock Image
+    description: Mock image provider for tests.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      size:
+        kind: size
+        mode: enum
+        values: [[512,512],[1024,1024]]
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [test_flag]
+    tags: [mock, test]
+
+  - id: mock/visual-image-gen
+    provider: mock
+    media_type: image
+    display_name: Mock Visual Image
+    description: Renders a deterministic colored PNG with circle accents derived from the prompt hash. Use to verify the provider flow end-to-end with visible output.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      size:
+        kind: size
+        mode: enum
+        values: [[512, 512]]
+    extra_allowlist: []
+    tags: [mock, test, visual]
+
+  - id: mock/visual-video-gen
+    provider: mock
+    media_type: video
+    display_name: Mock Visual Video
+    description: Animated GIF with a colored square on a random path. Use to verify the provider flow end-to-end with visible output.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      duration_seconds: { kind: float, min: 1.0, max: 5.0 }
+    extra_allowlist: []
+    tags: [mock, test, visual]
+
+  - id: mock/video-gen
+    provider: mock
+    media_type: video
+    display_name: Mock Video
+    description: Mock video provider for tests.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: float, min: 1.0, max: 10.0 }
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [mock, test]
+
+  # ─── Extended image mock models ──────────────────────────────────────────────
+
+  - id: mock/all-params-image
+    provider: mock
+    media_type: image
+    display_name: Mock All-Params Image
+    description: Every image param kind exposed — size enum, aspect_ratio, seed, guidance_scale, steps, negative_prompt, quality, style. Use to test the full validation surface.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      size:
+        kind: size
+        mode: enum
+        values: [[512,512],[1024,1024],[1024,1792],[1792,1024]]
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","9:16","4:3","3:4"]
+        default: "1:1"
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      guidance_scale: { kind: float, min: 0.0, max: 20.0, default: 7.5 }
+      steps: { kind: int, min: 1, max: 100, default: 30 }
+      negative_prompt: { kind: string, max_length: 1000 }
+      quality: { kind: string, enum_values: [standard, hd, ultra], default: standard }
+      style: { kind: string, enum_values: [vivid, natural, anime, photographic], default: natural }
+    extra_allowlist: []
+    tags: [mock, test, all-params]
+
+  - id: mock/freeform-size-image
+    provider: mock
+    media_type: image
+    display_name: Mock Freeform-Size Image
+    description: Freeform size validation — any width/height within [256,2048] that is a multiple of 8. Use to test the freeform size path.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 2048
+        min_height: 256
+        max_height: 2048
+        multiple_of: 8
+    tags: [mock, test, freeform-size]
+
+  - id: mock/url-refs-image
+    provider: mock
+    media_type: image
+    display_name: Mock URL-Refs Image
+    description: Image-to-image with URL-form ref inputs. Use to test the URL ref materialization path.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      strength: { kind: float, min: 0.0, max: 1.0, default: 0.8 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    tags: [mock, test, refs-url]
+
+  - id: mock/base64-refs-image
+    provider: mock
+    media_type: image
+    display_name: Mock Base64-Refs Image
+    description: Image-to-image with base64-form ref inputs. Use to test the base64 ref materialization path.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 4000 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    tags: [mock, test, refs-base64]
+
+  - id: mock/multipart-refs-image
+    provider: mock
+    media_type: image
+    display_name: Mock Multipart-Refs Image
+    description: Image-to-image with multipart-form ref inputs. Use to test the multipart ref materialization path.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 4000 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    tags: [mock, test, refs-multipart]
+
+  - id: mock/inpainting-image
+    provider: mock
+    media_type: image
+    display_name: Mock Inpainting Image
+    description: Inpainting with init + mask roles via multipart form. Use to test the inpainting capability and dual-role ref path.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
+    prompt: { required: true, max_length: 4000 }
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image, mask: mask } }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1 }
+    tags: [mock, test, inpainting]
+
+  - id: mock/passthrough-image
+    provider: mock
+    media_type: image
+    display_name: Mock Passthrough Image
+    description: Heavy extra_allowlist — safety_tolerance, output_format, output_quality, person_generation, style_preset, watermark, response_format are passed through verbatim. Use to test passthrough config.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 4000 }
+    extra_allowlist:
+      - safety_tolerance
+      - output_format
+      - output_quality
+      - person_generation
+      - style_preset
+      - watermark
+      - response_format
+    tags: [mock, test, passthrough]
+
+  - id: mock/expensive-image
+    provider: mock
+    media_type: image
+    display_name: Mock Expensive Image
+    description: Non-zero pricing ($5.00/request) and a very short prompt cap (100 chars). Use to test quota enforcement and prompt-length validation.
+    pricing: { base_cost_usd: 5.00 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 100 }
+    tags: [mock, test, expensive, quota-demo]
+
+  # ─── Extended video mock models ──────────────────────────────────────────────
+
+  - id: mock/keyframe-video
+    provider: mock
+    media_type: video
+    display_name: Mock Keyframe Video
+    description: Dual-keyframe image-to-video (Luma-style). Pass `first_frame` and `last_frame` reference images and the provider returns an animated GIF that cross-fades between them over 10 frames, proving the keyframe materialization flow end-to-end. With no refs supplied, falls back to a prompt-derived random animation.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: float, min: 3.0, max: 9.0 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","9:16","4:3","3:4"]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame: { required: false, min_count: 0, max_count: 1 }
+    tags: [mock, test, keyframes]
+
+  - id: mock/passthrough-video
+    provider: mock
+    media_type: video
+    display_name: Mock Passthrough Video
+    description: Heavy extra_allowlist for video — callback_url, loop, watermark, safety_tolerance, output_format. Use to test video passthrough config.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 1000 }
+    extra_allowlist:
+      - callback_url
+      - loop
+      - watermark
+      - safety_tolerance
+      - output_format
+    tags: [mock, test, passthrough]
+
+  - id: mock/strict-duration-video
+    provider: mock
+    media_type: video
+    display_name: Mock Strict-Duration Video
+    description: Exactly 5-second duration (min == max == 5.0). Use to test that any other duration value is rejected with 400.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: float, min: 5.0, max: 5.0 }
+    tags: [mock, test, strict-bounds]
+
+  - id: mock/expensive-video
+    provider: mock
+    media_type: video
+    display_name: Mock Expensive Video
+    description: Non-zero pricing ($0.50/request). Use to test video quota enforcement.
+    pricing: { base_cost_usd: 0.50 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      duration_seconds: { kind: float, min: 1.0, max: 10.0 }
+    tags: [mock, test, expensive, quota-demo]

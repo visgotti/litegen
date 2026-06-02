@@ -1,0 +1,5 @@
+.container {
+  /* Redoc renders its own light three-pane layout into this element. */
+  min-height: 70vh;
+  background: #fff;
+}

@@ -1,0 +1,110 @@
+models:
+  # Leonardo.Ai (cloud.leonardo.ai/api/rest/v1). Bearer. Async: create -> poll
+  # GET /generations/{id}. Ref/start images uploaded via presigned init-image.
+  - id: leonardo/diffusion-xl
+    provider: leonardo
+    media_type: image
+    display_name: Leonardo Diffusion XL
+    description: Leonardo image generation (default Diffusion XL model). Add more models via providers.leonardo.model_mapping.
+    pricing: { base_cost_usd: 0.02 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      negative_prompt: { kind: string, max_length: 4000 }
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      strength: { kind: float, min: 0.1, max: 0.9 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 32
+        max_width: 1536
+        min_height: 32
+        max_height: 1536
+        multiple_of: 8
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format:
+        form: multipart
+        field_map:
+          init: file
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [alchemy, photoReal, presetStyle, contrast, modelId]
+    tags: [text-to-image, image-to-image]
+
+  # ─── Motion / Veo3 / Kling video (image-to-video; start frame required) ────
+  - id: leonardo/motion2
+    provider: leonardo
+    media_type: video
+    display_name: Leonardo Motion 2.0
+    description: Leonardo Motion 2.0 image-to-video.
+    pricing: { base_cost_usd: 0.30 }
+    capabilities: { image_to_video: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      duration_seconds: { kind: float, min: 4.0, max: 10.0, default: 5.0 }
+      resolution:
+        kind: string
+        enum_values: [480p, 720p, 1080p]
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format:
+        form: multipart
+        field_map:
+          first_frame: file
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [imageId, imageType, isPublic]
+    tags: [image-to-video]
+
+  - id: leonardo/veo3
+    provider: leonardo
+    media_type: video
+    display_name: Leonardo Veo 3
+    description: Google Veo 3 served through Leonardo's first-party API (start-frame image-to-video).
+    pricing: { base_cost_usd: 2.50 }
+    capabilities: { image_to_video: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      duration_seconds: { kind: float, min: 4.0, max: 8.0, default: 8.0 }
+      resolution:
+        kind: string
+        enum_values: [720p, 1080p]
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format:
+        form: multipart
+        field_map:
+          first_frame: file
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [imageId, imageType, isPublic]
+    tags: [image-to-video, premium]
+
+  - id: leonardo/kling2.1
+    provider: leonardo
+    media_type: video
+    display_name: Leonardo Kling 2.1
+    description: Kling 2.1 served through Leonardo's first-party API.
+    pricing: { base_cost_usd: 1.00 }
+    capabilities: { image_to_video: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0 }
+      resolution:
+        kind: string
+        enum_values: [720p, 1080p]
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format:
+        form: multipart
+        field_map:
+          first_frame: file
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [imageId, imageType, isPublic]
+    tags: [image-to-video]

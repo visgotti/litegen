@@ -1,0 +1,132 @@
+models:
+  - id: replicate/flux-pro
+    provider: replicate
+    media_type: image
+    display_name: Flux Pro
+    description: Black Forest Labs Flux Pro via Replicate.
+    pricing: { base_cost_usd: 0.055 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      guidance_scale: { kind: float, min: 1.5, max: 5.0, default: 3.0 }
+      steps: { kind: int, min: 1, max: 50, default: 25 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","21:9","2:3","3:2","4:5","5:4","9:16","9:21","3:4","4:3"]
+        default: "1:1"
+    extra_allowlist: [safety_tolerance, output_format, output_quality]
+    tags: [text-to-image, premium]
+
+  - id: replicate/flux-dev
+    provider: replicate
+    media_type: image
+    display_name: Flux Dev
+    description: Flux Dev — open weights via Replicate.
+    pricing: { base_cost_usd: 0.025 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      guidance_scale: { kind: float, min: 0.0, max: 10.0, default: 3.5 }
+      steps: { kind: int, min: 1, max: 50, default: 28 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","21:9","2:3","3:2","4:5","5:4","9:16","9:21","3:4","4:3"]
+        default: "1:1"
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [output_format, output_quality]
+    tags: [text-to-image, image-to-image]
+
+  - id: replicate/flux-schnell
+    provider: replicate
+    media_type: image
+    display_name: Flux Schnell
+    description: Fastest Flux variant.
+    pricing: { base_cost_usd: 0.003 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      steps: { kind: int, min: 1, max: 4, default: 4 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","21:9","2:3","3:2","4:5","5:4","9:16","9:21","3:4","4:3"]
+        default: "1:1"
+    extra_allowlist: [output_format, output_quality]
+    tags: [text-to-image, fast]
+
+  - id: replicate/sdxl
+    provider: replicate
+    media_type: image
+    display_name: SDXL on Replicate
+    description: SDXL hosted on Replicate.
+    pricing: { base_cost_usd: 0.012 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      negative_prompt: { kind: string, max_length: 2000 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      steps: { kind: int, min: 10, max: 100, default: 50 }
+      guidance_scale: { kind: float, min: 1.0, max: 20.0, default: 7.5 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 512
+        max_width: 1536
+        min_height: 512
+        max_height: 1536
+        multiple_of: 8
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-image, image-to-image]
+
+  - id: replicate/sd3
+    provider: replicate
+    media_type: image
+    display_name: SD3 on Replicate
+    description: SD3 hosted on Replicate.
+    pricing: { base_cost_usd: 0.035 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      negative_prompt: { kind: string, max_length: 5000 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      steps: { kind: int, min: 10, max: 50, default: 28 }
+      guidance_scale: { kind: float, min: 0.0, max: 10.0, default: 4.5 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","9:16","21:9","9:21","2:3","3:2","4:5","5:4"]
+        default: "1:1"
+    extra_allowlist: [output_format]
+    tags: [text-to-image]
+
+  - id: replicate/video
+    provider: replicate
+    media_type: video
+    display_name: Replicate Video (generic)
+    description: Generic Replicate video endpoint.
+    pricing: { base_cost_usd: 0.30 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      duration_seconds: { kind: float, min: 2.0, max: 10.0 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [version]
+    tags: [text-to-video, image-to-video]

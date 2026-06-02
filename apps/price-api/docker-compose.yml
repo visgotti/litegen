@@ -1,0 +1,37 @@
+# Local dev stack for the price-api. Postgres on 5433 to avoid clashing with a
+# default 5432 instance. `docker compose up -d db` is enough to develop locally.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: price
+      POSTGRES_PASSWORD: price
+      POSTGRES_DB: price_api
+    ports:
+      - "5433:5432"
+    volumes:
+      - price_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U price -d price_api"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4100
+      DATABASE_URL: postgres://price:price@db:5432/price_api
+      DB_SYNCHRONIZE: "false"
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-please-32chars-min}
+      SCRAPING_ENABLED: "true"
+    ports:
+      - "4100:4100"
+    profiles: ["full"]
+
+volumes:
+  price_pgdata:

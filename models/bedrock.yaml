@@ -1,0 +1,61 @@
+models:
+  # Amazon Bedrock Nova (bedrock-runtime.{region}.amazonaws.com). AWS SigV4.
+  # Credentials: key_id (access key id) + key_secret (secret) + region.
+  - id: bedrock/amazon.nova-canvas-v1:0
+    provider: bedrock
+    media_type: image
+    display_name: Amazon Nova Canvas
+    description: Amazon Nova Canvas text-to-image (+ conditioning) via Bedrock InvokeModel (sync).
+    pricing: { base_cost_usd: 0.04 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 1024 }
+    params:
+      negative_prompt: { kind: string, max_length: 1024 }
+      seed: { kind: seed, min: 0, max: 2147483646 }
+      guidance_scale: { kind: float, min: 1.1, max: 10.0 }
+      quality:
+        kind: string
+        enum_values: [standard, premium]
+        default: standard
+      size:
+        kind: size
+        mode: freeform
+        min_width: 320
+        max_width: 4096
+        min_height: 320
+        max_height: 4096
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [controlMode, controlStrength]
+    tags: [text-to-image, image-to-image]
+
+  # Nova Reel: async; output is written to YOUR S3 bucket. REQUIRES the
+  # provider option `s3_output_uri` (e.g. providers.bedrock.options.s3_output_uri:
+  # "s3://bucket/prefix/"). Region availability is limited (e.g. us-east-1).
+  - id: bedrock/amazon.nova-reel-v1:1
+    provider: bedrock
+    media_type: video
+    display_name: Amazon Nova Reel
+    description: Amazon Nova Reel text-to-video / image-to-video (async; output to S3).
+    pricing: { base_cost_usd: 0.48 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      seed: { kind: seed, min: 0, max: 2147483646 }
+      duration_seconds: { kind: float, min: 6.0, max: 120.0, default: 6.0 }
+      fps: { kind: int, min: 24, max: 24, default: 24 }
+      resolution:
+        kind: string
+        enum_values: ["1280x720"]
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]

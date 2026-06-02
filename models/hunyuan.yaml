@@ -1,0 +1,52 @@
+models:
+  # Tencent Hunyuan. TC3-HMAC-SHA256 (SecretId=key_id, SecretKey=key_secret,
+  # region=ap-guangzhou). RPC-style POST / with X-TC-Action header.
+  # Image product: hunyuan.tencentcloudapi.com (v2023-09-01, async submit/query).
+  - id: hunyuan/hunyuan-image
+    provider: hunyuan
+    media_type: image
+    display_name: Hunyuan Image
+    description: Tencent Hunyuan text-to-image (async SubmitHunyuanImageJob).
+    pricing: { base_cost_usd: 0.04 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 1024 }
+    params:
+      negative_prompt: { kind: string, max_length: 1024 }
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 512
+        max_width: 1280
+        min_height: 512
+        max_height: 1280
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [Style, LogoAdd, RspImgType, Revise]
+    tags: [text-to-image, image-to-image]
+
+  # Video product (混元生视频 / vclm): vclm.tencentcloudapi.com (v2024-05-23).
+  - id: hunyuan/hunyuan-video
+    provider: hunyuan
+    media_type: video
+    display_name: Hunyuan Video
+    description: Tencent Hunyuan image-to-video (async SubmitImageToVideoJob on vclm).
+    pricing: { base_cost_usd: 0.50 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      resolution:
+        kind: string
+        enum_values: [540p, 720p]
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [LogoAdd, Resolution]
+    tags: [text-to-video, image-to-video]

@@ -1,0 +1,149 @@
+# LiteGen configuration example
+# Copy to litegen.yaml and customize
+
+server:
+  host: "0.0.0.0"
+  port: 4000
+  request_timeout_seconds: 300
+
+# Database (SQLite for dev, Postgres for prod)
+database_url: "sqlite://litegen.db"
+
+# Model registry directory (loaded at startup).
+# Each <provider>.yaml file declares the models that provider serves and
+# their input contracts (allowed sizes, aspect ratios, ref-image roles,
+# extra-passthrough allowlist, etc.). Override with LITEGEN_MODELS_DIR.
+models_dir: "./models"
+
+# Master API key (optional — if set, all requests require auth)
+# master_key: "your-secret-master-key"
+
+# NOTE: Per-key webhook URLs are stored in the database, not in this config file.
+# When you create an API key via POST /v1/keys you can supply a webhook_url.
+# LiteGen will POST to that URL (with an HMAC-SHA256 signature header) whenever
+# a video generation for that key reaches a terminal status (completed/failed/cancelled).
+# Example:  POST /v1/keys  {"name":"my-key","webhook_url":"https://myapp.example.com/hooks/litegen"}
+
+# Cost markup percentage (0 = no markup)
+cost_markup_percent: 0.0
+
+# Provider configurations
+providers:
+  openai:
+    api_key: ""  # or set OPENAI_API_KEY env var
+    # api_keys: "sk-key1:3,sk-key2:1"  # weighted multi-key support
+    # api_base: "https://api.openai.com/v1"
+  stability:
+    api_key: ""  # or set STABILITY_API_KEY env var
+  replicate:
+    api_key: ""  # or set REPLICATE_API_TOKEN env var
+  google:
+    api_key: ""  # or set GOOGLE_API_KEY env var
+  fal:
+    api_key: ""  # or set FAL_KEY env var
+  runway:
+    api_key: ""  # or set RUNWAY_API_KEY env var (Gen-4 image + video)
+  luma:
+    api_key: ""  # or set LUMA_API_KEY env var (Photon image + Ray video)
+  # ── Image-only vendors ──
+  bfl:
+    api_key: ""  # or BFL_API_KEY (Black Forest Labs / FLUX; x-key header)
+  ideogram:
+    api_key: ""  # or IDEOGRAM_API_KEY (Api-Key header)
+  recraft:
+    api_key: ""  # or RECRAFT_API_TOKEN
+  # ── Image + video vendors ──
+  minimax:
+    api_key: ""  # or MINIMAX_API_KEY (Hailuo); api_base for China: https://api.minimaxi.com/v1
+  bytedance:
+    api_key: ""  # or BYTEDANCE_API_KEY / ARK_API_KEY (Seedream/Seedance); api_base selects BytePlus vs Volcengine
+  leonardo:
+    api_key: ""  # or LEONARDO_API_KEY
+    # model_mapping: { "leonardo/phoenix": "<leonardo-model-uuid>" }  # add image models by UUID
+  vidu:
+    api_key: ""  # or VIDU_API_KEY (Authorization: Token)
+  pixverse:
+    api_key: ""  # or PIXVERSE_API_KEY (API-KEY header)
+  # ── Signing-scheme vendors ──
+  kling:
+    key_id: ""      # access key   (or KLING_ACCESS_KEY) — per-request JWT auth
+    key_secret: ""  # secret key   (or KLING_SECRET_KEY)
+  bedrock:
+    key_id: ""      # AWS access key id     (or BEDROCK_ACCESS_KEY_ID) — SigV4
+    key_secret: ""  # AWS secret access key (or BEDROCK_SECRET_ACCESS_KEY)
+    region: "us-east-1"  # or BEDROCK_REGION
+    # options: { s3_output_uri: "s3://bucket/prefix/" }  # REQUIRED for Nova Reel video
+  hunyuan:
+    key_id: ""      # Tencent SecretId  (or TENCENT_SECRET_ID) — TC3-HMAC-SHA256
+    key_secret: ""  # Tencent SecretKey (or TENCENT_SECRET_KEY)
+    region: "ap-guangzhou"  # or TENCENT_REGION (ap-guangzhou only)
+
+# Model routing rules (optional — auto-discovery works without these)
+model_routes:
+  # Example: route dall-e-3 through OpenAI with Stability as fallback
+  # - model: "dall-e-3"
+  #   strategy: "fallback"
+  #   deployments:
+  #     - provider: openai
+  #       weight: 1
+  #       max_retries: 2
+  #       timeout_seconds: 120
+  #     - provider: stability
+  #       weight: 1
+  #       max_retries: 1
+  #       timeout_seconds: 120
+
+  # Example: weighted round-robin for flux models
+  # - model: "fal/*"
+  #   strategy: "weighted_round_robin"
+  #   deployments:
+  #     - provider: fal
+  #       weight: 3
+  #     - provider: replicate
+  #       weight: 1
+
+# Cache configuration
+cache:
+  enabled: false
+  default_ttl_seconds: 3600
+  max_items: 10000
+
+# Image storage configuration
+# Controls where generated images are persisted.
+# backend: "local" = return base64 inline (default)
+# backend: "s3"   = upload to S3-compatible storage and return URLs
+image_storage:
+  backend: "local"  # "local" or "s3"
+  # path_prefix: "litegen/images"  # custom path prefix inside the bucket
+
+  # S3 configuration (required when backend = "s3")
+  # Works with AWS S3, MinIO, Cloudflare R2, DigitalOcean Spaces, etc.
+  # s3:
+  #   bucket_name: "my-litegen-bucket"
+  #   region: "us-east-1"
+  #   access_key_id: ""      # or set AWS_ACCESS_KEY_ID env var
+  #   secret_access_key: ""  # or set AWS_SECRET_ACCESS_KEY env var
+  #   # For S3-compatible services (MinIO, R2, Spaces):
+  #   # endpoint_url: "https://minio.example.com:9000"
+  #   # custom_public_url: "https://cdn.example.com"
+
+# Observability
+observability:
+  log_level: "info"
+  json_logs: false
+  metrics_enabled: true
+  metrics_path: "/metrics"
+
+# ─── CORS ────────────────────────────────────────────────────────────────────
+# Default is locked down (no origins allowed).
+# Set LITEGEN__CORS__ALLOWED_ORIGINS=https://your-dashboard.com,https://other.com
+# Or LITEGEN__CORS__ALLOWED_ORIGINS=* for dev convenience.
+# cors:
+#   allowed_origins: []       # CSV via env or list here
+#   allow_credentials: false
+
+# OpenTelemetry distributed tracing (optional)
+# Set OTEL_EXPORTER_OTLP_ENDPOINT to enable OTLP gRPC export, e.g.:
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+# When unset, only local tracing-subscriber fmt output is used.
+# The service.name attribute is set to "litegen" automatically.

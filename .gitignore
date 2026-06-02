@@ -1,0 +1,46 @@
+# Claude Code (personal, machine-local overrides)
+.claude/settings.local.json
+
+# Rust
+litegen-core/target/
+
+# Node / Dashboard
+node_modules/
+dashboard/node_modules/
+dashboard/dist/
+dashboard/dist-ssr/
+*.local
+
+# Cloudflare Wrangler / Next build output
+.wrangler/
+.next/
+out/
+
+# Playwright
+dashboard/test-results/
+dashboard/playwright-report/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment
+.env
+.env.*
+!.env.example
+# Deploy: commit the placeholder template, never the real secrets file.
+!.env.deploy.template
