@@ -171,12 +171,19 @@ pub async fn invite_user(
 
     let email = body.email.trim().to_lowercase();
     let token = generate_session_token();
+    // Scope the invitation to the caller's active org so the invitee joins it
+    // on accept. Falls back to the single-tenant default org.
+    let org_id = ctx
+        .org_id
+        .clone()
+        .unwrap_or_else(|| crate::api::middleware::DEFAULT_ORG_ID.to_string());
     let inv = Invitation {
         id: Uuid::new_v4().to_string(),
         email: email.clone(),
         role: body.role,
         token: token.clone(),
         invited_by: ctx.user.as_ref().map(|u| u.user_id.clone()),
+        org_id,
         expires_at: chrono::Utc::now() + chrono::Duration::days(7),
         used_at: None,
         created_at: chrono::Utc::now(),
@@ -195,8 +202,7 @@ pub async fn invite_user(
         Some(json!({ "email": email, "role": inv.role.as_str() })),
     );
 
-    let expose = std::env::var("LITEGEN__DEV__EXPOSE_INVITE_TOKENS").as_deref() == Ok("true");
-    if expose {
+    if state.dev.expose_invite_tokens {
         return (
             StatusCode::OK,
             Json(json!({
@@ -330,35 +336,50 @@ pub async fn accept_invitation(
         );
     }
 
-    // Hash password
-    let hash = match crate::auth::password::hash_password(&password) {
-        Ok(h) => h,
-        Err(crate::auth::password::PasswordError::TooShort) => {
-            return err(
-                StatusCode::BAD_REQUEST,
-                "password_too_short",
-                "Password must be at least 12 characters",
-            );
+    // Find or create the invited user. If they already have an account they
+    // simply gain membership in the invited org. Password hashing is deferred
+    // to the new-user branch so an existing invitee doesn't pay the hash cost.
+    let user = match state.db.get_user_by_email(&inv.email).await {
+        Ok(Some(existing)) => existing,
+        Ok(None) => {
+            // Hash password only when a new account must be created.
+            let hash = match crate::auth::password::hash_password(&password) {
+                Ok(h) => h,
+                Err(crate::auth::password::PasswordError::TooShort) => {
+                    return err(
+                        StatusCode::BAD_REQUEST,
+                        "password_too_short",
+                        "Password must be at least 12 characters",
+                    );
+                }
+                Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "hash_error", &e.to_string()),
+            };
+            let user = User {
+                id: Uuid::new_v4().to_string(),
+                email: inv.email.clone(),
+                password_hash: Some(hash),
+                role: inv.role,
+                oauth_github_id: None,
+                oauth_google_id: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                last_login_at: None,
+                is_active: true,
+            };
+            if let Err(e) = state.db.create_user(&user).await {
+                return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+            }
+            user
         }
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "hash_error", &e.to_string()),
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
     };
 
-    // Create user
-    let user = User {
-        id: Uuid::new_v4().to_string(),
-        email: inv.email.clone(),
-        password_hash: Some(hash),
-        role: inv.role,
-        oauth_github_id: None,
-        oauth_google_id: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        last_login_at: None,
-        is_active: true,
-    };
-
-    if let Err(e) = state.db.create_user(&user).await {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+    // Join the invited org with the invited role. Ignore a duplicate-membership
+    // error so re-accepting is idempotent.
+    if state.db.get_membership(&inv.org_id, &user.id).await.ok().flatten().is_none() {
+        if let Err(e) = state.db.add_org_member(&inv.org_id, &user.id, inv.role).await {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+        }
     }
 
     // Mark invitation used
@@ -787,17 +808,17 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
-    static ENV_MUTEX: once_cell::sync::Lazy<std::sync::Mutex<()>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(()));
-
     #[tokio::test]
     async fn invite_with_dev_token_exposure_includes_token() {
-        let _lock = ENV_MUTEX.lock().unwrap();
-        std::env::set_var("LITEGEN__DEV__EXPOSE_INVITE_TOKENS", "true");
-
         let db = build_db().await;
         let (_, admin_sess, admin_csrf) = seed_user_with_session(&db, Role::Admin).await;
-        let app = build_users_router(build_state(db).await);
+        // Build state with expose_invite_tokens: true (parsed config flag, not env var).
+        let mut state = build_state(db).await;
+        Arc::get_mut(&mut state)
+            .expect("unique Arc")
+            .dev
+            .expose_invite_tokens = true;
+        let app = build_users_router(state);
 
         let body = serde_json::to_vec(&json!({ "email": "tokentest@example.com", "role": "viewer" })).unwrap();
         let req = Request::builder()
@@ -813,7 +834,6 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(json["_dev_token"].is_string(), "should expose _dev_token");
-        std::env::remove_var("LITEGEN__DEV__EXPOSE_INVITE_TOKENS");
     }
 
     // ── GET /v1/auth/invitations/{token} ─────────────────────────────────────
@@ -827,6 +847,7 @@ mod tests {
             role: Role::Member,
             token: "test-token-abc".to_string(),
             invited_by: None,
+            org_id: crate::api::middleware::DEFAULT_ORG_ID.to_string(),
             expires_at: chrono::Utc::now() + chrono::Duration::days(7),
             used_at: None,
             created_at: chrono::Utc::now(),
@@ -855,6 +876,7 @@ mod tests {
             role: Role::Member,
             token: "expired-token".to_string(),
             invited_by: None,
+            org_id: crate::api::middleware::DEFAULT_ORG_ID.to_string(),
             expires_at: chrono::Utc::now() - chrono::Duration::hours(1),
             used_at: None,
             created_at: chrono::Utc::now() - chrono::Duration::days(8),
@@ -881,6 +903,7 @@ mod tests {
             role: Role::Member,
             token: "accept-token".to_string(),
             invited_by: None,
+            org_id: crate::api::middleware::DEFAULT_ORG_ID.to_string(),
             expires_at: chrono::Utc::now() + chrono::Duration::days(7),
             used_at: None,
             created_at: chrono::Utc::now(),
@@ -917,6 +940,7 @@ mod tests {
             role: Role::Member,
             token: "used-token".to_string(),
             invited_by: None,
+            org_id: crate::api::middleware::DEFAULT_ORG_ID.to_string(),
             expires_at: chrono::Utc::now() + chrono::Duration::days(7),
             used_at: Some(chrono::Utc::now() - chrono::Duration::hours(1)),
             created_at: chrono::Utc::now(),

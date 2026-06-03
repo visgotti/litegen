@@ -669,6 +669,7 @@ mod tests {
             role: Role::Member,
             token: generate_session_token(),
             invited_by: None,
+            org_id: crate::api::middleware::DEFAULT_ORG_ID.to_string(),
             expires_at: chrono::Utc::now() + chrono::Duration::days(7),
             used_at: None,
             created_at: chrono::Utc::now(),

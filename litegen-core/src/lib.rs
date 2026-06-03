@@ -7,6 +7,7 @@ pub mod observability;
 pub mod providers;
 pub mod proxy;
 pub mod types;
+pub mod util;
 
 /// Return the path to the models directory.
 /// Respects the `LITEGEN_MODELS_DIR` environment variable; defaults to `"models"`.
