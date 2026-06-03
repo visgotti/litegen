@@ -863,9 +863,13 @@ pub struct Session {
 pub struct Invitation {
     pub id: String,
     pub email: String,
+    /// The role the invited user will receive in `org_id` upon accepting.
     pub role: Role,
     pub token: String,
     pub invited_by: Option<String>,
+    /// Organization the invitee will join on accept. Defaults to the
+    /// single-tenant default org for legacy/global invites.
+    pub org_id: String,
     pub expires_at: chrono::DateTime<chrono::Utc>,
     pub used_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,

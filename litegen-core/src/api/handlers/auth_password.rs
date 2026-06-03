@@ -14,45 +14,8 @@ use crate::api::middleware::{
 use crate::auth::lockout::{is_locked_out, retry_after_seconds};
 use crate::auth::password::{hash_password, verify_dummy, verify_password, PasswordError};
 use crate::config::Mode;
-use crate::db::DatabaseStore;
 use crate::types::{Application, Organization, PasswordReset, Role, User};
-
-// ─── Tenant slug helpers ───────────────────────────────────────────────────────
-
-/// Lowercase, replace non-alphanumeric runs with '-', trim leading/trailing '-'.
-fn slugify(s: &str) -> String {
-    let slug: String = s
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
-        .collect();
-    let slug = slug.trim_matches('-').to_string();
-    if slug.is_empty() {
-        "org".to_string()
-    } else {
-        slug
-    }
-}
-
-/// Derive a default org name from the local-part of an email address.
-fn default_org_name_from_email(email: &str) -> String {
-    email.split('@').next().unwrap_or("My Org").to_string()
-}
-
-/// Append `-2`, `-3`, … to `base` until a free slug is found.
-async fn unique_slug(db: &dyn DatabaseStore, base: &str) -> Result<String, sqlx::Error> {
-    if db.get_org_by_slug(base).await?.is_none() {
-        return Ok(base.to_string());
-    }
-    for n in 2..10000 {
-        let cand = format!("{base}-{n}");
-        if db.get_org_by_slug(&cand).await?.is_none() {
-            return Ok(cand);
-        }
-    }
-    Ok(format!("{base}-{}", uuid::Uuid::new_v4()))
-}
+use crate::util::slug::{default_org_name_from_email, slugify, unique_org_slug};
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
@@ -225,7 +188,7 @@ pub async fn signup(
                 .map(|n| n.trim().to_string())
                 .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| default_org_name_from_email(&email));
-            let slug = match unique_slug(state.db.as_ref(), &slugify(&org_name)).await {
+            let slug = match unique_org_slug(state.db.as_ref(), &slugify(&org_name)).await {
                 Ok(s) => s,
                 Err(e) => return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
             };

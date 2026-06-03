@@ -999,14 +999,15 @@ impl DatabaseStore for PostgresDatabase {
 
     async fn create_invitation(&self, inv: &Invitation) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO invitations (id, email, role, token, invited_by, expires_at, used_at, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+            "INSERT INTO invitations (id, email, role, token, invited_by, org_id, expires_at, used_at, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
         )
         .bind(&inv.id)
         .bind(&inv.email)
         .bind(inv.role.as_str())
         .bind(&inv.token)
         .bind(&inv.invited_by)
+        .bind(&inv.org_id)
         .bind(inv.expires_at)
         .bind(inv.used_at)
         .bind(inv.created_at)
@@ -1017,7 +1018,7 @@ impl DatabaseStore for PostgresDatabase {
 
     async fn get_invitation(&self, token: &str) -> Result<Option<Invitation>, sqlx::Error> {
         let row = sqlx::query_as::<_, InvitationRow>(
-            "SELECT id, email, role, token, invited_by, expires_at, used_at, created_at \
+            "SELECT id, email, role, token, invited_by, org_id, expires_at, used_at, created_at \
              FROM invitations WHERE token = $1"
         )
         .bind(token)
@@ -1044,7 +1045,7 @@ impl DatabaseStore for PostgresDatabase {
 
     async fn list_invitations(&self) -> Result<Vec<Invitation>, sqlx::Error> {
         let rows = sqlx::query_as::<_, InvitationRow>(
-            "SELECT id, email, role, token, invited_by, expires_at, used_at, created_at \
+            "SELECT id, email, role, token, invited_by, org_id, expires_at, used_at, created_at \
              FROM invitations ORDER BY created_at DESC"
         )
         .fetch_all(&self.pool)

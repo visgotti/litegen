@@ -2,6 +2,7 @@ pub mod auth_password;
 pub mod oauth;
 pub mod users;
 pub mod account;
+pub mod orgs;
 
 pub use auth_password::{
     csrf_token, login, logout, me, password_reset_confirm, password_reset_request, signup,
@@ -1658,6 +1659,24 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/account", get(get_account).patch(patch_account))
         .route("/v1/account/sessions", get(list_sessions))
         .route("/v1/account/sessions/{id}", delete(revoke_session))
+        // ─── Organizations / Applications / Members / Provider credentials ──
+        // Session-authed; each handler authorizes against the PATH org via the
+        // caller's membership role (not the active-org header).
+        .route("/v1/orgs", get(orgs::list_orgs).post(orgs::create_org))
+        .route("/v1/orgs/{id}", get(orgs::get_org).patch(orgs::patch_org).delete(orgs::delete_org))
+        .route("/v1/orgs/{id}/members", get(orgs::list_members).post(orgs::invite_member))
+        .route("/v1/orgs/{id}/members/{user_id}", patch(orgs::patch_member).delete(orgs::remove_member))
+        .route("/v1/orgs/{id}/transfer-owner", post(orgs::transfer_owner))
+        .route("/v1/orgs/{id}/apps", get(orgs::list_apps).post(orgs::create_app))
+        .route("/v1/apps/{app_id}", get(orgs::get_app).patch(orgs::patch_app).delete(orgs::delete_app))
+        .route(
+            "/v1/apps/{app_id}/provider-credentials",
+            get(orgs::list_provider_credentials).post(orgs::create_provider_credential),
+        )
+        .route(
+            "/v1/apps/{app_id}/provider-credentials/{provider}",
+            delete(orgs::delete_provider_credential),
+        )
         .layer(middleware::from_fn_with_state(
             csrf_state.clone(),
             csrf_middleware,
