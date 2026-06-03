@@ -20,12 +20,21 @@ use uuid::Uuid;
 use crate::auth::oauth::OAuthConfig;
 use crate::auth::permissions::{permissions_for, Permission};
 use crate::auth::tokens::constant_time_eq;
+use crate::config::Mode;
 use crate::db::DatabaseStore;
 use crate::proxy::materializer::Materializer;
 use crate::proxy::router::ProxyRouter;
 use crate::types::Role;
 use crate::api::middleware::backpressure::InFlightLimit;
 use crate::api::middleware::rate_limit::RateLimiter;
+
+// ─── Default tenant ids (single-tenant) ───────────────────────────────────────
+
+/// Default organization id created by migration 0008. In `single_tenant` mode
+/// the master key and dev bypass are scoped to this org.
+pub const DEFAULT_ORG_ID: &str = "00000000-0000-0000-0000-000000000001";
+/// Default application id created by migration 0008.
+pub const DEFAULT_APP_ID: &str = "00000000-0000-0000-0000-000000000002";
 
 // ─── Scope ───────────────────────────────────────────────────────────────────
 
@@ -77,6 +86,11 @@ pub struct KeyContext {
     pub permissions: Vec<Permission>,
     /// Session ID for CSRF lookup (Some only when cookie auth was used).
     pub session_id: Option<String>,
+    /// Active organization id for this request (tenant context).
+    /// None for platform-admin (hosted master key) until a tenant is selected.
+    pub org_id: Option<String>,
+    /// Active application id for this request (tenant context).
+    pub app_id: Option<String>,
 }
 
 // ─── AppState ────────────────────────────────────────────────────────────────
@@ -118,6 +132,16 @@ pub async fn auth_middleware(
         // Use constant-time comparison to prevent timing oracle attacks.
         if let Some(master) = &state.master_key {
             if constant_time_eq(api_key, master.as_str()) {
+                // Master key tenant scope depends on mode:
+                //  - single_tenant: god within the default org/app.
+                //  - hosted: platform admin, not bound to any tenant (None).
+                let (org_id, app_id) = match state.mode {
+                    Mode::SingleTenant => (
+                        Some(DEFAULT_ORG_ID.to_string()),
+                        Some(DEFAULT_APP_ID.to_string()),
+                    ),
+                    Mode::Hosted => (None, None),
+                };
                 let ctx = KeyContext {
                     key_id: None,
                     scopes: vec![Scope::Generate, Scope::Read, Scope::Admin],
@@ -127,6 +151,8 @@ pub async fn auth_middleware(
                     user: None,
                     permissions: vec![],
                     session_id: None,
+                    org_id,
+                    app_id,
                 };
                 request.extensions_mut().insert(ctx);
                 return next.run(request).await;
@@ -134,8 +160,9 @@ pub async fn auth_middleware(
         }
 
         // If no master key is configured and a Bearer token is present,
-        // accept any token (dev mode — the token is irrelevant)
-        if state.master_key.is_none() {
+        // accept any token (dev bypass — the token is irrelevant).
+        // Only enabled in single_tenant mode; hosted mode requires real auth.
+        if state.master_key.is_none() && state.mode == Mode::SingleTenant {
             let ctx = KeyContext {
                 key_id: None,
                 scopes: vec![Scope::Generate, Scope::Read, Scope::Admin],
@@ -145,12 +172,18 @@ pub async fn auth_middleware(
                 user: None,
                 permissions: vec![],
                 session_id: None,
+                org_id: Some(DEFAULT_ORG_ID.to_string()),
+                app_id: Some(DEFAULT_APP_ID.to_string()),
             };
             request.extensions_mut().insert(ctx);
             return next.run(request).await;
         }
 
-        return handle_db_key(api_key, state, request, next).await;
+        // master_key configured → validate as DB key.
+        // master_key None + hosted → fall through (no bypass) to the final 401.
+        if state.master_key.is_some() {
+            return handle_db_key(api_key, state, request, next).await;
+        }
     }
 
     // Try session cookie auth
@@ -169,7 +202,70 @@ pub async fn auth_middleware(
                     let new_exp = chrono::Utc::now() + chrono::Duration::days(7);
                     let _ = state.db.bump_session_expiry(&sid, new_exp).await;
                 }
-                let perms = permissions_for(user.role).to_vec();
+
+                // TODO(perf): this issues up to ~2 extra DB queries per session request; cache the active tenant per session if it becomes hot.
+                // ─── Resolve active org/app + per-org permissions ───────────
+                // Active org: explicit header (validated membership) -> first
+                // org -> default(single_tenant)/none(hosted).
+                let header_org = request
+                    .headers()
+                    .get("x-litegen-org-id")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                let (org_id, membership_role) = if let Some(o) = header_org {
+                    match state.db.get_membership(&o, &user.id).await {
+                        Ok(Some(role)) => (Some(o), Some(role)),
+                        Ok(None) => return forbidden_response("Not a member of the requested organization"),
+                        Err(_) => return internal_error_response("organization lookup failed"),
+                    }
+                } else {
+                    match state.db.list_orgs_for_user(&user.id).await {
+                        Ok(mut v) if !v.is_empty() => {
+                            let (org, role) = v.remove(0);
+                            (Some(org.id), Some(role))
+                        }
+                        _ => {
+                            if state.mode == Mode::SingleTenant {
+                                (Some(DEFAULT_ORG_ID.to_string()), None)
+                            } else {
+                                (None, None)
+                            }
+                        }
+                    }
+                };
+                // Active app: explicit header (validated to belong to org) ->
+                // first app of org -> default(single_tenant)/none.
+                let header_app = request
+                    .headers()
+                    .get("x-litegen-app-id")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                let app_id = match (&org_id, header_app) {
+                    (Some(o), Some(a)) => match state.db.get_application(&a).await {
+                        Ok(Some(app)) if &app.org_id == o => Some(a),
+                        Ok(_) => return forbidden_response(
+                            "Application does not belong to the active organization",
+                        ),
+                        Err(_) => return internal_error_response("application lookup failed"),
+                    },
+                    (Some(o), None) => {
+                        if o == DEFAULT_ORG_ID {
+                            Some(DEFAULT_APP_ID.to_string())
+                        } else {
+                            match state.db.list_apps_for_org(o).await {
+                                Ok(mut v) => if v.is_empty() { None } else { Some(v.remove(0).id) },
+                                Err(_) => return internal_error_response("application listing failed"),
+                            }
+                        }
+                    }
+                    _ => None,
+                };
+                // Permissions: membership role if resolved, else fall back to
+                // the user's global role (preserves single_tenant behavior +
+                // existing tests).
+                let role_for_perms = membership_role.unwrap_or(user.role);
+                let perms = permissions_for(role_for_perms).to_vec();
+
                 let ctx = KeyContext {
                     key_id: None,
                     scopes: vec![Scope::Generate, Scope::Read, Scope::Admin],
@@ -183,6 +279,8 @@ pub async fn auth_middleware(
                     }),
                     permissions: perms,
                     session_id: Some(sid),
+                    org_id,
+                    app_id,
                 };
                 request.extensions_mut().insert(ctx);
                 return next.run(request).await;
@@ -192,9 +290,10 @@ pub async fn auth_middleware(
         return unauthorized_response("Invalid session");
     }
 
-    // No Bearer and no session cookie
-    // In dev mode (no master key), allow through with empty context
-    if state.master_key.is_none() {
+    // No Bearer and no session cookie.
+    // In dev mode (no master key), allow through with an all-scopes context.
+    // Only enabled in single_tenant mode; hosted mode requires real auth.
+    if state.master_key.is_none() && state.mode == Mode::SingleTenant {
         let ctx = KeyContext {
             key_id: None,
             scopes: vec![Scope::Generate, Scope::Read, Scope::Admin],
@@ -204,6 +303,8 @@ pub async fn auth_middleware(
             user: None,
             permissions: vec![],
             session_id: None,
+            org_id: Some(DEFAULT_ORG_ID.to_string()),
+            app_id: Some(DEFAULT_APP_ID.to_string()),
         };
         request.extensions_mut().insert(ctx);
         return next.run(request).await;
@@ -234,6 +335,27 @@ fn unauthorized_response(msg: &str) -> Response {
         })),
     )
         .into_response()
+}
+
+fn forbidden_response(msg: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({
+            "error": {
+                "message": msg,
+                "type": "forbidden",
+                "code": 403
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn internal_error_response(msg: &str) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({"error":{"message":msg,"type":"internal_error","code":500}})),
+    ).into_response()
 }
 
 pub fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -310,6 +432,8 @@ async fn handle_db_key(
                 user: None,
                 permissions: vec![],
                 session_id: None,
+                org_id: key.org_id.clone(),
+                app_id: key.app_id.clone(),
             };
 
             // RPM rate limit check
