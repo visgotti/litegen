@@ -530,6 +530,12 @@ pub struct Generation {
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Arbitrary JSON metadata.
     pub metadata: Option<serde_json::Value>,
+    /// Owning tenant (organization). None for pre-tenancy / untenanted rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_id: Option<String>,
+    /// Owning application. None for pre-tenancy / untenanted rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
 }
 
 // ─── Tenancy (Organizations / Applications / Members / Credentials) ─────────
@@ -749,6 +755,10 @@ pub struct AuditLogEntry {
     /// JSON snapshot of the entity state *after* the action (None on delete/revoke).
     pub after_json: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Tenant (organization) this audit entry belongs to. None falls back to the
+    /// default org at the DB layer (single-tenant); set from the caller's active org.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_id: Option<String>,
 }
 
 /// Filters for `list_audit_log`.
@@ -782,6 +792,8 @@ pub struct RequestArtifact {
     pub output_truncated: bool,
     pub error_message: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub org_id: Option<String>,
+    pub app_id: Option<String>,
 }
 
 /// One row in the `webhook_deliveries` table.

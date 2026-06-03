@@ -19,7 +19,8 @@ pub(crate) const REQUEST_LOG_COLS: &str =
 
 /// Full column list for generations selects.
 const GENERATION_COLS: &str = "id, key_id, model, provider, media_type, status, progress, \
-    provider_job_id, result_url, error_message, cost_usd, created_at, completed_at, metadata";
+    provider_job_id, result_url, error_message, cost_usd, created_at, completed_at, metadata, \
+    org_id, app_id";
 
 /// SQLite-backed database implementation.
 pub struct SqliteDatabase {
@@ -43,6 +44,7 @@ impl SqliteDatabase {
     /// Test-only accessor to the underlying pool so unit tests can stamp rows
     /// (e.g. set tenant columns) that the public API doesn't yet write.
     #[cfg(test)]
+    #[allow(dead_code)] // retained for future tenant-data tests
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
     }
@@ -61,13 +63,15 @@ impl DatabaseStore for SqliteDatabase {
         media_type: &str,
         provider_job_id: Option<&str>,
         cost_usd: f64,
+        org_id: Option<&str>,
+        app_id: Option<&str>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"
             INSERT INTO generations
                 (id, key_id, model, provider, media_type, status, progress,
-                 provider_job_id, cost_usd, created_at)
-            VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, datetime('now'))
+                 provider_job_id, cost_usd, org_id, app_id, created_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, COALESCE(?, ?), COALESCE(?, ?), datetime('now'))
             "#,
         )
         .bind(id)
@@ -77,6 +81,10 @@ impl DatabaseStore for SqliteDatabase {
         .bind(media_type)
         .bind(provider_job_id)
         .bind(cost_usd)
+        .bind(org_id)
+        .bind(crate::api::middleware::DEFAULT_ORG_ID)
+        .bind(app_id)
+        .bind(crate::api::middleware::DEFAULT_APP_ID)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -209,12 +217,14 @@ impl DatabaseStore for SqliteDatabase {
         latency_ms: i64,
         error: Option<&str>,
         metadata: Option<&serde_json::Value>,
+        org_id: Option<&str>,
+        app_id: Option<&str>,
     ) -> Result<(), sqlx::Error> {
         let meta_str = metadata.map(|m| m.to_string());
         sqlx::query(
             r#"
-            INSERT INTO request_logs (id, model, provider, status, media_type, cost_usd, latency_ms, error, metadata, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            INSERT INTO request_logs (id, model, provider, status, media_type, cost_usd, latency_ms, error, metadata, org_id, app_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, ?), COALESCE(?, ?), datetime('now'))
             "#,
         )
         .bind(id)
@@ -226,6 +236,10 @@ impl DatabaseStore for SqliteDatabase {
         .bind(latency_ms)
         .bind(error)
         .bind(meta_str.as_deref())
+        .bind(org_id)
+        .bind(crate::api::middleware::DEFAULT_ORG_ID)
+        .bind(app_id)
+        .bind(crate::api::middleware::DEFAULT_APP_ID)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -338,11 +352,15 @@ impl DatabaseStore for SqliteDatabase {
     ) -> Result<ApiKey, sqlx::Error> {
         let id = Uuid::new_v4();
         let now = Utc::now();
+        // Back-compat method: untenanted keys land in the default org/app so they
+        // remain visible to tenant-scoped listing in single-tenant mode.
+        let org_id = crate::api::middleware::DEFAULT_ORG_ID;
+        let app_id = crate::api::middleware::DEFAULT_APP_ID;
 
         sqlx::query(
             r#"
-            INSERT INTO api_keys (id, name, key_hash, key_prefix, created_at, is_active, token_quota, tokens_used, rpm_limit, scopes, webhook_url)
-            VALUES (?, ?, ?, ?, ?, 1, ?, 0, ?, ?, ?)
+            INSERT INTO api_keys (id, name, key_hash, key_prefix, created_at, is_active, token_quota, tokens_used, rpm_limit, scopes, webhook_url, org_id, app_id)
+            VALUES (?, ?, ?, ?, ?, 1, ?, 0, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(id.to_string())
@@ -354,6 +372,8 @@ impl DatabaseStore for SqliteDatabase {
         .bind(rpm_limit.map(|v| v as i64))
         .bind(scopes)
         .bind(webhook_url)
+        .bind(org_id)
+        .bind(app_id)
         .execute(&self.pool)
         .await?;
 
@@ -371,8 +391,8 @@ impl DatabaseStore for SqliteDatabase {
             scopes: scopes.to_string(),
             webhook_url: webhook_url.map(|s| s.to_string()),
             owner_user_id: None,
-            org_id: None,
-            app_id: None,
+            org_id: Some(org_id.to_string()),
+            app_id: Some(app_id.to_string()),
             public_id: None,
         })
     }
@@ -499,6 +519,28 @@ impl DatabaseStore for SqliteDatabase {
         Ok(result.rows_affected() > 0)
     }
 
+    async fn rotate_api_key(
+        &self,
+        id: &Uuid,
+        public_id: &str,
+        key_hash: &str,
+        key_prefix: &str,
+    ) -> Result<Option<ApiKey>, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE api_keys SET public_id = ?, key_hash = ?, key_prefix = ? WHERE id = ?",
+        )
+        .bind(public_id)
+        .bind(key_hash)
+        .bind(key_prefix)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.get_api_key(id).await
+    }
+
     async fn get_stats(&self) -> Result<ProxyStats, sqlx::Error> {
         let totals: (i64, i64, i64, f64, f64) = sqlx::query_as(
             r#"
@@ -551,6 +593,76 @@ impl DatabaseStore for SqliteDatabase {
         Ok(build_proxy_stats(totals, model_stats, provider_stats, rpm.0, percentiles))
     }
 
+    async fn get_stats_for_tenant(
+        &self,
+        org_id: &str,
+        app_id: Option<&str>,
+    ) -> Result<ProxyStats, sqlx::Error> {
+        // Shared tenant predicate appended to each aggregate query.
+        let tenant_clause = if app_id.is_some() {
+            "org_id = ? AND app_id = ?"
+        } else {
+            "org_id = ?"
+        };
+        // Helper to bind the tenant params consistently.
+        macro_rules! bind_tenant {
+            ($q:expr) => {{
+                let q = $q.bind(org_id);
+                match app_id {
+                    Some(a) => q.bind(a),
+                    None => q,
+                }
+            }};
+        }
+
+        let totals_sql = format!(
+            "SELECT COUNT(*) as total, \
+             SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as success, \
+             SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed, \
+             COALESCE(SUM(cost_usd), 0.0) as total_cost, \
+             COALESCE(AVG(latency_ms), 0.0) as avg_latency \
+             FROM request_logs WHERE {tenant_clause}"
+        );
+        let totals: (i64, i64, i64, f64, f64) =
+            bind_tenant!(sqlx::query_as::<_, (i64, i64, i64, f64, f64)>(&totals_sql))
+                .fetch_one(&self.pool)
+                .await?;
+
+        let model_sql = format!(
+            "SELECT model, COUNT(*) as requests, COALESCE(SUM(cost_usd), 0.0) as cost_usd, \
+             COALESCE(AVG(latency_ms), 0.0) as avg_latency_ms \
+             FROM request_logs WHERE {tenant_clause} \
+             GROUP BY model ORDER BY requests DESC LIMIT 20"
+        );
+        let model_stats = bind_tenant!(sqlx::query_as::<_, ModelUsageRow>(&model_sql))
+            .fetch_all(&self.pool)
+            .await?;
+
+        let provider_sql = format!(
+            "SELECT provider, COUNT(*) as requests, \
+             SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failures, \
+             COALESCE(SUM(cost_usd), 0.0) as cost_usd, \
+             COALESCE(AVG(latency_ms), 0.0) as avg_latency_ms \
+             FROM request_logs WHERE {tenant_clause} \
+             GROUP BY provider ORDER BY requests DESC"
+        );
+        let provider_stats = bind_tenant!(sqlx::query_as::<_, ProviderUsageRow>(&provider_sql))
+            .fetch_all(&self.pool)
+            .await?;
+
+        let rpm_sql = format!(
+            "SELECT COUNT(*) FROM request_logs \
+             WHERE {tenant_clause} AND created_at > datetime('now', '-1 minutes')"
+        );
+        let rpm: (i64,) = bind_tenant!(sqlx::query_as::<_, (i64,)>(&rpm_sql))
+            .fetch_one(&self.pool)
+            .await?;
+
+        // Reuse the global percentiles window (tenant-specific percentiles not required).
+        let percentiles = self.latency_percentiles(60).await?;
+        Ok(build_proxy_stats(totals, model_stats, provider_stats, rpm.0, percentiles))
+    }
+
     async fn latency_percentiles(&self, since_minutes: i64) -> Result<LatencyPercentiles, sqlx::Error> {
         let modifier = format!("-{} minutes", since_minutes);
         let rows: Vec<(i64,)> = sqlx::query_as(
@@ -571,8 +683,8 @@ impl DatabaseStore for SqliteDatabase {
             r#"
             INSERT INTO audit_log
                 (id, actor_key_id, actor_label, action, target_type, target_id,
-                 before_json, after_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                 before_json, after_json, org_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, ?), datetime('now'))
             "#,
         )
         .bind(&entry.id)
@@ -583,6 +695,8 @@ impl DatabaseStore for SqliteDatabase {
         .bind(&entry.target_id)
         .bind(&entry.before_json)
         .bind(&entry.after_json)
+        .bind(&entry.org_id)
+        .bind(crate::api::middleware::DEFAULT_ORG_ID)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -618,7 +732,7 @@ impl DatabaseStore for SqliteDatabase {
 
         let mut data_qb: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(
             "SELECT id, actor_key_id, actor_label, action, target_type, target_id, \
-             before_json, after_json, created_at FROM audit_log WHERE 1=1",
+             before_json, after_json, created_at, org_id FROM audit_log WHERE 1=1",
         );
         if let Some(ref v) = filter.actor_key_id {
             data_qb.push(" AND actor_key_id = ");
@@ -713,8 +827,10 @@ impl DatabaseStore for SqliteDatabase {
             r#"
             INSERT OR REPLACE INTO request_artifacts
                 (request_id, media_type, prompt, negative_prompt, params_json, refs_meta_json,
-                 output_kind, output_value, output_mime, output_truncated, error_message, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                 output_kind, output_value, output_mime, output_truncated, error_message, created_at,
+                 org_id, app_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'),
+                    COALESCE(?, ?), COALESCE(?, ?))
             "#,
         )
         .bind(&a.request_id)
@@ -728,6 +844,10 @@ impl DatabaseStore for SqliteDatabase {
         .bind(&a.output_mime)
         .bind(a.output_truncated as i32)
         .bind(&a.error_message)
+        .bind(a.org_id.as_deref())
+        .bind(crate::api::middleware::DEFAULT_ORG_ID)
+        .bind(a.app_id.as_deref())
+        .bind(crate::api::middleware::DEFAULT_APP_ID)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -736,7 +856,8 @@ impl DatabaseStore for SqliteDatabase {
     async fn get_request_artifact(&self, request_id: &str) -> Result<Option<RequestArtifact>, sqlx::Error> {
         let row = sqlx::query_as::<_, RequestArtifactRow>(
             "SELECT request_id, media_type, prompt, negative_prompt, params_json, refs_meta_json, \
-             output_kind, output_value, output_mime, output_truncated, error_message, created_at \
+             output_kind, output_value, output_mime, output_truncated, error_message, created_at, \
+             org_id, app_id \
              FROM request_artifacts WHERE request_id = ?"
         )
         .bind(request_id)
@@ -1599,7 +1720,7 @@ impl DatabaseStore for SqliteDatabase {
             .await?;
         let rows = sqlx::query_as::<_, AuditLogRow>(
             "SELECT id, actor_key_id, actor_label, action, target_type, target_id, \
-             before_json, after_json, created_at FROM audit_log WHERE org_id = ? \
+             before_json, after_json, created_at, org_id FROM audit_log WHERE org_id = ? \
              ORDER BY created_at DESC LIMIT ? OFFSET ?",
         )
         .bind(org_id)
@@ -1783,6 +1904,8 @@ pub(crate) struct GenerationRow {
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
     pub metadata: Option<String>,
+    pub org_id: Option<String>,
+    pub app_id: Option<String>,
 }
 
 pub(crate) fn generation_from_row(r: GenerationRow) -> Generation {
@@ -1801,6 +1924,8 @@ pub(crate) fn generation_from_row(r: GenerationRow) -> Generation {
         created_at: r.created_at,
         completed_at: r.completed_at,
         metadata: r.metadata.as_deref().and_then(|s| serde_json::from_str(s).ok()),
+        org_id: r.org_id,
+        app_id: r.app_id,
     }
 }
 
@@ -1817,6 +1942,7 @@ pub(crate) struct AuditLogRow {
     pub before_json: Option<String>,
     pub after_json: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub org_id: Option<String>,
 }
 
 pub(crate) fn audit_log_from_row(r: AuditLogRow) -> AuditLogEntry {
@@ -1830,6 +1956,7 @@ pub(crate) fn audit_log_from_row(r: AuditLogRow) -> AuditLogEntry {
         before_json: r.before_json,
         after_json: r.after_json,
         created_at: r.created_at,
+        org_id: r.org_id,
     }
 }
 
@@ -1882,6 +2009,8 @@ pub struct RequestArtifactRow {
     pub output_truncated: i64,
     pub error_message: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub org_id: Option<String>,
+    pub app_id: Option<String>,
 }
 
 pub fn artifact_from_row(r: RequestArtifactRow) -> RequestArtifact {
@@ -1898,6 +2027,8 @@ pub fn artifact_from_row(r: RequestArtifactRow) -> RequestArtifact {
         output_truncated: r.output_truncated != 0,
         error_message: r.error_message,
         created_at: r.created_at,
+        org_id: r.org_id,
+        app_id: r.app_id,
     }
 }
 

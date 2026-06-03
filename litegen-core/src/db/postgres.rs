@@ -25,7 +25,8 @@ const API_KEY_COLS: &str = "id, name, key_hash, key_prefix, created_at, expires_
 
 /// Full column list for generations selects (Postgres).
 const GENERATION_COLS: &str = "id, key_id, model, provider, media_type, status, progress, \
-    provider_job_id, result_url, error_message, cost_usd, created_at, completed_at, metadata";
+    provider_job_id, result_url, error_message, cost_usd, created_at, completed_at, metadata, \
+    org_id, app_id";
 
 /// PostgreSQL-backed database implementation.
 pub struct PostgresDatabase {
@@ -60,13 +61,15 @@ impl DatabaseStore for PostgresDatabase {
         media_type: &str,
         provider_job_id: Option<&str>,
         cost_usd: f64,
+        org_id: Option<&str>,
+        app_id: Option<&str>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"
             INSERT INTO generations
                 (id, key_id, model, provider, media_type, status, progress,
-                 provider_job_id, cost_usd, created_at)
-            VALUES ($1, $2, $3, $4, $5, 'pending', 0, $6, $7, NOW())
+                 provider_job_id, cost_usd, org_id, app_id, created_at)
+            VALUES ($1, $2, $3, $4, $5, 'pending', 0, $6, $7, COALESCE($8, $9), COALESCE($10, $11), NOW())
             "#,
         )
         .bind(id)
@@ -76,6 +79,10 @@ impl DatabaseStore for PostgresDatabase {
         .bind(media_type)
         .bind(provider_job_id)
         .bind(cost_usd)
+        .bind(org_id)
+        .bind(crate::api::middleware::DEFAULT_ORG_ID)
+        .bind(app_id)
+        .bind(crate::api::middleware::DEFAULT_APP_ID)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -207,12 +214,14 @@ impl DatabaseStore for PostgresDatabase {
         latency_ms: i64,
         error: Option<&str>,
         metadata: Option<&serde_json::Value>,
+        org_id: Option<&str>,
+        app_id: Option<&str>,
     ) -> Result<(), sqlx::Error> {
         let meta_str = metadata.map(|m| m.to_string());
         sqlx::query(
             r#"
-            INSERT INTO request_logs (id, model, provider, status, media_type, cost_usd, latency_ms, error, metadata, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+            INSERT INTO request_logs (id, model, provider, status, media_type, cost_usd, latency_ms, error, metadata, org_id, app_id, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, $11), COALESCE($12, $13), NOW())
             "#,
         )
         .bind(id)
@@ -224,6 +233,10 @@ impl DatabaseStore for PostgresDatabase {
         .bind(latency_ms)
         .bind(error)
         .bind(meta_str.as_deref())
+        .bind(org_id)
+        .bind(crate::api::middleware::DEFAULT_ORG_ID)
+        .bind(app_id)
+        .bind(crate::api::middleware::DEFAULT_APP_ID)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -334,11 +347,15 @@ impl DatabaseStore for PostgresDatabase {
     ) -> Result<ApiKey, sqlx::Error> {
         let id = Uuid::new_v4();
         let now = chrono::Utc::now();
+        // Back-compat method: untenanted keys land in the default org/app so they
+        // remain visible to tenant-scoped listing in single-tenant mode.
+        let org_id = crate::api::middleware::DEFAULT_ORG_ID;
+        let app_id = crate::api::middleware::DEFAULT_APP_ID;
 
         sqlx::query(
             r#"
-            INSERT INTO api_keys (id, name, key_hash, key_prefix, created_at, is_active, token_quota, tokens_used, rpm_limit, scopes, webhook_url)
-            VALUES ($1, $2, $3, $4, $5, TRUE, $6, 0, $7, $8, $9)
+            INSERT INTO api_keys (id, name, key_hash, key_prefix, created_at, is_active, token_quota, tokens_used, rpm_limit, scopes, webhook_url, org_id, app_id)
+            VALUES ($1, $2, $3, $4, $5, TRUE, $6, 0, $7, $8, $9, $10, $11)
             "#,
         )
         .bind(id.to_string())
@@ -350,6 +367,8 @@ impl DatabaseStore for PostgresDatabase {
         .bind(rpm_limit.map(|v| v as i64))
         .bind(scopes)
         .bind(webhook_url)
+        .bind(org_id)
+        .bind(app_id)
         .execute(&self.pool)
         .await?;
 
@@ -367,8 +386,8 @@ impl DatabaseStore for PostgresDatabase {
             scopes: scopes.to_string(),
             webhook_url: webhook_url.map(|s| s.to_string()),
             owner_user_id: None,
-            org_id: None,
-            app_id: None,
+            org_id: Some(org_id.to_string()),
+            app_id: Some(app_id.to_string()),
             public_id: None,
         })
     }
@@ -495,6 +514,28 @@ impl DatabaseStore for PostgresDatabase {
         Ok(result.rows_affected() > 0)
     }
 
+    async fn rotate_api_key(
+        &self,
+        id: &Uuid,
+        public_id: &str,
+        key_hash: &str,
+        key_prefix: &str,
+    ) -> Result<Option<ApiKey>, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE api_keys SET public_id = $1, key_hash = $2, key_prefix = $3 WHERE id = $4",
+        )
+        .bind(public_id)
+        .bind(key_hash)
+        .bind(key_prefix)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.get_api_key(id).await
+    }
+
     async fn get_stats(&self) -> Result<ProxyStats, sqlx::Error> {
         let totals: (i64, i64, i64, f64, f64) = sqlx::query_as(
             r#"
@@ -547,6 +588,75 @@ impl DatabaseStore for PostgresDatabase {
         Ok(build_proxy_stats(totals, model_stats, provider_stats, rpm.0, percentiles))
     }
 
+    async fn get_stats_for_tenant(
+        &self,
+        org_id: &str,
+        app_id: Option<&str>,
+    ) -> Result<ProxyStats, sqlx::Error> {
+        // Tenant predicate; $1 = org_id, $2 = app_id when present.
+        let tenant_clause = if app_id.is_some() {
+            "org_id = $1 AND app_id = $2"
+        } else {
+            "org_id = $1"
+        };
+        macro_rules! bind_tenant {
+            ($q:expr) => {{
+                let q = $q.bind(org_id);
+                match app_id {
+                    Some(a) => q.bind(a),
+                    None => q,
+                }
+            }};
+        }
+
+        let totals_sql = format!(
+            "SELECT COUNT(*) as total, \
+             SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as success, \
+             SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed, \
+             COALESCE(SUM(cost_usd), 0.0) as total_cost, \
+             COALESCE(AVG(latency_ms), 0.0) as avg_latency \
+             FROM request_logs WHERE {tenant_clause}"
+        );
+        let totals: (i64, i64, i64, f64, f64) =
+            bind_tenant!(sqlx::query_as::<_, (i64, i64, i64, f64, f64)>(&totals_sql))
+                .fetch_one(&self.pool)
+                .await?;
+
+        let model_sql = format!(
+            "SELECT model, COUNT(*) as requests, COALESCE(SUM(cost_usd), 0.0) as cost_usd, \
+             COALESCE(AVG(latency_ms), 0.0) as avg_latency_ms \
+             FROM request_logs WHERE {tenant_clause} \
+             GROUP BY model ORDER BY requests DESC LIMIT 20"
+        );
+        let model_stats = bind_tenant!(sqlx::query_as::<_, ModelUsageRow>(&model_sql))
+            .fetch_all(&self.pool)
+            .await?;
+
+        let provider_sql = format!(
+            "SELECT provider, COUNT(*) as requests, \
+             SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failures, \
+             COALESCE(SUM(cost_usd), 0.0) as cost_usd, \
+             COALESCE(AVG(latency_ms), 0.0) as avg_latency_ms \
+             FROM request_logs WHERE {tenant_clause} \
+             GROUP BY provider ORDER BY requests DESC"
+        );
+        let provider_stats = bind_tenant!(sqlx::query_as::<_, ProviderUsageRow>(&provider_sql))
+            .fetch_all(&self.pool)
+            .await?;
+
+        let rpm_sql = format!(
+            "SELECT COUNT(*) FROM request_logs \
+             WHERE {tenant_clause} AND created_at > NOW() - INTERVAL '1 minute'"
+        );
+        let rpm: (i64,) = bind_tenant!(sqlx::query_as::<_, (i64,)>(&rpm_sql))
+            .fetch_one(&self.pool)
+            .await?;
+
+        // Reuse the global percentiles window (tenant-specific percentiles not required).
+        let percentiles = self.latency_percentiles(60).await?;
+        Ok(build_proxy_stats(totals, model_stats, provider_stats, rpm.0, percentiles))
+    }
+
     async fn latency_percentiles(&self, since_minutes: i64) -> Result<LatencyPercentiles, sqlx::Error> {
         // Postgres: use percentile_cont for exact percentiles in a single query.
         let row: Option<(Option<f64>, Option<f64>, Option<f64>, i64)> = sqlx::query_as(
@@ -583,8 +693,8 @@ impl DatabaseStore for PostgresDatabase {
             r#"
             INSERT INTO audit_log
                 (id, actor_key_id, actor_label, action, target_type, target_id,
-                 before_json, after_json, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                 before_json, after_json, org_id, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, $10), NOW())
             "#,
         )
         .bind(&entry.id)
@@ -595,6 +705,8 @@ impl DatabaseStore for PostgresDatabase {
         .bind(&entry.target_id)
         .bind(&entry.before_json)
         .bind(&entry.after_json)
+        .bind(&entry.org_id)
+        .bind(crate::api::middleware::DEFAULT_ORG_ID)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -630,7 +742,7 @@ impl DatabaseStore for PostgresDatabase {
 
         let mut data_qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
             "SELECT id, actor_key_id, actor_label, action, target_type, target_id, \
-             before_json, after_json, created_at FROM audit_log WHERE 1=1",
+             before_json, after_json, created_at, org_id FROM audit_log WHERE 1=1",
         );
         if let Some(ref v) = filter.actor_key_id {
             data_qb.push(" AND actor_key_id = ");
@@ -725,8 +837,10 @@ impl DatabaseStore for PostgresDatabase {
             r#"
             INSERT INTO request_artifacts
                 (request_id, media_type, prompt, negative_prompt, params_json, refs_meta_json,
-                 output_kind, output_value, output_mime, output_truncated, error_message, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+                 output_kind, output_value, output_mime, output_truncated, error_message, created_at,
+                 org_id, app_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(),
+                    COALESCE($12, $13), COALESCE($14, $15))
             ON CONFLICT (request_id) DO UPDATE SET
                 output_kind = EXCLUDED.output_kind,
                 output_value = EXCLUDED.output_value,
@@ -746,6 +860,10 @@ impl DatabaseStore for PostgresDatabase {
         .bind(&a.output_mime)
         .bind(a.output_truncated)
         .bind(&a.error_message)
+        .bind(a.org_id.as_deref())
+        .bind(crate::api::middleware::DEFAULT_ORG_ID)
+        .bind(a.app_id.as_deref())
+        .bind(crate::api::middleware::DEFAULT_APP_ID)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -756,7 +874,7 @@ impl DatabaseStore for PostgresDatabase {
         let row = sqlx::query_as::<_, RequestArtifactRow>(
             "SELECT request_id, media_type, prompt, negative_prompt, params_json, refs_meta_json, \
              output_kind, output_value, output_mime, output_truncated::int AS output_truncated, \
-             error_message, created_at \
+             error_message, created_at, org_id, app_id \
              FROM request_artifacts WHERE request_id = $1"
         )
         .bind(request_id)
@@ -1620,7 +1738,7 @@ impl DatabaseStore for PostgresDatabase {
             .await?;
         let rows = sqlx::query_as::<_, AuditLogRow>(
             "SELECT id, actor_key_id, actor_label, action, target_type, target_id, \
-             before_json, after_json, created_at FROM audit_log WHERE org_id = $1 \
+             before_json, after_json, created_at, org_id FROM audit_log WHERE org_id = $1 \
              ORDER BY created_at DESC LIMIT $2 OFFSET $3",
         )
         .bind(org_id)

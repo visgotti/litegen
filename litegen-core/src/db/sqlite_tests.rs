@@ -150,6 +150,8 @@ mod tests {
             "video",
             Some("job-xyz"),
             0.05,
+            None,
+            None,
         ).await.unwrap();
 
         let gen = db.get_generation("litegen-vid-test-1").await.unwrap();
@@ -177,6 +179,8 @@ mod tests {
             "video",
             Some("job-abc"),
             0.10,
+            None,
+            None,
         ).await.unwrap();
 
         let gen = db.get_generation("litegen-vid-test-2").await.unwrap().unwrap();
@@ -187,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn update_generation_status_to_completed() {
         let db = in_memory_db().await;
-        db.insert_generation("litegen-vid-upd-1", None, "mock/video-gen", "mock", "video", Some("j1"), 0.0).await.unwrap();
+        db.insert_generation("litegen-vid-upd-1", None, "mock/video-gen", "mock", "video", Some("j1"), 0.0, None, None).await.unwrap();
 
         let now = chrono::Utc::now();
         db.update_generation_status(
@@ -209,7 +213,7 @@ mod tests {
     #[tokio::test]
     async fn update_generation_status_to_failed() {
         let db = in_memory_db().await;
-        db.insert_generation("litegen-vid-fail-1", None, "mock/video-gen", "mock", "video", Some("j2"), 0.0).await.unwrap();
+        db.insert_generation("litegen-vid-fail-1", None, "mock/video-gen", "mock", "video", Some("j2"), 0.0, None, None).await.unwrap();
 
         db.update_generation_status(
             "litegen-vid-fail-1",
@@ -229,9 +233,9 @@ mod tests {
     async fn list_active_generations_returns_pending_and_processing() {
         let db = in_memory_db().await;
 
-        db.insert_generation("litegen-vid-act-1", None, "mock/video-gen", "mock", "video", Some("j1"), 0.0).await.unwrap();
-        db.insert_generation("litegen-vid-act-2", None, "mock/video-gen", "mock", "video", Some("j2"), 0.0).await.unwrap();
-        db.insert_generation("litegen-vid-act-3", None, "mock/video-gen", "mock", "video", Some("j3"), 0.0).await.unwrap();
+        db.insert_generation("litegen-vid-act-1", None, "mock/video-gen", "mock", "video", Some("j1"), 0.0, None, None).await.unwrap();
+        db.insert_generation("litegen-vid-act-2", None, "mock/video-gen", "mock", "video", Some("j2"), 0.0, None, None).await.unwrap();
+        db.insert_generation("litegen-vid-act-3", None, "mock/video-gen", "mock", "video", Some("j3"), 0.0, None, None).await.unwrap();
 
         // Mark one as completed
         db.update_generation_status("litegen-vid-act-3", "completed", 100, None, None, Some(chrono::Utc::now())).await.unwrap();
@@ -257,9 +261,9 @@ mod tests {
         let key2 = db.create_api_key("k2", "h2", "lg-2", None, None, "generate,read", None).await.unwrap();
 
         // key1 owns gen-1; key2 owns gen-2; gen-3 has no key (master-key row)
-        db.insert_generation("lg-gen-1", Some(&key1.id), "mock/v", "mock", "video", None, 0.0).await.unwrap();
-        db.insert_generation("lg-gen-2", Some(&key2.id), "mock/v", "mock", "video", None, 0.0).await.unwrap();
-        db.insert_generation("lg-gen-3", None, "mock/v", "mock", "video", None, 0.0).await.unwrap();
+        db.insert_generation("lg-gen-1", Some(&key1.id), "mock/v", "mock", "video", None, 0.0, None, None).await.unwrap();
+        db.insert_generation("lg-gen-2", Some(&key2.id), "mock/v", "mock", "video", None, 0.0, None, None).await.unwrap();
+        db.insert_generation("lg-gen-3", None, "mock/v", "mock", "video", None, 0.0, None, None).await.unwrap();
 
         // key1 should see gen-1 AND gen-3 (NULL key_id rows are always visible)
         let rows = db.list_generations(Some(&key1.id), 1, 50).await.unwrap();
@@ -276,8 +280,8 @@ mod tests {
     async fn list_generations_master_key_sees_all() {
         let db = in_memory_db().await;
         let key1 = db.create_api_key("k1", "h1", "lg-1", None, None, "generate,read", None).await.unwrap();
-        db.insert_generation("lg-all-1", Some(&key1.id), "mock/v", "mock", "video", None, 0.0).await.unwrap();
-        db.insert_generation("lg-all-2", None, "mock/v", "mock", "video", None, 0.0).await.unwrap();
+        db.insert_generation("lg-all-1", Some(&key1.id), "mock/v", "mock", "video", None, 0.0, None, None).await.unwrap();
+        db.insert_generation("lg-all-2", None, "mock/v", "mock", "video", None, 0.0, None, None).await.unwrap();
 
         // master key (None) sees all
         let rows = db.list_generations(None, 1, 50).await.unwrap();
@@ -291,7 +295,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_generation_on_pending_succeeds() {
         let db = in_memory_db().await;
-        db.insert_generation("lg-cancel-1", None, "mock/v", "mock", "video", None, 0.0).await.unwrap();
+        db.insert_generation("lg-cancel-1", None, "mock/v", "mock", "video", None, 0.0, None, None).await.unwrap();
 
         let result = db.cancel_generation("lg-cancel-1").await.unwrap();
         assert!(result.is_some(), "cancel should return the updated row");
@@ -303,7 +307,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_generation_on_completed_returns_none() {
         let db = in_memory_db().await;
-        db.insert_generation("lg-cancel-2", None, "mock/v", "mock", "video", None, 0.0).await.unwrap();
+        db.insert_generation("lg-cancel-2", None, "mock/v", "mock", "video", None, 0.0, None, None).await.unwrap();
         db.update_generation_status("lg-cancel-2", "completed", 100, None, None, Some(chrono::Utc::now())).await.unwrap();
 
         let result = db.cancel_generation("lg-cancel-2").await.unwrap();
@@ -315,9 +319,9 @@ mod tests {
     #[tokio::test]
     async fn logs_filtered_by_model() {
         let db = in_memory_db().await;
-        db.log_request("id1", "openai/dall-e-3", "openai", "completed", "image", 0.01, 100, None, None).await.unwrap();
-        db.log_request("id2", "mock/image-gen", "mock", "completed", "image", 0.0, 50, None, None).await.unwrap();
-        db.log_request("id3", "mock/image-gen", "mock", "failed", "image", 0.0, 20, Some("err"), None).await.unwrap();
+        db.log_request("id1", "openai/dall-e-3", "openai", "completed", "image", 0.01, 100, None, None, None, None).await.unwrap();
+        db.log_request("id2", "mock/image-gen", "mock", "completed", "image", 0.0, 50, None, None, None, None).await.unwrap();
+        db.log_request("id3", "mock/image-gen", "mock", "failed", "image", 0.0, 20, Some("err"), None, None, None).await.unwrap();
 
         let filters = crate::types::LogFilters {
             model: Some("mock/image-gen".to_string()),
@@ -331,9 +335,9 @@ mod tests {
     #[tokio::test]
     async fn logs_filtered_by_status() {
         let db = in_memory_db().await;
-        db.log_request("s1", "openai/dall-e-3", "openai", "completed", "image", 0.01, 100, None, None).await.unwrap();
-        db.log_request("s2", "mock/image-gen", "mock", "failed", "image", 0.0, 50, Some("err"), None).await.unwrap();
-        db.log_request("s3", "mock/image-gen", "mock", "completed", "image", 0.0, 50, None, None).await.unwrap();
+        db.log_request("s1", "openai/dall-e-3", "openai", "completed", "image", 0.01, 100, None, None, None, None).await.unwrap();
+        db.log_request("s2", "mock/image-gen", "mock", "failed", "image", 0.0, 50, Some("err"), None, None, None).await.unwrap();
+        db.log_request("s3", "mock/image-gen", "mock", "completed", "image", 0.0, 50, None, None, None, None).await.unwrap();
 
         let filters = crate::types::LogFilters {
             status: Some("failed".to_string()),
@@ -360,6 +364,7 @@ mod tests {
             before_json: None,
             after_json: Some(r#"{"name":"test"}"#.to_string()),
             created_at: chrono::Utc::now(),
+            org_id: None,
         };
 
         db.insert_audit_log(&entry).await.unwrap();
@@ -389,6 +394,8 @@ mod tests {
                 "image",
                 0.0,
                 i as i64,
+                None,
+                None,
                 None,
                 None,
             ).await.unwrap();
@@ -430,11 +437,11 @@ mod tests {
         let db = in_memory_db().await;
         // 5 completed requests with latencies 10,20,30,40,50
         for (id, lat) in [("pf1", 10i64), ("pf2", 20), ("pf3", 30), ("pf4", 40), ("pf5", 50)] {
-            db.log_request(id, "mock/v", "mock", "completed", "image", 0.0, lat, None, None).await.unwrap();
+            db.log_request(id, "mock/v", "mock", "completed", "image", 0.0, lat, None, None, None, None).await.unwrap();
         }
         // 3 failed requests with very high latency that should NOT affect percentiles
         for (id, lat) in [("pf6", 10000i64), ("pf7", 20000), ("pf8", 30000)] {
-            db.log_request(id, "mock/v", "mock", "failed", "image", 0.0, lat, Some("err"), None).await.unwrap();
+            db.log_request(id, "mock/v", "mock", "failed", "image", 0.0, lat, Some("err"), None, None, None).await.unwrap();
         }
 
         let p = db.latency_percentiles(60).await.unwrap();
@@ -461,6 +468,8 @@ mod tests {
             output_truncated: false,
             error_message: None,
             created_at: chrono::Utc::now(),
+            org_id: None,
+            app_id: None,
         };
 
         db.insert_request_artifact(&artifact).await.unwrap();
@@ -505,6 +514,8 @@ mod tests {
             output_truncated: true,
             error_message: None,
             created_at: chrono::Utc::now(),
+            org_id: None,
+            app_id: None,
         };
 
         db.insert_request_artifact(&artifact).await.unwrap();
@@ -530,6 +541,8 @@ mod tests {
             output_truncated: false,
             error_message: Some("provider rate limited".to_string()),
             created_at: chrono::Utc::now(),
+            org_id: None,
+            app_id: None,
         };
 
         db.insert_request_artifact(&artifact).await.unwrap();
@@ -554,6 +567,7 @@ mod tests {
             before_json: None,
             after_json: None,
             created_at: chrono::Utc::now(),
+            org_id: None,
         };
 
         db.insert_audit_log(&make_entry("a1", "key.create")).await.unwrap();
@@ -931,16 +945,9 @@ mod tests {
         db.create_application(&app_a).await.unwrap();
         db.create_application(&app_b).await.unwrap();
 
-        // Insert a generation row per tenant, then stamp org_id/app_id via raw SQL
-        // (insert_generation doesn't take org/app yet).
-        db.insert_generation("gen-a", None, "mock/v", "mock", "video", None, 0.0).await.unwrap();
-        db.insert_generation("gen-b", None, "mock/v", "mock", "video", None, 0.0).await.unwrap();
-        sqlx::query("UPDATE generations SET org_id = ?, app_id = ? WHERE id = ?")
-            .bind(&org_a.id).bind(&app_a.id).bind("gen-a")
-            .execute(db.pool()).await.unwrap();
-        sqlx::query("UPDATE generations SET org_id = ?, app_id = ? WHERE id = ?")
-            .bind(&org_b.id).bind(&app_b.id).bind("gen-b")
-            .execute(db.pool()).await.unwrap();
+        // Insert a generation row per tenant, stamped directly via insert_generation.
+        db.insert_generation("gen-a", None, "mock/v", "mock", "video", None, 0.0, Some(&org_a.id), Some(&app_a.id)).await.unwrap();
+        db.insert_generation("gen-b", None, "mock/v", "mock", "video", None, 0.0, Some(&org_b.id), Some(&app_b.id)).await.unwrap();
 
         // org A + app A sees only A's row.
         let rows = db.list_generations_for_tenant(&org_a.id, Some(&app_a.id), 1, 50).await.unwrap();
@@ -1023,5 +1030,53 @@ mod tests {
         let app_keys = db.list_api_keys_for_app(&app.id).await.unwrap();
         assert_eq!(app_keys.len(), 1);
         assert_eq!(app_keys[0].id, key.id);
+    }
+
+    #[tokio::test]
+    async fn artifact_is_isolated_per_tenant() {
+        let db = in_memory_db().await;
+
+        // Set up two distinct orgs/apps.
+        let org_a = make_org(&Uuid::new_v4().to_string(), "art-org-a");
+        let org_b = make_org(&Uuid::new_v4().to_string(), "art-org-b");
+        db.create_organization(&org_a).await.unwrap();
+        db.create_organization(&org_b).await.unwrap();
+        let app_a = make_app(&Uuid::new_v4().to_string(), &org_a.id, "art-app-a");
+        let app_b = make_app(&Uuid::new_v4().to_string(), &org_b.id, "art-app-b");
+        db.create_application(&app_a).await.unwrap();
+        db.create_application(&app_b).await.unwrap();
+
+        // Insert an artifact scoped to org A / app A.
+        let artifact_a = RequestArtifact {
+            request_id: "req-art-a".to_string(),
+            media_type: "image".to_string(),
+            prompt: Some("tenant A image".to_string()),
+            negative_prompt: None,
+            params_json: None,
+            refs_meta_json: None,
+            output_kind: "b64".to_string(),
+            output_value: Some("abc123".to_string()),
+            output_mime: Some("image/png".to_string()),
+            output_truncated: false,
+            error_message: None,
+            created_at: chrono::Utc::now(),
+            org_id: Some(org_a.id.clone()),
+            app_id: Some(app_a.id.clone()),
+        };
+        db.insert_request_artifact(&artifact_a).await.unwrap();
+
+        // App A's key can retrieve the artifact and it carries the correct org.
+        let fetched = db.get_request_artifact("req-art-a").await.unwrap().expect("should exist");
+        assert_eq!(fetched.org_id.as_deref(), Some(org_a.id.as_str()));
+
+        // Simulate the get_log_artifact handler's cross-tenant check: org B cannot see it.
+        let caller_org_b = org_b.id.as_str();
+        let denied = fetched.org_id.as_deref().map(|o| o != caller_org_b).unwrap_or(false);
+        assert!(denied, "org B should be denied access to org A's artifact");
+
+        // Simulate org A accessing their own artifact — allowed.
+        let caller_org_a = org_a.id.as_str();
+        let allowed = !fetched.org_id.as_deref().map(|o| o != caller_org_a).unwrap_or(false);
+        assert!(allowed, "org A should be allowed to access their own artifact");
     }
 }

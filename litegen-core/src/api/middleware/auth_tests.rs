@@ -36,6 +36,7 @@ mod tests {
         async fn insert_generation(
             &self, _id: &str, _key_id: Option<&uuid::Uuid>, _model: &str, _provider: &str,
             _media_type: &str, _provider_job_id: Option<&str>, _cost_usd: f64,
+            _org_id: Option<&str>, _app_id: Option<&str>,
         ) -> Result<(), sqlx::Error> { Ok(()) }
         async fn update_generation_status(
             &self, _id: &str, _status: &str, _progress: i32, _result_url: Option<&str>,
@@ -52,6 +53,7 @@ mod tests {
             _id: &str, _model: &str, _provider: &str, _status: &str,
             _media_type: &str, _cost_usd: f64, _latency_ms: i64,
             _error: Option<&str>, _metadata: Option<&serde_json::Value>,
+            _org_id: Option<&str>, _app_id: Option<&str>,
         ) -> Result<(), sqlx::Error> { Ok(()) }
 
         async fn get_request_logs(&self, _page: u32, _per_page: u32)
@@ -284,6 +286,7 @@ mod tests {
         async fn insert_generation(
             &self, _id: &str, _key_id: Option<&uuid::Uuid>, _model: &str, _provider: &str,
             _media_type: &str, _provider_job_id: Option<&str>, _cost_usd: f64,
+            _org_id: Option<&str>, _app_id: Option<&str>,
         ) -> Result<(), sqlx::Error> { Ok(()) }
         async fn update_generation_status(
             &self, _id: &str, _status: &str, _progress: i32, _result_url: Option<&str>,
@@ -297,7 +300,8 @@ mod tests {
 
         async fn log_request(&self, _id: &str, _model: &str, _provider: &str, _status: &str,
             _media_type: &str, _cost_usd: f64, _latency_ms: i64,
-            _error: Option<&str>, _metadata: Option<&serde_json::Value>) -> Result<(), sqlx::Error> { Ok(()) }
+            _error: Option<&str>, _metadata: Option<&serde_json::Value>,
+            _org_id: Option<&str>, _app_id: Option<&str>) -> Result<(), sqlx::Error> { Ok(()) }
 
         async fn get_request_logs(&self, _page: u32, _per_page: u32)
             -> Result<(Vec<RequestLog>, u64), sqlx::Error> { Ok((vec![], 0)) }

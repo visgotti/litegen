@@ -10,6 +10,7 @@ pub trait DatabaseStore: Send + Sync {
     // ─── Generations ────────────────────────────────────────────────────────────
 
     /// Insert a new generation row when a video generation is submitted.
+    /// `org_id`/`app_id` stamp the tenant; pass `None` when there is no tenant context.
     async fn insert_generation(
         &self,
         id: &str,
@@ -19,6 +20,8 @@ pub trait DatabaseStore: Send + Sync {
         media_type: &str,
         provider_job_id: Option<&str>,
         cost_usd: f64,
+        org_id: Option<&str>,
+        app_id: Option<&str>,
     ) -> Result<(), sqlx::Error>;
 
     /// Update the status (and related fields) of an existing generation.
@@ -41,6 +44,7 @@ pub trait DatabaseStore: Send + Sync {
     /// Paginated list of generations.
     /// When `key_id` is `Some`, returns rows owned by that key OR rows with `key_id IS NULL`
     /// (master-key rows). When `key_id` is `None` (caller is master key), returns all rows.
+    // superseded by list_generations_for_tenant for the API (kept for tests/back-compat)
     async fn list_generations(
         &self,
         key_id: Option<&Uuid>,
@@ -49,6 +53,7 @@ pub trait DatabaseStore: Send + Sync {
     ) -> Result<Vec<Generation>, sqlx::Error>;
 
     /// Count of generations, with the same ownership filter as `list_generations`.
+    // superseded by count_generations_for_tenant for the API (kept for tests/back-compat)
     async fn count_generations(&self, key_id: Option<&Uuid>) -> Result<i64, sqlx::Error>;
 
     /// Soft-cancel a generation: sets `status = 'cancelled'` and `completed_at = NOW()`.
@@ -58,6 +63,7 @@ pub trait DatabaseStore: Send + Sync {
 
     // ─── Request Logs ───────────────────────────────────────────────────
 
+    /// `org_id`/`app_id` stamp the tenant; pass `None` when there is no tenant context.
     async fn log_request(
         &self,
         id: &str,
@@ -69,8 +75,11 @@ pub trait DatabaseStore: Send + Sync {
         latency_ms: i64,
         error: Option<&str>,
         metadata: Option<&serde_json::Value>,
+        org_id: Option<&str>,
+        app_id: Option<&str>,
     ) -> Result<(), sqlx::Error>;
 
+    // superseded by get_request_logs_for_tenant for the API (kept for tests/back-compat)
     async fn get_request_logs(
         &self,
         page: u32,
@@ -78,6 +87,7 @@ pub trait DatabaseStore: Send + Sync {
     ) -> Result<(Vec<RequestLog>, u64), sqlx::Error>;
 
     /// Filtered, paginated request logs. Any `None` filter field is ignored.
+    // superseded by get_request_logs_for_tenant for the API (kept for tests/back-compat)
     async fn get_request_logs_filtered(
         &self,
         filters: &LogFilters,
@@ -134,9 +144,51 @@ pub trait DatabaseStore: Send + Sync {
 
     async fn revoke_api_key(&self, id: &Uuid) -> Result<bool, sqlx::Error>;
 
+    /// Rotate an existing key's secret in place: replace `key_hash`/`key_prefix`
+    /// (and `public_id`) on the same row id, keeping all other settings.
+    /// Returns the updated key, or `None` if the id doesn't exist.
+    /// Default impl returns None (for mock/test implementations).
+    async fn rotate_api_key(
+        &self,
+        _id: &Uuid,
+        _public_id: &str,
+        _key_hash: &str,
+        _key_prefix: &str,
+    ) -> Result<Option<ApiKey>, sqlx::Error> {
+        Ok(None)
+    }
+
     // ─── Stats ──────────────────────────────────────────────────────────
 
+    // superseded by get_stats_for_tenant for the API (kept for tests/back-compat)
     async fn get_stats(&self) -> Result<ProxyStats, sqlx::Error>;
+
+    /// Tenant-scoped aggregate stats: same shape as `get_stats` but restricted to
+    /// `org_id` (and `app_id` when `Some`). Default impl returns empty stats so
+    /// mock/test implementations still compile.
+    async fn get_stats_for_tenant(
+        &self,
+        _org_id: &str,
+        _app_id: Option<&str>,
+    ) -> Result<ProxyStats, sqlx::Error> {
+        Ok(ProxyStats {
+            total_requests: 0,
+            successful_requests: 0,
+            failed_requests: 0,
+            total_cost_usd: 0.0,
+            avg_latency_ms: 0.0,
+            requests_per_minute: 0.0,
+            models_used: Vec::new(),
+            providers_used: Vec::new(),
+            latency_percentiles: LatencyPercentiles {
+                p50_ms: 0.0,
+                p95_ms: 0.0,
+                p99_ms: 0.0,
+                sample_count: 0,
+                window_minutes: 60,
+            },
+        })
+    }
 
     /// Compute latency percentiles (p50/p95/p99) for completed requests in the
     /// last `since_minutes` minutes.  Capped at 10 000 samples.

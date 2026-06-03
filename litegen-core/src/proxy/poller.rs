@@ -215,6 +215,8 @@ mod poller_tests {
             "video",
             Some("mock-video-job-1"),
             0.0,
+            None,
+            None,
         ).await.unwrap();
 
         // Verify it's pending
@@ -245,6 +247,8 @@ mod poller_tests {
             "video",
             Some("job-x"),
             0.0,
+            None,
+            None,
         ).await.unwrap();
 
         poll_once(&db, &registry, &client).await;
@@ -290,6 +294,8 @@ mod poller_tests {
             "video",
             Some("mock-video-job-1"),
             0.0,
+            None,
+            None,
         ).await.unwrap();
 
         poll_once(&db, &registry, &client).await;

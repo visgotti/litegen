@@ -81,6 +81,7 @@ fn log_audit_user(
     let action = action.to_string();
     let target_type = target_type.to_string();
     let target_id = target_id.to_string();
+    let org_id = ctx.org_id.clone();
     tokio::spawn(async move {
         let entry = crate::types::AuditLogEntry {
             id: format!("audit-{}", Uuid::new_v4()),
@@ -92,6 +93,7 @@ fn log_audit_user(
             before_json: None,
             after_json: after.map(|v| v.to_string()),
             created_at: chrono::Utc::now(),
+            org_id,
         };
         let _ = db.insert_audit_log(&entry).await;
     });
