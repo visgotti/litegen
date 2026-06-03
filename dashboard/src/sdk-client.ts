@@ -54,3 +54,11 @@ export const client = new LiteGenClient({
     }
   },
 });
+
+// Initialize the active-tenant headers from localStorage so the very first
+// requests (before TenantProvider resolves /auth/me) are already scoped.
+{
+  const initOrg = localStorage.getItem('litegen_active_org') ?? undefined;
+  const initApp = localStorage.getItem('litegen_active_app') ?? undefined;
+  if (initOrg || initApp) client.setActiveTenant(initOrg, initApp);
+}
