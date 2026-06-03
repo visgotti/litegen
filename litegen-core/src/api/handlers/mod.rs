@@ -22,7 +22,6 @@ use axum::{
     response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tracing::error;
 use uuid::Uuid;
@@ -213,6 +212,8 @@ pub async fn generate_image(
                     output_truncated,
                     error_message: None,
                     created_at: chrono::Utc::now(),
+                    org_id: key_ctx.as_ref().and_then(|c| c.org_id.clone()),
+                    app_id: key_ctx.as_ref().and_then(|c| c.app_id.clone()),
                 }
             };
 
@@ -221,9 +222,11 @@ pub async fn generate_image(
             let id = response.id.clone();
             let model = response.model.clone();
             let provider = response.provider.clone();
+            let org_id = key_ctx.as_ref().and_then(|c| c.org_id.clone());
+            let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
             tokio::spawn(async move {
                 let _ = db
-                    .log_request(&id, &model, &provider, "completed", "image", cost, latency, None, None)
+                    .log_request(&id, &model, &provider, "completed", "image", cost, latency, None, None, org_id.as_deref(), app_id.as_deref())
                     .await;
                 if let Err(e) = db.insert_request_artifact(&artifact).await {
                     tracing::warn!(error = %e, request_id = %artifact.request_id, "Failed to store request artifact");
@@ -250,10 +253,12 @@ pub async fn generate_image(
             let model = validated.schema.id.clone();
             let err_msg = e.to_string();
             let prompt = validated.request.base.prompt.clone();
+            let org_id = key_ctx.as_ref().and_then(|c| c.org_id.clone());
+            let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
             tokio::spawn(async move {
                 let id = format!("litegen-img-{}", Uuid::new_v4());
                 let _ = db
-                    .log_request(&id, &model, "unknown", "failed", "image", 0.0, latency, Some(&err_msg), None)
+                    .log_request(&id, &model, "unknown", "failed", "image", 0.0, latency, Some(&err_msg), None, org_id.as_deref(), app_id.as_deref())
                     .await;
                 let artifact = RequestArtifact {
                     request_id: id,
@@ -268,6 +273,8 @@ pub async fn generate_image(
                     output_truncated: false,
                     error_message: Some(err_msg),
                     created_at: chrono::Utc::now(),
+                    org_id: org_id.clone(),
+                    app_id: app_id.clone(),
                 };
                 if let Err(e) = db.insert_request_artifact(&artifact).await {
                     tracing::warn!(error = %e, "Failed to store error artifact");
@@ -393,6 +400,8 @@ pub async fn generate_video(
                     output_truncated: false,
                     error_message: None,
                     created_at: chrono::Utc::now(),
+                    org_id: key_ctx.as_ref().and_then(|c| c.org_id.clone()),
+                    app_id: key_ctx.as_ref().and_then(|c| c.app_id.clone()),
                 }
             };
 
@@ -403,9 +412,11 @@ pub async fn generate_video(
             // Extract provider_job_id from the router's in-flight jobs map via response id.
             let provider_job_id_for_insert = state.router.get_provider_job_id(&id).await;
             let key_id_for_insert = key_ctx.as_ref().and_then(|c| c.key_id);
+            let org_id = key_ctx.as_ref().and_then(|c| c.org_id.clone());
+            let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
             tokio::spawn(async move {
                 let _ = db
-                    .log_request(&id, &model, &provider, "pending", "video", cost, latency, None, None)
+                    .log_request(&id, &model, &provider, "pending", "video", cost, latency, None, None, org_id.as_deref(), app_id.as_deref())
                     .await;
                 let _ = db.insert_generation(
                     &id,
@@ -415,6 +426,8 @@ pub async fn generate_video(
                     "video",
                     provider_job_id_for_insert.as_deref(),
                     cost,
+                    org_id.as_deref(),
+                    app_id.as_deref(),
                 ).await;
                 if let Err(e) = db.insert_request_artifact(&video_artifact).await {
                     tracing::warn!(error = %e, request_id = %video_artifact.request_id, "Failed to store video artifact");
@@ -453,8 +466,21 @@ pub async fn generate_video(
 )]
 pub async fn get_video_status(
     State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // Tenant scope: require an active org. If a persisted generation row exists
+    // for this id, it must belong to the caller's org (→ 404 otherwise). Rows
+    // that aren't yet persisted (router-tracked in-flight jobs) pass through.
+    let ctx_org = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
+    if let Ok(Some(gen)) = state.db.get_generation(&id).await {
+        if gen.org_id.as_deref() != Some(ctx_org) {
+            return (StatusCode::NOT_FOUND, Json(error_response("Not found", 404))).into_response();
+        }
+    }
     match state.router.get_video_status(&id).await {
         Ok(resp) => (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response(),
         Err(e) => {
@@ -481,25 +507,16 @@ pub async fn get_generation(
     OptionalKeyContext(key_ctx): OptionalKeyContext,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // Tenant scope: require an active org; never reveal another org's row (→ 404).
+    let ctx_org = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
     match state.db.get_generation(&id).await {
-        Ok(Some(gen)) => {
-            // Access control: master key (key_id = None) can see all;
-            // DB-key holders can only see their own generations.
-            let caller_key_id = key_ctx.as_ref().and_then(|c| c.key_id);
-            let is_master = caller_key_id.is_none();
-
-            if !is_master {
-                match gen.key_id {
-                    Some(owner) if Some(owner) != caller_key_id => {
-                        return (StatusCode::FORBIDDEN, Json(error_response("Forbidden", 403))).into_response();
-                    }
-                    _ => {}
-                }
-            }
-
+        Ok(Some(gen)) if gen.org_id.as_deref() == Some(ctx_org) => {
             (StatusCode::OK, Json(serde_json::to_value(&gen).unwrap())).into_response()
         }
-        Ok(None) => (StatusCode::NOT_FOUND, Json(error_response("Generation not found", 404))).into_response(),
+        Ok(_) => (StatusCode::NOT_FOUND, Json(error_response("Generation not found", 404))).into_response(),
         Err(e) => {
             error!(error = %e, "Failed to get generation");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response()
@@ -716,8 +733,15 @@ pub async fn readiness(
 )]
 pub async fn get_stats(
     State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
 ) -> impl IntoResponse {
-    match state.db.get_stats().await {
+    // Tenant scope: require an active org; stats are computed over org (+ app when set).
+    let org_id = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
+    let app_id = key_ctx.as_ref().and_then(|c| c.app_id.as_deref());
+    match state.db.get_stats_for_tenant(org_id, app_id).await {
         Ok(stats) => (StatusCode::OK, Json(serde_json::to_value(stats).unwrap())).into_response(),
         Err(e) => {
             error!(error = %e, "Failed to get stats");
@@ -823,21 +847,28 @@ pub async fn create_api_key(
         }
     }
 
-    let raw_key = format!("lg-{}", Uuid::new_v4().to_string().replace('-', ""));
-    let prefix = &raw_key[..8];
-    let hash = {
-        let mut hasher = Sha256::new();
-        hasher.update(raw_key.as_bytes());
-        hex::encode(hasher.finalize())
+    // Tenant scope: a key is always issued into a specific org + app. A hosted
+    // master/platform context (org_id None) cannot mint tenant keys → 403.
+    let org_id = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
+        None => return forbidden_no_org(),
     };
+    let app_id = match key_ctx.as_ref().and_then(|c| c.app_id.as_deref()) {
+        Some(a) => a,
+        None => return forbidden_no_org(),
+    };
+
+    // Mint a pk_live_/sk_live_ id+secret pair. The secret_hash is what auth looks up.
+    let kp = crate::auth::secrets::generate_key_pair();
 
     // Determine owner: session user → set owner_user_id; master key → None
     let owner_user_id = key_ctx.as_ref()
         .and_then(|c| c.user.as_ref())
         .map(|u| u.user_id.clone());
 
-    match state.db.create_api_key(
-        &request.name, &hash, prefix,
+    match state.db.create_api_key_scoped(
+        org_id, app_id, &kp.public_id, &request.name,
+        &kp.secret_hash, &kp.prefix,
         request.token_quota, request.rpm_limit,
         &request.scopes, request.webhook_url.as_deref(),
     ).await {
@@ -864,11 +895,9 @@ pub async fn create_api_key(
                 StatusCode::CREATED,
                 Json(ApiKeyCreatedResponse {
                     id: key.id,
-                    key: raw_key,
-                    prefix: key.key_prefix,
-                    // TODO(Task 5): create_api_key will generate a pk_live_ public_id;
-                    // until then legacy keys have None, so this is "" in the interim.
-                    public_id: key.public_id.clone().unwrap_or_default(),
+                    public_id: kp.public_id,
+                    key: kp.secret,
+                    prefix: kp.prefix,
                     name: key.name,
                     created_at: key.created_at,
                     token_quota: key.token_quota,
@@ -900,25 +929,35 @@ pub async fn list_api_keys(
 ) -> impl IntoResponse {
     use crate::auth::permissions::Permission;
 
-    // Determine what the caller can see
+    // Tenant scope: keys are listed within the active application. A hosted
+    // master/platform context (app_id None) has no tenant → 403.
+    let app_id = match key_ctx.as_ref().and_then(|c| c.app_id.as_deref()) {
+        Some(a) => a,
+        None => return forbidden_no_org(),
+    };
+
+    // Determine what the caller can see, scoped to the active app.
     let keys_result = if let Some(ref ctx) = key_ctx {
-        if ctx.permissions.contains(&Permission::KeyReadAny) {
-            // Admin/Owner via session: see all
-            state.db.list_api_keys().await
-        } else if let Some(ref user) = ctx.user {
-            if ctx.permissions.contains(&Permission::KeyReadOwn) {
-                // Member/Viewer via session: only their keys
-                state.db.list_api_keys_for_owner(&user.user_id).await
+        if let Some(ref user) = ctx.user {
+            // Session auth: admins see the whole app; members only their own keys.
+            if ctx.permissions.contains(&Permission::KeyReadAny) {
+                state.db.list_api_keys_for_app(app_id).await
+            } else if ctx.permissions.contains(&Permission::KeyReadOwn) {
+                state.db.list_api_keys_for_app(app_id).await.map(|keys| {
+                    keys.into_iter()
+                        .filter(|k| k.owner_user_id.as_deref() == Some(user.user_id.as_str()))
+                        .collect()
+                })
             } else {
                 return (StatusCode::FORBIDDEN, Json(error_response("key:read:own permission required", 403))).into_response();
             }
         } else {
-            // Bearer token path (key_id set): see all (existing behavior)
-            state.db.list_api_keys().await
+            // Bearer/master key path: all keys in the active app.
+            state.db.list_api_keys_for_app(app_id).await
         }
     } else {
-        // No auth context (dev mode) — see all
-        state.db.list_api_keys().await
+        // No auth context (dev mode) — keys in the active app.
+        state.db.list_api_keys_for_app(app_id).await
     };
 
     match keys_result {
@@ -966,6 +1005,17 @@ pub async fn revoke_api_key(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     use crate::auth::permissions::Permission;
+    // Tenant scope: require an org and only operate on keys in that org. A key
+    // belonging to another org (or absent) is indistinguishable → 404.
+    let ctx_org = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
+    match state.db.get_api_key(&id).await {
+        Ok(Some(k)) if k.org_id.as_deref() == Some(ctx_org) => {}
+        Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response(),
+    }
     // Check ownership for session-authed users
     if let Some(ref ctx) = key_ctx {
         if let Some(ref user) = ctx.user {
@@ -1015,8 +1065,13 @@ pub async fn get_api_key_handler(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     use crate::auth::permissions::Permission;
+    // Tenant scope: require an org; never reveal another org's key (→ 404).
+    let ctx_org = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
     match state.db.get_api_key(&id).await {
-        Ok(Some(key)) => {
+        Ok(Some(key)) if key.org_id.as_deref() == Some(ctx_org) => {
             // Ownership check for session-authed users
             if let Some(ref ctx) = key_ctx {
                 if let Some(ref user) = ctx.user {
@@ -1046,7 +1101,8 @@ pub async fn get_api_key_handler(
             };
             (StatusCode::OK, Json(serde_json::to_value(detail).unwrap())).into_response()
         }
-        Ok(None) => (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
+        // None, or a key belonging to another org → 404 (don't reveal other orgs).
+        Ok(_) => (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response(),
     }
 }
@@ -1070,6 +1126,16 @@ pub async fn patch_api_key_handler(
     Json(req): Json<UpdateApiKeyRequest>,
 ) -> impl IntoResponse {
     use crate::auth::permissions::Permission;
+    // Tenant scope: require an org; a key in another org (or absent) → 404.
+    let ctx_org = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
+    match state.db.get_api_key(&id).await {
+        Ok(Some(k)) if k.org_id.as_deref() == Some(ctx_org) => {}
+        Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response(),
+    }
     // Ownership check for session-authed users
     if let Some(ref ctx) = key_ctx {
         if let Some(ref user) = ctx.user {
@@ -1130,49 +1196,58 @@ pub async fn list_generations(
 ) -> impl IntoResponse {
     use crate::auth::permissions::Permission;
 
-    // For session users: scope by ownership
-    if ctx.user.is_some() {
+    // Tenant scope: require an active org; results are scoped to org (+ app when set).
+    let org_id = match ctx.org_id.as_deref() {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
+    let app_id = ctx.app_id.as_deref();
+
+    // Session-auth members without any generation:read permission are denied.
+    // Members with read:own (but not read:any) additionally see only their own keys.
+    let owned_filter: Option<Vec<uuid::Uuid>> = if ctx.user.is_some() {
         if ctx.permissions.contains(&Permission::GenerationReadAny) {
-            // Admin/Owner: see all (use None key_id = all)
+            None
         } else if ctx.permissions.contains(&Permission::GenerationReadOwn) {
-            // Member/Viewer: get their owned keys and filter generations
             let user_id = ctx.user.as_ref().map(|u| u.user_id.as_str()).unwrap_or("");
             let owned_keys = state.db.list_api_keys_for_owner(user_id).await.unwrap_or_default();
-            let owned_key_ids: Vec<uuid::Uuid> = owned_keys.iter().map(|k| k.id).collect();
-
-            // Fetch all then filter by owned key_ids (simple approach)
-            let all_gens = match state.db.list_generations(None, 1, 10000).await {
-                Ok(g) => g,
-                Err(e) => {
-                    error!(error = %e, "Failed to list generations");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
-                }
-            };
-            let filtered: Vec<_> = all_gens.into_iter()
-                .filter(|g| g.key_id.map(|kid| owned_key_ids.contains(&kid)).unwrap_or(false))
-                .collect();
-            let total = filtered.len() as i64;
-            let offset = ((query.page.saturating_sub(1)) * query.per_page) as usize;
-            let paged: Vec<_> = filtered.into_iter().skip(offset).take(query.per_page as usize).collect();
-            let total_pages = ((total as f64) / (query.per_page as f64)).ceil() as u32;
-            let response = PaginatedResponse {
-                data: paged,
-                total: total as u64,
-                page: query.page,
-                per_page: query.per_page,
-                total_pages,
-            };
-            return (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response();
+            Some(owned_keys.iter().map(|k| k.id).collect())
         } else {
             return (StatusCode::FORBIDDEN, Json(error_response("generation:read:own permission required", 403))).into_response();
         }
+    } else {
+        None
+    };
+
+    if let Some(owned_key_ids) = owned_filter {
+        // Read-own member: tenant-scope the rows then filter to their owned keys.
+        let all_gens = match state.db.list_generations_for_tenant(org_id, app_id, 1, 10000).await {
+            Ok(g) => g,
+            Err(e) => {
+                error!(error = %e, "Failed to list generations");
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
+            }
+        };
+        let filtered: Vec<_> = all_gens.into_iter()
+            .filter(|g| g.key_id.map(|kid| owned_key_ids.contains(&kid)).unwrap_or(false))
+            .collect();
+        let total = filtered.len() as i64;
+        let offset = ((query.page.saturating_sub(1)) * query.per_page) as usize;
+        let paged: Vec<_> = filtered.into_iter().skip(offset).take(query.per_page as usize).collect();
+        let total_pages = ((total as f64) / (query.per_page as f64)).ceil() as u32;
+        let response = PaginatedResponse {
+            data: paged,
+            total: total as u64,
+            page: query.page,
+            per_page: query.per_page,
+            total_pages,
+        };
+        return (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response();
     }
 
-    let caller_key_id = ctx.key_id.as_ref();
-
     let (total, gens) = match tokio::try_join!(
-        state.db.count_generations(caller_key_id),
-        state.db.list_generations(caller_key_id, query.page, query.per_page),
+        state.db.count_generations_for_tenant(org_id, app_id),
+        state.db.list_generations_for_tenant(org_id, app_id, query.page, query.per_page),
     ) {
         Ok(pair) => pair,
         Err(e) => {
@@ -1204,26 +1279,20 @@ pub async fn cancel_generation(
     Path(id): Path<String>,
     Json(_body): Json<CancelGenerationBody>,
 ) -> impl IntoResponse {
-    // First fetch the generation to check ownership.
-    let gen = match state.db.get_generation(&id).await {
-        Ok(Some(g)) => g,
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(error_response("Generation not found", 404))).into_response(),
+    // Tenant scope: require an active org; a row in another org (or absent) → 404.
+    let ctx_org = match ctx.org_id.as_deref() {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
+    // First fetch the generation to verify it belongs to the caller's org.
+    match state.db.get_generation(&id).await {
+        Ok(Some(g)) if g.org_id.as_deref() == Some(ctx_org) => {}
+        Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Generation not found", 404))).into_response(),
         Err(e) => {
             error!(error = %e, "Failed to get generation for cancel");
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
         }
     };
-
-    // Access control: master key (key_id = None) can cancel anything.
-    let caller_key_id = ctx.key_id;
-    if caller_key_id.is_some() {
-        match gen.key_id {
-            Some(owner) if Some(owner) != caller_key_id => {
-                return (StatusCode::FORBIDDEN, Json(error_response("Forbidden", 403))).into_response();
-            }
-            _ => {}
-        }
-    }
 
     // Attempt the cancel — returns None if status wasn't pending/processing.
     match state.db.cancel_generation(&id).await {
@@ -1251,53 +1320,39 @@ pub async fn cancel_generation(
 
 // ─── Key Rotate ──────────────────────────────────────────────────────────────
 
-/// POST /v1/keys/{id}/rotate — Atomically revoke old key, create new one with same settings.
+/// POST /v1/keys/{id}/rotate — Issue a new secret for an existing key in place.
+/// Keeps the same row id and all settings; the new `sk_live_` secret is returned once.
 pub async fn rotate_api_key(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    // 1. Fetch the existing key.
-    let existing = match state.db.get_api_key(&id).await {
-        Ok(Some(k)) => k,
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
+    // Tenant scope: require an org; a key in another org (or absent) → 404.
+    let ctx_org = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
+
+    // 1. Fetch the existing key and verify it belongs to the caller's org.
+    let _existing = match state.db.get_api_key(&id).await {
+        Ok(Some(k)) if k.org_id.as_deref() == Some(ctx_org) => k,
+        Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
         Err(e) => {
             error!(error = %e, "Failed to fetch key for rotate");
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
         }
-    };
+    }; // fetched only to verify org ownership
 
-    // 2. Generate new raw key + hash.
-    let raw_key = format!("lg-{}", Uuid::new_v4().to_string().replace('-', ""));
-    let prefix = raw_key[..8].to_string();
-    let hash = {
-        let mut hasher = Sha256::new();
-        hasher.update(raw_key.as_bytes());
-        hex::encode(hasher.finalize())
-    };
-
-    // 3. Insert new key with same settings.
-    let new_key = match state.db.create_api_key(
-        &existing.name,
-        &hash,
-        &prefix,
-        existing.token_quota,
-        existing.rpm_limit,
-        &existing.scopes,
-        existing.webhook_url.as_deref(),
-    ).await {
-        Ok(k) => k,
+    // 2. Mint a fresh id/secret pair and update the same row in place.
+    let kp = crate::auth::secrets::generate_key_pair();
+    let rotated = match state.db.rotate_api_key(&id, &kp.public_id, &kp.secret_hash, &kp.prefix).await {
+        Ok(Some(k)) => k,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
         Err(e) => {
-            error!(error = %e, "Failed to create replacement key during rotate");
+            error!(error = %e, "Failed to rotate key");
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
         }
     };
-
-    // 4. Revoke the old key.
-    if let Err(e) = state.db.revoke_api_key(&id).await {
-        error!(error = %e, "Failed to revoke old key during rotate");
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
-    }
 
     log_audit(
         state.db.clone(),
@@ -1306,20 +1361,21 @@ pub async fn rotate_api_key(
         "api_key",
         &id.to_string(),
         None,
-        serde_json::to_value(serde_json::json!({ "new_id": new_key.id })).ok(),
+        serde_json::to_value(serde_json::json!({ "public_id": kp.public_id })).ok(),
     );
 
-    // 5. Return the new key value (only time it's visible).
+    // 3. Return the new secret (only time it's visible).
     (StatusCode::OK, Json(serde_json::json!({
-        "id": new_key.id,
-        "key": raw_key,
-        "prefix": new_key.key_prefix,
-        "name": new_key.name,
-        "scopes": new_key.scopes,
-        "token_quota": new_key.token_quota,
-        "rpm_limit": new_key.rpm_limit,
-        "webhook_url": new_key.webhook_url,
-        "expires_at": new_key.expires_at,
+        "id": rotated.id,
+        "public_id": kp.public_id,
+        "key": kp.secret,
+        "prefix": rotated.key_prefix,
+        "name": rotated.name,
+        "scopes": rotated.scopes,
+        "token_quota": rotated.token_quota,
+        "rpm_limit": rotated.rpm_limit,
+        "webhook_url": rotated.webhook_url,
+        "expires_at": rotated.expires_at,
     }))).into_response()
 }
 
@@ -1376,6 +1432,8 @@ pub async fn test_webhook(
         created_at: now,
         completed_at: Some(now),
         metadata: None,
+        org_id: key.org_id.clone(),
+        app_id: key.app_id.clone(),
     };
 
     let client = reqwest::Client::new();
@@ -1441,41 +1499,54 @@ pub async fn get_logs_filtered(
             return (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response();
         }
     }
+    // Tenant scope: require an active org; logs are restricted to org (+ app when set).
+    let org_id = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
+    let app_id = key_ctx.as_ref().and_then(|c| c.app_id.as_deref());
+
     let is_csv = query.format.as_deref() == Some("csv");
-    // For CSV we fetch up to 10000 rows (no pagination).
     let page = query.page.unwrap_or(1);
     let per_page = if is_csv { 10000 } else { query.per_page.unwrap_or(50) };
 
-    let filters = crate::types::LogFilters {
-        model: query.model,
-        provider: query.provider,
-        status: query.status,
-        from: query.from,
-        to: query.to,
-    };
-
-    match state.db.get_request_logs_filtered(&filters, page, per_page).await {
-        Ok((logs, total)) => {
-            if is_csv {
-                let date = chrono::Utc::now().format("%Y%m%d").to_string();
-                let filename = format!("logs-{}.csv", date);
-                return csv_response(logs_to_csv(&logs), &filename);
-            }
-            let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
-            let response = PaginatedResponse {
-                data: logs,
-                total,
-                page,
-                per_page,
-                total_pages,
-            };
-            (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response()
-        }
+    // Fetch all tenant rows, then apply the optional model/provider/status/date
+    // filters in-handler (the tenant-scoped query is not itself filter-aware).
+    let (all_logs, _) = match state.db.get_request_logs_for_tenant(org_id, app_id, 1, 100_000).await {
+        Ok(pair) => pair,
         Err(e) => {
-            error!(error = %e, "Failed to get filtered logs");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response()
+            error!(error = %e, "Failed to get tenant logs");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
         }
+    };
+    let filtered: Vec<RequestLog> = all_logs
+        .into_iter()
+        .filter(|l| query.model.as_deref().map(|m| l.model == m).unwrap_or(true))
+        .filter(|l| query.provider.as_deref().map(|p| l.provider == p).unwrap_or(true))
+        .filter(|l| query.status.as_deref().map(|s| format!("{}", l.status) == s).unwrap_or(true))
+        // `from`/`to` params are compared lexicographically after formatting as RFC 3339
+        .filter(|l| query.from.as_deref().map(|f| l.created_at.to_rfc3339().as_str() >= f).unwrap_or(true))
+        .filter(|l| query.to.as_deref().map(|t| l.created_at.to_rfc3339().as_str() <= t).unwrap_or(true))
+        .collect();
+
+    if is_csv {
+        let date = chrono::Utc::now().format("%Y%m%d").to_string();
+        let filename = format!("logs-{}.csv", date);
+        return csv_response(logs_to_csv(&filtered), &filename);
     }
+
+    let total = filtered.len() as u64;
+    let offset = ((page.saturating_sub(1)) * per_page) as usize;
+    let paged: Vec<RequestLog> = filtered.into_iter().skip(offset).take(per_page as usize).collect();
+    let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+    let response = PaginatedResponse {
+        data: paged,
+        total,
+        page,
+        per_page,
+        total_pages,
+    };
+    (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response()
 }
 
 // ─── Webhook Delivery Log ────────────────────────────────────────────────────
@@ -1532,39 +1603,50 @@ pub async fn list_audit(
             return (StatusCode::FORBIDDEN, Json(error_response("audit:read permission required", 403))).into_response();
         }
     }
+    // Tenant scope: require an active org; the audit log is restricted to it.
+    let org_id = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
     let is_csv = query.format.as_deref() == Some("csv");
     let page = query.page.unwrap_or(1);
     let per_page = if is_csv { 10000 } else { query.per_page.unwrap_or(50) };
 
-    let filter = crate::types::AuditLogFilter {
-        actor_key_id: query.actor_key_id,
-        action: query.action,
-        from: query.from,
-        to: query.to,
-    };
-
-    match state.db.list_audit_log(&filter, page, per_page).await {
-        Ok((entries, total)) => {
-            if is_csv {
-                let date = chrono::Utc::now().format("%Y%m%d").to_string();
-                let filename = format!("audit-{}.csv", date);
-                return csv_response(audit_to_csv(&entries), &filename);
-            }
-            let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
-            let response = PaginatedResponse {
-                data: entries,
-                total: total as u64,
-                page,
-                per_page,
-                total_pages,
-            };
-            (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response()
-        }
+    // Fetch all org-scoped entries, then apply the optional actor/action/date
+    // filters in-handler (the tenant-scoped query is not itself filter-aware).
+    let (all_entries, _) = match state.db.list_audit_log_for_tenant(org_id, 1, 100_000).await {
+        Ok(pair) => pair,
         Err(e) => {
             error!(error = %e, "Failed to list audit log");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response()
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
         }
+    };
+    let filtered: Vec<AuditLogEntry> = all_entries
+        .into_iter()
+        .filter(|e| query.actor_key_id.as_deref().map(|a| e.actor_key_id.as_deref() == Some(a)).unwrap_or(true))
+        .filter(|e| query.action.as_deref().map(|a| e.action == a).unwrap_or(true))
+        // `from`/`to` params are compared lexicographically after formatting as RFC 3339
+        .filter(|e| query.from.as_deref().map(|f| e.created_at.to_rfc3339().as_str() >= f).unwrap_or(true))
+        .filter(|e| query.to.as_deref().map(|t| e.created_at.to_rfc3339().as_str() <= t).unwrap_or(true))
+        .collect();
+
+    if is_csv {
+        let date = chrono::Utc::now().format("%Y%m%d").to_string();
+        let filename = format!("audit-{}.csv", date);
+        return csv_response(audit_to_csv(&filtered), &filename);
     }
+    let total = filtered.len() as u64;
+    let offset = ((page.saturating_sub(1)) * per_page) as usize;
+    let paged: Vec<AuditLogEntry> = filtered.into_iter().skip(offset).take(per_page as usize).collect();
+    let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+    let response = PaginatedResponse {
+        data: paged,
+        total,
+        page,
+        per_page,
+        total_pages,
+    };
+    (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response()
 }
 
 // ─── Cache Management ───────────────────────────────────────────────────────
@@ -1732,10 +1814,23 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
 /// GET /v1/logs/{id}/artifact — Retrieve the stored artifact for a request log.
 pub async fn get_log_artifact(
     State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // Tenant scope: require an active org.
+    let ctx_org = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
     match state.db.get_request_artifact(&id).await {
-        Ok(Some(artifact)) => (StatusCode::OK, Json(serde_json::to_value(artifact).unwrap())).into_response(),
+        Ok(Some(artifact)) => {
+            // Cross-tenant isolation: if the artifact carries an org_id and it does not
+            // match the caller's org, return 404 (same as not-found — do not reveal existence).
+            if artifact.org_id.as_deref().map(|o| o != ctx_org).unwrap_or(false) {
+                return (StatusCode::NOT_FOUND, Json(error_response("Artifact not found", 404))).into_response();
+            }
+            (StatusCode::OK, Json(serde_json::to_value(artifact).unwrap())).into_response()
+        }
         Ok(None) => (StatusCode::NOT_FOUND, Json(error_response("Artifact not found", 404))).into_response(),
         Err(e) => {
             error!(error = %e, "Failed to get request artifact");
@@ -1822,6 +1917,7 @@ fn log_audit(
     let target_id = target_id.to_string();
     let before = before_json.map(|v| v.to_string());
     let after = after_json.map(|v| v.to_string());
+    let org_id = key_ctx.and_then(|c| c.org_id.clone());
 
     tokio::spawn(async move {
         let entry = crate::types::AuditLogEntry {
@@ -1834,11 +1930,21 @@ fn log_audit(
             before_json: before,
             after_json: after,
             created_at: chrono::Utc::now(),
+            org_id,
         };
         if let Err(e) = db.insert_audit_log(&entry).await {
             tracing::warn!(error = %e, "Failed to insert audit log entry");
         }
     });
+}
+
+/// 403 used by tenant-data routes when the caller has no active organization
+/// (e.g. a hosted master/platform context where `ctx.org_id == None`).
+fn forbidden_no_org() -> axum::response::Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(error_response("no active organization", 403)),
+    ).into_response()
 }
 
 fn error_response(message: &str, code: u16) -> serde_json::Value {
@@ -1848,6 +1954,7 @@ fn error_response(message: &str, code: u16) -> serde_json::Value {
             "type": match code {
                 400 => "invalid_request_error",
                 401 => "authentication_error",
+                403 => "forbidden",
                 404 => "not_found_error",
                 429 => "rate_limit_error",
                 502 => "provider_error",
@@ -1915,16 +2022,27 @@ mod key_endpoint_tests {
         })
     }
 
-    /// Build a minimal admin-only test router that doesn't apply scope checks
-    /// (master_key = None → all scopes allowed).
+    /// Build a minimal admin-only test router. Applies auth_middleware so the
+    /// single-tenant default org/app is set in the KeyContext (required by the
+    /// tenant-scoped key endpoints); master_key = None → all scopes allowed.
     fn build_keys_router(state: Arc<AppState>) -> axum::Router {
         use axum::routing::{delete, get, patch, post};
+        use axum::middleware;
+        use crate::api::middleware::auth_middleware;
+        let auth_state = state.clone();
         axum::Router::new()
             .route("/v1/keys", post(create_api_key))
             .route("/v1/keys", get(list_api_keys))
             .route("/v1/keys/{id}", delete(revoke_api_key))
             .route("/v1/keys/{id}", get(get_api_key_handler))
             .route("/v1/keys/{id}", patch(patch_api_key_handler))
+            .layer(middleware::from_fn(move |req: axum::extract::Request, next: middleware::Next| {
+                let s = auth_state.clone();
+                async move {
+                    let headers = req.headers().clone();
+                    auth_middleware(headers, s, req, next).await
+                }
+            }))
             .with_state(state)
     }
 
@@ -2100,7 +2218,7 @@ mod new_endpoint_tests {
     #[tokio::test]
     async fn list_generations_returns_owned_rows() {
         let state = build_state().await;
-        state.db.insert_generation("lg-list-test-1", None, "mock/v", "mock", "video", None, 0.0).await.unwrap();
+        state.db.insert_generation("lg-list-test-1", None, "mock/v", "mock", "video", None, 0.0, None, None).await.unwrap();
 
         let app = build_test_router(state);
         let req = Request::builder()
@@ -2119,7 +2237,7 @@ mod new_endpoint_tests {
     #[tokio::test]
     async fn cancel_generation_pending_returns_cancelled() {
         let state = build_state().await;
-        state.db.insert_generation("lg-cancel-ep-1", None, "mock/v", "mock", "video", None, 0.0).await.unwrap();
+        state.db.insert_generation("lg-cancel-ep-1", None, "mock/v", "mock", "video", None, 0.0, None, None).await.unwrap();
 
         let app = build_test_router(state);
         let body = serde_json::to_vec(&serde_json::json!({"status": "cancelled"})).unwrap();
@@ -2137,7 +2255,7 @@ mod new_endpoint_tests {
     #[tokio::test]
     async fn cancel_generation_completed_returns_409() {
         let state = build_state().await;
-        state.db.insert_generation("lg-cancel-ep-2", None, "mock/v", "mock", "video", None, 0.0).await.unwrap();
+        state.db.insert_generation("lg-cancel-ep-2", None, "mock/v", "mock", "video", None, 0.0, None, None).await.unwrap();
         state.db.update_generation_status("lg-cancel-ep-2", "completed", 100, None, None, Some(chrono::Utc::now())).await.unwrap();
 
         let app = build_test_router(state);
@@ -2153,7 +2271,7 @@ mod new_endpoint_tests {
     // ── POST /v1/keys/{id}/rotate ───────────────────────────────────────────
 
     #[tokio::test]
-    async fn rotate_key_returns_new_key_same_name_and_scopes() {
+    async fn rotate_key_issues_new_secret_in_place() {
         let state = build_state().await;
         let create_body = serde_json::to_vec(&serde_json::json!({
             "name": "rotate-test", "scopes": "generate,read", "token_quota": 10.0
@@ -2165,31 +2283,29 @@ mod new_endpoint_tests {
         assert_eq!(resp.status(), StatusCode::CREATED);
 
         let keys = state.db.list_api_keys().await.unwrap();
-        let old_id = keys[0].id;
+        let key_id = keys[0].id;
+        let old_hash = keys[0].key_hash.clone();
 
         let req = Request::builder().method("POST")
-            .uri(format!("/v1/keys/{}/rotate", old_id))
+            .uri(format!("/v1/keys/{}/rotate", key_id))
             .body(Body::empty()).unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "rotate should return 200");
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let rotated: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
-        // (a) name/scopes/quota preserved
+        // (a) name/scopes/quota preserved; same row id; new sk_live_ secret returned
         assert_eq!(rotated["name"], "rotate-test");
         assert_eq!(rotated["scopes"], "generate,read");
         assert_eq!(rotated["token_quota"], 10.0);
-        assert!(rotated["key"].as_str().unwrap().starts_with("lg-"));
+        assert_eq!(rotated["id"].as_str().unwrap(), key_id.to_string());
+        assert!(rotated["key"].as_str().unwrap().starts_with("sk_live_"));
+        assert!(rotated["public_id"].as_str().unwrap().starts_with("pk_live_"));
 
-        let new_id = uuid::Uuid::parse_str(rotated["id"].as_str().unwrap()).unwrap();
-
-        // (b) old id is now inactive
-        let old_key = state.db.get_api_key(&old_id).await.unwrap().unwrap();
-        assert!(!old_key.is_active, "old key should be revoked");
-
-        // (c) new id is active
-        let new_key = state.db.get_api_key(&new_id).await.unwrap().unwrap();
-        assert!(new_key.is_active, "new key should be active");
+        // (b) same id stays active, but the stored hash changed (secret rotated)
+        let key = state.db.get_api_key(&key_id).await.unwrap().unwrap();
+        assert!(key.is_active, "rotated key should stay active");
+        assert_ne!(key.key_hash, old_hash, "key hash should change after rotate");
     }
 
     // ── POST /v1/keys/{id}/test-webhook ────────────────────────────────────
@@ -2292,7 +2408,7 @@ mod new_endpoint_tests {
     #[tokio::test]
     async fn logs_csv_export_returns_csv_content_type() {
         let state = build_state().await;
-        state.db.log_request("csv1", "mock/v", "mock", "completed", "image", 0.01, 100, None, None).await.unwrap();
+        state.db.log_request("csv1", "mock/v", "mock", "completed", "image", 0.01, 100, None, None, None, None).await.unwrap();
 
         let app = build_test_router(state);
         let req = Request::builder()
@@ -2317,9 +2433,9 @@ mod new_endpoint_tests {
     #[tokio::test]
     async fn logs_filter_by_model_via_handler() {
         let state = build_state().await;
-        state.db.log_request("log1", "mock/image-gen", "mock", "completed", "image", 0.0, 10, None, None).await.unwrap();
-        state.db.log_request("log2", "openai/dall-e-3", "openai", "completed", "image", 0.01, 20, None, None).await.unwrap();
-        state.db.log_request("log3", "mock/image-gen", "mock", "failed", "image", 0.0, 5, Some("err"), None).await.unwrap();
+        state.db.log_request("log1", "mock/image-gen", "mock", "completed", "image", 0.0, 10, None, None, None, None).await.unwrap();
+        state.db.log_request("log2", "openai/dall-e-3", "openai", "completed", "image", 0.01, 20, None, None, None, None).await.unwrap();
+        state.db.log_request("log3", "mock/image-gen", "mock", "failed", "image", 0.0, 5, Some("err"), None, None, None).await.unwrap();
 
         let app = build_test_router(state);
         let req = Request::builder()
@@ -2337,11 +2453,21 @@ mod new_endpoint_tests {
     #[tokio::test]
     async fn audit_log_records_key_create() {
         use axum::routing::{get, post};
+        use axum::middleware;
+        use crate::api::middleware::auth_middleware;
 
         let state = build_state().await;
+        let auth_state = state.clone();
         let app = axum::Router::new()
             .route("/v1/keys", post(create_api_key))
             .route("/v1/audit", get(list_audit))
+            .layer(middleware::from_fn(move |req: axum::extract::Request, next: middleware::Next| {
+                let s = auth_state.clone();
+                async move {
+                    let headers = req.headers().clone();
+                    auth_middleware(headers, s, req, next).await
+                }
+            }))
             .with_state(state);
 
         // POST /v1/keys
@@ -2742,5 +2868,197 @@ mod model_info_tests {
         // No-ref model: Recraft v3 has no ref_inputs → defaults to 1.
         let recraft = reg.get("recraft/recraftv3").expect("recraftv3 present");
         assert_eq!(project_model_info(recraft).capabilities.max_images, 1);
+    }
+}
+
+// ─── Task 9 tenant-scoping tests ──────────────────────────────────────────────
+
+#[cfg(test)]
+mod tenant_scoping_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::{middleware, routing::{get, post}};
+    use tower::ServiceExt;
+    use crate::api::middleware::{auth_middleware, AppState, DEFAULT_ORG_ID, DEFAULT_APP_ID};
+    use crate::capabilities::CapabilityRegistry;
+    use crate::config::{AppConfig, CacheGlobalConfig, Mode};
+    use crate::db::sqlite::SqliteDatabase;
+    use crate::db::DatabaseStore;
+    use crate::proxy::cache::GenerationCache;
+    use crate::proxy::materializer::{Materializer, MaterializeError, TempStorage};
+    use crate::proxy::registry::ProviderRegistry;
+    use crate::proxy::router::ProxyRouter;
+    use crate::proxy::storage::LocalStore;
+    use crate::types::{Application, Organization};
+    use bytes::Bytes;
+
+    struct NoopStorageT;
+    #[async_trait::async_trait]
+    impl TempStorage for NoopStorageT {
+        async fn put(&self, key: &str, _b: Bytes, _ct: &str) -> Result<String, MaterializeError> {
+            Ok(format!("local://{}", key))
+        }
+        async fn delete(&self, _k: &str) -> Result<(), MaterializeError> { Ok(()) }
+    }
+
+    async fn build_db() -> Arc<SqliteDatabase> {
+        Arc::new(SqliteDatabase::connect("sqlite::memory:").await.expect("db"))
+    }
+
+    fn make_org(id: &str, slug: &str) -> Organization {
+        let now = chrono::Utc::now();
+        Organization {
+            id: id.to_string(), name: format!("Org {slug}"), slug: slug.to_string(),
+            plan: "free".to_string(), status: "active".to_string(),
+            created_at: now, updated_at: now,
+        }
+    }
+    fn make_app(id: &str, org_id: &str, slug: &str) -> Application {
+        let now = chrono::Utc::now();
+        Application {
+            id: id.to_string(), org_id: org_id.to_string(), name: format!("App {slug}"),
+            slug: slug.to_string(), status: "active".to_string(),
+            created_at: now, updated_at: now,
+        }
+    }
+
+    async fn build_state(db: Arc<SqliteDatabase>, mode: Mode, master_key: Option<String>) -> Arc<AppState> {
+        let registry = Arc::new(ProviderRegistry::new());
+        let config = Arc::new(AppConfig::default());
+        let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig::default()));
+        let image_store = Arc::new(LocalStore);
+        let router = Arc::new(ProxyRouter::new(registry, cache, config, image_store));
+        let mat = Arc::new(Materializer::new(Arc::new(NoopStorageT), reqwest::Client::new()));
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.pop(); p.push("models");
+        let cap_registry = Arc::new(CapabilityRegistry::from_dir(&p).expect("models"));
+        Arc::new(AppState {
+            router, db, master_key, registry: cap_registry, materializer: mat,
+            rate_limiter: Arc::new(crate::api::middleware::rate_limit::RateLimiter::new()),
+            in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(64)),
+            oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
+        })
+    }
+
+    fn build_router(state: Arc<AppState>) -> axum::Router {
+        let auth_state = state.clone();
+        axum::Router::new()
+            .route("/v1/keys", post(create_api_key).get(list_api_keys))
+            .route("/v1/generations", get(list_generations))
+            .layer(middleware::from_fn(move |req: axum::extract::Request, next: middleware::Next| {
+                let s = auth_state.clone();
+                async move {
+                    let headers = req.headers().clone();
+                    auth_middleware(headers, s, req, next).await
+                }
+            }))
+            .with_state(state)
+    }
+
+    // POST /v1/keys returns a pk_live_ id and an sk_live_ secret (single_tenant master ctx).
+    #[tokio::test]
+    async fn create_key_returns_id_and_secret() {
+        let db = build_db().await;
+        let state = build_state(db, Mode::SingleTenant, None).await;
+        let app = build_router(state);
+
+        let body = serde_json::to_vec(&serde_json::json!({"name": "k", "scopes": "generate,read"})).unwrap();
+        let req = Request::builder().method("POST").uri("/v1/keys")
+            .header("content-type", "application/json").body(Body::from(body)).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(created["public_id"].as_str().unwrap().starts_with("pk_live_"), "public_id should be pk_live_");
+        assert!(created["key"].as_str().unwrap().starts_with("sk_live_"), "secret should be sk_live_");
+    }
+
+    // A created sk_live_ secret authenticates via Bearer and is scoped to its tenant.
+    #[tokio::test]
+    async fn bearer_secret_authenticates_and_scopes() {
+        let db = build_db().await;
+        // master_key set so Bearer path validates DB keys (no dev bypass).
+        let state = build_state(db.clone(), Mode::SingleTenant, Some("master".to_string())).await;
+        let app = build_router(state.clone());
+
+        // Create a key under the default-org master context.
+        let body = serde_json::to_vec(&serde_json::json!({"name": "bk", "scopes": "generate,read,admin"})).unwrap();
+        let req = Request::builder().method("POST").uri("/v1/keys")
+            .header("authorization", "Bearer master")
+            .header("content-type", "application/json").body(Body::from(body)).unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let secret = created["key"].as_str().unwrap().to_string();
+
+        // Use the secret as a Bearer token to call a read route → 200 + sees default-org data.
+        db.insert_generation("g-bearer-1", None, "mock/v", "mock", "video", None, 0.0, Some(DEFAULT_ORG_ID), Some(DEFAULT_APP_ID)).await.unwrap();
+        let req = Request::builder().method("GET").uri("/v1/generations")
+            .header("authorization", format!("Bearer {}", secret))
+            .body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "bearer sk_live_ should authenticate");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let listed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(listed["total"], 1, "should see the default-org generation");
+    }
+
+    // A hosted master/platform key (org_id None) is rejected by tenant-data routes.
+    #[tokio::test]
+    async fn tenant_data_route_rejects_no_org() {
+        let db = build_db().await;
+        let state = build_state(db, Mode::Hosted, Some("master".to_string())).await;
+        let app = build_router(state);
+
+        // GET /v1/keys with the hosted master key → 403 (no active org).
+        let req = Request::builder().method("GET").uri("/v1/keys")
+            .header("authorization", "Bearer master").body(Body::empty()).unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "hosted master GET /v1/keys → 403");
+
+        // GET /v1/generations likewise → 403.
+        let req = Request::builder().method("GET").uri("/v1/generations")
+            .header("authorization", "Bearer master").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "hosted master GET /v1/generations → 403");
+    }
+
+    // A generation under app A is not visible to a Bearer key scoped to app B.
+    #[tokio::test]
+    async fn generations_are_isolated_per_tenant_via_endpoint() {
+        let db = build_db().await;
+        // Two orgs/apps; one key in each.
+        db.create_organization(&make_org("org-a", "org-a")).await.unwrap();
+        db.create_organization(&make_org("org-b", "org-b")).await.unwrap();
+        db.create_application(&make_app("app-a", "org-a", "app-a")).await.unwrap();
+        db.create_application(&make_app("app-b", "org-b", "app-b")).await.unwrap();
+
+        let kp_a = crate::auth::secrets::generate_key_pair();
+        let kp_b = crate::auth::secrets::generate_key_pair();
+        db.create_api_key_scoped("org-a", "app-a", &kp_a.public_id, "ka", &kp_a.secret_hash, &kp_a.prefix, None, None, "generate,read", None).await.unwrap();
+        db.create_api_key_scoped("org-b", "app-b", &kp_b.public_id, "kb", &kp_b.secret_hash, &kp_b.prefix, None, None, "generate,read", None).await.unwrap();
+
+        // One generation per tenant.
+        db.insert_generation("gen-org-a", None, "mock/v", "mock", "video", None, 0.0, Some("org-a"), Some("app-a")).await.unwrap();
+        db.insert_generation("gen-org-b", None, "mock/v", "mock", "video", None, 0.0, Some("org-b"), Some("app-b")).await.unwrap();
+
+        let state = build_state(db, Mode::Hosted, Some("master".to_string())).await;
+        let app = build_router(state);
+
+        // Caller with app-A key sees only A's generation.
+        let req = Request::builder().method("GET").uri("/v1/generations")
+            .header("authorization", format!("Bearer {}", kp_a.secret)).body(Body::empty()).unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let listed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(listed["total"], 1, "app-A key should see exactly one row");
+        assert_eq!(listed["data"][0]["id"], "gen-org-a");
+        assert!(listed["data"].as_array().unwrap().iter().all(|g| g["id"] != "gen-org-b"), "must not see app-B's row");
     }
 }

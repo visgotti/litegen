@@ -280,6 +280,8 @@ mod tests {
             created_at: chrono::Utc::now(),
             completed_at: Some(chrono::Utc::now()),
             metadata: None,
+            org_id: None,
+            app_id: None,
         }
     }
 

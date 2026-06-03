@@ -38,6 +38,7 @@ mod tests {
         async fn insert_generation(
             &self, _id: &str, _key_id: Option<&uuid::Uuid>, _model: &str, _provider: &str,
             _media_type: &str, _provider_job_id: Option<&str>, _cost_usd: f64,
+            _org_id: Option<&str>, _app_id: Option<&str>,
         ) -> Result<(), sqlx::Error> { Ok(()) }
 
         async fn update_generation_status(
@@ -63,6 +64,8 @@ mod tests {
             _latency_ms: i64,
             _error: Option<&str>,
             _metadata: Option<&serde_json::Value>,
+            _org_id: Option<&str>,
+            _app_id: Option<&str>,
         ) -> Result<(), sqlx::Error> {
             Ok(())
         }
@@ -592,6 +595,7 @@ models:
         async fn insert_generation(
             &self, _id: &str, _key_id: Option<&uuid::Uuid>, _model: &str, _provider: &str,
             _media_type: &str, _provider_job_id: Option<&str>, _cost_usd: f64,
+            _org_id: Option<&str>, _app_id: Option<&str>,
         ) -> Result<(), sqlx::Error> { Ok(()) }
 
         async fn update_generation_status(
@@ -611,6 +615,7 @@ models:
             _id: &str, _model: &str, _provider: &str, _status: &str,
             _media_type: &str, _cost_usd: f64, _latency_ms: i64,
             _error: Option<&str>, _metadata: Option<&serde_json::Value>,
+            _org_id: Option<&str>, _app_id: Option<&str>,
         ) -> Result<(), sqlx::Error> {
             self.log_count.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -870,10 +875,20 @@ models:
 
     fn build_generation_router(state: Arc<AppState>) -> axum::Router {
         use axum::routing::{get, post};
+        use axum::middleware;
         use crate::api::handlers::{generate_video, get_generation};
+        use crate::api::middleware::auth_middleware;
+        let auth_state = state.clone();
         axum::Router::new()
             .route("/v1/videos/generations", post(generate_video))
             .route("/v1/generations/{id}", get(get_generation))
+            .layer(middleware::from_fn(move |req: axum::extract::Request, next: middleware::Next| {
+                let s = auth_state.clone();
+                async move {
+                    let headers = req.headers().clone();
+                    auth_middleware(headers, s, req, next).await
+                }
+            }))
             .with_state(state)
     }
 
@@ -1008,6 +1023,8 @@ models:
             "video",
             Some("mock-video-job-1"),
             0.0,
+            None,
+            None,
         ).await.unwrap();
 
         // Run one poll iteration
