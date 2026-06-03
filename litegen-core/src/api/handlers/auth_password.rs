@@ -9,11 +9,50 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::api::middleware::{
-    create_session_cookies, make_clear_session_cookies, AppState, KeyContext,
+    create_session_cookies, make_clear_session_cookies, AppState, KeyContext, DEFAULT_ORG_ID,
 };
 use crate::auth::lockout::{is_locked_out, retry_after_seconds};
 use crate::auth::password::{hash_password, verify_dummy, verify_password, PasswordError};
-use crate::types::{PasswordReset, Role, User};
+use crate::config::Mode;
+use crate::db::DatabaseStore;
+use crate::types::{Application, Organization, PasswordReset, Role, User};
+
+// ─── Tenant slug helpers ───────────────────────────────────────────────────────
+
+/// Lowercase, replace non-alphanumeric runs with '-', trim leading/trailing '-'.
+fn slugify(s: &str) -> String {
+    let slug: String = s
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "org".to_string()
+    } else {
+        slug
+    }
+}
+
+/// Derive a default org name from the local-part of an email address.
+fn default_org_name_from_email(email: &str) -> String {
+    email.split('@').next().unwrap_or("My Org").to_string()
+}
+
+/// Append `-2`, `-3`, … to `base` until a free slug is found.
+async fn unique_slug(db: &dyn DatabaseStore, base: &str) -> Result<String, sqlx::Error> {
+    if db.get_org_by_slug(base).await?.is_none() {
+        return Ok(base.to_string());
+    }
+    for n in 2..10000 {
+        let cand = format!("{base}-{n}");
+        if db.get_org_by_slug(&cand).await?.is_none() {
+            return Ok(cand);
+        }
+    }
+    Ok(format!("{base}-{}", uuid::Uuid::new_v4()))
+}
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
@@ -66,6 +105,9 @@ pub struct AuthResponse {
 pub struct SignupRequest {
     pub email: String,
     pub password: String,
+    /// Optional organization name (hosted mode). Defaults to the email local-part.
+    #[serde(default)]
+    pub org_name: Option<String>,
 }
 
 /// POST /v1/auth/signup — Create the first user (owner).
@@ -87,25 +129,42 @@ pub async fn signup(
 ) -> Response {
     let email = body.email.trim().to_lowercase();
 
-    // Only allow when users table is empty
-    match state.db.count_users().await {
-        Ok(count) if count > 0 => {
-            return error_resp(StatusCode::CONFLICT, "signup_closed", "Signup is closed: users already exist");
+    // single_tenant: the first user claims the (single) owner account.
+    // hosted: anyone can sign up and gets their own org — skip the gate + owner email.
+    if state.mode == Mode::SingleTenant {
+        // Only allow when users table is empty
+        match state.db.count_users().await {
+            Ok(count) if count > 0 => {
+                return error_resp(StatusCode::CONFLICT, "signup_closed", "Signup is closed: users already exist");
+            }
+            Err(e) => {
+                return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+            }
+            _ => {}
         }
-        Err(e) => {
-            return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+
+        // If LITEGEN__OWNER_EMAIL is set, only that email can sign up
+        if let Ok(required) = std::env::var("LITEGEN__OWNER_EMAIL") {
+            if required.trim().to_lowercase() != email {
+                return error_resp(
+                    StatusCode::FORBIDDEN,
+                    "owner_email_required",
+                    &format!("Only {} can claim the owner account", required),
+                );
+            }
         }
-        _ => {}
     }
 
-    // If LITEGEN__OWNER_EMAIL is set, only that email can sign up
-    if let Ok(required) = std::env::var("LITEGEN__OWNER_EMAIL") {
-        if required.trim().to_lowercase() != email {
-            return error_resp(
-                StatusCode::FORBIDDEN,
-                "owner_email_required",
-                &format!("Only {} can claim the owner account", required),
-            );
+    // Hosted mode: pre-flight duplicate-email check before any expensive work.
+    if state.mode == Mode::Hosted {
+        match state.db.get_user_by_email(&email).await {
+            Ok(Some(_)) => {
+                return error_resp(StatusCode::CONFLICT, "email_taken", "An account with that email already exists");
+            }
+            Err(e) => {
+                return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+            }
+            Ok(None) => {}
         }
     }
 
@@ -134,14 +193,79 @@ pub async fn signup(
     };
 
     if let Err(e) = state.db.create_user(&user).await {
+        // Backstop: if a concurrent request raced past the pre-flight check and
+        // hit the UNIQUE constraint, return 409 instead of leaking the constraint name.
+        let msg = e.to_string().to_lowercase();
+        if msg.contains("unique") && msg.contains("email") {
+            return error_resp(StatusCode::CONFLICT, "email_taken", "An account with that email already exists");
+        }
         return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
     }
 
+    // Provision tenant membership. NOTE: this is a sequence of non-atomic DB
+    // calls (user → org → membership → app); there is no cross-method
+    // transaction available, so a mid-sequence failure can leave a partial
+    // tenant. Acceptable for Phase 1.
+    let org_view = match state.mode {
+        Mode::SingleTenant => {
+            // Owner becomes a member of the pre-existing default org (migration 0008).
+            if let Err(e) = state.db.add_org_member(DEFAULT_ORG_ID, &user.id, Role::Owner).await {
+                return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+            }
+            // Reflect the default org in the response for forward-compat.
+            match state.db.get_organization(DEFAULT_ORG_ID).await {
+                Ok(Some(org)) => json!({ "id": org.id, "name": org.name, "slug": org.slug }),
+                _ => json!({ "id": DEFAULT_ORG_ID, "name": "Default", "slug": "default" }),
+            }
+        }
+        Mode::Hosted => {
+            let org_name = body
+                .org_name
+                .clone()
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| default_org_name_from_email(&email));
+            let slug = match unique_slug(state.db.as_ref(), &slugify(&org_name)).await {
+                Ok(s) => s,
+                Err(e) => return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+            };
+            let org = Organization {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: org_name,
+                slug,
+                plan: "free".into(),
+                status: "active".into(),
+                created_at: now,
+                updated_at: now,
+            };
+            if let Err(e) = state.db.create_organization(&org).await {
+                return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+            }
+            if let Err(e) = state.db.add_org_member(&org.id, &user.id, Role::Owner).await {
+                return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+            }
+            let app = Application {
+                id: uuid::Uuid::new_v4().to_string(),
+                org_id: org.id.clone(),
+                name: "Default".into(),
+                slug: "default".into(),
+                status: "active".into(),
+                created_at: now,
+                updated_at: now,
+            };
+            if let Err(e) = state.db.create_application(&app).await {
+                return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+            }
+            json!({ "id": org.id, "name": org.name, "slug": org.slug })
+        }
+    };
+
     match create_session_cookies(&state.db, &user.id, None, None).await {
         Ok((_st, _ct, sc, cc)) => {
+            let public: PublicUser = user.into();
             let mut resp = (
                 StatusCode::OK,
-                Json(AuthResponse { user: user.into() }),
+                Json(json!({ "user": public, "org": org_view })),
             )
                 .into_response();
             resp.headers_mut().append("set-cookie", sc);
@@ -281,21 +405,39 @@ pub async fn logout(
     ),
     tag = "Auth"
 )]
-pub async fn me(Extension(ctx): Extension<KeyContext>) -> Response {
-    match ctx.user {
-        Some(u) => (
-            StatusCode::OK,
-            Json(json!({
-                "user": {
-                    "id": u.user_id,
-                    "email": u.email,
-                    "role": u.role.as_str()
-                }
-            })),
-        )
-            .into_response(),
-        None => error_resp(StatusCode::UNAUTHORIZED, "not_authenticated", "Not logged in"),
-    }
+pub async fn me(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+) -> Response {
+    let Some(u) = ctx.user else {
+        return error_resp(StatusCode::UNAUTHORIZED, "not_authenticated", "Not logged in");
+    };
+
+    let orgs: Vec<serde_json::Value> = state
+        .db
+        .list_orgs_for_user(&u.user_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(org, role)| {
+            json!({ "id": org.id, "name": org.name, "role": role.as_str() })
+        })
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "user": {
+                "id": u.user_id,
+                "email": u.email,
+                "role": u.role.as_str()
+            },
+            "orgs": orgs,
+            "active_org": ctx.org_id,
+            "active_app": ctx.app_id,
+        })),
+    )
+        .into_response()
 }
 
 // ─── GET /v1/auth/csrf ────────────────────────────────────────────────────────
@@ -473,6 +615,14 @@ mod tests {
         build_state_with_db(db).await
     }
 
+    async fn build_hosted_state() -> Arc<AppState> {
+        let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.expect("in-memory db"));
+        let mut state = build_state_with_db(db).await;
+        // build_state_with_db returns Arc; mutate before any clones exist.
+        Arc::get_mut(&mut state).expect("unique Arc").mode = crate::config::Mode::Hosted;
+        state
+    }
+
     async fn build_state_with_db(db: Arc<SqliteDatabase>) -> Arc<AppState> {
         let registry = Arc::new(ProviderRegistry::new());
         let config = Arc::new(AppConfig::default());
@@ -518,6 +668,16 @@ mod tests {
                     auth_middleware(headers, s, req, next).await
                 }
             }))
+            .with_state(state)
+    }
+
+    /// Router that mounts signup/login as unauthenticated routes (matching the
+    /// production wiring in handlers/mod.rs, where these bypass the auth +
+    /// CSRF middleware). Required for hosted mode, which has no dev bypass.
+    fn build_unauth_signup_router(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/v1/auth/signup", post(signup))
+            .route("/v1/auth/login", post(login))
             .with_state(state)
     }
 
@@ -613,6 +773,113 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn hosted_signup_creates_org_and_app() {
+        let state = build_hosted_state().await;
+        let app = build_unauth_signup_router(state.clone());
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/signup")
+            .header("content-type", "application/json")
+            .body(json_body(json!({
+                "email": "founder@acme.com",
+                "password": "strongpassword123",
+                "org_name": "Acme"
+            })))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "Hosted signup should return 200");
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["org"]["name"], "Acme");
+        assert_eq!(body["org"]["slug"], "acme");
+        let org_id = body["org"]["id"].as_str().expect("org id").to_string();
+        let user_id = body["user"]["id"].as_str().expect("user id").to_string();
+
+        // Org exists and is named "Acme".
+        let org = state.db.get_organization(&org_id).await.unwrap().expect("org persisted");
+        assert_eq!(org.name, "Acme");
+
+        // Signer is the org owner.
+        let role = state.db.get_membership(&org_id, &user_id).await.unwrap();
+        assert_eq!(role, Some(Role::Owner), "Signer should be the org owner");
+
+        // Exactly one application created for the org.
+        let apps = state.db.list_apps_for_org(&org_id).await.unwrap();
+        assert_eq!(apps.len(), 1, "Should create exactly one default application");
+        assert_eq!(apps[0].slug, "default");
+    }
+
+    #[tokio::test]
+    async fn hosted_signup_is_not_gated_by_existing_users() {
+        let state = build_hosted_state().await;
+        // Pre-create a user so count_users() > 0; hosted must still allow signup.
+        create_user_with_password(&state, "first@acme.com", "password12345678").await;
+        let app = build_unauth_signup_router(state.clone());
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/signup")
+            .header("content-type", "application/json")
+            .body(json_body(json!({
+                "email": "second@globex.com",
+                "password": "strongpassword123"
+            })))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "Hosted signup must not be gated by existing users");
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // org_name omitted → derived from email local-part "second".
+        assert_eq!(body["org"]["name"], "second");
+    }
+
+    #[tokio::test]
+    async fn hosted_signup_duplicate_email_returns_409() {
+        let state = build_hosted_state().await;
+        let app = build_unauth_signup_router(state.clone());
+
+        // First signup — must succeed.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/signup")
+            .header("content-type", "application/json")
+            .body(json_body(json!({
+                "email": "dup@example.com",
+                "password": "strongpassword123"
+            })))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "First signup should return 200");
+
+        // Second signup with the same email — must return 409.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/signup")
+            .header("content-type", "application/json")
+            .body(json_body(json!({
+                "email": "dup@example.com",
+                "password": "strongpassword123"
+            })))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT, "Duplicate email should return 409");
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let body_str = body.to_string().to_lowercase();
+        assert!(
+            !body_str.contains("constraint"),
+            "Response must not leak constraint name, got: {body_str}"
+        );
+        assert_eq!(body["error"]["code"], "email_taken", "Error code must be email_taken");
     }
 
     // ── Login ─────────────────────────────────────────────────────────────────
