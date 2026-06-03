@@ -760,42 +760,6 @@ pub struct PaginationParams {
 fn default_page() -> u32 { 1 }
 fn default_per_page() -> u32 { 50 }
 
-/// GET /v1/logs — Get request logs (paginated).
-#[utoipa::path(
-    get,
-    path = "/v1/logs",
-    params(
-        ("page" = Option<u32>, Query, description = "Page number"),
-        ("per_page" = Option<u32>, Query, description = "Items per page"),
-    ),
-    responses(
-        (status = 200, description = "Request logs", body = PaginatedResponse<RequestLog>),
-    ),
-    tag = "Dashboard"
-)]
-pub async fn get_logs(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<PaginationParams>,
-) -> impl IntoResponse {
-    match state.db.get_request_logs(params.page, params.per_page).await {
-        Ok((logs, total)) => {
-            let total_pages = ((total as f64) / (params.per_page as f64)).ceil() as u32;
-            let response = PaginatedResponse {
-                data: logs,
-                total,
-                page: params.page,
-                per_page: params.per_page,
-                total_pages,
-            };
-            (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response()
-        }
-        Err(e) => {
-            error!(error = %e, "Failed to get logs");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response()
-        }
-    }
-}
-
 // ─── API Key Management ─────────────────────────────────────────────────────
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -1394,9 +1358,16 @@ pub async fn test_webhook(
     OptionalKeyContext(key_ctx): OptionalKeyContext,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    // Tenant scope: require an org; a key in another org (or absent) → 404. This
+    // must run before any webhook work so org A cannot trigger org B's webhook or
+    // probe key existence.
+    let ctx_org = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
     let key = match state.db.get_api_key(&id).await {
-        Ok(Some(k)) => k,
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
+        Ok(Some(k)) if k.org_id.as_deref() == Some(ctx_org) => k,
+        Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
         Err(e) => {
             error!(error = %e, "Failed to fetch key for test-webhook");
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
@@ -1474,6 +1445,18 @@ pub struct LogsQuery {
 }
 
 /// GET /v1/logs — Paginated + filtered request logs. Supports `?format=csv`.
+#[utoipa::path(
+    get,
+    path = "/v1/logs",
+    params(
+        ("page" = Option<u32>, Query, description = "Page number"),
+        ("per_page" = Option<u32>, Query, description = "Items per page"),
+    ),
+    responses(
+        (status = 200, description = "Request logs", body = PaginatedResponse<RequestLog>),
+    ),
+    tag = "Dashboard"
+)]
 pub async fn get_logs_filtered(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
@@ -1554,9 +1537,20 @@ pub async fn get_logs_filtered(
 /// GET /v1/keys/{id}/webhook-deliveries — List webhook deliveries for a key (admin scope).
 pub async fn list_webhook_deliveries(
     State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
     Path(id): Path<Uuid>,
     Query(params): Query<PaginationParams>,
 ) -> impl IntoResponse {
+    // Tenant scope: require an org; a key in another org (or absent) → 404.
+    let ctx_org = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
+    match state.db.get_api_key(&id).await {
+        Ok(Some(k)) if k.org_id.as_deref() == Some(ctx_org) => {}
+        Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response(),
+    }
     let key_id_str = id.to_string();
     match state.db.list_webhook_deliveries(&key_id_str, params.page, params.per_page).await {
         Ok((deliveries, total)) => {

@@ -849,6 +849,106 @@ async fn cross_tenant_key_detail_404() {
     assert_eq!(own.status, 200, "A reading its own key should be 200: {:?}", own.body);
 }
 
+// ─── Test 13b: cross-tenant webhook-deliveries is 404 ──────────────────────────
+//
+// `GET /v1/keys/{id}/webhook-deliveries` must be tenant-scoped: org B reading
+// org A's key's deliveries → 404 (indistinguishable from non-existent). Org A
+// reading its own key's deliveries → 200 (empty list).
+
+#[tokio::test]
+async fn cross_tenant_webhook_deliveries_404() {
+    let app = spawn_app().await;
+
+    // Org A creates a key; capture its uuid `id`.
+    let mut a = Client::new(&app.base);
+    signup(&mut a, &unique_email("cwd-a"), "CwdOrgA").await;
+    let a_csrf = a.csrf().await;
+    let a_key = a
+        .post_with(
+            "/v1/keys",
+            json!({ "name": "a-wh-key", "scopes": "generate,read" }),
+            &[("x-csrf-token", &a_csrf)],
+        )
+        .await;
+    assert_eq!(a_key.status, 201, "A create key failed: {:?}", a_key.body);
+    let a_key_id = a_key.body["id"].as_str().expect("key uuid id").to_string();
+
+    // Org B (separate org/session) tries to read A's key's deliveries → 404.
+    let mut b = Client::new(&app.base);
+    signup(&mut b, &unique_email("cwd-b"), "CwdOrgB").await;
+    let cross = b.get(&format!("/v1/keys/{a_key_id}/webhook-deliveries")).await;
+    assert_eq!(
+        cross.status, 404,
+        "B reading A's webhook deliveries should be 404 (indistinguishable), got {} {:?}",
+        cross.status, cross.body
+    );
+
+    // A can read its own key's deliveries (positive control; empty is fine).
+    let own = a.get(&format!("/v1/keys/{a_key_id}/webhook-deliveries")).await;
+    assert_eq!(
+        own.status, 200,
+        "A reading its own webhook deliveries should be 200: {:?}",
+        own.body
+    );
+}
+
+// ─── Test 13c: cross-tenant test-webhook is 404 ────────────────────────────────
+//
+// `POST /v1/keys/{id}/test-webhook` must be tenant-scoped: org B triggering a
+// test webhook for org A's key → 404 (never 200/400, so B cannot fire A's
+// webhook or probe key existence). For the owner the route is reachable: with no
+// webhook configured it returns 400 `no_webhook_configured` — asserted NOT 404.
+
+#[tokio::test]
+async fn cross_tenant_test_webhook_404() {
+    let app = spawn_app().await;
+
+    // Org A creates a key (no webhook_url); capture its uuid `id`.
+    let mut a = Client::new(&app.base);
+    signup(&mut a, &unique_email("ctw-a"), "CtwOrgA").await;
+    let a_csrf = a.csrf().await;
+    let a_key = a
+        .post_with(
+            "/v1/keys",
+            json!({ "name": "a-tw-key", "scopes": "generate,read" }),
+            &[("x-csrf-token", &a_csrf)],
+        )
+        .await;
+    assert_eq!(a_key.status, 201, "A create key failed: {:?}", a_key.body);
+    let a_key_id = a_key.body["id"].as_str().expect("key uuid id").to_string();
+
+    // Org B (separate org/session) tries to fire a test webhook for A's key → 404.
+    let mut b = Client::new(&app.base);
+    signup(&mut b, &unique_email("ctw-b"), "CtwOrgB").await;
+    let b_csrf = b.csrf().await;
+    let cross = b
+        .post_with(
+            &format!("/v1/keys/{a_key_id}/test-webhook"),
+            json!({}),
+            &[("x-csrf-token", &b_csrf)],
+        )
+        .await;
+    assert_eq!(
+        cross.status, 404,
+        "B firing A's test webhook should be 404 (indistinguishable), got {} {:?}",
+        cross.status, cross.body
+    );
+
+    // The owner (A) reaches the route: no webhook configured → not a 404.
+    let own = a
+        .post_with(
+            &format!("/v1/keys/{a_key_id}/test-webhook"),
+            json!({}),
+            &[("x-csrf-token", &a_csrf)],
+        )
+        .await;
+    assert_ne!(
+        own.status, 404,
+        "A firing its own key's test webhook must NOT be 404 (owner reaches route), got {} {:?}",
+        own.status, own.body
+    );
+}
+
 // ─── Test 14: logout invalidates the session ───────────────────────────────────
 //
 // After signup the session cookie authenticates `GET /v1/auth/me` (200). POST
