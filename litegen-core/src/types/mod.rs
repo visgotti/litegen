@@ -532,6 +532,47 @@ pub struct Generation {
     pub metadata: Option<serde_json::Value>,
 }
 
+// ─── Tenancy (Organizations / Applications / Members / Credentials) ─────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Organization {
+    pub id: String,
+    pub name: String,
+    pub slug: String,
+    pub plan: String,
+    pub status: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Application {
+    pub id: String,
+    pub org_id: String,
+    pub name: String,
+    pub slug: String,
+    pub status: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OrganizationMember {
+    pub org_id: String,
+    pub user_id: String,
+    pub email: String, // joined from users for list views
+    pub role: Role,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Public view of a stored BYO provider credential — NEVER the plaintext secret.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProviderCredentialInfo {
+    pub provider: String,
+    pub display_hint: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
 // ─── API Key Auth ───────────────────────────────────────────────────────────
 
 /// API key for authenticating with the LiteGen proxy.
@@ -557,6 +598,10 @@ pub struct ApiKey {
     pub webhook_url: Option<String>,
     /// The user who owns this key (None for master-key-created keys).
     pub owner_user_id: Option<String>,
+    pub org_id: Option<String>,
+    pub app_id: Option<String>,
+    /// Public key id shown to customers, e.g. "pk_live_…". None for legacy lg- keys.
+    pub public_id: Option<String>,
 }
 
 /// Full key detail for GET /v1/keys/{id} and PATCH /v1/keys/{id} responses.
@@ -647,6 +692,8 @@ pub struct ApiKeyInfo {
     pub rpm_limit: Option<u32>,
     pub scopes: String,
     pub webhook_url: Option<String>,
+    pub public_id: Option<String>,
+    pub app_id: Option<String>,
 }
 
 /// Response for `GET /v1/keys`.
@@ -658,8 +705,10 @@ pub struct ApiKeyListResponse {
 /// Response for `POST /v1/keys`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiKeyCreatedResponse {
+    pub id: Uuid,
     pub key: String,
     pub prefix: String,
+    pub public_id: String,
     pub name: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub token_quota: Option<f64>,
@@ -829,6 +878,21 @@ pub struct PasswordReset {
     pub expires_at: chrono::DateTime<chrono::Utc>,
     pub used_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn org_and_app_serde_roundtrip() {
+        let org = Organization { id: "o1".into(), name: "Acme".into(), slug: "acme".into(),
+            plan: "free".into(), status: "active".into(),
+            created_at: chrono::Utc::now(), updated_at: chrono::Utc::now() };
+        let j = serde_json::to_string(&org).unwrap();
+        let back: Organization = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.slug, "acme");
+    }
 }
 
 #[cfg(test)]

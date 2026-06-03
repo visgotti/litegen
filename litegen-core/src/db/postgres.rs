@@ -18,7 +18,7 @@ use super::trait_def::DatabaseStore;
 
 /// Full column list for api_keys selects (Postgres).
 const API_KEY_COLS: &str = "id, name, key_hash, key_prefix, created_at, expires_at, is_active, \
-    token_quota, tokens_used, rpm_limit, scopes, webhook_url, owner_user_id";
+    token_quota, tokens_used, rpm_limit, scopes, webhook_url, owner_user_id, org_id, app_id, public_id";
 
 /// Full column list for generations selects (Postgres).
 const GENERATION_COLS: &str = "id, key_id, model, provider, media_type, status, progress, \
@@ -365,6 +365,9 @@ impl DatabaseStore for PostgresDatabase {
             scopes: scopes.to_string(),
             webhook_url: webhook_url.map(|s| s.to_string()),
             owner_user_id: None,
+            org_id: None,
+            app_id: None,
+            public_id: None,
         })
     }
 

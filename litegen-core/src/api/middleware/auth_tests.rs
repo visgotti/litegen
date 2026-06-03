@@ -78,6 +78,9 @@ mod tests {
                 scopes: "generate,read".to_string(),
                 webhook_url: None,
                 owner_user_id: None,
+                org_id: None,
+                app_id: None,
+                public_id: None,
             })
         }
 
@@ -303,7 +306,7 @@ mod tests {
                 key_prefix: key_prefix.to_string(), created_at: chrono::Utc::now(),
                 expires_at: None, is_active: true, token_quota: None, tokens_used: 0.0,
                 rpm_limit: None, scopes: "generate,read".to_string(), webhook_url: None,
-                owner_user_id: None,
+                owner_user_id: None, org_id: None, app_id: None, public_id: None,
             })
         }
 
@@ -326,6 +329,9 @@ mod tests {
                     scopes: self.scopes.clone(),
                     webhook_url: None,
                     owner_user_id: None,
+                    org_id: None,
+                    app_id: None,
+                    public_id: None,
                 }))
             } else {
                 Ok(None)
