@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use crate::capabilities::ModelSchema;
 use crate::config::AppConfig;
 use crate::proxy::circuit_breaker::CircuitBreaker;
-use crate::providers::{apply_markup, GenerationOutput, ImageExtras, ProviderError, VideoExtras, VideoGenerationHandle};
+use crate::providers::{apply_markup, GenerationOutput, ImageExtras, ProviderCredentials, ProviderError, VideoExtras, VideoGenerationHandle};
 use crate::proxy::cache::GenerationCache;
 use crate::proxy::materializer::MaterializedRequest;
 use crate::proxy::registry::ProviderRegistry;
@@ -99,6 +99,7 @@ impl ProxyRouter {
         base: &BaseGenerationRequest,
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<ImageGenerationResponse, ProxyError> {
         let start = Instant::now();
 
@@ -110,11 +111,11 @@ impl ProxyRouter {
 
         // 2. Find a route or use single-provider direct dispatch
         let (provider_name, output) = if let Some(route) = self.find_model_route(&schema.id) {
-            self.execute_route_image(schema, base, extras, materialized, &route).await?
+            self.execute_route_image(schema, base, extras, materialized, &route, app_creds).await?
         } else {
             // Direct dispatch: use schema.provider
             let provider = self.registry
-                .image_provider_for(&schema.provider)
+                .image_provider_for_request(&schema.provider, app_creds)
                 .await
                 .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
 
@@ -206,19 +207,20 @@ impl ProxyRouter {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
         route: &ModelRoute,
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<(String, GenerationOutput), ProxyError> {
         match route.strategy {
             RoutingStrategy::Fallback => {
-                self.fallback_image(schema, base, extras, materialized, &route.deployments).await
+                self.fallback_image(schema, base, extras, materialized, &route.deployments, app_creds).await
             }
             RoutingStrategy::WeightedRoundRobin => {
-                self.weighted_image(schema, base, extras, materialized, &route.deployments).await
+                self.weighted_image(schema, base, extras, materialized, &route.deployments, app_creds).await
             }
             RoutingStrategy::LowestCost => {
-                self.lowest_cost_image(schema, base, extras, materialized, &route.deployments).await
+                self.lowest_cost_image(schema, base, extras, materialized, &route.deployments, app_creds).await
             }
             RoutingStrategy::LowestLatency => {
-                self.lowest_latency_image(schema, base, extras, materialized, &route.deployments).await
+                self.lowest_latency_image(schema, base, extras, materialized, &route.deployments, app_creds).await
             }
         }
     }
@@ -231,6 +233,7 @@ impl ProxyRouter {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<(String, GenerationOutput), ProxyError> {
         let mut last_error: Option<ProviderError> = None;
 
@@ -245,7 +248,7 @@ impl ProxyRouter {
                 continue;
             }
 
-            let provider = match self.registry.image_provider_for(&deployment.provider).await {
+            let provider = match self.registry.image_provider_for_request(&deployment.provider, app_creds.clone()).await {
                 Some(p) => p,
                 None => {
                     warn!(provider = %deployment.provider, "Image provider not configured, skipping deployment");
@@ -317,6 +320,7 @@ impl ProxyRouter {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<(String, GenerationOutput), ProxyError> {
         if deployments.is_empty() {
             return Err(ProxyError::NoDeployments { model: schema.id.clone() });
@@ -349,7 +353,7 @@ impl ProxyRouter {
             }
         }
         let ordered_owned: Vec<Deployment> = ordered.into_iter().cloned().collect();
-        self.fallback_image(schema, base, extras, materialized, &ordered_owned).await
+        self.fallback_image(schema, base, extras, materialized, &ordered_owned, app_creds).await
     }
 
     /// Sort deployments by estimated cost (ascending) then fall back in that order.
@@ -360,6 +364,7 @@ impl ProxyRouter {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<(String, GenerationOutput), ProxyError> {
         let mut cost_sorted: Vec<(f64, &Deployment)> = Vec::new();
         // Build a minimal ImageGenerationRequest for cost estimation
@@ -375,7 +380,7 @@ impl ProxyRouter {
             response_format: extras.response_format.clone(),
         };
         for d in deployments {
-            let cost = if let Some(p) = self.registry.image_provider_for(&d.provider).await {
+            let cost = if let Some(p) = self.registry.image_provider_for_request(&d.provider, app_creds.clone()).await {
                 p.estimate_cost(schema, &dummy_req)
                     .await
                     .map(|c| c.total_cost_usd)
@@ -387,7 +392,7 @@ impl ProxyRouter {
         }
         cost_sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         let sorted: Vec<Deployment> = cost_sorted.into_iter().map(|(_, d)| d.clone()).collect();
-        self.fallback_image(schema, base, extras, materialized, &sorted).await
+        self.fallback_image(schema, base, extras, materialized, &sorted, app_creds).await
     }
 
     /// Sort deployments by average measured latency (ascending), fall back in that order.
@@ -399,6 +404,7 @@ impl ProxyRouter {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<(String, GenerationOutput), ProxyError> {
         let mut lat_sorted: Vec<(u64, &Deployment)> = Vec::new();
         for d in deployments {
@@ -407,7 +413,7 @@ impl ProxyRouter {
         }
         lat_sorted.sort_by_key(|(avg, _)| *avg);
         let sorted: Vec<Deployment> = lat_sorted.into_iter().map(|(_, d)| d.clone()).collect();
-        self.fallback_image(schema, base, extras, materialized, &sorted).await
+        self.fallback_image(schema, base, extras, materialized, &sorted, app_creds).await
     }
 
     // ─── Video Generation ───────────────────────────────────────────────
@@ -425,14 +431,15 @@ impl ProxyRouter {
         base: &BaseGenerationRequest,
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<VideoGenerationResponse, ProxyError> {
         // Find route or use direct dispatch
         let (provider_name, handle) = if let Some(route) = self.find_model_route(&schema.id) {
-            self.execute_route_video(schema, base, extras, materialized, &route).await?
+            self.execute_route_video(schema, base, extras, materialized, &route, app_creds).await?
         } else {
             // Direct dispatch
             let provider = self.registry
-                .video_provider_for(&schema.provider)
+                .video_provider_for_request(&schema.provider, app_creds)
                 .await
                 .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
 
@@ -553,19 +560,20 @@ impl ProxyRouter {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
         route: &ModelRoute,
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<(String, VideoGenerationHandle), ProxyError> {
         match route.strategy {
             RoutingStrategy::Fallback => {
-                self.fallback_video(schema, base, extras, materialized, &route.deployments).await
+                self.fallback_video(schema, base, extras, materialized, &route.deployments, app_creds).await
             }
             RoutingStrategy::WeightedRoundRobin => {
-                self.weighted_video(schema, base, extras, materialized, &route.deployments).await
+                self.weighted_video(schema, base, extras, materialized, &route.deployments, app_creds).await
             }
             RoutingStrategy::LowestCost => {
-                self.lowest_cost_video(schema, base, extras, materialized, &route.deployments).await
+                self.lowest_cost_video(schema, base, extras, materialized, &route.deployments, app_creds).await
             }
             RoutingStrategy::LowestLatency => {
-                self.lowest_latency_video(schema, base, extras, materialized, &route.deployments).await
+                self.lowest_latency_video(schema, base, extras, materialized, &route.deployments, app_creds).await
             }
         }
     }
@@ -578,6 +586,7 @@ impl ProxyRouter {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<(String, VideoGenerationHandle), ProxyError> {
         let mut last_error: Option<ProviderError> = None;
 
@@ -592,7 +601,7 @@ impl ProxyRouter {
                 continue;
             }
 
-            let provider = match self.registry.video_provider_for(&deployment.provider).await {
+            let provider = match self.registry.video_provider_for_request(&deployment.provider, app_creds.clone()).await {
                 Some(p) => p,
                 None => {
                     warn!(provider = %deployment.provider, "Video provider not configured, skipping deployment");
@@ -656,6 +665,7 @@ impl ProxyRouter {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<(String, VideoGenerationHandle), ProxyError> {
         if deployments.is_empty() {
             return Err(ProxyError::NoDeployments { model: schema.id.clone() });
@@ -685,7 +695,7 @@ impl ProxyRouter {
             }
         }
         let ordered_owned: Vec<Deployment> = ordered.into_iter().cloned().collect();
-        self.fallback_video(schema, base, extras, materialized, &ordered_owned).await
+        self.fallback_video(schema, base, extras, materialized, &ordered_owned, app_creds).await
     }
 
     /// Sort video deployments by estimated cost (ascending) then fall back in that order.
@@ -696,6 +706,7 @@ impl ProxyRouter {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<(String, VideoGenerationHandle), ProxyError> {
         let dummy_req = VideoGenerationRequest {
             base: base.clone(),
@@ -706,7 +717,7 @@ impl ProxyRouter {
         };
         let mut cost_sorted: Vec<(f64, &Deployment)> = Vec::new();
         for d in deployments {
-            let cost = if let Some(p) = self.registry.video_provider_for(&d.provider).await {
+            let cost = if let Some(p) = self.registry.video_provider_for_request(&d.provider, app_creds.clone()).await {
                 p.estimate_cost(schema, &dummy_req)
                     .await
                     .map(|c| c.total_cost_usd)
@@ -718,7 +729,7 @@ impl ProxyRouter {
         }
         cost_sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         let sorted: Vec<Deployment> = cost_sorted.into_iter().map(|(_, d)| d.clone()).collect();
-        self.fallback_video(schema, base, extras, materialized, &sorted).await
+        self.fallback_video(schema, base, extras, materialized, &sorted, app_creds).await
     }
 
     /// Sort video deployments by average measured latency (ascending), fall back in that order.
@@ -729,6 +740,7 @@ impl ProxyRouter {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
         deployments: &[Deployment],
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<(String, VideoGenerationHandle), ProxyError> {
         let mut lat_sorted: Vec<(u64, &Deployment)> = Vec::new();
         for d in deployments {
@@ -737,7 +749,7 @@ impl ProxyRouter {
         }
         lat_sorted.sort_by_key(|(avg, _)| *avg);
         let sorted: Vec<Deployment> = lat_sorted.into_iter().map(|(_, d)| d.clone()).collect();
-        self.fallback_video(schema, base, extras, materialized, &sorted).await
+        self.fallback_video(schema, base, extras, materialized, &sorted, app_creds).await
     }
 
     // ─── Cost Estimation ────────────────────────────────────────────────
@@ -748,9 +760,10 @@ impl ProxyRouter {
         &self,
         schema: &ModelSchema,
         request: &ImageGenerationRequest,
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<CostEstimate, ProxyError> {
         let provider = self.registry
-            .image_provider_for(&schema.provider)
+            .image_provider_for_request(&schema.provider, app_creds)
             .await
             .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
 
@@ -780,9 +793,10 @@ impl ProxyRouter {
         &self,
         schema: &ModelSchema,
         request: &VideoGenerationRequest,
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<CostEstimate, ProxyError> {
         let provider = self.registry
-            .video_provider_for(&schema.provider)
+            .video_provider_for_request(&schema.provider, app_creds)
             .await
             .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
 

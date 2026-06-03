@@ -157,7 +157,7 @@ pub async fn generate_image(
         extra: validated.request.base.extra.clone(),
     };
 
-    match state.router.generate_image(&validated.schema, &validated.request.base, &extras, &materialized).await {
+    match state.router.generate_image(&validated.schema, &validated.request.base, &extras, &materialized, None).await {
         Ok(response) => {
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
@@ -300,7 +300,7 @@ pub async fn estimate_image_cost(
     State(state): State<Arc<AppState>>,
     validated: ValidatedImage,
 ) -> impl IntoResponse {
-    match state.router.estimate_image_cost(&validated.schema, &validated.request).await {
+    match state.router.estimate_image_cost(&validated.schema, &validated.request, None).await {
         Ok(estimate) => (StatusCode::OK, Json(serde_json::to_value(estimate).unwrap())).into_response(),
         Err(e) => {
             let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -356,7 +356,7 @@ pub async fn generate_video(
         extra: validated.request.base.extra.clone(),
     };
 
-    match state.router.generate_video(&validated.schema, &validated.request.base, &extras, &materialized).await {
+    match state.router.generate_video(&validated.schema, &validated.request.base, &extras, &materialized, None).await {
         Ok(response) => {
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
@@ -539,7 +539,7 @@ pub async fn estimate_video_cost(
     State(state): State<Arc<AppState>>,
     validated: ValidatedVideo,
 ) -> impl IntoResponse {
-    match state.router.estimate_video_cost(&validated.schema, &validated.request).await {
+    match state.router.estimate_video_cost(&validated.schema, &validated.request, None).await {
         Ok(estimate) => (StatusCode::OK, Json(serde_json::to_value(estimate).unwrap())).into_response(),
         Err(e) => {
             let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);

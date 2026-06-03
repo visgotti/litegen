@@ -37,7 +37,7 @@ use crate::providers::video::openai::OpenAiVideoProvider;
 use crate::providers::video::replicate::ReplicateVideoProvider;
 use crate::providers::video::runway::RunwayProvider;
 use crate::providers::{
-    ImageProvider, ProviderInstanceConfig, VideoProvider, parse_api_keys,
+    ImageProvider, ProviderCredentials, ProviderInstanceConfig, VideoProvider, parse_api_keys,
 };
 use crate::types::{ApiKeyEntry, ModelInfo, ProviderHealth};
 
@@ -45,6 +45,11 @@ use crate::types::{ApiKeyEntry, ModelInfo, ProviderHealth};
 pub struct ProviderRegistry {
     image_providers: RwLock<HashMap<String, Arc<dyn ImageProvider>>>,
     video_providers: RwLock<HashMap<String, Arc<dyn VideoProvider>>>,
+    /// The `ProviderInstanceConfig` each provider was registered with, keyed by
+    /// provider name. Used to build per-request override instances that keep the
+    /// non-credential fields (api_base, model_mapping, …) while swapping in a
+    /// per-app BYO credential.
+    provider_configs: RwLock<HashMap<String, ProviderInstanceConfig>>,
 }
 
 impl Default for ProviderRegistry {
@@ -58,6 +63,7 @@ impl ProviderRegistry {
         Self {
             image_providers: RwLock::new(HashMap::new()),
             video_providers: RwLock::new(HashMap::new()),
+            provider_configs: RwLock::new(HashMap::new()),
         }
     }
 
@@ -83,289 +89,98 @@ impl ProviderRegistry {
     }
 
     /// Register a single provider by name, creating the appropriate implementation.
+    ///
+    /// Delegates per-name construction to the pure [`build_image_provider`] /
+    /// [`build_video_provider`] factories, then inserts the resulting `Arc`s into
+    /// the relevant maps. A vendor that serves both modalities (e.g. "openai",
+    /// "fal") is inserted into BOTH maps. The config is also stashed in
+    /// `provider_configs` so per-request BYO overrides can reuse its
+    /// non-credential fields.
     async fn register_provider(&self, name: &str, config: ProviderInstanceConfig) {
-        match name {
-            "openai" => {
-                // OpenAI serves BOTH images (DALL-E) and video (Sora) under the
-                // single vendor name "openai", so models like `openai/dall-e-3`
-                // and `openai/sora` both resolve to this provider.
-                let mut ip = OpenAiProvider::new();
-                ip.configure(config.clone());
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(ip));
+        let image = build_image_provider(name, &config);
+        let video = build_video_provider(name, &config);
 
-                let mut vp = OpenAiVideoProvider::new();
-                vp.configure(config);
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(vp));
-                info!(provider = "openai", "Registered image+video provider");
-            }
-            "stability" => {
-                let mut p = StabilityProvider::new();
-                p.configure(config);
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(p));
-                info!(provider = "stability", "Registered image provider");
-            }
-            "replicate" => {
-                // Replicate serves BOTH images (Flux/SDXL/SD3) and video
-                // (AnimateDiff/SVD/Zeroscope) under the single vendor name.
-                let mut ip = ReplicateProvider::new();
-                ip.configure(config.clone());
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(ip));
+        if image.is_none() && video.is_none() {
+            warn!(provider = %name, "Unknown provider, skipping");
+            return;
+        }
 
-                let mut vp = ReplicateVideoProvider::new();
-                vp.configure(config);
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(vp));
-                info!(provider = "replicate", "Registered image+video provider");
-            }
-            "google" => {
-                // Google serves images (Imagen/Gemini) and video (Veo) under the
-                // single vendor name "google".
-                let mut ip = GoogleProvider::new();
-                ip.configure(config.clone());
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(ip));
+        let has_image = image.is_some();
+        let has_video = video.is_some();
 
-                let mut vp = GoogleVideoProvider::new();
-                vp.configure(config);
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(vp));
-                info!(provider = "google", "Registered image+video provider");
-            }
-            "fal" => {
-                // Fal serves BOTH images (Flux/SDXL/etc.) and video (Kling/
-                // MiniMax/SVD/LTX) under the single vendor name "fal".
-                let mut ip = FalProvider::new();
-                ip.configure(config.clone());
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(ip));
+        if let Some(ip) = image {
+            self.image_providers
+                .write()
+                .await
+                .insert(name.to_string(), Arc::from(ip));
+        }
+        if let Some(vp) = video {
+            self.video_providers
+                .write()
+                .await
+                .insert(name.to_string(), Arc::from(vp));
+        }
+        self.provider_configs
+            .write()
+            .await
+            .insert(name.to_string(), config);
 
-                let mut vp = FalVideoProvider::new();
-                vp.configure(config);
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(vp));
-                info!(provider = "fal", "Registered image+video provider");
-            }
-            "runway" => {
-                // Runway serves video (Gen-3/4) and image (Gen-4 image).
-                let mut vp = RunwayProvider::new();
-                vp.configure(config.clone());
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(vp));
+        match (has_image, has_video) {
+            (true, true) => info!(provider = %name, "Registered image+video provider"),
+            (true, false) => info!(provider = %name, "Registered image provider"),
+            (false, true) => info!(provider = %name, "Registered video provider"),
+            (false, false) => {}
+        }
+    }
 
-                let mut ip = RunwayImageProvider::new();
-                ip.configure(config);
-                self.image_providers
-                    .write()
+    /// Build a per-request image provider for `name`, optionally overriding its
+    /// credentials with a per-app BYO credential.
+    ///
+    /// - `None` → returns the cached global instance (identical to
+    ///   [`image_provider_for`](Self::image_provider_for)); behavior unchanged.
+    /// - `Some(creds)` → builds a FRESH instance configured with `creds` layered
+    ///   over the registered global config (or a default config when no global is
+    ///   registered for this provider, so BYO works without a platform key).
+    pub async fn image_provider_for_request(
+        &self,
+        name: &str,
+        app_creds: Option<ProviderCredentials>,
+    ) -> Option<Arc<dyn ImageProvider>> {
+        match app_creds {
+            None => self.image_provider_for(name).await,
+            Some(creds) => {
+                let base = self
+                    .provider_configs
+                    .read()
                     .await
-                    .insert(name.to_string(), Arc::new(ip));
-                info!(provider = "runway", "Registered image+video provider");
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_default();
+                let cfg = base.with_credentials(creds);
+                build_image_provider(name, &cfg).map(Arc::from)
             }
-            "luma" => {
-                // Luma serves video (Dream Machine/Ray) and image (Photon).
-                let mut vp = LumaProvider::new();
-                vp.configure(config.clone());
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(vp));
+        }
+    }
 
-                let mut ip = LumaImageProvider::new();
-                ip.configure(config);
-                self.image_providers
-                    .write()
+    /// Build a per-request video provider for `name`. See
+    /// [`image_provider_for_request`](Self::image_provider_for_request).
+    pub async fn video_provider_for_request(
+        &self,
+        name: &str,
+        app_creds: Option<ProviderCredentials>,
+    ) -> Option<Arc<dyn VideoProvider>> {
+        match app_creds {
+            None => self.video_provider_for(name).await,
+            Some(creds) => {
+                let base = self
+                    .provider_configs
+                    .read()
                     .await
-                    .insert(name.to_string(), Arc::new(ip));
-                info!(provider = "luma", "Registered image+video provider");
-            }
-            "bfl" => {
-                let mut p = BflProvider::new();
-                p.configure(config);
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(p));
-                info!(provider = "bfl", "Registered image provider");
-            }
-            "ideogram" => {
-                let mut p = IdeogramProvider::new();
-                p.configure(config);
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(p));
-                info!(provider = "ideogram", "Registered image provider");
-            }
-            "recraft" => {
-                let mut p = RecraftProvider::new();
-                p.configure(config);
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(p));
-                info!(provider = "recraft", "Registered image provider");
-            }
-            "minimax" => {
-                // MiniMax serves image (image-01) and video (Hailuo) under one name.
-                let mut ip = MiniMaxImageProvider::new();
-                ip.configure(config.clone());
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(ip));
-
-                let mut vp = MiniMaxVideoProvider::new();
-                vp.configure(config);
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(vp));
-                info!(provider = "minimax", "Registered image+video provider");
-            }
-            "vidu" => {
-                let mut p = ViduProvider::new();
-                p.configure(config);
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(p));
-                info!(provider = "vidu", "Registered video provider");
-            }
-            "hunyuan" => {
-                // Tencent Hunyuan: image + vclm video; TC3-HMAC-SHA256 signing.
-                let mut ip = HunyuanImageProvider::new();
-                ip.configure(config.clone());
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(ip));
-
-                let mut vp = HunyuanVideoProvider::new();
-                vp.configure(config);
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(vp));
-                info!(provider = "hunyuan", "Registered image+video provider");
-            }
-            "bedrock" => {
-                // Amazon Bedrock Nova: Canvas (image) + Reel (video); AWS SigV4.
-                let mut ip = BedrockImageProvider::new();
-                ip.configure(config.clone());
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(ip));
-
-                let mut vp = BedrockVideoProvider::new();
-                vp.configure(config);
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(vp));
-                info!(provider = "bedrock", "Registered image+video provider");
-            }
-            "kling" => {
-                // Kling serves image (Kolors) and video under one name; JWT auth.
-                let mut ip = KlingImageProvider::new();
-                ip.configure(config.clone());
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(ip));
-
-                let mut vp = KlingVideoProvider::new();
-                vp.configure(config);
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(vp));
-                info!(provider = "kling", "Registered image+video provider");
-            }
-            "leonardo" => {
-                // Leonardo serves image (generations) and video (image-to-video).
-                let mut ip = LeonardoImageProvider::new();
-                ip.configure(config.clone());
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(ip));
-
-                let mut vp = LeonardoVideoProvider::new();
-                vp.configure(config);
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(vp));
-                info!(provider = "leonardo", "Registered image+video provider");
-            }
-            "pixverse" => {
-                let mut p = PixverseProvider::new();
-                p.configure(config);
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(p));
-                info!(provider = "pixverse", "Registered video provider");
-            }
-            "bytedance" => {
-                // ByteDance serves image (Seedream) and video (Seedance) under one name.
-                let mut ip = ByteDanceImageProvider::new();
-                ip.configure(config.clone());
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(ip));
-
-                let mut vp = ByteDanceVideoProvider::new();
-                vp.configure(config);
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(vp));
-                info!(provider = "bytedance", "Registered image+video provider");
-            }
-            "mock" => {
-                let mut ip = MockProvider::new();
-                ip.configure(config.clone());
-                self.image_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(ip));
-
-                let mut vp = MockVideoProvider::new();
-                vp.configure(config);
-                self.video_providers
-                    .write()
-                    .await
-                    .insert(name.to_string(), Arc::new(vp));
-                info!(provider = "mock", "Registered mock image+video provider");
-            }
-            _ => {
-                warn!(provider = %name, "Unknown provider, skipping");
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_default();
+                let cfg = base.with_credentials(creds);
+                build_video_provider(name, &cfg).map(Arc::from)
             }
         }
     }
@@ -488,6 +303,81 @@ impl ProviderRegistry {
     }
 }
 
+/// Pure factory: build the image-provider implementation for `name`, configured
+/// with `config`. Returns `None` for vendors without an image provider (or an
+/// unknown name). Does NOT touch the registry maps — used both by
+/// `register_provider` (global instances) and `image_provider_for_request`
+/// (fresh per-request BYO instances).
+fn build_image_provider(
+    name: &str,
+    config: &ProviderInstanceConfig,
+) -> Option<Box<dyn ImageProvider>> {
+    // OpenAI/Replicate/Google/Fal/Runway/Luma/MiniMax/Hunyuan/Bedrock/Kling/
+    // Leonardo/ByteDance/Mock serve images (some also video — see
+    // build_video_provider). Stability/Bfl/Ideogram/Recraft are image-only.
+    macro_rules! configured {
+        ($ty:ty) => {{
+            let mut p = <$ty>::new();
+            p.configure(config.clone());
+            Some(Box::new(p) as Box<dyn ImageProvider>)
+        }};
+    }
+    match name {
+        "openai" => configured!(OpenAiProvider),
+        "stability" => configured!(StabilityProvider),
+        "replicate" => configured!(ReplicateProvider),
+        "google" => configured!(GoogleProvider),
+        "fal" => configured!(FalProvider),
+        "runway" => configured!(RunwayImageProvider),
+        "luma" => configured!(LumaImageProvider),
+        "bfl" => configured!(BflProvider),
+        "ideogram" => configured!(IdeogramProvider),
+        "recraft" => configured!(RecraftProvider),
+        "minimax" => configured!(MiniMaxImageProvider),
+        "hunyuan" => configured!(HunyuanImageProvider),
+        "bedrock" => configured!(BedrockImageProvider),
+        "kling" => configured!(KlingImageProvider),
+        "leonardo" => configured!(LeonardoImageProvider),
+        "bytedance" => configured!(ByteDanceImageProvider),
+        "mock" => configured!(MockProvider),
+        _ => None,
+    }
+}
+
+/// Pure factory: build the video-provider implementation for `name`. Returns
+/// `None` for image-only vendors (or an unknown name). Mirror of
+/// [`build_image_provider`].
+fn build_video_provider(
+    name: &str,
+    config: &ProviderInstanceConfig,
+) -> Option<Box<dyn VideoProvider>> {
+    macro_rules! configured {
+        ($ty:ty) => {{
+            let mut p = <$ty>::new();
+            p.configure(config.clone());
+            Some(Box::new(p) as Box<dyn VideoProvider>)
+        }};
+    }
+    match name {
+        "openai" => configured!(OpenAiVideoProvider),
+        "replicate" => configured!(ReplicateVideoProvider),
+        "google" => configured!(GoogleVideoProvider),
+        "fal" => configured!(FalVideoProvider),
+        "runway" => configured!(RunwayProvider),
+        "luma" => configured!(LumaProvider),
+        "minimax" => configured!(MiniMaxVideoProvider),
+        "vidu" => configured!(ViduProvider),
+        "hunyuan" => configured!(HunyuanVideoProvider),
+        "bedrock" => configured!(BedrockVideoProvider),
+        "kling" => configured!(KlingVideoProvider),
+        "leonardo" => configured!(LeonardoVideoProvider),
+        "pixverse" => configured!(PixverseProvider),
+        "bytedance" => configured!(ByteDanceVideoProvider),
+        "mock" => configured!(MockVideoProvider),
+        _ => None,
+    }
+}
+
 fn build_instance_config(env_config: &ProviderEnvConfig) -> ProviderInstanceConfig {
     let api_key = env_config.api_key.clone().unwrap_or_default();
     let api_keys = env_config
@@ -523,5 +413,153 @@ fn build_instance_config(env_config: &ProviderEnvConfig) -> ProviderInstanceConf
         extra_headers: env_config.extra_headers.clone(),
         options: env_config.options.clone(),
         credentials,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal global config carrying a single api_key.
+    fn cfg_with_key(key: &str) -> ProviderInstanceConfig {
+        let creds = ProviderCredentials {
+            api_key: Some(key.to_string()),
+            ..Default::default()
+        };
+        ProviderInstanceConfig {
+            api_key: key.to_string(),
+            credentials: creds,
+            ..Default::default()
+        }
+    }
+
+    /// `with_credentials` swaps the derived api_key + credentials, keeping the
+    /// non-credential fields. This is the per-request override the registry uses.
+    #[test]
+    fn with_credentials_swaps_api_key() {
+        let mut base = cfg_with_key("GLOBAL");
+        base.api_base = Some("https://custom.example/v1".to_string());
+
+        let app = ProviderCredentials {
+            api_key: Some("APPKEY".to_string()),
+            ..Default::default()
+        };
+        let overridden = base.with_credentials(app);
+
+        assert_eq!(overridden.api_key, "APPKEY");
+        assert_eq!(overridden.credentials.api_key.as_deref(), Some("APPKEY"));
+        // Non-credential field preserved.
+        assert_eq!(overridden.api_base.as_deref(), Some("https://custom.example/v1"));
+    }
+
+    /// With a registered global "openai", `image_provider_for_request(.., None)`
+    /// returns the SAME cached Arc as `image_provider_for` (behavior unchanged),
+    /// while `Some(app_creds)` returns a DISTINCT, freshly-built instance.
+    #[tokio::test]
+    async fn image_provider_for_request_override_uses_app_key() {
+        let reg = ProviderRegistry::new();
+        reg.register_provider("openai", cfg_with_key("GLOBAL")).await;
+
+        // None → cached global instance (identity-equal to image_provider_for).
+        let global = reg.image_provider_for("openai").await.expect("global registered");
+        let via_none = reg
+            .image_provider_for_request("openai", None)
+            .await
+            .expect("none returns global");
+        assert!(
+            Arc::ptr_eq(&global, &via_none),
+            "None must return the cached global Arc (unchanged behavior)"
+        );
+
+        // Some(app_creds) → fresh per-request instance (different allocation),
+        // still configured.
+        let app = ProviderCredentials {
+            api_key: Some("APPKEY".to_string()),
+            ..Default::default()
+        };
+        let via_override = reg
+            .image_provider_for_request("openai", Some(app))
+            .await
+            .expect("override builds an instance");
+        assert!(
+            !Arc::ptr_eq(&global, &via_override),
+            "override must be a fresh instance, not the cached global"
+        );
+        assert!(via_override.is_configured(), "override instance is configured");
+        assert_eq!(via_override.name(), "openai");
+    }
+
+    /// BYO works even when no global "openai" is registered: the override path
+    /// builds a fresh instance from default config + the app key, and it reports
+    /// configured.
+    #[tokio::test]
+    async fn image_provider_for_request_byo_without_global() {
+        let reg = ProviderRegistry::new();
+        // No register_provider call — there is no global "openai".
+        assert!(reg.image_provider_for("openai").await.is_none());
+
+        let app = ProviderCredentials {
+            api_key: Some("K".to_string()),
+            ..Default::default()
+        };
+        let prov = reg
+            .image_provider_for_request("openai", Some(app))
+            .await
+            .expect("BYO builds an instance without a global");
+        assert!(prov.is_configured(), "BYO instance is configured with just the app key");
+    }
+
+    /// Video override path mirrors the image path: None → cached global,
+    /// Some → fresh instance; and BYO works without a global.
+    #[tokio::test]
+    async fn video_provider_for_request_override_and_byo() {
+        let reg = ProviderRegistry::new();
+        reg.register_provider("openai", cfg_with_key("GLOBAL")).await;
+
+        let global = reg.video_provider_for("openai").await.expect("global video registered");
+        let via_none = reg
+            .video_provider_for_request("openai", None)
+            .await
+            .expect("none returns global video");
+        assert!(Arc::ptr_eq(&global, &via_none));
+
+        let app = ProviderCredentials {
+            api_key: Some("APPKEY".to_string()),
+            ..Default::default()
+        };
+        let via_override = reg
+            .video_provider_for_request("openai", Some(app.clone()))
+            .await
+            .expect("override builds a video instance");
+        assert!(!Arc::ptr_eq(&global, &via_override));
+        assert!(via_override.is_configured());
+
+        // BYO without a global, on a fresh registry.
+        let reg2 = ProviderRegistry::new();
+        let byo = reg2
+            .video_provider_for_request("openai", Some(app))
+            .await
+            .expect("BYO video instance without a global");
+        assert!(byo.is_configured());
+    }
+
+    /// The factory refactor must register a provider into BOTH the image and
+    /// video maps when the vendor serves both modalities.
+    #[tokio::test]
+    async fn register_provider_populates_both_maps_for_dual_vendor() {
+        let reg = ProviderRegistry::new();
+        reg.register_provider("openai", cfg_with_key("GLOBAL")).await;
+        assert!(reg.image_provider_for("openai").await.is_some());
+        assert!(reg.video_provider_for("openai").await.is_some());
+
+        // Image-only vendor: present in image map, absent from video map.
+        reg.register_provider("stability", cfg_with_key("GLOBAL")).await;
+        assert!(reg.image_provider_for("stability").await.is_some());
+        assert!(reg.video_provider_for("stability").await.is_none());
+
+        // Video-only vendor: present in video map, absent from image map.
+        reg.register_provider("pixverse", cfg_with_key("GLOBAL")).await;
+        assert!(reg.video_provider_for("pixverse").await.is_some());
+        assert!(reg.image_provider_for("pixverse").await.is_none());
     }
 }
