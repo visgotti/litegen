@@ -275,6 +275,9 @@ models:
             in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(64)),
 
             oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::SingleTenant,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
         })
     }
 
@@ -721,6 +724,9 @@ models:
             in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(64)),
 
             oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::SingleTenant,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
         })
     }
 
@@ -850,6 +856,9 @@ models:
             in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(64)),
 
             oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::SingleTenant,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
         })
     }
 
@@ -1118,6 +1127,9 @@ models:
             in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(64)),
 
             oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::SingleTenant,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
         });
 
         // Build a router with auth middleware + the generate handler

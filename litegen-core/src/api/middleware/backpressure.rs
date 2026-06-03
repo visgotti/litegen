@@ -127,6 +127,9 @@ mod tests {
             in_flight: Arc::new(InFlightLimit::new(cap)),
 
             oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::SingleTenant,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
         })
     }
 

@@ -1,6 +1,36 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
+/// Runtime tenancy mode.
+/// `SingleTenant` (default) preserves the original single-deployment behavior;
+/// `Hosted` enables multi-tenant features (enforced by later tasks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    #[default]
+    SingleTenant,
+    Hosted,
+}
+
+impl Mode {
+    /// Parse a mode from a string (used by tests and any non-serde string source).
+    /// Config loading itself uses serde deserialization of `LITEGEN__MODE`.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "single_tenant" | "single" => Some(Mode::SingleTenant),
+            "hosted" | "multi_tenant" => Some(Mode::Hosted),
+            _ => None,
+        }
+    }
+}
+
+/// Development-only feature flags. Off by default.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct DevFlags {
+    #[serde(default)] pub expose_invite_tokens: bool,
+    #[serde(default)] pub expose_reset_tokens: bool,
+}
+
 /// Top-level application configuration.
 /// Loaded from `litegen.yaml`, environment variables, and CLI args.
 #[derive(Debug, Clone, Deserialize)]
@@ -41,6 +71,16 @@ pub struct AppConfig {
     /// Backpressure / concurrency limit configuration.
     #[serde(default)]
     pub backpressure: BackpressureConfig,
+    /// Runtime tenancy mode (single_tenant | hosted).
+    #[serde(default)]
+    pub mode: Mode,
+    /// `LITEGEN__SECRETS_KEY`: base64 32-byte key for encrypting BYO provider
+    /// credentials at rest. Required in hosted mode (enforced by a later task).
+    #[serde(default)]
+    pub secrets_key: Option<String>,
+    /// Development-only feature flags.
+    #[serde(default)]
+    pub dev: DevFlags,
 }
 
 impl Default for AppConfig {
@@ -58,6 +98,9 @@ impl Default for AppConfig {
             circuit_breaker: CircuitBreakerConfig::default(),
             cors: CorsConfig::default(),
             backpressure: BackpressureConfig::default(),
+            mode: Mode::default(),
+            secrets_key: None,
+            dev: DevFlags::default(),
         }
     }
 }
@@ -477,5 +520,19 @@ impl<'a> serde::Serialize for ServerConfigSerialize<'a> {
         map.serialize_entry("port", &self.0.port)?;
         map.serialize_entry("request_timeout_seconds", &self.0.request_timeout_seconds)?;
         map.end()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_defaults_to_single_tenant_and_parses_env() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.mode, Mode::SingleTenant);
+        assert_eq!(Mode::parse("hosted"), Some(Mode::Hosted));
+        assert_eq!(Mode::parse("single_tenant"), Some(Mode::SingleTenant));
+        assert_eq!(Mode::parse("bogus"), None);
     }
 }

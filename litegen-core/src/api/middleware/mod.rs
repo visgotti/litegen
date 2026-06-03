@@ -91,6 +91,9 @@ pub struct AppState {
     pub rate_limiter: Arc<RateLimiter>,
     pub in_flight: Arc<InFlightLimit>,
     pub oauth: OAuthConfig,
+    pub mode: crate::config::Mode,
+    pub secrets_key: Option<[u8; 32]>,
+    pub dev: crate::config::DevFlags,
 }
 
 // ─── Auth middleware ─────────────────────────────────────────────────────────
