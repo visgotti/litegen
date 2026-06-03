@@ -31,8 +31,7 @@ const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
 /** Collapse path params + drop query string so spec and facade paths compare. */
 function normalizePath(path: string): string {
-  return path
-    .split("?")[0]
+  return (path.split("?")[0] ?? path)
     .replace(/\$\{[^}]+\}/g, "{}") // TS template params: ${encodeURIComponent(id)}
     .replace(/\{[^}]+\}/g, "{}"); // OpenAPI params: {id}
 }
@@ -60,7 +59,7 @@ function facadeOperations(): Set<string> {
   const ops = new Set<string>();
   let m: RegExpExecArray | null;
   while ((m = re.exec(src)) !== null) {
-    ops.add(`${m[1]} ${normalizePath(m[2])}`);
+    ops.add(`${m[1]} ${normalizePath(m[2] ?? "")}`);
   }
   return ops;
 }

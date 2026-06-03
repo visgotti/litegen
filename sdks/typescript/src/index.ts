@@ -84,6 +84,24 @@ export type ApiKeyCreatedResponse = components["schemas"]["ApiKeyCreatedResponse
 export type HealthResponse = components["schemas"]["HealthResponse"];
 export type LivenessResponse = components["schemas"]["LivenessResponse"];
 
+// Tenancy (orgs / apps / members / provider credentials).
+export type OrgView = components["schemas"]["OrgView"];
+export type OrgSummary = components["schemas"]["OrgSummary"];
+export type MemberView = components["schemas"]["MemberView"];
+export type Organization = components["schemas"]["Organization"];
+export type Application = components["schemas"]["Application"];
+export type OrganizationMember = components["schemas"]["OrganizationMember"];
+export type ProviderCredentialInfo = components["schemas"]["ProviderCredentialInfo"];
+export type CreateOrgRequest = components["schemas"]["CreateOrgRequest"];
+export type UpdateOrgRequest = components["schemas"]["UpdateOrgRequest"];
+export type CreateAppRequest = components["schemas"]["CreateAppRequest"];
+export type UpdateAppRequest = components["schemas"]["UpdateAppRequest"];
+export type AddMemberRequest = components["schemas"]["AddMemberRequest"];
+export type UpdateMemberRequest = components["schemas"]["UpdateMemberRequest"];
+export type OrgTransferOwnerRequest = components["schemas"]["OrgTransferOwnerRequest"];
+export type CreateProviderCredentialRequest =
+  components["schemas"]["CreateProviderCredentialRequest"];
+
 // Capability schema types (response of `GET /v1/models/{id}`).
 export type ParamSpec = components["schemas"]["ParamSpec"];
 export type ParamSpecBool = components["schemas"]["ParamSpecBool"];

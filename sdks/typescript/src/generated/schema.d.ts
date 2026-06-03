@@ -90,6 +90,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/apps/{app_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/apps/{app_id} — Get an application; authorizes via its org (app:read). */
+        get: operations["get_app"];
+        put?: never;
+        post?: never;
+        /** DELETE /v1/apps/{app_id} — Delete an application (app:delete via its org). */
+        delete: operations["delete_app"];
+        options?: never;
+        head?: never;
+        /** PATCH /v1/apps/{app_id} — Rename an application (app:write via its org). */
+        patch: operations["patch_app"];
+        trace?: never;
+    };
+    "/v1/apps/{app_id}/provider-credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /v1/apps/{app_id}/provider-credentials — List BYO credentials (provider_cred:read).
+         *     Never returns plaintext — only `ProviderCredentialInfo`.
+         */
+        get: operations["list_provider_credentials"];
+        put?: never;
+        /**
+         * POST /v1/apps/{app_id}/provider-credentials — Store a BYO credential (provider_cred:write).
+         *     Encrypts the credential JSON; returns `ProviderCredentialInfo` (no plaintext).
+         */
+        post: operations["create_provider_credential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/apps/{app_id}/provider-credentials/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /v1/apps/{app_id}/provider-credentials/{provider} — Delete a credential (provider_cred:delete). */
+        delete: operations["delete_provider_credential"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/auth/csrf": {
         parameters: {
             query?: never;
@@ -448,6 +508,114 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/orgs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/orgs — List the orgs the caller belongs to (any session user). */
+        get: operations["list_orgs"];
+        put?: never;
+        /** POST /v1/orgs — Create an organization owned by the caller (any session user). */
+        post: operations["create_org"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/orgs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/orgs/{id} — Get an organization (requires org:read membership). */
+        get: operations["get_org"];
+        put?: never;
+        post?: never;
+        /** DELETE /v1/orgs/{id} — Delete an organization (requires org:delete membership). */
+        delete: operations["delete_org"];
+        options?: never;
+        head?: never;
+        /** PATCH /v1/orgs/{id} — Rename an organization (requires org:write membership). */
+        patch: operations["patch_org"];
+        trace?: never;
+    };
+    "/v1/orgs/{id}/apps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/orgs/{id}/apps — List applications in an org (requires app:read). */
+        get: operations["list_apps"];
+        put?: never;
+        /** POST /v1/orgs/{id}/apps — Create an application (requires app:write). */
+        post: operations["create_app"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/orgs/{id}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/orgs/{id}/members — List org members (requires member:read membership). */
+        get: operations["list_members"];
+        put?: never;
+        /** POST /v1/orgs/{id}/members — Invite a member to this org (requires member:invite). */
+        post: operations["invite_member"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/orgs/{id}/members/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /v1/orgs/{id}/members/{user_id} — Remove a member (requires member:remove). */
+        delete: operations["remove_member"];
+        options?: never;
+        head?: never;
+        /** PATCH /v1/orgs/{id}/members/{user_id} — Change a member's role (requires member:write). */
+        patch: operations["patch_member"];
+        trace?: never;
+    };
+    "/v1/orgs/{id}/transfer-owner": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/orgs/{id}/transfer-owner — Transfer ownership (requires org:transfer_owner). */
+        post: operations["transfer_owner"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/stats": {
         parameters: {
             query?: never;
@@ -585,8 +753,13 @@ export interface components {
             last_login_at?: string | null;
             role: string;
         };
+        AddMemberRequest: {
+            email: string;
+            role: components["schemas"]["Role"];
+        };
         /** @description API key for authenticating with the LiteGen proxy. */
         ApiKey: {
+            app_id?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -597,8 +770,11 @@ export interface components {
             key_hash: string;
             key_prefix: string;
             name: string;
+            org_id?: string | null;
             /** @description The user who owns this key (None for master-key-created keys). */
             owner_user_id?: string | null;
+            /** @description Public key id shown to customers, e.g. "pk_live_…". None for legacy lg- keys. */
+            public_id?: string | null;
             /**
              * Format: int32
              * @description Requests-per-minute cap; None = unlimited.
@@ -623,9 +799,12 @@ export interface components {
         ApiKeyCreatedResponse: {
             /** Format: date-time */
             created_at: string;
+            /** Format: uuid */
+            id: string;
             key: string;
             name: string;
             prefix: string;
+            public_id: string;
             /** Format: int32 */
             rpm_limit?: number | null;
             scopes: string;
@@ -646,6 +825,7 @@ export interface components {
         };
         /** @description Public view of an API key (no hash). */
         ApiKeyInfo: {
+            app_id?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -655,6 +835,7 @@ export interface components {
             is_active: boolean;
             name: string;
             prefix: string;
+            public_id?: string | null;
             /** Format: int32 */
             rpm_limit?: number | null;
             scopes: string;
@@ -667,6 +848,17 @@ export interface components {
         /** @description Response for `GET /v1/keys`. */
         ApiKeyListResponse: {
             data: components["schemas"]["ApiKeyInfo"][];
+        };
+        Application: {
+            /** Format: date-time */
+            created_at: string;
+            id: string;
+            name: string;
+            org_id: string;
+            slug: string;
+            status: string;
+            /** Format: date-time */
+            updated_at: string;
         };
         AuthResponse: {
             user: components["schemas"]["PublicUser"];
@@ -760,6 +952,17 @@ export interface components {
             token_quota?: number | null;
             /** @description Webhook URL for async callbacks. */
             webhook_url?: string | null;
+        };
+        CreateAppRequest: {
+            name: string;
+        };
+        CreateOrgRequest: {
+            name: string;
+        };
+        CreateProviderCredentialRequest: {
+            /** @description The provider's secret fields, e.g. `{"api_key":"sk-..."}`. */
+            credentials: unknown;
+            provider: string;
         };
         CsrfResponse: {
             csrf_token: string;
@@ -865,6 +1068,12 @@ export interface components {
             expires_at: string;
             id: string;
             invited_by?: string | null;
+            /**
+             * @description Organization the invitee will join on accept. Defaults to the
+             *     single-tenant default org for legacy/global invites.
+             */
+            org_id: string;
+            /** @description The role the invited user will receive in `org_id` upon accepting. */
             role: components["schemas"]["Role"];
             token: string;
             /** Format: date-time */
@@ -908,6 +1117,13 @@ export interface components {
         };
         /** @enum {string} */
         MediaType: "image" | "video";
+        MemberView: {
+            created_at: string;
+            email: string;
+            org_id: string;
+            role: string;
+            user_id: string;
+        };
         ModelCapabilities: {
             /** Format: double */
             max_duration_seconds?: number | null;
@@ -997,6 +1213,45 @@ export interface components {
             model: string;
             /** Format: int64 */
             requests: number;
+        };
+        OrgSummary: {
+            id: string;
+            name: string;
+            role: string;
+            slug: string;
+        };
+        /**
+         * @description Renamed in the OpenAPI schema to `OrgTransferOwnerRequest` to avoid a
+         *     component name collision with `users::TransferOwnerRequest`.
+         */
+        OrgTransferOwnerRequest: {
+            new_owner_user_id: string;
+        };
+        OrgView: {
+            id: string;
+            name: string;
+            plan: string;
+            slug: string;
+            status: string;
+        };
+        Organization: {
+            /** Format: date-time */
+            created_at: string;
+            id: string;
+            name: string;
+            plan: string;
+            slug: string;
+            status: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        OrganizationMember: {
+            /** Format: date-time */
+            created_at: string;
+            email: string;
+            org_id: string;
+            role: components["schemas"]["Role"];
+            user_id: string;
         };
         PaginatedResponse_RequestLog: {
             data: {
@@ -1131,6 +1386,13 @@ export interface components {
             /** @description Provider name (e.g. "openai", "stability", "replicate"). */
             provider: string;
         };
+        /** @description Public view of a stored BYO provider credential — NEVER the plaintext secret. */
+        ProviderCredentialInfo: {
+            /** Format: date-time */
+            created_at: string;
+            display_hint?: string | null;
+            provider: string;
+        };
         ProviderHealth: {
             healthy: boolean;
             /** Format: date-time */
@@ -1260,6 +1522,8 @@ export interface components {
         };
         SignupRequest: {
             email: string;
+            /** @description Optional organization name (hosted mode). Defaults to the email local-part. */
+            org_name?: string | null;
             password: string;
         };
         SizeSpec: (components["schemas"]["SizeSpecFreeform"] & {
@@ -1286,6 +1550,15 @@ export interface components {
         };
         TransferOwnerRequest: {
             new_owner_id: string;
+        };
+        UpdateAppRequest: {
+            name: string;
+        };
+        UpdateMemberRequest: {
+            role: components["schemas"]["Role"];
+        };
+        UpdateOrgRequest: {
+            name: string;
         };
         /** @description Cost / usage information for a generation. */
         UsageInfo: {
@@ -1528,6 +1801,249 @@ export interface operations {
                 };
             };
             /** @description Session not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_app: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application ID */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Application */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Application"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_app: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application ID */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    patch_app: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application ID */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateAppRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated application */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Application"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_provider_credentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application ID */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stored credentials (no plaintext) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderCredentialInfo"][];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_provider_credential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application ID */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateProviderCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description Credential stored (no plaintext) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderCredentialInfo"];
+                };
+            };
+            /** @description Secrets key not configured */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_provider_credential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application ID */
+                app_id: string;
+                /** @description Provider name */
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2225,6 +2741,492 @@ export interface operations {
                 };
             };
             /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_orgs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Organizations the caller belongs to */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgSummary"][];
+                };
+            };
+            /** @description Session required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_org: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateOrgRequest"];
+            };
+        };
+        responses: {
+            /** @description Organization created */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgView"];
+                };
+            };
+            /** @description Session required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description DB error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_org: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Organization */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgView"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_org: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    patch_org: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateOrgRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated organization */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgView"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_apps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Applications */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Application"][];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_app: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAppRequest"];
+            };
+        };
+        responses: {
+            /** @description Application created */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Application"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_members: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Members */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberView"][];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    invite_member: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddMemberRequest"];
+            };
+        };
+        responses: {
+            /** @description Invitation created */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Cannot invite owner directly */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    remove_member: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                id: string;
+                /** @description Member user ID */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Cannot remove owner */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Member not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    patch_member: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                id: string;
+                /** @description Member user ID */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMemberRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Cannot change owner via this endpoint */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Member not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    transfer_owner: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrgTransferOwnerRequest"];
+            };
+        };
+        responses: {
+            /** @description Ownership transferred */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Target not a member */
             404: {
                 headers: {
                     [name: string]: unknown;

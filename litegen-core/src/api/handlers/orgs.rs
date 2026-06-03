@@ -198,7 +198,10 @@ pub struct UpdateMemberRequest {
     pub role: Role,
 }
 
+/// Renamed in the OpenAPI schema to `OrgTransferOwnerRequest` to avoid a
+/// component name collision with `users::TransferOwnerRequest`.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(as = OrgTransferOwnerRequest)]
 pub struct TransferOwnerRequest {
     pub new_owner_user_id: String,
 }
