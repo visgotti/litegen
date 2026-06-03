@@ -138,6 +138,39 @@ impl ProviderCredentials {
         c.api_key = Some(key);
         c
     }
+
+    /// Build from a decrypted stored credential JSON, e.g. `{"api_key":"sk-…"}`
+    /// or `{"key_id":"…","key_secret":"…","region":"…"}`. Recognized keys map to
+    /// their fields; any other string-valued key lands in `extra` (non-string
+    /// values are ignored). `api_keys` is not parsed here (single-key BYO).
+    pub fn from_json(v: &serde_json::Value) -> Self {
+        let obj = v.as_object();
+        let s = |k: &str| {
+            obj.and_then(|o| o.get(k))
+                .and_then(|x| x.as_str())
+                .map(|x| x.to_string())
+        };
+        let mut extra = HashMap::new();
+        if let Some(o) = obj {
+            for (k, val) in o {
+                if !["api_key", "key_id", "key_secret", "region", "api_keys"]
+                    .contains(&k.as_str())
+                {
+                    if let Some(sv) = val.as_str() {
+                        extra.insert(k.clone(), sv.to_string());
+                    }
+                }
+            }
+        }
+        ProviderCredentials {
+            api_key: s("api_key"),
+            api_keys: Vec::new(),
+            key_id: s("key_id"),
+            key_secret: s("key_secret"),
+            region: s("region"),
+            extra,
+        }
+    }
 }
 
 /// Apply a *non-signing* auth scheme to a request builder.
@@ -272,5 +305,32 @@ mod tests {
     fn missing_api_key_errors() {
         let client = reqwest::Client::new();
         assert!(apply(&AuthSpec::bearer(), &ProviderCredentials::default(), client.get("http://x")).is_err());
+    }
+
+    #[test]
+    fn provider_credentials_from_json() {
+        use serde_json::json;
+
+        // Bearer-style: single api_key.
+        let c = ProviderCredentials::from_json(&json!({"api_key": "sk-x"}));
+        assert_eq!(c.api_key.as_deref(), Some("sk-x"));
+        assert!(c.key_id.is_none());
+
+        // Signing-style: key_id / key_secret / region.
+        let c = ProviderCredentials::from_json(
+            &json!({"key_id": "a", "key_secret": "b", "region": "us"}),
+        );
+        assert_eq!(c.key_id.as_deref(), Some("a"));
+        assert_eq!(c.key_secret.as_deref(), Some("b"));
+        assert_eq!(c.region.as_deref(), Some("us"));
+        assert!(c.api_key.is_none());
+
+        // Unknown string key → extra; non-string values ignored.
+        let c = ProviderCredentials::from_json(
+            &json!({"api_key": "sk-y", "group_id": "g-1", "ignored_num": 5}),
+        );
+        assert_eq!(c.api_key.as_deref(), Some("sk-y"));
+        assert_eq!(c.extra.get("group_id").map(String::as_str), Some("g-1"));
+        assert!(!c.extra.contains_key("ignored_num"));
     }
 }

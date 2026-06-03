@@ -311,7 +311,7 @@ mod tests {
         let materialized = empty_materialized();
 
         let result = router
-            .generate_image(&schema, &base, &extras, &materialized)
+            .generate_image(&schema, &base, &extras, &materialized, None)
             .await;
 
         assert!(
@@ -377,7 +377,7 @@ mod tests {
         let materialized = empty_materialized();
 
         let result = router
-            .generate_image(&schema, &base, &extras, &materialized)
+            .generate_image(&schema, &base, &extras, &materialized, None)
             .await;
 
         assert!(result.is_ok(), "Expected success, got: {:?}", result.err());
@@ -426,7 +426,7 @@ mod tests {
         let extras = make_image_extras();
         let materialized = empty_materialized();
 
-        let result = router.generate_image(&schema, &base, &extras, &materialized).await;
+        let result = router.generate_image(&schema, &base, &extras, &materialized, None).await;
         assert!(result.is_ok(), "Expected success after retries, got: {:?}", result.err());
 
         let attempts = counter.load(Ordering::SeqCst);
@@ -462,11 +462,11 @@ mod tests {
         let materialized = empty_materialized();
 
         // First call — provider is invoked
-        let r1 = router.generate_image(&schema, &base, &extras, &materialized).await;
+        let r1 = router.generate_image(&schema, &base, &extras, &materialized, None).await;
         assert!(r1.is_ok(), "First call failed: {:?}", r1.err());
 
         // Second call with same prompt — should hit cache
-        let r2 = router.generate_image(&schema, &base, &extras, &materialized).await;
+        let r2 = router.generate_image(&schema, &base, &extras, &materialized, None).await;
         assert!(r2.is_ok(), "Second call failed: {:?}", r2.err());
 
         let count = call_counter.load(Ordering::SeqCst);
@@ -497,7 +497,7 @@ mod tests {
         let extras = make_image_extras();
         let materialized = empty_materialized();
 
-        let result = router.generate_image(&schema, &base, &extras, &materialized).await;
+        let result = router.generate_image(&schema, &base, &extras, &materialized, None).await;
         assert!(result.is_ok(), "Expected success, got: {:?}", result.err());
 
         let writes = write_counter.load(Ordering::SeqCst);
@@ -527,8 +527,8 @@ mod tests {
         extras_b.size = Some("1024x1024".into());
         let materialized = empty_materialized();
 
-        let _ = router.generate_image(&schema, &base, &extras_a, &materialized).await.unwrap();
-        let _ = router.generate_image(&schema, &base, &extras_b, &materialized).await.unwrap();
+        let _ = router.generate_image(&schema, &base, &extras_a, &materialized, None).await.unwrap();
+        let _ = router.generate_image(&schema, &base, &extras_b, &materialized, None).await.unwrap();
         // Different size → cache miss → provider called twice.
         assert_eq!(call_counter.load(Ordering::SeqCst), 2,
             "Different size must NOT share a cache entry");
@@ -609,7 +609,7 @@ mod tests {
         // First two calls: "always-failing" is tried (and fails), "mock" picks up.
         // Each call records one failure on "always-failing".
         for i in 0..2 {
-            let r = router.generate_image(&schema, &base, &extras, &materialized).await;
+            let r = router.generate_image(&schema, &base, &extras, &materialized, None).await;
             assert!(r.is_ok(), "Call {} should succeed via fallback to mock: {:?}", i, r.err());
         }
 
@@ -620,7 +620,7 @@ mod tests {
         );
 
         // Third call: breaker is open, "always-failing" is skipped, "mock" serves directly.
-        let r = router.generate_image(&schema, &base, &extras, &materialized).await;
+        let r = router.generate_image(&schema, &base, &extras, &materialized, None).await;
         assert!(r.is_ok(), "Third call should succeed immediately via fallback (breaker open): {:?}", r.err());
         let resp = r.unwrap();
         assert_eq!(resp.provider, "mock", "Should route to mock (always-failing breaker is open)");

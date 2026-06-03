@@ -159,6 +159,20 @@ pub struct ProviderInstanceConfig {
     pub credentials: ProviderCredentials,
 }
 
+impl ProviderInstanceConfig {
+    /// Clone this config but replace its credentials (and the derived `api_key`/
+    /// `api_keys`) with `creds`. Used to build a per-request provider instance
+    /// carrying a per-app BYO credential, preserving non-credential fields
+    /// (api_base, model_mapping, extra_headers, options).
+    pub fn with_credentials(&self, creds: ProviderCredentials) -> Self {
+        let mut c = self.clone();
+        c.api_key = creds.api_key.clone().unwrap_or_default();
+        c.api_keys = creds.api_keys.clone();
+        c.credentials = creds;
+        c
+    }
+}
+
 /// Health check result for a provider.
 #[derive(Debug, Clone)]
 pub struct HealthCheckResult {
