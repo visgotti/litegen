@@ -123,6 +123,13 @@ mod tests {
     // ─── Build a minimal AppState with a given master_key ────────────────────
 
     async fn build_state(master_key: Option<&str>) -> Arc<AppState> {
+        build_state_mode(master_key, crate::config::Mode::SingleTenant).await
+    }
+
+    async fn build_state_mode(
+        master_key: Option<&str>,
+        mode: crate::config::Mode,
+    ) -> Arc<AppState> {
         let registry = Arc::new(ProviderRegistry::new());
         let config = Arc::new(AppConfig::default());
         let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig::default()));
@@ -151,7 +158,7 @@ mod tests {
             in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(64)),
 
             oauth: crate::auth::oauth::OAuthConfig::default(),
-            mode: crate::config::Mode::SingleTenant,
+            mode,
             secrets_key: None,
             dev: crate::config::DevFlags::default(),
         })
@@ -564,6 +571,73 @@ mod tests {
         assert!(
             resp.headers().contains_key("retry-after"),
             "429 should have Retry-After header"
+        );
+    }
+
+    // ─── Hosted mode disables the dev bypass: no master key + no auth → 401 ───
+
+    #[tokio::test]
+    async fn hosted_mode_no_master_key_no_auth_returns_401() {
+        // master_key = None would normally trigger the dev bypass in
+        // single_tenant mode. In hosted mode that bypass MUST be disabled.
+        let state = build_state_mode(None, crate::config::Mode::Hosted).await;
+        let app = build_auth_router(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "Hosted mode with no master key + no auth must be 401 (dev bypass disabled)"
+        );
+    }
+
+    // ─── single_tenant master key still admin + scoped to default org ────────
+
+    #[tokio::test]
+    async fn single_tenant_master_key_still_admin() {
+        use crate::api::middleware::{KeyContext, DEFAULT_ORG_ID, DEFAULT_APP_ID};
+
+        let state = build_state_mode(Some("k"), crate::config::Mode::SingleTenant).await;
+
+        // Handler asserts the injected ctx has all scopes + default org/app.
+        async fn ctx_handler(
+            axum::extract::Extension(ctx): axum::extract::Extension<KeyContext>,
+        ) -> impl IntoResponse {
+            let ok = ctx.scopes.contains(&crate::api::middleware::Scope::Admin)
+                && ctx.org_id.as_deref() == Some(DEFAULT_ORG_ID)
+                && ctx.app_id.as_deref() == Some(DEFAULT_APP_ID);
+            if ok { StatusCode::OK } else { StatusCode::BAD_REQUEST }
+        }
+
+        let state_for_mw = state.clone();
+        let app = Router::new()
+            .route("/test", get(ctx_handler))
+            .layer(middleware::from_fn(move |req: Request, next: Next| {
+                let s = state_for_mw.clone();
+                async move {
+                    let headers = req.headers().clone();
+                    auth_middleware(headers, s, req, next).await
+                }
+            }));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/test")
+            .header("authorization", "Bearer k")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "single_tenant master key should be admin + scoped to the default org/app"
         );
     }
 }

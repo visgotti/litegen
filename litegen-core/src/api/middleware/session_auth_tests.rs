@@ -29,7 +29,7 @@ mod tests {
     use crate::proxy::registry::ProviderRegistry;
     use crate::proxy::router::ProxyRouter;
     use crate::proxy::storage::LocalStore;
-    use crate::types::{Role, Session, User};
+    use crate::types::{Application, Organization, Role, Session, User};
     use bytes::Bytes;
 
     struct NoopStorage;
@@ -353,5 +353,96 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "Owner with UserReadAny perm should pass");
+    }
+
+    // ─── Session user requesting an org they aren't a member of → 403 ────────
+
+    #[tokio::test]
+    async fn session_non_member_org_header_403() {
+        let db = build_test_db().await;
+        // User is created but added to NO organization.
+        let (_user, sess) = seed_user_and_session(&db, Role::Owner).await;
+        let state = build_state_with_db(db).await;
+        let app = build_auth_router(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/test")
+            .header("cookie", format!("litegen_session={}", sess.id))
+            // An org the user is not a member of.
+            .header("x-litegen-org-id", "00000000-0000-0000-0000-0000deadbeef")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "Requesting an org the user is not a member of must be 403"
+        );
+    }
+
+    // ─── App belonging to a different org → 403 ──────────────────────────────
+
+    #[tokio::test]
+    async fn session_app_wrong_org_header_403() {
+        let db = build_test_db().await;
+        let (user, sess) = seed_user_and_session(&db, Role::Owner).await;
+
+        // Create org A and add the user as a member.
+        let org_a = Organization {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Org A".to_string(),
+            slug: "org-a".to_string(),
+            plan: "free".to_string(),
+            status: "active".to_string(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        db.create_organization(&org_a).await.expect("create org A");
+        db.add_org_member(&org_a.id, &user.id, Role::Owner).await.expect("add member to org A");
+
+        // Create org B (user is NOT a member) and an application belonging to org B.
+        let org_b = Organization {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Org B".to_string(),
+            slug: "org-b".to_string(),
+            plan: "free".to_string(),
+            status: "active".to_string(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        db.create_organization(&org_b).await.expect("create org B");
+
+        let app_b = Application {
+            id: uuid::Uuid::new_v4().to_string(),
+            org_id: org_b.id.clone(),
+            name: "App B".to_string(),
+            slug: "app-b".to_string(),
+            status: "active".to_string(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        db.create_application(&app_b).await.expect("create app B");
+
+        let state = build_state_with_db(db).await;
+        let router = build_auth_router(state);
+
+        // Request: session cookie + org A header + app B header (app belongs to org B, not A).
+        let req = Request::builder()
+            .method("GET")
+            .uri("/test")
+            .header("cookie", format!("litegen_session={}", sess.id))
+            .header("x-litegen-org-id", &org_a.id)
+            .header("x-litegen-app-id", &app_b.id)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "App belonging to a different org must be 403"
+        );
     }
 }
