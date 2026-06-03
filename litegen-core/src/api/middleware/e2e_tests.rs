@@ -947,7 +947,7 @@ models:
         // Run one poller iteration
         let db_arc = state.db.clone();
         let reg_arc = state.router.registry.clone();
-        crate::proxy::poller::poll_once(&db_arc, &reg_arc, &reqwest::Client::new()).await;
+        crate::proxy::poller::poll_once(&db_arc, &reg_arc, &reqwest::Client::new(), None).await;
 
         // GET again — should be completed
         let req = Request::builder()
@@ -1030,7 +1030,7 @@ models:
         // Run one poll iteration
         let db_arc = state.db.clone();
         let reg_arc = state.router.registry.clone();
-        crate::proxy::poller::poll_once(&db_arc, &reg_arc, &reqwest::Client::new()).await;
+        crate::proxy::poller::poll_once(&db_arc, &reg_arc, &reqwest::Client::new(), None).await;
 
         // Give webhook dispatch task time to fire
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;

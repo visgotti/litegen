@@ -157,7 +157,20 @@ pub async fn generate_image(
         extra: validated.request.base.extra.clone(),
     };
 
-    match state.router.generate_image(&validated.schema, &validated.request.base, &extras, &materialized, None).await {
+    // Resolve the calling app's BYO credential for this model's provider. A
+    // server-side failure (bad secrets key / corrupt cred) early-returns a 500.
+    let app_creds = match resolve_app_credential(&state, &key_ctx, &validated.schema.provider).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    // No per-app credential AND no registered platform default → the provider is
+    // unusable for this app. (When `app_creds` is Some, BYO works even with no
+    // global instance, so we skip the check.)
+    if app_creds.is_none() && !state.router.has_image_provider(&validated.schema.provider).await {
+        return provider_not_configured_response(&validated.schema.provider);
+    }
+
+    match state.router.generate_image(&validated.schema, &validated.request.base, &extras, &materialized, app_creds).await {
         Ok(response) => {
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
@@ -298,9 +311,17 @@ pub async fn generate_image(
 )]
 pub async fn estimate_image_cost(
     State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
     validated: ValidatedImage,
 ) -> impl IntoResponse {
-    match state.router.estimate_image_cost(&validated.schema, &validated.request, None).await {
+    let app_creds = match resolve_app_credential(&state, &key_ctx, &validated.schema.provider).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if app_creds.is_none() && !state.router.has_image_provider(&validated.schema.provider).await {
+        return provider_not_configured_response(&validated.schema.provider);
+    }
+    match state.router.estimate_image_cost(&validated.schema, &validated.request, app_creds).await {
         Ok(estimate) => (StatusCode::OK, Json(serde_json::to_value(estimate).unwrap())).into_response(),
         Err(e) => {
             let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -356,7 +377,17 @@ pub async fn generate_video(
         extra: validated.request.base.extra.clone(),
     };
 
-    match state.router.generate_video(&validated.schema, &validated.request.base, &extras, &materialized, None).await {
+    // Resolve the calling app's BYO credential for this model's provider (see
+    // `generate_image`). Server-side failures early-return a 500.
+    let app_creds = match resolve_app_credential(&state, &key_ctx, &validated.schema.provider).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if app_creds.is_none() && !state.router.has_video_provider(&validated.schema.provider).await {
+        return provider_not_configured_response(&validated.schema.provider);
+    }
+
+    match state.router.generate_video(&validated.schema, &validated.request.base, &extras, &materialized, app_creds).await {
         Ok(response) => {
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
@@ -537,9 +568,17 @@ pub async fn get_generation(
 )]
 pub async fn estimate_video_cost(
     State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
     validated: ValidatedVideo,
 ) -> impl IntoResponse {
-    match state.router.estimate_video_cost(&validated.schema, &validated.request, None).await {
+    let app_creds = match resolve_app_credential(&state, &key_ctx, &validated.schema.provider).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if app_creds.is_none() && !state.router.has_video_provider(&validated.schema.provider).await {
+        return provider_not_configured_response(&validated.schema.provider);
+    }
+    match state.router.estimate_video_cost(&validated.schema, &validated.request, app_creds).await {
         Ok(estimate) => (StatusCode::OK, Json(serde_json::to_value(estimate).unwrap())).into_response(),
         Err(e) => {
             let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -1950,6 +1989,7 @@ fn error_response(message: &str, code: u16) -> serde_json::Value {
                 401 => "authentication_error",
                 403 => "forbidden",
                 404 => "not_found_error",
+                424 => "provider_not_configured",
                 429 => "rate_limit_error",
                 502 => "provider_error",
                 503 => "service_unavailable",
@@ -1958,6 +1998,72 @@ fn error_response(message: &str, code: u16) -> serde_json::Value {
             "code": code
         }
     })
+}
+
+/// 400 body for a model whose provider has neither a per-app BYO credential nor a
+/// registered platform default. Distinct from `error_response(400, ..)` because the
+/// `type` is `provider_not_configured` (not `invalid_request_error`), matching the
+/// documented BYO contract the dashboard/SDK keys off of.
+fn provider_not_configured_response(provider: &str) -> axum::response::Response {
+    let body = serde_json::json!({
+        "error": {
+            "type": "provider_not_configured",
+            "code": 400,
+            "message": format!(
+                "Provider '{provider}' is not configured for this application. \
+                 Add a provider credential in the dashboard."
+            ),
+        }
+    });
+    (StatusCode::BAD_REQUEST, Json(body)).into_response()
+}
+
+/// Resolve the calling app's stored credential for `provider`, decrypted.
+///
+/// - `Ok(Some(creds))` — the app has a stored BYO credential (use it per-request).
+/// - `Ok(None)` — the app has none (the caller should fall back to the platform
+///   default, or surface `provider_not_configured` if there is none).
+/// - `Err(response)` — a server-side error (no/invalid secrets key, corrupt or
+///   un-decryptable stored credential, DB failure). These are 500s, never 400s:
+///   the request was well-formed; the server is misconfigured.
+async fn resolve_app_credential(
+    state: &AppState,
+    key_ctx: &Option<KeyContext>,
+    provider: &str,
+) -> Result<Option<crate::providers::ProviderCredentials>, axum::response::Response> {
+    let app_id = match key_ctx.as_ref().and_then(|c| c.app_id.as_deref()) {
+        Some(a) => a,
+        None => return Ok(None),
+    };
+    let secrets_key = match state.secrets_key {
+        Some(k) => k,
+        None => return Ok(None),
+    };
+    match state.db.get_provider_credential(app_id, provider).await {
+        Ok(Some((ct, nonce))) => {
+            let plaintext = crate::auth::secrets::decrypt(&secrets_key, &ct, &nonce).map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(error_response("failed to decrypt provider credential", 500)),
+                )
+                    .into_response()
+            })?;
+            let val: serde_json::Value = serde_json::from_slice(&plaintext).map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(error_response("stored provider credential is corrupt", 500)),
+                )
+                    .into_response()
+            })?;
+            Ok(Some(crate::providers::ProviderCredentials::from_json(&val)))
+        }
+        Ok(None) => Ok(None),
+        Err(_) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(error_response("provider credential lookup failed", 500)),
+        )
+            .into_response()),
+    }
 }
 
 // ─── Key endpoint tests ───────────────────────────────────────────────────────

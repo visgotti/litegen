@@ -17,6 +17,7 @@ pub(crate) async fn poll_once(
     db: &Arc<dyn DatabaseStore>,
     registry: &Arc<ProviderRegistry>,
     http: &reqwest::Client,
+    secrets_key: Option<[u8; 32]>,
 ) {
     let rows = match db.list_active_generations(100).await {
         Ok(r) => r,
@@ -27,7 +28,16 @@ pub(crate) async fn poll_once(
     };
 
     for gen in rows {
-        let provider = match registry.video_provider_for(&gen.provider).await {
+        // Resolve this generation's per-app BYO credential, if the app stored one.
+        // Any failure (no secrets key, lookup error, decrypt/parse error) falls back
+        // to `None` (→ the platform default global instance). The poller must never
+        // crash on a single bad credential, so all errors are logged and swallowed.
+        let app_creds = resolve_gen_credential(db, secrets_key, &gen).await;
+
+        let provider = match registry
+            .video_provider_for_request(&gen.provider, app_creds)
+            .await
+        {
             Some(p) => p,
             None => {
                 warn!(
@@ -142,6 +152,56 @@ pub(crate) async fn poll_once(
     }
 }
 
+/// Resolve a single generation's stored per-app BYO credential, decrypted.
+///
+/// Returns `None` (→ platform default) when the generation has no app, no secrets
+/// key is configured, the app stored no credential, or anything fails to look up /
+/// decrypt / parse. Errors are logged but never propagated — the poller must keep
+/// running across a bad credential on one row.
+async fn resolve_gen_credential(
+    db: &Arc<dyn DatabaseStore>,
+    secrets_key: Option<[u8; 32]>,
+    gen: &crate::types::Generation,
+) -> Option<crate::providers::ProviderCredentials> {
+    let app_id = gen.app_id.as_deref()?;
+    let key = secrets_key?;
+    match db.get_provider_credential(app_id, &gen.provider).await {
+        Ok(Some((ct, nonce))) => match crate::auth::secrets::decrypt(&key, &ct, &nonce) {
+            Ok(plaintext) => match serde_json::from_slice::<serde_json::Value>(&plaintext) {
+                Ok(val) => Some(crate::providers::ProviderCredentials::from_json(&val)),
+                Err(e) => {
+                    warn!(
+                        generation_id = %gen.id,
+                        provider = %gen.provider,
+                        error = %e,
+                        "poller: stored provider credential is corrupt, using platform default"
+                    );
+                    None
+                }
+            },
+            Err(e) => {
+                warn!(
+                    generation_id = %gen.id,
+                    provider = %gen.provider,
+                    error = %e,
+                    "poller: failed to decrypt provider credential, using platform default"
+                );
+                None
+            }
+        },
+        Ok(None) => None,
+        Err(e) => {
+            warn!(
+                generation_id = %gen.id,
+                provider = %gen.provider,
+                error = %e,
+                "poller: provider credential lookup failed, using platform default"
+            );
+            None
+        }
+    }
+}
+
 /// Spawn a background task that polls every 5 seconds. The returned
 /// JoinHandle can be awaited at shutdown to drain in-flight work; cancellation
 /// happens via the `shutdown` future (e.g. tokio-util's CancellationToken).
@@ -149,6 +209,7 @@ pub fn spawn_poller(
     db: Arc<dyn DatabaseStore>,
     registry: Arc<ProviderRegistry>,
     http: reqwest::Client,
+    secrets_key: Option<[u8; 32]>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -157,7 +218,7 @@ pub fn spawn_poller(
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    poll_once(&db, &registry, &http).await;
+                    poll_once(&db, &registry, &http, secrets_key).await;
                 }
                 _ = &mut shutdown => {
                     tracing::info!("poller received shutdown signal, exiting loop");
@@ -224,7 +285,7 @@ mod poller_tests {
         assert_eq!(before.status, crate::types::GenerationStatus::Pending);
 
         // Run one poller iteration
-        poll_once(&db, &registry, &client).await;
+        poll_once(&db, &registry, &client, None).await;
 
         // Should now be completed
         let after = db.get_generation("litegen-vid-poll-test-1").await.unwrap().unwrap();
@@ -251,7 +312,7 @@ mod poller_tests {
             None,
         ).await.unwrap();
 
-        poll_once(&db, &registry, &client).await;
+        poll_once(&db, &registry, &client, None).await;
 
         // Status should remain pending (provider not found, skipped)
         let row = db.get_generation("litegen-vid-poll-skip-1").await.unwrap().unwrap();
@@ -298,7 +359,7 @@ mod poller_tests {
             None,
         ).await.unwrap();
 
-        poll_once(&db, &registry, &client).await;
+        poll_once(&db, &registry, &client, None).await;
 
         // Give the spawned webhook task a moment
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;

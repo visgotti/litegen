@@ -57,6 +57,16 @@ struct TestApp {
 }
 
 async fn spawn_app() -> TestApp {
+    spawn_app_with_providers(&[]).await
+}
+
+/// Like [`spawn_app`] but registers additional global provider instances beyond
+/// the default `mock`. Each entry is `(name, config_json)` and is merged into
+/// `AppConfig::providers` before `init_from_config`, so e.g. a real provider can
+/// be pointed at a `wiremock` upstream. (Non-`mock` providers still need *some*
+/// credential present, or `init_from_config` skips them — pass a placeholder
+/// `api_key`; a per-app BYO credential overrides it per request.)
+async fn spawn_app_with_providers(extra_providers: &[(&str, Value)]) -> TestApp {
     let tmp = tempfile::NamedTempFile::new().expect("tempfile");
     let url = format!("sqlite://{}?mode=rwc", tmp.path().display());
     let db: Arc<dyn DatabaseStore> = Arc::new(
@@ -77,6 +87,12 @@ async fn spawn_app() -> TestApp {
         serde_json::from_value(serde_json::json!({ "enabled": true }))
             .expect("mock provider config"),
     );
+    for (name, cfg) in extra_providers {
+        app_config.providers.insert(
+            (*name).to_string(),
+            serde_json::from_value(cfg.clone()).expect("extra provider config"),
+        );
+    }
     let provider_registry = Arc::new(ProviderRegistry::new());
     provider_registry.init_from_config(&app_config).await;
 
@@ -994,5 +1010,174 @@ async fn logout_invalidates_session() {
         me_after.status, 401,
         "me after logout should be 401, got {} {:?}",
         me_after.status, me_after.body
+    );
+}
+
+// ─── BYO provider credentials (Phase 2) ────────────────────────────────────────
+
+/// Sign up + create a `generate,read` Bearer key bound to the org's default app.
+/// Returns `(default_app_id, bearer_secret)`. The session `Client` `c` keeps its
+/// cookies so it can still mutate the org (e.g. store a provider credential).
+async fn signup_app_and_key(c: &mut Client, tag: &str) -> (String, String) {
+    signup(c, &unique_email(tag), &format!("{tag}-org")).await;
+    let org_id = first_org_id(c).await;
+    let apps = c.get(&format!("/v1/orgs/{org_id}/apps")).await;
+    assert_eq!(apps.status, 200, "list apps failed: {:?}", apps.body);
+    let app_id = apps.body.as_array().expect("apps array")[0]["id"]
+        .as_str()
+        .expect("default app id")
+        .to_string();
+
+    let csrf = c.csrf().await;
+    let created = c
+        .post_with(
+            "/v1/keys",
+            json!({ "name": format!("{tag}-key"), "scopes": "generate,read" }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(created.status, 201, "create key failed: {:?}", created.body);
+    let secret = created.body["key"].as_str().expect("key secret").to_string();
+    (app_id, secret)
+}
+
+// ─── Test: BYO — real provider, no app cred, no global instance → 400 ──────────
+//
+// The harness registers only the `mock` provider globally, so a *real* provider
+// (`openai`) has no global instance, and a fresh app has stored no BYO credential.
+// Generating against a real-provider model must therefore surface the documented
+// `provider_not_configured` 400 (NOT a 5xx, and NOT an upstream attempt).
+#[tokio::test]
+async fn byo_missing_credential_returns_400() {
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (_app_id, secret) = signup_app_and_key(&mut c, "byo-missing").await;
+
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    let r = bearer
+        .post_with(
+            "/v1/images/generations",
+            // `openai/dall-e-3` is a real, non-mock provider model shipped in models/.
+            json!({ "model": "openai/dall-e-3", "prompt": "x" }),
+            &[("authorization", &bearer_hdr)],
+        )
+        .await;
+
+    assert_eq!(
+        r.status, 400,
+        "expected 400 provider_not_configured, got {} {:?}",
+        r.status, r.body
+    );
+    assert_eq!(
+        r.body["error"]["type"].as_str(),
+        Some("provider_not_configured"),
+        "unexpected error body: {:?}",
+        r.body
+    );
+}
+
+// ─── Test: BYO — mock still works with no credential ───────────────────────────
+//
+// The mock provider needs no credential and is registered globally, so the no-cred
+// path must still return 200 (we didn't break the existing single_tenant/mock flow).
+#[tokio::test]
+async fn mock_generation_still_works_without_cred() {
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (_app_id, secret) = signup_app_and_key(&mut c, "byo-mock").await;
+
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    let r = bearer
+        .post_with(
+            "/v1/images/generations",
+            json!({ "model": MOCK_MODEL, "prompt": "x" }),
+            &[("authorization", &bearer_hdr)],
+        )
+        .await;
+
+    assert_eq!(
+        r.status, 200,
+        "mock generation should still succeed with no credential, got {} {:?}",
+        r.status, r.body
+    );
+}
+
+// ─── Test: BYO — stored app credential reaches the upstream ────────────────────
+//
+// Stand up a `wiremock` upstream that returns a minimal valid DALL-E b64 response.
+// Register `openai` globally pointed at that upstream with a *placeholder* key (so
+// the global instance exists but its key is NOT what we assert on). Store an app
+// provider-credential with `api_key=APPKEY` via the owner session, then generate
+// with the Bearer key requesting `response_format=b64_json` (the b64 path needs no
+// follow-up image fetch). Assert the upstream received `Authorization: Bearer APPKEY`
+// — i.e. the per-app BYO credential, not the platform placeholder, reached upstream.
+#[tokio::test]
+async fn byo_credential_reaches_upstream() {
+    use base64::Engine as _;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let upstream = MockServer::start().await;
+    let fake_b64 = base64::engine::general_purpose::STANDARD.encode(b"fake-png-bytes");
+    Mock::given(method("POST"))
+        .and(path("/v1/images/generations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "created": 1234567890,
+            "data": [{ "b64_json": fake_b64 }]
+        })))
+        .expect(1)
+        .mount(&upstream)
+        .await;
+
+    // openai registered globally → its api_base points at the wiremock upstream.
+    // The placeholder api_key keeps `init_from_config` from skipping the provider;
+    // the per-app BYO credential overrides it per request.
+    let openai_cfg = json!({
+        "enabled": true,
+        "api_key": "PLATFORM_PLACEHOLDER",
+        "api_base": format!("{}/v1/images/generations", upstream.uri()),
+    });
+    let app = spawn_app_with_providers(&[("openai", openai_cfg)]).await;
+
+    let mut c = Client::new(&app.base);
+    let (app_id, secret) = signup_app_and_key(&mut c, "byo-upstream").await;
+
+    // Store the app's BYO credential (api_key=APPKEY) via the owner session.
+    let csrf = c.csrf().await;
+    let stored = c
+        .post_with(
+            &format!("/v1/apps/{app_id}/provider-credentials"),
+            json!({ "provider": "openai", "credentials": { "api_key": "APPKEY" } }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(stored.status, 200, "store provider credential failed: {:?}", stored.body);
+
+    // Generate with the Bearer key; b64_json avoids an upstream image fetch.
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    let r = bearer
+        .post_with(
+            "/v1/images/generations",
+            json!({ "model": "openai/dall-e-3", "prompt": "x", "response_format": "b64_json" }),
+            &[("authorization", &bearer_hdr)],
+        )
+        .await;
+    assert_eq!(r.status, 200, "BYO generation should succeed, got {} {:?}", r.status, r.body);
+
+    // The upstream must have seen the per-app key, not the platform placeholder.
+    let received = upstream.received_requests().await.expect("recorded requests");
+    assert_eq!(received.len(), 1, "expected exactly one upstream call");
+    let auth = received[0]
+        .headers
+        .get("authorization")
+        .expect("authorization header present")
+        .to_str()
+        .expect("authorization header utf-8");
+    assert_eq!(
+        auth, "Bearer APPKEY",
+        "upstream should receive the per-app BYO key, got {auth:?}"
     );
 }
