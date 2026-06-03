@@ -50,6 +50,28 @@ use utoipa::OpenApi;
         crate::api::handlers::account::patch_account,
         crate::api::handlers::account::list_sessions,
         crate::api::handlers::account::revoke_session,
+        // Organizations
+        crate::api::handlers::orgs::create_org,
+        crate::api::handlers::orgs::list_orgs,
+        crate::api::handlers::orgs::get_org,
+        crate::api::handlers::orgs::patch_org,
+        crate::api::handlers::orgs::delete_org,
+        // Organization members
+        crate::api::handlers::orgs::list_members,
+        crate::api::handlers::orgs::invite_member,
+        crate::api::handlers::orgs::patch_member,
+        crate::api::handlers::orgs::remove_member,
+        crate::api::handlers::orgs::transfer_owner,
+        // Applications (under orgs + top-level by app id)
+        crate::api::handlers::orgs::list_apps,
+        crate::api::handlers::orgs::create_app,
+        crate::api::handlers::orgs::get_app,
+        crate::api::handlers::orgs::patch_app,
+        crate::api::handlers::orgs::delete_app,
+        // BYO provider credentials
+        crate::api::handlers::orgs::list_provider_credentials,
+        crate::api::handlers::orgs::create_provider_credential,
+        crate::api::handlers::orgs::delete_provider_credential,
     ),
     components(schemas(
         // Request / response types (from `types`)
@@ -118,6 +140,23 @@ use utoipa::OpenApi;
         crate::api::handlers::account::AccountUser,
         crate::api::handlers::account::SessionInfo,
         crate::api::handlers::account::PatchAccountRequest,
+        // Tenancy domain types
+        crate::types::Organization,
+        crate::types::Application,
+        crate::types::OrganizationMember,
+        crate::types::ProviderCredentialInfo,
+        // Orgs handler schemas (views + request bodies)
+        crate::api::handlers::orgs::OrgView,
+        crate::api::handlers::orgs::OrgSummary,
+        crate::api::handlers::orgs::MemberView,
+        crate::api::handlers::orgs::CreateOrgRequest,
+        crate::api::handlers::orgs::UpdateOrgRequest,
+        crate::api::handlers::orgs::CreateAppRequest,
+        crate::api::handlers::orgs::UpdateAppRequest,
+        crate::api::handlers::orgs::AddMemberRequest,
+        crate::api::handlers::orgs::UpdateMemberRequest,
+        crate::api::handlers::orgs::TransferOwnerRequest,
+        crate::api::handlers::orgs::CreateProviderCredentialRequest,
         // Capability schema (response of GET /v1/models/{id}).
         // `MediaType` and `ModelPricing` are renamed via `#[schema(as = ...)]` to
         // avoid collisions with the same-named types in `crate::types`.
@@ -151,6 +190,8 @@ use utoipa::OpenApi;
         (name = "Auth", description = "Authentication (password + OAuth)"),
         (name = "Users", description = "User management and invitations"),
         (name = "Account", description = "Current user account and sessions"),
+        (name = "Organizations", description = "Organization CRUD, members, and ownership"),
+        (name = "Applications", description = "Applications and BYO provider credentials"),
     )
 )]
 pub struct ApiDoc;

@@ -37,6 +37,20 @@ type TransferOwnerRequest = Schemas["TransferOwnerRequest"];
 type AccountUser = Schemas["AccountUser"];
 type PatchAccountRequest = Schemas["PatchAccountRequest"];
 type SessionInfo = Schemas["SessionInfo"];
+// Tenancy (orgs / apps / members / provider credentials)
+type OrgView = Schemas["OrgView"];
+type OrgSummary = Schemas["OrgSummary"];
+type MemberView = Schemas["MemberView"];
+type Application = Schemas["Application"];
+type ProviderCredentialInfo = Schemas["ProviderCredentialInfo"];
+type CreateOrgRequest = Schemas["CreateOrgRequest"];
+type UpdateOrgRequest = Schemas["UpdateOrgRequest"];
+type CreateAppRequest = Schemas["CreateAppRequest"];
+type UpdateAppRequest = Schemas["UpdateAppRequest"];
+type AddMemberRequest = Schemas["AddMemberRequest"];
+type UpdateMemberRequest = Schemas["UpdateMemberRequest"];
+type OrgTransferOwnerRequest = Schemas["OrgTransferOwnerRequest"];
+type CreateProviderCredentialRequest = Schemas["CreateProviderCredentialRequest"];
 
 interface PaginatedLogs {
   data: RequestLog[];
@@ -185,6 +199,10 @@ export interface LiteGenClientOptions {
   fetch?: FetchLike;
   timeoutMs?: number;
   defaultHeaders?: Record<string, string>;
+  /** Initial active organization id — sent as `X-Litegen-Org-Id`. */
+  activeOrgId?: string;
+  /** Initial active application id — sent as `X-Litegen-App-Id`. */
+  activeAppId?: string;
 }
 
 // ─── Client ──────────────────────────────────────────────────────────────────
@@ -199,6 +217,9 @@ export class LiteGenClient {
   private readonly fetchImpl: FetchLike;
   private readonly timeoutMs: number;
   private readonly defaultHeaders: Record<string, string>;
+  /** Active tenant context sent as `X-Litegen-Org-Id` / `X-Litegen-App-Id`. */
+  private activeOrgId?: string;
+  private activeAppId?: string;
 
   readonly images: ImagesNamespace;
   readonly videos: VideosNamespace;
@@ -213,6 +234,8 @@ export class LiteGenClient {
   readonly account: AccountNamespace;
   readonly audit: AuditNamespace;
   readonly generations: GenerationsNamespace;
+  readonly orgs: OrgsNamespace;
+  readonly apps: AppsNamespace;
 
   constructor(opts: LiteGenClientOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? "http://localhost:4000").replace(/\/$/, "");
@@ -238,6 +261,32 @@ export class LiteGenClient {
     this.account = new AccountNamespace(this);
     this.audit = new AuditNamespace(this);
     this.generations = new GenerationsNamespace(this);
+    this.orgs = new OrgsNamespace(this);
+    this.apps = new AppsNamespace(this);
+
+    this.activeOrgId = opts.activeOrgId;
+    this.activeAppId = opts.activeAppId;
+  }
+
+  /**
+   * Set (or clear) the active organization / application. When set, every
+   * request includes `X-Litegen-Org-Id` and/or `X-Litegen-App-Id` headers so
+   * the backend resolves the caller's active tenant context. Pass `undefined`
+   * for either argument to clear it.
+   */
+  setActiveTenant(orgId?: string, appId?: string): void {
+    this.activeOrgId = orgId;
+    this.activeAppId = appId;
+  }
+
+  /** The currently active org id, if any. */
+  getActiveOrgId(): string | undefined {
+    return this.activeOrgId;
+  }
+
+  /** The currently active app id, if any. */
+  getActiveAppId(): string | undefined {
+    return this.activeAppId;
   }
 
   /** @internal */
@@ -256,6 +305,10 @@ export class LiteGenClient {
     // Bearer token: static apiKey takes precedence, then dynamic getter.
     const token = this.apiKey ?? this.getAuthToken?.();
     if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    // Active-tenant context headers (set via setActiveTenant / constructor opts).
+    if (this.activeOrgId) headers["X-Litegen-Org-Id"] = this.activeOrgId;
+    if (this.activeAppId) headers["X-Litegen-App-Id"] = this.activeAppId;
 
     // CSRF token for mutating requests.
     const isMutating = !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase());
@@ -693,5 +746,159 @@ class GenerationsNamespace {
       { status: "cancelled" },
       signal,
     );
+  }
+}
+
+// ─── Tenancy namespaces ────────────────────────────────────────────────────────
+
+class OrgMembersNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+
+  list(orgId: string, signal?: AbortSignal): Promise<MemberView[]> {
+    return this.client.request(
+      "GET",
+      `/v1/orgs/${encodeURIComponent(orgId)}/members`,
+      undefined,
+      signal,
+    );
+  }
+  invite(orgId: string, req: AddMemberRequest, signal?: AbortSignal): Promise<unknown> {
+    return this.client.request(
+      "POST",
+      `/v1/orgs/${encodeURIComponent(orgId)}/members`,
+      req,
+      signal,
+    );
+  }
+  updateRole(
+    orgId: string,
+    userId: string,
+    req: UpdateMemberRequest,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    return this.client.request(
+      "PATCH",
+      `/v1/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`,
+      req,
+      signal,
+    );
+  }
+  remove(orgId: string, userId: string, signal?: AbortSignal): Promise<void> {
+    return this.client.request(
+      "DELETE",
+      `/v1/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`,
+      undefined,
+      signal,
+    );
+  }
+}
+
+class OrgAppsNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+
+  list(orgId: string, signal?: AbortSignal): Promise<Application[]> {
+    return this.client.request(
+      "GET",
+      `/v1/orgs/${encodeURIComponent(orgId)}/apps`,
+      undefined,
+      signal,
+    );
+  }
+  create(orgId: string, req: CreateAppRequest, signal?: AbortSignal): Promise<Application> {
+    return this.client.request(
+      "POST",
+      `/v1/orgs/${encodeURIComponent(orgId)}/apps`,
+      req,
+      signal,
+    );
+  }
+}
+
+class OrgsNamespace {
+  readonly members: OrgMembersNamespace;
+  readonly apps: OrgAppsNamespace;
+
+  constructor(private readonly client: LiteGenClient) {
+    this.members = new OrgMembersNamespace(client);
+    this.apps = new OrgAppsNamespace(client);
+  }
+
+  list(signal?: AbortSignal): Promise<OrgSummary[]> {
+    return this.client.request("GET", "/v1/orgs", undefined, signal);
+  }
+  create(req: CreateOrgRequest, signal?: AbortSignal): Promise<OrgView> {
+    return this.client.request("POST", "/v1/orgs", req, signal);
+  }
+  get(id: string, signal?: AbortSignal): Promise<OrgView> {
+    return this.client.request("GET", `/v1/orgs/${encodeURIComponent(id)}`, undefined, signal);
+  }
+  update(id: string, req: UpdateOrgRequest, signal?: AbortSignal): Promise<OrgView> {
+    return this.client.request("PATCH", `/v1/orgs/${encodeURIComponent(id)}`, req, signal);
+  }
+  delete(id: string, signal?: AbortSignal): Promise<void> {
+    return this.client.request("DELETE", `/v1/orgs/${encodeURIComponent(id)}`, undefined, signal);
+  }
+  transferOwner(
+    orgId: string,
+    req: OrgTransferOwnerRequest,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.client.request(
+      "POST",
+      `/v1/orgs/${encodeURIComponent(orgId)}/transfer-owner`,
+      req,
+      signal,
+    );
+  }
+}
+
+class AppProviderCredentialsNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+
+  list(appId: string, signal?: AbortSignal): Promise<ProviderCredentialInfo[]> {
+    return this.client.request(
+      "GET",
+      `/v1/apps/${encodeURIComponent(appId)}/provider-credentials`,
+      undefined,
+      signal,
+    );
+  }
+  create(
+    appId: string,
+    req: CreateProviderCredentialRequest,
+    signal?: AbortSignal,
+  ): Promise<ProviderCredentialInfo> {
+    return this.client.request(
+      "POST",
+      `/v1/apps/${encodeURIComponent(appId)}/provider-credentials`,
+      req,
+      signal,
+    );
+  }
+  delete(appId: string, provider: string, signal?: AbortSignal): Promise<void> {
+    return this.client.request(
+      "DELETE",
+      `/v1/apps/${encodeURIComponent(appId)}/provider-credentials/${encodeURIComponent(provider)}`,
+      undefined,
+      signal,
+    );
+  }
+}
+
+class AppsNamespace {
+  readonly providerCredentials: AppProviderCredentialsNamespace;
+
+  constructor(private readonly client: LiteGenClient) {
+    this.providerCredentials = new AppProviderCredentialsNamespace(client);
+  }
+
+  get(appId: string, signal?: AbortSignal): Promise<Application> {
+    return this.client.request("GET", `/v1/apps/${encodeURIComponent(appId)}`, undefined, signal);
+  }
+  update(appId: string, req: UpdateAppRequest, signal?: AbortSignal): Promise<Application> {
+    return this.client.request("PATCH", `/v1/apps/${encodeURIComponent(appId)}`, req, signal);
+  }
+  delete(appId: string, signal?: AbortSignal): Promise<void> {
+    return this.client.request("DELETE", `/v1/apps/${encodeURIComponent(appId)}`, undefined, signal);
   }
 }
