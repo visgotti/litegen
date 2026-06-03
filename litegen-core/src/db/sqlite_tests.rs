@@ -744,4 +744,66 @@ mod tests {
         assert!(db.get_session(&sess1.id).await.unwrap().is_some(), "sess1 should survive");
         assert!(db.get_session(&sess2.id).await.unwrap().is_none(), "sess2 should be deleted");
     }
+
+    /// Verifies migration 0008 applies on a fresh DB: the multitenant tables are
+    /// created and the backfill inserts the default org/app rows. This connects a
+    /// fresh pool and runs ALL migrations (including 0008) directly, then raw-queries
+    /// the new tables — a SQL error in 0008 would fail at migrate-time.
+    #[tokio::test]
+    async fn migration_0008_creates_tenant_tables() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        // shared-cache in-memory DB so every pooled connection sees the same schema.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite:file:mig0008?mode=memory&cache=shared")
+            .await
+            .expect("connect fresh sqlite");
+        sqlx::migrate!("./migrations/sqlite")
+            .run(&pool)
+            .await
+            .expect("migration 0008 must apply on a fresh DB");
+
+        // All four new tables must exist and be queryable.
+        for table in ["organizations", "applications", "organization_members", "provider_credentials"] {
+            let sql = format!("SELECT count(*) FROM {table}");
+            sqlx::query_scalar::<_, i64>(&sql)
+                .fetch_one(&pool)
+                .await
+                .unwrap_or_else(|e| panic!("table {table} must exist: {e}"));
+        }
+
+        // The default org row from the backfill must be present.
+        let org_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM organizations WHERE id = '00000000-0000-0000-0000-000000000001'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(org_count, 1, "default org row must exist after backfill");
+
+        // The default app row from the backfill must be present.
+        let app_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM applications WHERE id = '00000000-0000-0000-0000-000000000002'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(app_count, 1, "default app row must exist after backfill");
+
+        // Tenant columns must exist on the altered tables.
+        for table in ["api_keys", "generations", "request_logs", "audit_log", "invitations",
+                      "request_artifacts", "webhook_deliveries"] {
+            let sql = format!("SELECT org_id FROM {table} LIMIT 1");
+            sqlx::query(&sql)
+                .fetch_optional(&pool)
+                .await
+                .unwrap_or_else(|e| panic!("{table}.org_id column must exist: {e}"));
+        }
+        // public_id added only on api_keys.
+        sqlx::query("SELECT public_id FROM api_keys LIMIT 1")
+            .fetch_optional(&pool)
+            .await
+            .expect("api_keys.public_id column must exist");
+    }
 }
