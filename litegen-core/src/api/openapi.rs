@@ -19,7 +19,7 @@ use utoipa::OpenApi;
         crate::api::handlers::health_check,
         crate::api::handlers::liveness,
         crate::api::handlers::get_stats,
-        crate::api::handlers::get_logs,
+        crate::api::handlers::get_logs_filtered,
         crate::api::handlers::create_api_key,
         crate::api::handlers::list_api_keys,
         crate::api::handlers::revoke_api_key,
