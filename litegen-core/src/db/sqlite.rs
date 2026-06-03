@@ -11,7 +11,7 @@ use super::trait_def::DatabaseStore;
 
 /// Full column list for api_keys selects — avoids repetition.
 const API_KEY_COLS: &str = "id, name, key_hash, key_prefix, created_at, expires_at, is_active, \
-    token_quota, tokens_used, rpm_limit, scopes, webhook_url, owner_user_id";
+    token_quota, tokens_used, rpm_limit, scopes, webhook_url, owner_user_id, org_id, app_id, public_id";
 
 /// Full column list for generations selects.
 const GENERATION_COLS: &str = "id, key_id, model, provider, media_type, status, progress, \
@@ -361,6 +361,9 @@ impl DatabaseStore for SqliteDatabase {
             scopes: scopes.to_string(),
             webhook_url: webhook_url.map(|s| s.to_string()),
             owner_user_id: None,
+            org_id: None,
+            app_id: None,
+            public_id: None,
         })
     }
 
@@ -1116,6 +1119,9 @@ pub(crate) struct ApiKeyRow {
     pub scopes: String,
     pub webhook_url: Option<String>,
     pub owner_user_id: Option<String>,
+    pub org_id: Option<String>,
+    pub app_id: Option<String>,
+    pub public_id: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -1170,6 +1176,9 @@ pub(crate) fn api_key_from_row(r: ApiKeyRow) -> ApiKey {
         scopes: r.scopes,
         webhook_url: r.webhook_url,
         owner_user_id: r.owner_user_id,
+        org_id: r.org_id,
+        app_id: r.app_id,
+        public_id: r.public_id,
     }
 }
 

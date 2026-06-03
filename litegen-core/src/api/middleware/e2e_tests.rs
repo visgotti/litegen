@@ -102,6 +102,9 @@ mod tests {
                 scopes: "generate,read".to_string(),
                 webhook_url: None,
                 owner_user_id: None,
+                org_id: None,
+                app_id: None,
+                public_id: None,
             })
         }
 
@@ -637,6 +640,9 @@ models:
                 scopes: "generate,read".to_string(),
                 webhook_url: None,
                 owner_user_id: None,
+                org_id: None,
+                app_id: None,
+                public_id: None,
             })
         }
 

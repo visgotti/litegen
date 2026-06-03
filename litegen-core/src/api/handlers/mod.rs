@@ -862,8 +862,12 @@ pub async fn create_api_key(
             (
                 StatusCode::CREATED,
                 Json(ApiKeyCreatedResponse {
+                    id: key.id,
                     key: raw_key,
                     prefix: key.key_prefix,
+                    // TODO(Task 5): create_api_key will generate a pk_live_ public_id;
+                    // until then legacy keys have None, so this is "" in the interim.
+                    public_id: key.public_id.clone().unwrap_or_default(),
                     name: key.name,
                     created_at: key.created_at,
                     token_quota: key.token_quota,
@@ -932,6 +936,8 @@ pub async fn list_api_keys(
                     rpm_limit: k.rpm_limit,
                     scopes: k.scopes,
                     webhook_url: k.webhook_url,
+                    public_id: k.public_id,
+                    app_id: k.app_id,
                 })
                 .collect();
             Json(ApiKeyListResponse { data }).into_response()
