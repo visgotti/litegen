@@ -334,4 +334,209 @@ pub trait DatabaseStore: Send + Sync {
     ) -> Result<Vec<chrono::DateTime<chrono::Utc>>, sqlx::Error> {
         Ok(vec![])
     }
+
+    // ─── Organizations ──────────────────────────────────────────────────
+    // Default impls return empty/Ok/None/false so mock/test implementations
+    // (and backends not yet migrated) still compile.
+
+    async fn create_organization(&self, _o: &Organization) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+
+    async fn get_organization(&self, _id: &str) -> Result<Option<Organization>, sqlx::Error> {
+        Ok(None)
+    }
+
+    async fn get_org_by_slug(&self, _slug: &str) -> Result<Option<Organization>, sqlx::Error> {
+        Ok(None)
+    }
+
+    /// Organizations the user belongs to, paired with their role in each.
+    async fn list_orgs_for_user(
+        &self,
+        _user_id: &str,
+    ) -> Result<Vec<(Organization, Role)>, sqlx::Error> {
+        Ok(vec![])
+    }
+
+    async fn update_organization(
+        &self,
+        _id: &str,
+        _name: Option<&str>,
+    ) -> Result<Option<Organization>, sqlx::Error> {
+        Ok(None)
+    }
+
+    async fn delete_organization(&self, _id: &str) -> Result<bool, sqlx::Error> {
+        Ok(false)
+    }
+
+    // ─── Members ────────────────────────────────────────────────────────
+
+    async fn add_org_member(
+        &self,
+        _org_id: &str,
+        _user_id: &str,
+        _role: Role,
+    ) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+
+    async fn get_membership(
+        &self,
+        _org_id: &str,
+        _user_id: &str,
+    ) -> Result<Option<Role>, sqlx::Error> {
+        Ok(None)
+    }
+
+    async fn list_org_members(&self, _org_id: &str) -> Result<Vec<OrganizationMember>, sqlx::Error> {
+        Ok(vec![])
+    }
+
+    async fn update_member_role(
+        &self,
+        _org_id: &str,
+        _user_id: &str,
+        _role: Role,
+    ) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+
+    async fn remove_org_member(&self, _org_id: &str, _user_id: &str) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+
+    /// Demote the current owner(s) to admin and promote `new_owner_user_id` to owner.
+    async fn transfer_org_owner(
+        &self,
+        _org_id: &str,
+        _new_owner_user_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+
+    // ─── Applications ───────────────────────────────────────────────────
+
+    async fn create_application(&self, _a: &Application) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+
+    async fn get_application(&self, _id: &str) -> Result<Option<Application>, sqlx::Error> {
+        Ok(None)
+    }
+
+    async fn list_apps_for_org(&self, _org_id: &str) -> Result<Vec<Application>, sqlx::Error> {
+        Ok(vec![])
+    }
+
+    async fn update_application(
+        &self,
+        _id: &str,
+        _name: Option<&str>,
+    ) -> Result<Option<Application>, sqlx::Error> {
+        Ok(None)
+    }
+
+    async fn delete_application(&self, _id: &str) -> Result<bool, sqlx::Error> {
+        Ok(false)
+    }
+
+    // ─── Provider Credentials (store opaque ciphertext only) ────────────
+
+    async fn upsert_provider_credential(
+        &self,
+        _app_id: &str,
+        _provider: &str,
+        _ciphertext: &str,
+        _nonce: &str,
+        _display_hint: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+
+    /// Returns `(ciphertext, nonce)` for the stored credential, if any.
+    async fn get_provider_credential(
+        &self,
+        _app_id: &str,
+        _provider: &str,
+    ) -> Result<Option<(String, String)>, sqlx::Error> {
+        Ok(None)
+    }
+
+    async fn list_provider_credentials(
+        &self,
+        _app_id: &str,
+    ) -> Result<Vec<ProviderCredentialInfo>, sqlx::Error> {
+        Ok(vec![])
+    }
+
+    async fn delete_provider_credential(
+        &self,
+        _app_id: &str,
+        _provider: &str,
+    ) -> Result<bool, sqlx::Error> {
+        Ok(false)
+    }
+
+    // ─── API Keys (tenant-scoped create / list) ─────────────────────────
+
+    async fn create_api_key_scoped(
+        &self,
+        _org_id: &str,
+        _app_id: &str,
+        _public_id: &str,
+        _name: &str,
+        _key_hash: &str,
+        _key_prefix: &str,
+        _token_quota: Option<f64>,
+        _rpm_limit: Option<u32>,
+        _scopes: &str,
+        _webhook_url: Option<&str>,
+    ) -> Result<ApiKey, sqlx::Error> {
+        Err(sqlx::Error::RowNotFound)
+    }
+
+    async fn list_api_keys_for_app(&self, _app_id: &str) -> Result<Vec<ApiKey>, sqlx::Error> {
+        Ok(vec![])
+    }
+
+    // ─── Tenant-scoped reads ────────────────────────────────────────────
+
+    async fn list_generations_for_tenant(
+        &self,
+        _org_id: &str,
+        _app_id: Option<&str>,
+        _page: u32,
+        _per_page: u32,
+    ) -> Result<Vec<Generation>, sqlx::Error> {
+        Ok(vec![])
+    }
+
+    async fn count_generations_for_tenant(
+        &self,
+        _org_id: &str,
+        _app_id: Option<&str>,
+    ) -> Result<i64, sqlx::Error> {
+        Ok(0)
+    }
+
+    async fn get_request_logs_for_tenant(
+        &self,
+        _org_id: &str,
+        _app_id: Option<&str>,
+        _page: u32,
+        _per_page: u32,
+    ) -> Result<(Vec<RequestLog>, u64), sqlx::Error> {
+        Ok((Vec::new(), 0))
+    }
+
+    async fn list_audit_log_for_tenant(
+        &self,
+        _org_id: &str,
+        _page: u32,
+        _per_page: u32,
+    ) -> Result<(Vec<AuditLogEntry>, i64), sqlx::Error> {
+        Ok((Vec::new(), 0))
+    }
 }

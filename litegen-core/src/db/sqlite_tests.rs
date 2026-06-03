@@ -806,4 +806,221 @@ mod tests {
             .await
             .expect("api_keys.public_id column must exist");
     }
+
+    // ─── Tenancy CRUD tests ───────────────────────────────────────────────────
+
+    use crate::types::{Application, Organization};
+
+    fn make_org(id: &str, slug: &str) -> Organization {
+        let now = chrono::Utc::now();
+        Organization {
+            id: id.to_string(),
+            name: format!("Org {slug}"),
+            slug: slug.to_string(),
+            plan: "free".to_string(),
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn make_app(id: &str, org_id: &str, slug: &str) -> Application {
+        let now = chrono::Utc::now();
+        Application {
+            id: id.to_string(),
+            org_id: org_id.to_string(),
+            name: format!("App {slug}"),
+            slug: slug.to_string(),
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn org_app_member_crud() {
+        let db = in_memory_db().await;
+
+        // Create an org and an app within it.
+        let org = make_org(&Uuid::new_v4().to_string(), "acme");
+        db.create_organization(&org).await.unwrap();
+        let got_org = db.get_organization(&org.id).await.unwrap().expect("org exists");
+        assert_eq!(got_org.slug, "acme");
+        assert_eq!(got_org.plan, "free");
+        let by_slug = db.get_org_by_slug("acme").await.unwrap().expect("by slug");
+        assert_eq!(by_slug.id, org.id);
+
+        let app = make_app(&Uuid::new_v4().to_string(), &org.id, "web");
+        db.create_application(&app).await.unwrap();
+        let got_app = db.get_application(&app.id).await.unwrap().expect("app exists");
+        assert_eq!(got_app.org_id, org.id);
+        assert_eq!(got_app.slug, "web");
+        let apps = db.list_apps_for_org(&org.id).await.unwrap();
+        assert_eq!(apps.len(), 1);
+
+        // Create two users and add them as members.
+        let owner = make_user("orgowner@example.com", Role::Owner);
+        let admin = make_user("orgadmin@example.com", Role::Member);
+        db.create_user(&owner).await.unwrap();
+        db.create_user(&admin).await.unwrap();
+        db.add_org_member(&org.id, &owner.id, Role::Owner).await.unwrap();
+        db.add_org_member(&org.id, &admin.id, Role::Admin).await.unwrap();
+
+        // get_membership returns the role.
+        assert_eq!(db.get_membership(&org.id, &owner.id).await.unwrap(), Some(Role::Owner));
+        assert_eq!(db.get_membership(&org.id, &admin.id).await.unwrap(), Some(Role::Admin));
+        assert_eq!(db.get_membership(&org.id, "nobody").await.unwrap(), None);
+
+        // list_org_members includes the joined email.
+        let members = db.list_org_members(&org.id).await.unwrap();
+        assert_eq!(members.len(), 2);
+        assert!(members.iter().any(|m| m.email == "orgowner@example.com" && m.role == Role::Owner));
+        assert!(members.iter().any(|m| m.email == "orgadmin@example.com" && m.role == Role::Admin));
+
+        // update_member_role.
+        db.update_member_role(&org.id, &admin.id, Role::Viewer).await.unwrap();
+        assert_eq!(db.get_membership(&org.id, &admin.id).await.unwrap(), Some(Role::Viewer));
+
+        // list_orgs_for_user returns the org + role.
+        let orgs = db.list_orgs_for_user(&owner.id).await.unwrap();
+        assert_eq!(orgs.len(), 1);
+        assert_eq!(orgs[0].0.id, org.id);
+        assert_eq!(orgs[0].1, Role::Owner);
+
+        // transfer_org_owner swaps roles: owner -> admin, admin(now viewer) -> owner.
+        db.transfer_org_owner(&org.id, &admin.id).await.unwrap();
+        assert_eq!(db.get_membership(&org.id, &owner.id).await.unwrap(), Some(Role::Admin));
+        assert_eq!(db.get_membership(&org.id, &admin.id).await.unwrap(), Some(Role::Owner));
+
+        // transfer_org_owner to a non-member must fail and roll back the demote,
+        // leaving the current owner intact (the org never becomes ownerless).
+        assert!(db.transfer_org_owner(&org.id, "not-a-member").await.is_err());
+        assert_eq!(db.get_membership(&org.id, &admin.id).await.unwrap(), Some(Role::Owner));
+        assert_eq!(db.get_membership(&org.id, &owner.id).await.unwrap(), Some(Role::Admin));
+
+        // update_organization renames.
+        let renamed = db.update_organization(&org.id, Some("Renamed Inc")).await.unwrap().unwrap();
+        assert_eq!(renamed.name, "Renamed Inc");
+
+        // remove_org_member.
+        db.remove_org_member(&org.id, &owner.id).await.unwrap();
+        assert_eq!(db.get_membership(&org.id, &owner.id).await.unwrap(), None);
+
+        // delete_application removes the app.
+        assert!(db.delete_application(&app.id).await.unwrap());
+        assert!(db.get_application(&app.id).await.unwrap().is_none());
+
+        // delete_organization removes a (fresh, empty) org and reports success.
+        let empty_org = make_org(&Uuid::new_v4().to_string(), "to-delete");
+        db.create_organization(&empty_org).await.unwrap();
+        assert!(db.delete_organization(&empty_org.id).await.unwrap());
+        assert!(db.get_organization(&empty_org.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn tenant_generation_isolation() {
+        let db = in_memory_db().await;
+
+        let org_a = make_org(&Uuid::new_v4().to_string(), "org-a");
+        let org_b = make_org(&Uuid::new_v4().to_string(), "org-b");
+        db.create_organization(&org_a).await.unwrap();
+        db.create_organization(&org_b).await.unwrap();
+        let app_a = make_app(&Uuid::new_v4().to_string(), &org_a.id, "app-a");
+        let app_b = make_app(&Uuid::new_v4().to_string(), &org_b.id, "app-b");
+        db.create_application(&app_a).await.unwrap();
+        db.create_application(&app_b).await.unwrap();
+
+        // Insert a generation row per tenant, then stamp org_id/app_id via raw SQL
+        // (insert_generation doesn't take org/app yet).
+        db.insert_generation("gen-a", None, "mock/v", "mock", "video", None, 0.0).await.unwrap();
+        db.insert_generation("gen-b", None, "mock/v", "mock", "video", None, 0.0).await.unwrap();
+        sqlx::query("UPDATE generations SET org_id = ?, app_id = ? WHERE id = ?")
+            .bind(&org_a.id).bind(&app_a.id).bind("gen-a")
+            .execute(db.pool()).await.unwrap();
+        sqlx::query("UPDATE generations SET org_id = ?, app_id = ? WHERE id = ?")
+            .bind(&org_b.id).bind(&app_b.id).bind("gen-b")
+            .execute(db.pool()).await.unwrap();
+
+        // org A + app A sees only A's row.
+        let rows = db.list_generations_for_tenant(&org_a.id, Some(&app_a.id), 1, 50).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "gen-a");
+        assert_eq!(db.count_generations_for_tenant(&org_a.id, Some(&app_a.id)).await.unwrap(), 1);
+
+        // org A without app filter still only sees A's row (never B's).
+        let rows = db.list_generations_for_tenant(&org_a.id, None, 1, 50).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "gen-a");
+        assert!(rows.iter().all(|g| g.id != "gen-b"));
+
+        // org B sees only B's row.
+        let rows = db.list_generations_for_tenant(&org_b.id, None, 1, 50).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "gen-b");
+        assert_eq!(db.count_generations_for_tenant(&org_b.id, None).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn provider_credential_roundtrip() {
+        let db = in_memory_db().await;
+        let org = make_org(&Uuid::new_v4().to_string(), "cred-org");
+        db.create_organization(&org).await.unwrap();
+        let app = make_app(&Uuid::new_v4().to_string(), &org.id, "cred-app");
+        db.create_application(&app).await.unwrap();
+
+        db.upsert_provider_credential(&app.id, "openai", "CIPHER1", "NONCE1", Some("sk-...abcd"))
+            .await.unwrap();
+
+        // get returns (ciphertext, nonce).
+        let got = db.get_provider_credential(&app.id, "openai").await.unwrap().expect("cred");
+        assert_eq!(got, ("CIPHER1".to_string(), "NONCE1".to_string()));
+
+        // upsert again overwrites (UNIQUE(app_id, provider)).
+        db.upsert_provider_credential(&app.id, "openai", "CIPHER2", "NONCE2", Some("sk-...wxyz"))
+            .await.unwrap();
+        let got = db.get_provider_credential(&app.id, "openai").await.unwrap().expect("cred");
+        assert_eq!(got, ("CIPHER2".to_string(), "NONCE2".to_string()));
+
+        // list returns ProviderCredentialInfo with display_hint and NOT the ciphertext.
+        let list = db.list_provider_credentials(&app.id).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].provider, "openai");
+        assert_eq!(list[0].display_hint.as_deref(), Some("sk-...wxyz"));
+
+        // delete works.
+        assert!(db.delete_provider_credential(&app.id, "openai").await.unwrap());
+        assert!(db.get_provider_credential(&app.id, "openai").await.unwrap().is_none());
+        assert!(!db.delete_provider_credential(&app.id, "openai").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn create_api_key_scoped_persists_tenant() {
+        let db = in_memory_db().await;
+        let org = make_org(&Uuid::new_v4().to_string(), "key-org");
+        db.create_organization(&org).await.unwrap();
+        let app = make_app(&Uuid::new_v4().to_string(), &org.id, "key-app");
+        db.create_application(&app).await.unwrap();
+
+        let key = db.create_api_key_scoped(
+            &org.id, &app.id, "pk_live_abc123", "scoped-key",
+            "hash_scoped", "lg-sc", Some(25.0), Some(120), "generate,read", None,
+        ).await.unwrap();
+        assert_eq!(key.org_id.as_deref(), Some(org.id.as_str()));
+        assert_eq!(key.app_id.as_deref(), Some(app.id.as_str()));
+        assert_eq!(key.public_id.as_deref(), Some("pk_live_abc123"));
+        assert_eq!(key.token_quota, Some(25.0));
+        assert_eq!(key.rpm_limit, Some(120));
+
+        // get_api_key shows the tenant fields populated.
+        let fetched = db.get_api_key(&key.id).await.unwrap().expect("key");
+        assert_eq!(fetched.org_id.as_deref(), Some(org.id.as_str()));
+        assert_eq!(fetched.app_id.as_deref(), Some(app.id.as_str()));
+        assert_eq!(fetched.public_id.as_deref(), Some("pk_live_abc123"));
+        assert!(fetched.is_active);
+
+        // list_api_keys_for_app returns it.
+        let app_keys = db.list_api_keys_for_app(&app.id).await.unwrap();
+        assert_eq!(app_keys.len(), 1);
+        assert_eq!(app_keys[0].id, key.id);
+    }
 }
