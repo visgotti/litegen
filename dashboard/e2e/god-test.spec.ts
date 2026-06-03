@@ -223,15 +223,16 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
 
   await page.getByTestId('create-key-btn').click();
 
-  // Assert success banner with created key
+  // Assert success banner with created key (id/secret pair UI from Task 12)
   const banner = page.getByTestId('key-created-banner');
   await expect(banner).toBeVisible({ timeout: 10_000 });
-  await expect(banner).toContainText('Key created:');
+  // Public id (pk_live_…) is shown alongside the one-time secret.
+  await expect(page.getByTestId('key-public-id')).toContainText('pk_live_');
 
-  // Get the created key value from the banner
-  const keyText = await page.locator('[data-testid="key-created-banner"] code').textContent();
+  // Get the created secret value from the banner's secret <code> (sk_live_…)
+  const keyText = await page.getByTestId('key-secret').textContent();
   expect(keyText).toBeTruthy();
-  expect(keyText!.startsWith('lg-')).toBeTruthy();
+  expect(keyText!.startsWith('sk_live_')).toBeTruthy();
 
   // Wait for table row to appear — find the row with name "playwright-test-key"
   await expect(page.getByText('playwright-test-key')).toBeVisible({ timeout: 10_000 });
@@ -580,19 +581,38 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
     expect(webhookReceived.length).toBeGreaterThan(0);
     expect(webhookReceived[0].body.status).toBe('completed');
 
-    // Rotate the key
-    await page.locator(`[data-testid="key-rotate-${webhookKeyId}"]`).click();
-    await expect(page.locator('[data-testid="key-rotate-result-banner"]')).toBeVisible({ timeout: 10_000 });
+    // Capture the public id BEFORE rotation so we can prove it changed in place.
+    const publicIdBefore = (await page
+      .locator(`[data-testid="key-public-id-${webhookKeyId}"]`)
+      .textContent())!.trim();
+    expect(publicIdBefore.startsWith('pk_live_')).toBeTruthy();
 
-    // Reload to see the updated status
+    // Rotate the key. Task 12's id/secret rewrite makes rotation IN PLACE: the
+    // same row id keeps its name/scopes/settings and stays ACTIVE, but gets a
+    // brand-new pk_live_ public id and a one-time sk_live_ secret. (Previously
+    // rotation revoked the old key and minted a separate new row.)
+    await page.locator(`[data-testid="key-rotate-${webhookKeyId}"]`).click();
+    const rotateBanner = page.locator('[data-testid="key-rotate-result-banner"]');
+    await expect(rotateBanner).toBeVisible({ timeout: 10_000 });
+    // The rotate banner reveals the new secret exactly once.
+    const rotatedSecret = (await rotateBanner.locator('code').textContent())!.trim();
+    expect(rotatedSecret.startsWith('sk_live_')).toBeTruthy();
+
+    // Reload to see the updated row
     await page.reload();
     await expect(page.getByTestId('auth-status')).toBeVisible({ timeout: 10_000 });
     await page.click('a[href="/keys"]');
     await page.waitForURL('**/keys');
 
     const oldRow = page.locator(`[data-testid="key-row-${webhookKeyId}"]`);
-    // Look for status badge inside that row — after rotate, old key should be revoked
-    await expect(oldRow.locator(`[data-testid="key-status-${webhookKeyId}"]`)).toContainText('revoked', { timeout: 10_000 });
+    // Same row id persists and remains active after an in-place rotation.
+    await expect(oldRow.locator(`[data-testid="key-status-${webhookKeyId}"]`)).toContainText('active', { timeout: 10_000 });
+    // …but its public id was replaced with a fresh pk_live_ value.
+    const publicIdAfter = (await page
+      .locator(`[data-testid="key-public-id-${webhookKeyId}"]`)
+      .textContent())!.trim();
+    expect(publicIdAfter.startsWith('pk_live_')).toBeTruthy();
+    expect(publicIdAfter).not.toBe(publicIdBefore);
 
     // Copy prefix check — grant clipboard permissions for the context first
     await context.grantPermissions(['clipboard-read', 'clipboard-write']);
@@ -676,8 +696,10 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
 
   const rpmBanner = page.getByTestId('key-created-banner');
   await expect(rpmBanner).toBeVisible({ timeout: 10_000 });
-  const rpmKeyValue = await page.locator('[data-testid="key-created-banner"] code').textContent();
+  // Use the secret <code> (sk_live_…) as the bearer token, not the public id.
+  const rpmKeyValue = await page.getByTestId('key-secret').textContent();
   expect(rpmKeyValue).toBeTruthy();
+  expect(rpmKeyValue!.startsWith('sk_live_')).toBeTruthy();
 
   // Fire a request with the rate-limited key
   const rpmResp = await page.request.post('http://127.0.0.1:5099/v1/images/generations', {
@@ -738,13 +760,13 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await expect(page.locator('table')).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText('webhook-test-key').first()).toBeVisible({ timeout: 10_000 });
 
-  // Find the REVOKED webhook-test-key row — that's the original key that was
-  // test-webhoooked earlier. After rotation, it's revoked but still has deliveries.
-  // It appears after the new rotated key in the list. Use the row that contains
-  // both 'webhook-test-key' AND 'revoked'.
+  // Find the webhook-test-key row. After Task 12's in-place rotation it stays a
+  // single ACTIVE row (same id, new secret) rather than splitting into a revoked
+  // old row + a new active row, so target the active row that still owns the
+  // earlier test-webhook deliveries.
   const webhookRow = page.locator('tr[data-testid^="key-row-"]')
     .filter({ hasText: 'webhook-test-key' })
-    .filter({ has: page.locator('.badge.unhealthy') })
+    .filter({ has: page.locator('.badge.healthy') })
     .first();
   await expect(webhookRow).toBeVisible({ timeout: 5_000 });
   const webhookRowTestId = await webhookRow.getAttribute('data-testid');

@@ -2506,7 +2506,7 @@ mod permission_scoping_tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use axum::{middleware, routing::{delete, get, post}};
+    use axum::{middleware, routing::{delete, get}};
     use tower::ServiceExt;
     use crate::api::middleware::{auth_middleware, AppState};
     use crate::auth::tokens::{generate_csrf_token, generate_session_token};
@@ -2609,7 +2609,6 @@ mod permission_scoping_tests {
         let (member, member_sess, _) = seed_user_session(&db, Role::Member, "member@t.com").await;
 
         // Create one key as member (via DB directly, setting owner)
-        let key_id = uuid::Uuid::new_v4();
         db.create_api_key("member-key", "hash1", "lg-m", None, None, "generate,read", None).await.unwrap();
         let keys = db.list_api_keys().await.unwrap();
         db.set_api_key_owner(&keys[0].id, &member.id).await.unwrap();
