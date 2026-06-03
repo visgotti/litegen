@@ -514,7 +514,7 @@ Each Application stores its **own** upstream provider credentials, encrypted at 
 LITEGEN__SECRETS_KEY=$(head -c 32 /dev/urandom | base64)
 ```
 
-Each app's requests are dispatched using that app's decrypted provider credentials, keeping tenants' upstream keys isolated.
+At generation time (and during background video-status polling) each request is dispatched using that app's decrypted provider credentials, keeping tenants' upstream keys isolated. Resolution order per provider is: **the app's stored credential → the global env-configured credential (if any) → `400 provider_not_configured`** when neither exists. Cost-estimate endpoints follow the same rule. Decryption/parse failures surface as `500` (server misconfiguration), never a silent fallback to another key.
 
 ### Scaling roadmap
 
