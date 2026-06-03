@@ -831,6 +831,19 @@ impl ProxyRouter {
             .map(|h| h.provider_job_id.clone())
     }
 
+    /// Whether a global image provider instance is registered for `name`.
+    /// Used by the HTTP layer to decide whether a missing per-app BYO credential
+    /// should fall back to the platform default or surface `provider_not_configured`.
+    pub async fn has_image_provider(&self, name: &str) -> bool {
+        self.registry.image_provider_for(name).await.is_some()
+    }
+
+    /// Whether a global video provider instance is registered for `name`.
+    /// See [`has_image_provider`](Self::has_image_provider).
+    pub async fn has_video_provider(&self, name: &str) -> bool {
+        self.registry.video_provider_for(name).await.is_some()
+    }
+
     // ─── Helpers ────────────────────────────────────────────────────────
 
     fn find_model_route(&self, model: &str) -> Option<ModelRoute> {
@@ -965,7 +978,10 @@ impl ProxyError {
     pub fn status_code(&self) -> u16 {
         match self {
             Self::ModelNotFound { .. } => 404,
-            Self::ProviderNotConfigured(_) => 503,
+            // The model's provider has no usable credential (no per-app BYO key and
+            // no platform default). This is a client/config problem, not a transient
+            // outage — surface a 424 rather than a 5xx so callers don't blindly retry.
+            Self::ProviderNotConfigured(_) => 424,
             Self::NoDeployments { .. } => 503,
             Self::AllDeploymentsFailed { .. } => 502,
             Self::ProviderError { retryable, .. } => {

@@ -156,6 +156,7 @@ async fn main() -> anyhow::Result<()> {
         db.clone(),
         registry.clone(),
         reqwest::Client::new(),
+        secrets_key,
         poller_shutdown,
     );
 
