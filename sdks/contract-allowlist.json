@@ -1,0 +1,47 @@
+{
+  "_comment": "Ratchets for the SDK↔OpenAPI contract tests (typescript/test/contract.test.ts and python/tests/test_contract.py). Both SDKs read this one file so coverage is tracked from a single source of truth. The tests stay green today despite known gaps, but FAIL on any NEW drift. Shrink these lists as gaps close; do not grow them to silence newly-introduced drift.",
+
+  "known_uncovered": {
+    "_comment": "METHOD path operations the OpenAPI spec declares but the hand-written SDK facade does NOT yet surface a method for. Per language. Adding a method for one of these must be accompanied by removing it here (the 'no now-covered entries' check enforces that). A brand-new spec operation with no method and no entry here fails the suite.",
+    "typescript": [],
+    "python": [
+      "DELETE /v1/account/sessions/{}",
+      "DELETE /v1/users/{}",
+      "GET /v1/account",
+      "GET /v1/account/sessions",
+      "GET /v1/auth/csrf",
+      "GET /v1/auth/invitations/{}",
+      "GET /v1/auth/me",
+      "GET /v1/auth/oauth/github/callback",
+      "GET /v1/auth/oauth/github/start",
+      "GET /v1/auth/oauth/google/callback",
+      "GET /v1/auth/oauth/google/start",
+      "GET /v1/users",
+      "PATCH /v1/account",
+      "PATCH /v1/users/{}",
+      "POST /v1/auth/invitations/{}/accept",
+      "POST /v1/auth/login",
+      "POST /v1/auth/logout",
+      "POST /v1/auth/password-reset/confirm",
+      "POST /v1/auth/password-reset/request",
+      "POST /v1/auth/signup",
+      "POST /v1/users",
+      "POST /v1/users/transfer-owner"
+    ]
+  },
+
+  "known_undocumented": {
+    "_comment": "METHOD path operations the SDK facade calls that are absent from the OpenAPI spec. These are NOT facade bugs — litegen-core serves them, but its OpenAPI emission omits them, so they get no generated types (the TS client hand-writes their types under a 'Types not yet in generated schema' banner). The real fix is to make litegen-core include these in /openapi.json, regenerate, then delete them here. Shared across both SDKs. Anything the facade calls that is neither in the spec nor listed here fails the drift check (catches genuine typos/renames).",
+    "paths": [
+      "GET /health/ready",
+      "GET /v1/audit",
+      "GET /v1/generations",
+      "GET /v1/keys/{}/webhook-deliveries",
+      "GET /v1/logs/{}/artifact",
+      "PATCH /v1/generations/{}",
+      "PATCH /v1/keys/{}",
+      "POST /v1/keys/{}/rotate",
+      "POST /v1/keys/{}/test-webhook"
+    ]
+  }
+}
