@@ -599,7 +599,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
         middleware,
-        routing::{delete, get, patch, post},
+        routing::{get, patch, post},
         Router,
     };
     use tower::ServiceExt;

@@ -57,6 +57,6 @@ mod tests {
         // Oldest failure 1 min ago, window is 15 min → 14 min left.
         let attempts: Vec<_> = (0..5).map(|_| now - Duration::minutes(1)).collect();
         let ra = retry_after_seconds(&attempts, now);
-        assert!(ra >= 60 * 14 && ra <= 60 * 15);
+        assert!((60 * 14..=60 * 15).contains(&ra));
     }
 }

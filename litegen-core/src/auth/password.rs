@@ -74,6 +74,6 @@ mod tests {
     #[test]
     fn dummy_verify_runs_constant_time() {
         // ~regression check: dummy hash verify should NOT panic + take similar time
-        let _ = verify_dummy("any-password");
+        verify_dummy("any-password");
     }
 }

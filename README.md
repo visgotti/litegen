@@ -461,6 +461,65 @@ LiteGen supports two independent authentication modes:
 
 Both modes can be active simultaneously. Programmatic clients continue working unchanged when user auth is enabled.
 
+## Multi-tenant hosting
+
+LiteGen runs in one of two modes, selected by `LITEGEN__MODE`:
+
+```bash
+LITEGEN__MODE=single_tenant   # default — unchanged single-deployment behavior
+LITEGEN__MODE=hosted          # multi-tenant SaaS: open self-serve signup
+```
+
+The default is `single_tenant`; everything documented above (first-run owner signup, master-key bypass, roles, sessions) behaves exactly as before. **Hosted mode** opts into the multi-tenant platform:
+
+- `POST /v1/auth/signup` becomes **open self-serve signup**. Each new user gets their own **Organization** (plus a default Application) and becomes its Owner — signup is no longer gated by the empty-`users` check or `LITEGEN__OWNER_EMAIL`.
+- The master key is **demoted to platform-admin**: it is still a superuser for operational endpoints, but it carries **no implicit tenant access** — it is not a member of any org and cannot read tenant-scoped data by default.
+
+### The tenancy model
+
+```
+User ──< OrganizationMember >── Organization ──< Application ──< API key
+                (per-org role)
+```
+
+- A **User** belongs to one or more **Organizations** via memberships, each carrying a per-org **role**: `owner`, `admin`, `member`, or `viewer`.
+- An **Organization** owns one or more **Applications**.
+- An **Application** owns its **API keys** and its own upstream provider credentials.
+
+### API keys are id + secret
+
+Keys are minted as an id/secret pair:
+
+- A **public id** `pk_live_…` — safe to display; shown in the dashboard key list.
+- A **secret** `sk_live_…` — shown **once** at creation (and on rotation), never again.
+
+Programmatic clients send the secret as `Authorization: Bearer sk_live_…`; the secret resolves the owning tenant (org + app) server-side. This is a drop-in for OpenAI-style SDKs — point the SDK's base URL at your LiteGen deployment and use the `sk_live_…` secret as the API key.
+
+Rotation re-issues a new `pk_live_…`/`sk_live_…` pair **in place** on the same key record (preserving its name, scopes, quota, and RPM limit); the old secret stops working immediately.
+
+### Dashboard org/app scoping
+
+A dashboard session can belong to multiple orgs and apps. The active selection is sent on each request as:
+
+- `X-Litegen-Org-Id` — the active organization.
+- `X-Litegen-App-Id` — the active application within that org.
+
+Both headers are validated against the user's memberships server-side, so a session can never read or mutate a tenant it isn't a member of.
+
+### BYO provider keys
+
+Each Application stores its **own** upstream provider credentials, encrypted at rest with **AES-256-GCM**. To enable credential storage in hosted mode, provide a base64-encoded 32-byte key:
+
+```bash
+LITEGEN__SECRETS_KEY=$(head -c 32 /dev/urandom | base64)
+```
+
+Each app's requests are dispatched using that app's decrypted provider credentials, keeping tenants' upstream keys isolated.
+
+### Scaling roadmap
+
+Hosted mode is fully functional on a single instance. Horizontal multi-instance scaling — shared **Redis** for rate limits and circuit-breaker state, and **object storage** for generation artifacts — is a follow-up (**Phase 3**), and automated infrastructure provisioning is **Phase 4**.
+
 ## License
 
 MIT
