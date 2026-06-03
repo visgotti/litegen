@@ -84,6 +84,8 @@ metrics-exporter-prometheus = "0.16"
 
 # Password hashing for API keys
 sha2 = "0.10"
+# AES-256-GCM for BYO provider credential encryption
+aes-gcm = "0.10"
 # HMAC for webhook signing
 hmac = "0.12"
 
