@@ -6,6 +6,7 @@ import { LiteGenAPIError } from '@litegen/sdk';
 export default function Signup() {
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
+  const [orgName, setOrgName] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
@@ -26,7 +27,8 @@ export default function Signup() {
 
     setLoading(true);
     try {
-      await client.auth.signup({ email, password });
+      const trimmedOrg = orgName.trim();
+      await client.auth.signup({ email, password, ...(trimmedOrg ? { org_name: trimmedOrg } : {}) });
       navigate('/');
     } catch (err) {
       if (err instanceof LiteGenAPIError) {
@@ -65,6 +67,21 @@ export default function Signup() {
               onChange={e => setEmail(e.target.value)}
               placeholder="you@example.com"
               required
+              style={{ width: '100%', boxSizing: 'border-box' }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: 'block', marginBottom: 6, color: '#8b949e', fontSize: 13 }}>
+              Organization name <span style={{ color: '#6e7681' }}>(optional)</span>
+            </label>
+            <input
+              className="input"
+              data-testid="signup-org-name"
+              type="text"
+              value={orgName}
+              onChange={e => setOrgName(e.target.value)}
+              placeholder="Acme Inc."
               style={{ width: '100%', boxSizing: 'border-box' }}
             />
           </div>

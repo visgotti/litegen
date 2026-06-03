@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { client, clearCsrfCache, getApiKey } from '../sdk-client';
+import { useTenant } from '../context/tenant';
+import OrgSwitcher from './OrgSwitcher';
 import AuthBar from './AuthBar';
 
 interface MeUser {
@@ -32,6 +34,7 @@ function roleBadgeStyle(role: string) {
 
 export default function UserMenu() {
   const navigate = useNavigate();
+  const { activeOrgRole } = useTenant();
   const [me, setMe] = useState<MeUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -138,7 +141,7 @@ export default function UserMenu() {
                 }}
               >
                 <span data-testid="user-menu-email" style={{ fontSize: 13, fontWeight: 500 }}>{me.email}</span>
-                <span data-testid="user-menu-role" style={roleBadgeStyle(me.role)}>{me.role}</span>
+                <span data-testid="user-menu-role" style={roleBadgeStyle(activeOrgRole ?? me.role)}>{activeOrgRole ?? me.role}</span>
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" style={{ color: '#8b949e', flexShrink: 0 }}>
                   <path d="M6 8L1 3h10z"/>
                 </svg>
@@ -193,6 +196,7 @@ export default function UserMenu() {
                 </div>
               )}
             </div>
+            <OrgSwitcher />
           </div>
         ) : authChecked ? (
           <div style={{ flex: 1 }}>

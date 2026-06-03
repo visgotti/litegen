@@ -3,6 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { client } from '../sdk-client';
 import type { ProxyStats, RequestLog, ApiKeyInfo } from '@litegen/sdk';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
+import { useTenant } from '../context/tenant';
 
 const COLORS = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#f0883e'];
 
@@ -19,6 +20,7 @@ function buildHourlyBuckets(logs: RequestLog[]): { hour: string; cost: number }[
 }
 
 export default function Overview() {
+  const { activeOrg, activeApp } = useTenant();
   const [stats, setStats] = useState<ProxyStats | null>(null);
   const [error, setError] = useState('');
   const [logs, setLogs] = useState<RequestLog[]>([]);
@@ -52,7 +54,9 @@ export default function Overview() {
     fetchKeys();
   };
 
-  useEffect(() => { fetchAll(); }, []);
+  // Refetch when the active tenant changes (SDK auto-scopes via headers).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchAll(); }, [activeOrg, activeApp]);
 
   useAutoRefresh(fetchAll, 5000, autoRefresh);
 

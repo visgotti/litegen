@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { client } from '../sdk-client';
 import type { ApiKeyInfo, PatchKeyBody, WebhookDelivery } from '@litegen/sdk';
 import { showToast } from '../components/toast-store';
+import { useTenant } from '../context/tenant';
 
 interface EditState {
   id: string;
@@ -18,8 +19,10 @@ interface WebhookResult {
 }
 
 export default function Keys() {
+  const { activeApp } = useTenant();
   const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
   const [createdKey, setCreatedKey] = useState('');
+  const [createdPublicId, setCreatedPublicId] = useState('');
   const [rotatedKey, setRotatedKey] = useState('');
   const [error, setError] = useState('');
 
@@ -50,7 +53,8 @@ export default function Keys() {
       .catch(e => setError(e.message));
   };
 
-  useEffect(() => { load(); }, []);
+  // Refetch when the active app changes (the SDK auto-scopes via headers).
+  useEffect(() => { load(); }, [activeApp]);
 
   const createKey = async () => {
     if (!newName.trim()) return;
@@ -65,6 +69,7 @@ export default function Keys() {
 
       const result = await client.keys.create(body);
       setCreatedKey(result.key);
+      setCreatedPublicId(result.public_id);
       setRotatedKey('');
       setNewName('');
       setNewTokenQuota('');
@@ -92,6 +97,7 @@ export default function Keys() {
       const result = await client.keys.rotate(id);
       setRotatedKey(result.key);
       setCreatedKey('');
+      setCreatedPublicId('');
       load();
     } catch (e: unknown) {
       setError((e as Error).message);
@@ -217,9 +223,15 @@ export default function Keys() {
       {error && <div className="alert alert-error" data-testid="keys-error">{error}</div>}
       {createdKey && (
         <div className="alert alert-success" data-testid="key-created-banner">
-          Key created: <code style={{ userSelect: 'all' }}>{createdKey}</code>
+          {createdPublicId && (
+            <>
+              Public key id: <code data-testid="key-public-id" style={{ userSelect: 'all' }}>{createdPublicId}</code>
+              <br />
+            </>
+          )}
+          Secret key: <code data-testid="key-secret" style={{ userSelect: 'all' }}>{createdKey}</code>
           <br />
-          <small>Copy this now — it won't be shown again.</small>
+          <small>Copy the secret now — it won't be shown again.</small>
         </div>
       )}
       {rotatedKey && (
@@ -315,7 +327,7 @@ export default function Keys() {
               <React.Fragment key={k.id}>
                 <tr data-testid={`key-row-${k.id}`}>
                   <td data-testid={`key-name-${k.id}`}>{k.name}</td>
-                  <td><code>{k.prefix}...</code></td>
+                  <td><code data-testid={`key-public-id-${k.id}`}>{k.public_id ?? `${k.prefix}...`}</code></td>
                   <td data-testid={`key-scopes-${k.id}`}>{k.scopes || '—'}</td>
                   <td data-testid={`key-quota-${k.id}`}>{formatQuota(k)}</td>
                   <td data-testid={`key-rpm-${k.id}`}>{k.rpm_limit ?? '—'}</td>
