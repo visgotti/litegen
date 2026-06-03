@@ -8,11 +8,14 @@ use uuid::Uuid;
 use crate::types::*;
 
 use super::sqlite::{
-    api_key_from_row, audit_log_from_row, build_proxy_stats, generation_from_row,
-    invitation_from_row, password_reset_from_row, request_log_from_row, session_from_row,
-    user_from_row, webhook_delivery_from_row, ApiKeyRow, AuditLogRow, GenerationRow,
-    InvitationRow, ModelUsageRow, PasswordResetRow, ProviderUsageRow, RequestLogRow,
-    SessionRow, UserRow, WebhookDeliveryRow,
+    api_key_from_row, application_from_row, audit_log_from_row, build_proxy_stats,
+    generation_from_row, invitation_from_row, org_with_role_from_row, organization_from_row,
+    org_member_from_row,
+    password_reset_from_row, provider_credential_from_row, request_log_from_row, session_from_row,
+    user_from_row, webhook_delivery_from_row, ApiKeyRow, ApplicationRow, AuditLogRow, REQUEST_LOG_COLS,
+    GenerationRow, InvitationRow, ModelUsageRow, OrgMemberRow, OrgWithRoleRow, OrganizationRow,
+    PasswordResetRow, ProviderCredentialRow, ProviderUsageRow, RequestLogRow, SessionRow, UserRow,
+    WebhookDeliveryRow,
 };
 use super::trait_def::DatabaseStore;
 
@@ -286,10 +289,9 @@ impl DatabaseStore for PostgresDatabase {
         }
         let total: (i64,) = count_qb.build_query_as().fetch_one(&self.pool).await?;
 
-        let mut data_qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
-            "SELECT id, model, provider, status, media_type, cost_usd, latency_ms, error, metadata, created_at \
-             FROM request_logs WHERE 1=1",
-        );
+        let mut data_qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(format!(
+            "SELECT {REQUEST_LOG_COLS} FROM request_logs WHERE 1=1"
+        ));
         if let Some(ref m) = filters.model {
             data_qb.push(" AND model = ");
             data_qb.push_bind(m.clone());
@@ -1114,5 +1116,518 @@ impl DatabaseStore for PostgresDatabase {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(t,)| t).collect())
+    }
+
+    // ─── Organizations ──────────────────────────────────────────────────
+
+    async fn create_organization(&self, o: &Organization) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO organizations (id, name, slug, plan, status, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(&o.id)
+        .bind(&o.name)
+        .bind(&o.slug)
+        .bind(&o.plan)
+        .bind(&o.status)
+        .bind(o.created_at)
+        .bind(o.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_organization(&self, id: &str) -> Result<Option<Organization>, sqlx::Error> {
+        let row = sqlx::query_as::<_, OrganizationRow>(
+            "SELECT id, name, slug, plan, status, created_at, updated_at FROM organizations WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(organization_from_row))
+    }
+
+    async fn get_org_by_slug(&self, slug: &str) -> Result<Option<Organization>, sqlx::Error> {
+        let row = sqlx::query_as::<_, OrganizationRow>(
+            "SELECT id, name, slug, plan, status, created_at, updated_at FROM organizations WHERE slug = $1",
+        )
+        .bind(slug)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(organization_from_row))
+    }
+
+    async fn list_orgs_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<(Organization, Role)>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, OrgWithRoleRow>(
+            "SELECT o.id, o.name, o.slug, o.plan, o.status, o.created_at, o.updated_at, m.role \
+             FROM organizations o \
+             JOIN organization_members m ON m.org_id = o.id \
+             WHERE m.user_id = $1 ORDER BY o.created_at ASC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(org_with_role_from_row).collect())
+    }
+
+    async fn update_organization(
+        &self,
+        id: &str,
+        name: Option<&str>,
+    ) -> Result<Option<Organization>, sqlx::Error> {
+        if let Some(n) = name {
+            let result = sqlx::query(
+                "UPDATE organizations SET name = $1, updated_at = NOW() WHERE id = $2",
+            )
+            .bind(n)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+            if result.rows_affected() == 0 {
+                return Ok(None);
+            }
+        }
+        self.get_organization(id).await
+    }
+
+    async fn delete_organization(&self, id: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM organizations WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // ─── Members ────────────────────────────────────────────────────────
+
+    async fn add_org_member(
+        &self,
+        org_id: &str,
+        user_id: &str,
+        role: Role,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO organization_members (org_id, user_id, role, created_at) \
+             VALUES ($1, $2, $3, NOW())",
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .bind(role.as_str())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_membership(
+        &self,
+        org_id: &str,
+        user_id: &str,
+    ) -> Result<Option<Role>, sqlx::Error> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT role FROM organization_members WHERE org_id = $1 AND user_id = $2",
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.and_then(|(r,)| Role::parse(&r)))
+    }
+
+    async fn list_org_members(&self, org_id: &str) -> Result<Vec<OrganizationMember>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, OrgMemberRow>(
+            "SELECT m.org_id, m.user_id, u.email, m.role, m.created_at \
+             FROM organization_members m \
+             JOIN users u ON u.id = m.user_id \
+             WHERE m.org_id = $1 ORDER BY m.created_at ASC",
+        )
+        .bind(org_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(org_member_from_row).collect())
+    }
+
+    async fn update_member_role(
+        &self,
+        org_id: &str,
+        user_id: &str,
+        role: Role,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE organization_members SET role = $1 WHERE org_id = $2 AND user_id = $3")
+            .bind(role.as_str())
+            .bind(org_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn remove_org_member(&self, org_id: &str, user_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM organization_members WHERE org_id = $1 AND user_id = $2")
+            .bind(org_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn transfer_org_owner(
+        &self,
+        org_id: &str,
+        new_owner_user_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE organization_members SET role = 'admin' WHERE org_id = $1 AND role = 'owner'")
+            .bind(org_id)
+            .execute(&mut *tx)
+            .await?;
+        let promoted =
+            sqlx::query("UPDATE organization_members SET role = 'owner' WHERE org_id = $1 AND user_id = $2")
+                .bind(org_id)
+                .bind(new_owner_user_id)
+                .execute(&mut *tx)
+                .await?;
+        if promoted.rows_affected() == 0 {
+            // new owner is not a member; dropping the tx rolls back the demote
+            return Err(sqlx::Error::RowNotFound);
+        }
+        tx.commit().await
+    }
+
+    // ─── Applications ───────────────────────────────────────────────────
+
+    async fn create_application(&self, a: &Application) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO applications (id, org_id, name, slug, status, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(&a.id)
+        .bind(&a.org_id)
+        .bind(&a.name)
+        .bind(&a.slug)
+        .bind(&a.status)
+        .bind(a.created_at)
+        .bind(a.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_application(&self, id: &str) -> Result<Option<Application>, sqlx::Error> {
+        let row = sqlx::query_as::<_, ApplicationRow>(
+            "SELECT id, org_id, name, slug, status, created_at, updated_at FROM applications WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(application_from_row))
+    }
+
+    async fn list_apps_for_org(&self, org_id: &str) -> Result<Vec<Application>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, ApplicationRow>(
+            "SELECT id, org_id, name, slug, status, created_at, updated_at \
+             FROM applications WHERE org_id = $1 ORDER BY created_at ASC",
+        )
+        .bind(org_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(application_from_row).collect())
+    }
+
+    async fn update_application(
+        &self,
+        id: &str,
+        name: Option<&str>,
+    ) -> Result<Option<Application>, sqlx::Error> {
+        if let Some(n) = name {
+            let result = sqlx::query(
+                "UPDATE applications SET name = $1, updated_at = NOW() WHERE id = $2",
+            )
+            .bind(n)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+            if result.rows_affected() == 0 {
+                return Ok(None);
+            }
+        }
+        self.get_application(id).await
+    }
+
+    async fn delete_application(&self, id: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM applications WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // ─── Provider Credentials ───────────────────────────────────────────
+
+    async fn upsert_provider_credential(
+        &self,
+        app_id: &str,
+        provider: &str,
+        ciphertext: &str,
+        nonce: &str,
+        display_hint: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO provider_credentials \
+                (id, app_id, provider, ciphertext, nonce, display_hint, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW()) \
+             ON CONFLICT (app_id, provider) DO UPDATE SET \
+                ciphertext = EXCLUDED.ciphertext, \
+                nonce = EXCLUDED.nonce, \
+                display_hint = EXCLUDED.display_hint, \
+                updated_at = NOW()",
+        )
+        .bind(id.to_string())
+        .bind(app_id)
+        .bind(provider)
+        .bind(ciphertext)
+        .bind(nonce)
+        .bind(display_hint)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_provider_credential(
+        &self,
+        app_id: &str,
+        provider: &str,
+    ) -> Result<Option<(String, String)>, sqlx::Error> {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT ciphertext, nonce FROM provider_credentials WHERE app_id = $1 AND provider = $2",
+        )
+        .bind(app_id)
+        .bind(provider)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    async fn list_provider_credentials(
+        &self,
+        app_id: &str,
+    ) -> Result<Vec<ProviderCredentialInfo>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, ProviderCredentialRow>(
+            "SELECT provider, display_hint, created_at FROM provider_credentials \
+             WHERE app_id = $1 ORDER BY provider ASC",
+        )
+        .bind(app_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(provider_credential_from_row).collect())
+    }
+
+    async fn delete_provider_credential(
+        &self,
+        app_id: &str,
+        provider: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let result =
+            sqlx::query("DELETE FROM provider_credentials WHERE app_id = $1 AND provider = $2")
+                .bind(app_id)
+                .bind(provider)
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // ─── API Keys (tenant-scoped) ───────────────────────────────────────
+
+    async fn create_api_key_scoped(
+        &self,
+        org_id: &str,
+        app_id: &str,
+        public_id: &str,
+        name: &str,
+        key_hash: &str,
+        key_prefix: &str,
+        token_quota: Option<f64>,
+        rpm_limit: Option<u32>,
+        scopes: &str,
+        webhook_url: Option<&str>,
+    ) -> Result<ApiKey, sqlx::Error> {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO api_keys \
+                (id, org_id, app_id, public_id, name, key_hash, key_prefix, is_active, \
+                 tokens_used, token_quota, rpm_limit, scopes, webhook_url, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, 0, $8, $9, $10, $11, NOW())",
+        )
+        .bind(id.to_string())
+        .bind(org_id)
+        .bind(app_id)
+        .bind(public_id)
+        .bind(name)
+        .bind(key_hash)
+        .bind(key_prefix)
+        .bind(token_quota)
+        .bind(rpm_limit.map(|v| v as i64))
+        .bind(scopes)
+        .bind(webhook_url)
+        .execute(&self.pool)
+        .await?;
+        self.get_api_key(&id).await?.ok_or(sqlx::Error::RowNotFound)
+    }
+
+    async fn list_api_keys_for_app(&self, app_id: &str) -> Result<Vec<ApiKey>, sqlx::Error> {
+        let sql = format!(
+            "SELECT {} FROM api_keys WHERE app_id = $1 ORDER BY created_at DESC",
+            API_KEY_COLS
+        );
+        let rows = sqlx::query_as::<_, ApiKeyRow>(&sql)
+            .bind(app_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(api_key_from_row).collect())
+    }
+
+    // ─── Tenant-scoped reads ────────────────────────────────────────────
+
+    async fn list_generations_for_tenant(
+        &self,
+        org_id: &str,
+        app_id: Option<&str>,
+        page: u32,
+        per_page: u32,
+    ) -> Result<Vec<Generation>, sqlx::Error> {
+        let offset = ((page.saturating_sub(1)) * per_page) as i64;
+        let rows = match app_id {
+            Some(app) => {
+                let sql = format!(
+                    "SELECT {} FROM generations WHERE org_id = $1 AND app_id = $2 \
+                     ORDER BY created_at DESC LIMIT $3 OFFSET $4",
+                    GENERATION_COLS
+                );
+                sqlx::query_as::<_, GenerationRow>(&sql)
+                    .bind(org_id)
+                    .bind(app)
+                    .bind(per_page as i64)
+                    .bind(offset)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            None => {
+                let sql = format!(
+                    "SELECT {} FROM generations WHERE org_id = $1 \
+                     ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+                    GENERATION_COLS
+                );
+                sqlx::query_as::<_, GenerationRow>(&sql)
+                    .bind(org_id)
+                    .bind(per_page as i64)
+                    .bind(offset)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+        };
+        Ok(rows.into_iter().map(generation_from_row).collect())
+    }
+
+    async fn count_generations_for_tenant(
+        &self,
+        org_id: &str,
+        app_id: Option<&str>,
+    ) -> Result<i64, sqlx::Error> {
+        let row: (i64,) = match app_id {
+            Some(app) => sqlx::query_as(
+                "SELECT COUNT(*) FROM generations WHERE org_id = $1 AND app_id = $2",
+            )
+            .bind(org_id)
+            .bind(app)
+            .fetch_one(&self.pool)
+            .await?,
+            None => sqlx::query_as("SELECT COUNT(*) FROM generations WHERE org_id = $1")
+                .bind(org_id)
+                .fetch_one(&self.pool)
+                .await?,
+        };
+        Ok(row.0)
+    }
+
+    async fn get_request_logs_for_tenant(
+        &self,
+        org_id: &str,
+        app_id: Option<&str>,
+        page: u32,
+        per_page: u32,
+    ) -> Result<(Vec<RequestLog>, u64), sqlx::Error> {
+        let offset = ((page.saturating_sub(1)) * per_page) as i64;
+        const COLS: &str = REQUEST_LOG_COLS;
+        let (total, rows) = match app_id {
+            Some(app) => {
+                let total: (i64,) = sqlx::query_as(
+                    "SELECT COUNT(*) FROM request_logs WHERE org_id = $1 AND app_id = $2",
+                )
+                .bind(org_id)
+                .bind(app)
+                .fetch_one(&self.pool)
+                .await?;
+                let sql = format!(
+                    "SELECT {COLS} FROM request_logs WHERE org_id = $1 AND app_id = $2 \
+                     ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+                );
+                let rows = sqlx::query_as::<_, RequestLogRow>(&sql)
+                    .bind(org_id)
+                    .bind(app)
+                    .bind(per_page as i64)
+                    .bind(offset)
+                    .fetch_all(&self.pool)
+                    .await?;
+                (total, rows)
+            }
+            None => {
+                let total: (i64,) =
+                    sqlx::query_as("SELECT COUNT(*) FROM request_logs WHERE org_id = $1")
+                        .bind(org_id)
+                        .fetch_one(&self.pool)
+                        .await?;
+                let sql = format!(
+                    "SELECT {COLS} FROM request_logs WHERE org_id = $1 \
+                     ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+                );
+                let rows = sqlx::query_as::<_, RequestLogRow>(&sql)
+                    .bind(org_id)
+                    .bind(per_page as i64)
+                    .bind(offset)
+                    .fetch_all(&self.pool)
+                    .await?;
+                (total, rows)
+            }
+        };
+        let logs = rows.into_iter().map(request_log_from_row).collect();
+        Ok((logs, total.0 as u64))
+    }
+
+    async fn list_audit_log_for_tenant(
+        &self,
+        org_id: &str,
+        page: u32,
+        per_page: u32,
+    ) -> Result<(Vec<AuditLogEntry>, i64), sqlx::Error> {
+        let offset = ((page.saturating_sub(1)) * per_page) as i64;
+        let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE org_id = $1")
+            .bind(org_id)
+            .fetch_one(&self.pool)
+            .await?;
+        let rows = sqlx::query_as::<_, AuditLogRow>(
+            "SELECT id, actor_key_id, actor_label, action, target_type, target_id, \
+             before_json, after_json, created_at FROM audit_log WHERE org_id = $1 \
+             ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+        )
+        .bind(org_id)
+        .bind(per_page as i64)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        let entries = rows.into_iter().map(audit_log_from_row).collect();
+        Ok((entries, total.0))
     }
 }
