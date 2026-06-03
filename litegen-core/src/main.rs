@@ -1,15 +1,26 @@
 use std::sync::Arc;
 use axum::http::HeaderValue;
+use base64::Engine as _;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use litegen::api;
 use litegen::api::middleware::AppState;
-use litegen::config::{self, load_config};
+use litegen::config::{self, load_config, Mode};
 use litegen::observability::init_tracing;
 use litegen::proxy::{GenerationCache, ProxyRouter, ProviderRegistry, build_image_store, spawn_poller};
 use litegen::proxy::materializer::{Materializer, StorageAdapter};
+
+/// Decode a base64-encoded 32-byte secrets key. Returns `Some([u8;32])` only
+/// when the input decodes to exactly 32 bytes; otherwise `None`.
+fn decode_secrets_key(s: &Option<String>) -> Option<[u8; 32]> {
+    let raw = s.as_ref()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(raw.trim())
+        .ok()?;
+    bytes.try_into().ok()
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -100,6 +111,15 @@ async fn main() -> anyhow::Result<()> {
         info!(providers = ?oauth.enabled_providers(), "OAuth providers enabled");
     }
 
+    // Decode the BYO-credential encryption key (base64 -> 32 bytes).
+    let secrets_key = decode_secrets_key(&config.secrets_key);
+    if config.mode == Mode::Hosted && secrets_key.is_none() {
+        tracing::error!(
+            "Hosted mode requires LITEGEN__SECRETS_KEY to be a base64-encoded 32-byte key; \
+             credential encryption will be unavailable until it is set"
+        );
+    }
+
     // Build app state
     let state = Arc::new(AppState {
         router: router.clone(),
@@ -114,6 +134,9 @@ async fn main() -> anyhow::Result<()> {
             ),
         ),
         oauth,
+        mode: config.mode,
+        secrets_key,
+        dev: config.dev.clone(),
     });
 
     // Shutdown coordination: one signal fans out to the poller and to

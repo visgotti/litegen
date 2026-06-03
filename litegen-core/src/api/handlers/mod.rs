@@ -1884,6 +1884,9 @@ mod key_endpoint_tests {
             in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(64)),
 
             oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::SingleTenant,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
         })
     }
 
@@ -2038,6 +2041,9 @@ mod new_endpoint_tests {
             in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(64)),
 
             oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::SingleTenant,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
         })
     }
 
@@ -2397,6 +2403,9 @@ mod permission_scoping_tests {
             rate_limiter: Arc::new(crate::api::middleware::rate_limit::RateLimiter::new()),
             in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(64)),
             oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::SingleTenant,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
         })
     }
 
@@ -2561,6 +2570,9 @@ mod health_tests {
             in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(64)),
 
             oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::SingleTenant,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
         })
     }
 
@@ -2647,6 +2659,9 @@ mod health_tests {
             in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(64)),
 
             oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::SingleTenant,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
         });
 
         let app = build_health_router(state);
