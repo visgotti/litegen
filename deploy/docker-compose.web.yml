@@ -1,0 +1,15 @@
+# Web tier: serves the built dashboard on :80 + reverse-proxies the API.
+# Layered on top of docker-compose.prod.yml (same compose project = shared network),
+# so `web` can reach the `litegen` service by name. Brought up via:
+#   docker compose -f docker-compose.prod.yml -f docker-compose.web.yml --env-file .env up -d
+services:
+  web:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./dashboard-dist:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - litegen
