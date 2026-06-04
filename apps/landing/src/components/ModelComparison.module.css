@@ -1,0 +1,119 @@
+.section {
+  padding: 72px 0;
+  border-top: 1px solid var(--border);
+}
+
+.head {
+  max-width: 680px;
+  margin: 0 auto 28px;
+  text-align: center;
+}
+
+.heading {
+  margin-top: 10px;
+  font-size: clamp(1.6rem, 3.5vw, 2.3rem);
+  font-weight: 800;
+}
+
+.sub {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 1.05rem;
+}
+
+/* Prompt selector pills. */
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+
+.pill {
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease, transform 0.12s ease;
+}
+
+.pill:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.pillActive {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* The active prompt, shown verbatim above the grid. */
+.prompt {
+  max-width: 720px;
+  margin: 0 auto 28px;
+  text-align: center;
+  font-size: 1.1rem;
+  font-style: italic;
+  color: var(--text);
+}
+
+/* Result grid — one cell per provider:model. */
+.grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 18px;
+}
+
+.cell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Square frame so the grid stays tidy; images are contained (full output shown). */
+.frame {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* provider:model caption, monospace so it reads as an identifier. */
+.cap {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  word-break: break-word;
+}
+
+.prov {
+  color: var(--muted);
+}
+
+.sep {
+  color: var(--muted-2);
+  margin: 0 1px;
+}
+
+.model {
+  color: var(--accent);
+  font-weight: 600;
+}

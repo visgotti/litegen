@@ -32,29 +32,31 @@ export interface ProviderInfo {
   name: string;
   image?: boolean;
   video?: boolean;
+  /** Logo filename under public/logos/ (full-colour brand mark). */
+  logo?: string;
 }
 
 export const PROVIDERS: readonly ProviderInfo[] = [
   // First-party APIs we integrate directly. Marquee names first.
-  { name: 'OpenAI', image: true, video: true },
-  { name: 'Google', image: true, video: true },
-  { name: 'Stability AI', image: true },
-  { name: 'Black Forest Labs', image: true },
-  { name: 'Ideogram', image: true },
-  { name: 'Recraft', image: true },
-  { name: 'Leonardo.Ai', image: true, video: true },
-  { name: 'Runway', image: true, video: true },
-  { name: 'Luma', image: true, video: true },
-  { name: 'Kling', image: true, video: true },
-  { name: 'MiniMax', image: true, video: true },
-  { name: 'ByteDance', image: true, video: true },
-  { name: 'Amazon Bedrock', image: true, video: true },
-  { name: 'Tencent Hunyuan', image: true, video: true },
-  { name: 'Vidu', video: true },
-  { name: 'PixVerse', video: true },
+  { name: 'OpenAI', image: true, video: true, logo: 'openai.png' },
+  { name: 'Google', image: true, video: true, logo: 'google.png' },
+  { name: 'Stability AI', image: true, logo: 'stability-ai.webp' },
+  { name: 'Black Forest Labs', image: true, logo: 'black-forest-labs.png' },
+  { name: 'Ideogram', image: true, logo: 'ideogram.svg' },
+  { name: 'Recraft', image: true, logo: 'recraft.png' },
+  { name: 'Leonardo.Ai', image: true, video: true, logo: 'leonardo-ai.png' },
+  { name: 'Runway', image: true, video: true, logo: 'runway.png' },
+  { name: 'Luma', image: true, video: true, logo: 'luma.png' },
+  { name: 'Kling', image: true, video: true, logo: 'kling.png' },
+  { name: 'MiniMax', image: true, video: true, logo: 'minimax.png' },
+  { name: 'ByteDance', image: true, video: true, logo: 'bytedance.svg' },
+  { name: 'Amazon Bedrock', image: true, video: true, logo: 'amazon-bedrock.png' },
+  { name: 'Tencent Hunyuan', image: true, video: true, logo: 'tencent-hunyuan.svg' },
+  { name: 'Vidu', video: true, logo: 'vidu.png' },
+  { name: 'PixVerse', video: true, logo: 'pixverse.png' },
   // Aggregators / self-hosted.
-  { name: 'Replicate', image: true, video: true },
-  { name: 'Fal', image: true, video: true },
+  { name: 'Replicate', image: true, video: true, logo: 'replicate.png' },
+  { name: 'Fal', image: true, video: true, logo: 'fal.png' },
 ] as const;
 
 /** The quickstart snippet (code is not translated). */

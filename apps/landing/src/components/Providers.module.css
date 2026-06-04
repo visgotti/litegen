@@ -58,6 +58,27 @@
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
 }
 
+/* Brand-logo tile. A light card keeps full-colour marks (incl. dark/black ones)
+   legible on the dark chip, the way integrations pages render logo walls. */
+.logo {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+}
+
+.logo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
 .name {
   white-space: nowrap;
 }

@@ -50,6 +50,8 @@ export interface FlowNode {
   name?: string;
   /** Short 2-letter mark shown in the node when no logo is available. */
   initial?: string;
+  /** Full-colour brand logo filename under public/logos/ (preferred over initial). */
+  logo?: string;
   /**
    * Headline modality — drives the radial layout (image hemisphere up, video
    * down) and the node's halo tint. A provider may still *return* both kinds of
@@ -104,24 +106,24 @@ const PROVIDER_NODES_RAW: FlowNode[] = [
   // varied radius + angle per provider, with the left app→gateway corridor and a
   // minimum node separation respected. `kind` is the headline modality (halo
   // tint); the Image/Video tags shown on each node come from `outputs` below.
-  { id: 'openai', role: 'provider', name: 'OpenAI', initial: 'OA', kind: 'image', pos: { x: 60.7, y: 87.7 }, posMobile: { x: 13, y: 37.3 } },
-  { id: 'stability', role: 'provider', name: 'Stability', initial: 'St', kind: 'image', pos: { x: 21.4, y: 32.2 }, posMobile: { x: 40.9, y: 35.8 } },
-  { id: 'replicate', role: 'provider', name: 'Replicate', initial: 'Re', kind: 'image', pos: { x: 48.6, y: 21.6 }, posMobile: { x: 76.1, y: 36.8 } },
-  { id: 'bfl', role: 'provider', name: 'BFL', initial: 'BF', kind: 'image', pos: { x: 45, y: 88.9 }, posMobile: { x: 24.9, y: 45.3 } },
-  { id: 'ideogram', role: 'provider', name: 'Ideogram', initial: 'Id', kind: 'image', pos: { x: 21.2, y: 74 }, posMobile: { x: 54.5, y: 46.3 } },
-  { id: 'recraft', role: 'provider', name: 'Recraft', initial: 'Rc', kind: 'image', pos: { x: 82.5, y: 68.3 }, posMobile: { x: 85, y: 46.8 } },
-  { id: 'leonardo', role: 'provider', name: 'Leonardo', initial: 'Le', kind: 'image', pos: { x: 86.4, y: 52.9 }, posMobile: { x: 13, y: 54.5 } },
-  { id: 'google', role: 'provider', name: 'Google', initial: 'Go', kind: 'image', pos: { x: 58.5, y: 13.4 }, posMobile: { x: 42.4, y: 56.9 } },
-  { id: 'fal', role: 'provider', name: 'Fal', initial: 'Fa', kind: 'image', pos: { x: 37.5, y: 14.1 }, posMobile: { x: 75, y: 54.6 } },
-  { id: 'runway', role: 'provider', name: 'Runway', initial: 'Rw', kind: 'video', pos: { x: 77.9, y: 39.3 }, posMobile: { x: 23.4, y: 66.6 } },
-  { id: 'luma', role: 'provider', name: 'Luma', initial: 'Lu', kind: 'video', pos: { x: 73.5, y: 23.2 }, posMobile: { x: 52.7, y: 64.1 } },
-  { id: 'kling', role: 'provider', name: 'Kling', initial: 'Kl', kind: 'video', pos: { x: 29.2, y: 84.5 }, posMobile: { x: 83.2, y: 63.6 } },
-  { id: 'minimax', role: 'provider', name: 'MiniMax', initial: 'MM', kind: 'video', pos: { x: 40, y: 75.9 }, posMobile: { x: 13, y: 74.6 } },
-  { id: 'bytedance', role: 'provider', name: 'ByteDance', initial: 'BD', kind: 'video', pos: { x: 65, y: 72.7 }, posMobile: { x: 39.5, y: 76 } },
-  { id: 'bedrock', role: 'provider', name: 'Bedrock', initial: 'Be', kind: 'video', pos: { x: 34.6, y: 28.3 }, posMobile: { x: 76.2, y: 74.5 } },
-  { id: 'hunyuan', role: 'provider', name: 'Hunyuan', initial: 'Hy', kind: 'video', pos: { x: 78.7, y: 83 }, posMobile: { x: 23.3, y: 84.5 } },
-  { id: 'vidu', role: 'provider', name: 'Vidu', initial: 'Vd', kind: 'video', pos: { x: 89.4, y: 31.4 }, posMobile: { x: 60.9, y: 83.9 } },
-  { id: 'pixverse', role: 'provider', name: 'PixVerse', initial: 'Px', kind: 'video', pos: { x: 73.6, y: 56.6 }, posMobile: { x: 87, y: 84.6 } },
+  { id: 'openai', role: 'provider', name: 'OpenAI', initial: 'OA', logo: 'openai.png', kind: 'image', pos: { x: 60.7, y: 87.7 }, posMobile: { x: 13, y: 37.3 } },
+  { id: 'stability', role: 'provider', name: 'Stability', initial: 'St', logo: 'stability-ai.webp', kind: 'image', pos: { x: 21.4, y: 32.2 }, posMobile: { x: 40.9, y: 35.8 } },
+  { id: 'replicate', role: 'provider', name: 'Replicate', initial: 'Re', logo: 'replicate.png', kind: 'image', pos: { x: 48.6, y: 21.6 }, posMobile: { x: 76.1, y: 36.8 } },
+  { id: 'bfl', role: 'provider', name: 'BFL', initial: 'BF', logo: 'black-forest-labs.png', kind: 'image', pos: { x: 45, y: 88.9 }, posMobile: { x: 24.9, y: 45.3 } },
+  { id: 'ideogram', role: 'provider', name: 'Ideogram', initial: 'Id', logo: 'ideogram.svg', kind: 'image', pos: { x: 21.2, y: 74 }, posMobile: { x: 54.5, y: 46.3 } },
+  { id: 'recraft', role: 'provider', name: 'Recraft', initial: 'Rc', logo: 'recraft.png', kind: 'image', pos: { x: 82.5, y: 68.3 }, posMobile: { x: 85, y: 46.8 } },
+  { id: 'leonardo', role: 'provider', name: 'Leonardo', initial: 'Le', logo: 'leonardo-ai.png', kind: 'image', pos: { x: 86.4, y: 52.9 }, posMobile: { x: 13, y: 54.5 } },
+  { id: 'google', role: 'provider', name: 'Google', initial: 'Go', logo: 'google.png', kind: 'image', pos: { x: 58.5, y: 13.4 }, posMobile: { x: 42.4, y: 56.9 } },
+  { id: 'fal', role: 'provider', name: 'Fal', initial: 'Fa', logo: 'fal.png', kind: 'image', pos: { x: 37.5, y: 14.1 }, posMobile: { x: 75, y: 54.6 } },
+  { id: 'runway', role: 'provider', name: 'Runway', initial: 'Rw', logo: 'runway.png', kind: 'video', pos: { x: 77.9, y: 39.3 }, posMobile: { x: 23.4, y: 66.6 } },
+  { id: 'luma', role: 'provider', name: 'Luma', initial: 'Lu', logo: 'luma.png', kind: 'video', pos: { x: 73.5, y: 23.2 }, posMobile: { x: 52.7, y: 64.1 } },
+  { id: 'kling', role: 'provider', name: 'Kling', initial: 'Kl', logo: 'kling.png', kind: 'video', pos: { x: 29.2, y: 84.5 }, posMobile: { x: 83.2, y: 63.6 } },
+  { id: 'minimax', role: 'provider', name: 'MiniMax', initial: 'MM', logo: 'minimax.png', kind: 'video', pos: { x: 40, y: 75.9 }, posMobile: { x: 13, y: 74.6 } },
+  { id: 'bytedance', role: 'provider', name: 'ByteDance', initial: 'BD', logo: 'bytedance.svg', kind: 'video', pos: { x: 65, y: 72.7 }, posMobile: { x: 39.5, y: 76 } },
+  { id: 'bedrock', role: 'provider', name: 'Bedrock', initial: 'Be', logo: 'amazon-bedrock.png', kind: 'video', pos: { x: 34.6, y: 28.3 }, posMobile: { x: 76.2, y: 74.5 } },
+  { id: 'hunyuan', role: 'provider', name: 'Hunyuan', initial: 'Hy', logo: 'tencent-hunyuan.svg', kind: 'video', pos: { x: 78.7, y: 83 }, posMobile: { x: 23.3, y: 84.5 } },
+  { id: 'vidu', role: 'provider', name: 'Vidu', initial: 'Vd', logo: 'vidu.png', kind: 'video', pos: { x: 89.4, y: 31.4 }, posMobile: { x: 60.9, y: 83.9 } },
+  { id: 'pixverse', role: 'provider', name: 'PixVerse', initial: 'Px', logo: 'pixverse.png', kind: 'video', pos: { x: 73.6, y: 56.6 }, posMobile: { x: 87, y: 84.6 } },
 ];
 
 /** Safe default for any provider missing from the generated snapshot. */

@@ -25,6 +25,12 @@ const nextConfig: NextConfig = {
   // Pin the tracing root to this app (a stray lockfile above the repo would
   // otherwise make Next infer the wrong workspace root).
   outputFileTracingRoot: import.meta.dirname,
+  // Let a production/deploy build use a SEPARATE build dir from `next dev`.
+  // `next dev` and `next build` both manage `.next`; running a deploy build
+  // while a dev server (port 8019) is up makes the dev file-watcher rewrite
+  // `.next` mid-build and the build dies with `ENOENT … _ssgManifest.js`.
+  // deploy.js sets NEXT_DIST_DIR=.next-prod so the two never share state.
+  distDir: process.env.NEXT_DIST_DIR || '.next',
 };
 
 export default withNextIntl(nextConfig);

@@ -23,7 +23,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Boxes, Layers, MousePointer2 } from 'lucide-react';
+import { Boxes, Layers } from 'lucide-react';
 import {
   ALL_NODES,
   APP_NODE,
@@ -37,6 +37,10 @@ import {
 import { PROVIDER_MODELS } from './infra-flow/provider-models.generated';
 import type { FlowHandle, FlowRenderer, PointerState } from './infra-flow/renderer';
 import styles from './InfraFlow.module.css';
+
+// Mirror next.config's basePath so logo URLs resolve under a subpath deploy
+// (GitHub Pages) as well as at the domain root (Cloudflare).
+const BASE = process.env.NEXT_PUBLIC_BASE_PATH?.trim().replace(/\/$/, '') || '';
 
 /** Build the CSS custom properties that position a node in both layouts. */
 function posVars(node: FlowNode): React.CSSProperties {
@@ -88,6 +92,10 @@ export function InfraFlow() {
   const rendererRef = useRef<FlowRenderer | null>(null);
 
   const [gpuActive, setGpuActive] = useState(false);
+  // Active render backend + whether a `?renderer=` debug flag pinned it (shows a
+  // small badge so WebGPU vs the WebGL2 fallback can be compared side by side).
+  const [backendKind, setBackendKind] = useState<'webgpu' | 'webgl2' | 'svg' | null>(null);
+  const [forcedBackend, setForcedBackend] = useState(false);
   // The currently-hovered node id, used to light its route in the DOM/SVG layer
   // so the "trace its route" interaction works even when WebGPU is unavailable.
   const [focusedId, setFocusedId] = useState<string | null>(null);
@@ -112,6 +120,21 @@ export function InfraFlow() {
     const stage = stageRef.current;
     const canvas = canvasRef.current;
     if (!stage || !canvas) return;
+
+    // Debug override: ?renderer=webgl|webgpu|svg pins one backend for comparison.
+    const flag =
+      typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('renderer')
+        : null;
+    const force: 'webgpu' | 'webgl2' | 'svg' | undefined =
+      flag === 'webgl' || flag === 'webgl2'
+        ? 'webgl2'
+        : flag === 'webgpu'
+          ? 'webgpu'
+          : flag === 'svg' || flag === 'none'
+            ? 'svg'
+            : undefined;
+    setForcedBackend(force !== undefined);
 
     // Assemble handles in the order the shader expects: app, gateway, providers.
     // Each handle's `el` is the element to measure (anchor if one was provided).
@@ -143,6 +166,7 @@ export function InfraFlow() {
           focus: focusRef.current,
           reducedMotion,
           signal: controller.signal,
+          forceBackend: force,
           // Unexpected device loss → reveal the static SVG fallback.
           onLost: () => setGpuActive(false),
         });
@@ -153,6 +177,7 @@ export function InfraFlow() {
         }
         rendererRef.current = renderer;
         setGpuActive(Boolean(renderer));
+        setBackendKind(renderer ? renderer.kind : 'svg');
       })
       .catch(() => {
         /* keep the SVG fallback */
@@ -355,10 +380,15 @@ export function InfraFlow() {
                   >
                     <span
                       ref={collectAnchor(provider.id)}
-                      className={styles.pmark}
+                      className={`${styles.pmark}${provider.logo ? ` ${styles.pmarkLogo}` : ''}`}
                       aria-hidden="true"
                     >
-                      {provider.initial}
+                      {provider.logo ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={`${BASE}/logos/${provider.logo}`} alt="" decoding="async" />
+                      ) : (
+                        provider.initial
+                      )}
                     </span>
                     <span className={styles.pname}>{provider.name}</span>
                     {(provider.outputs?.image || provider.outputs?.video) && (
@@ -414,10 +444,15 @@ export function InfraFlow() {
               </ul>
             </div>
 
-            <p className={styles.hint}>
-              <MousePointer2 size={13} aria-hidden="true" />
-              {t('hint')}
-            </p>
+            {forcedBackend && (
+              <div className={styles.badge} aria-hidden="true">
+                {backendKind === 'webgpu'
+                  ? 'WebGPU'
+                  : backendKind === 'webgl2'
+                    ? 'WebGL2'
+                    : 'SVG fallback'}
+              </div>
+            )}
           </div>
 
           <figcaption className={styles.srOnly}>{t('figcaption')}</figcaption>
