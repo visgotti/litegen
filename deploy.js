@@ -559,7 +559,9 @@ async function deployWeb() {
       if (!fs.existsSync(landingOut)) {
         throw new Error(`landing build produced no ${landingOut} directory`);
       }
-      assertNoLocalhostInBundle('apps/landing/out', 'landing');
+      // NOTE: no localhost guard here — the landing is a marketing/docs site that
+      // intentionally shows `http://localhost:4000` in API code-examples. The guard
+      // is for the dashboard, whose wired API base must never be localhost.
       console.log('  Landing build OK.');
     } catch (err) {
       console.warn(`\n  ⚠ Landing build FAILED: ${err.message}`);
