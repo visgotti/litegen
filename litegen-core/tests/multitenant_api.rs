@@ -122,6 +122,7 @@ async fn spawn_app_with_providers(extra_providers: &[(&str, Value)]) -> TestApp 
         in_flight: Arc::new(litegen::api::middleware::backpressure::InFlightLimit::new(64)),
         oauth: litegen::auth::oauth::OAuthConfig::default(),
         mode: Mode::Hosted,
+        allow_password: true,
         secrets_key: Some([7u8; 32]),
         dev: DevFlags {
             expose_invite_tokens: true,
