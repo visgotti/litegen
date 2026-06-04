@@ -1793,6 +1793,12 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
             "/v1/apps/{app_id}/provider-credentials/{provider}",
             delete(orgs::delete_provider_credential),
         )
+        .route(
+            "/v1/apps/{app_id}/storage",
+            get(orgs::get_app_storage)
+                .put(orgs::put_app_storage)
+                .delete(orgs::delete_app_storage),
+        )
         .layer(middleware::from_fn_with_state(
             csrf_state.clone(),
             csrf_middleware,

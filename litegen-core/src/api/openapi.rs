@@ -74,6 +74,10 @@ use utoipa::OpenApi;
         crate::api::handlers::orgs::list_provider_credentials,
         crate::api::handlers::orgs::create_provider_credential,
         crate::api::handlers::orgs::delete_provider_credential,
+        // BYO app storage
+        crate::api::handlers::orgs::get_app_storage,
+        crate::api::handlers::orgs::put_app_storage,
+        crate::api::handlers::orgs::delete_app_storage,
     ),
     components(schemas(
         // Request / response types (from `types`)
@@ -148,6 +152,7 @@ use utoipa::OpenApi;
         crate::types::Application,
         crate::types::OrganizationMember,
         crate::types::ProviderCredentialInfo,
+        crate::types::AppStorageInfo,
         // Orgs handler schemas (views + request bodies)
         crate::api::handlers::orgs::OrgView,
         crate::api::handlers::orgs::OrgSummary,
@@ -160,6 +165,7 @@ use utoipa::OpenApi;
         crate::api::handlers::orgs::UpdateMemberRequest,
         crate::api::handlers::orgs::TransferOwnerRequest,
         crate::api::handlers::orgs::CreateProviderCredentialRequest,
+        crate::api::handlers::orgs::PutAppStorageRequest,
         // Capability schema (response of GET /v1/models/{id}).
         // `MediaType` and `ModelPricing` are renamed via `#[schema(as = ...)]` to
         // avoid collisions with the same-named types in `crate::types`.

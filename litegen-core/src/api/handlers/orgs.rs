@@ -967,5 +967,241 @@ pub async fn delete_provider_credential(
     }
 }
 
+// ─── Per-app BYO storage config ──────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct PutAppStorageRequest {
+    #[serde(default)]
+    pub backend: Option<String>,
+    pub bucket_name: String,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub endpoint_url: Option<String>,
+    #[serde(default)]
+    pub custom_public_url: Option<String>,
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+    /// Write-only. Provide WITH `secret_access_key` to set/rotate; omit BOTH to keep existing.
+    #[serde(default)]
+    pub access_key_id: Option<String>,
+    /// Write-only.
+    #[serde(default)]
+    pub secret_access_key: Option<String>,
+}
+
+fn app_storage_info_from_row(row: crate::types::AppStorageRow) -> crate::types::AppStorageInfo {
+    crate::types::AppStorageInfo {
+        configured: true,
+        backend: Some(row.backend),
+        bucket_name: Some(row.bucket_name),
+        region: Some(row.region),
+        endpoint_url: row.endpoint_url,
+        custom_public_url: row.custom_public_url,
+        path_prefix: row.path_prefix,
+        access_key_id_hint: row.access_key_id_hint,
+        updated_at: Some(row.updated_at),
+    }
+}
+
+/// GET /v1/apps/{app_id}/storage — read BYO storage config (storage_cred:read). No secret.
+#[utoipa::path(
+    get,
+    path = "/v1/apps/{app_id}/storage",
+    params(("app_id" = String, Path, description = "Application ID")),
+    responses(
+        (status = 200, description = "Storage config (no secret)", body = crate::types::AppStorageInfo),
+        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+    ),
+    tag = "Applications"
+)]
+pub async fn get_app_storage(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+    Path(app_id): Path<String>,
+) -> Response {
+    let (_, org_id) = match org_for_app(&state, &app_id).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::StorageCredRead).await {
+        return resp;
+    }
+    match state.db.get_app_storage(&app_id).await {
+        Ok(Some(row)) => (StatusCode::OK, Json(app_storage_info_from_row(row))).into_response(),
+        Ok(None) => (
+            StatusCode::OK,
+            Json(crate::types::AppStorageInfo {
+                configured: false,
+                backend: None,
+                bucket_name: None,
+                region: None,
+                endpoint_url: None,
+                custom_public_url: None,
+                path_prefix: None,
+                access_key_id_hint: None,
+                updated_at: None,
+            }),
+        )
+            .into_response(),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// PUT /v1/apps/{app_id}/storage — upsert BYO storage config (storage_cred:write).
+#[utoipa::path(
+    put,
+    path = "/v1/apps/{app_id}/storage",
+    params(("app_id" = String, Path, description = "Application ID")),
+    request_body = PutAppStorageRequest,
+    responses(
+        (status = 200, description = "Stored (no secret)", body = crate::types::AppStorageInfo),
+        (status = 400, description = "Bad request / secrets key unavailable", body = crate::types::ErrorResponse),
+        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+    ),
+    tag = "Applications"
+)]
+pub async fn put_app_storage(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+    Path(app_id): Path<String>,
+    Json(body): Json<PutAppStorageRequest>,
+) -> Response {
+    let (_, org_id) = match org_for_app(&state, &app_id).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::StorageCredWrite).await {
+        return resp;
+    }
+
+    let secrets_key = match state.secrets_key {
+        Some(k) => k,
+        None => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "secrets_key_unavailable",
+                "Storage credentials require a configured secrets key",
+            );
+        }
+    };
+
+    let bucket_name = body.bucket_name.trim().to_string();
+    if bucket_name.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "invalid_bucket", "bucket_name is required");
+    }
+    let backend = body
+        .backend
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("s3")
+        .to_string();
+    let region = body
+        .region
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("us-east-1")
+        .to_string();
+
+    let ak = body.access_key_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let sk = body.secret_access_key.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let (secret_ciphertext, secret_nonce, access_key_id_hint) = match (ak, sk) {
+        (Some(ak), Some(sk)) => {
+            let plaintext = match serde_json::to_vec(
+                &serde_json::json!({ "access_key_id": ak, "secret_access_key": sk }),
+            ) {
+                Ok(v) => v,
+                Err(e) => return internal_error(&e.to_string()),
+            };
+            let (ct, nonce) = match crate::auth::secrets::encrypt(&secrets_key, &plaintext) {
+                Ok(v) => v,
+                Err(e) => return internal_error(&e),
+            };
+            let hint = if ak.len() >= 4 {
+                Some(format!("…{}", &ak[ak.len() - 4..]))
+            } else {
+                None
+            };
+            (ct, nonce, hint)
+        }
+        (None, None) => match state.db.get_app_storage(&app_id).await {
+            Ok(Some(existing)) => {
+                (existing.secret_ciphertext, existing.secret_nonce, existing.access_key_id_hint)
+            }
+            Ok(None) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "credentials_required",
+                    "access_key_id and secret_access_key are required for a new storage config",
+                );
+            }
+            Err(e) => return internal_error(&e.to_string()),
+        },
+        _ => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "credentials_incomplete",
+                "provide both access_key_id and secret_access_key, or neither",
+            );
+        }
+    };
+
+    let input = crate::types::AppStorageUpsert {
+        app_id: app_id.clone(),
+        backend,
+        bucket_name,
+        region,
+        endpoint_url: body.endpoint_url.clone().filter(|s| !s.trim().is_empty()),
+        custom_public_url: body.custom_public_url.clone().filter(|s| !s.trim().is_empty()),
+        path_prefix: body.path_prefix.clone().filter(|s| !s.trim().is_empty()),
+        access_key_id_hint,
+        secret_ciphertext,
+        secret_nonce,
+    };
+    if let Err(e) = state.db.upsert_app_storage(&input).await {
+        return internal_error(&e.to_string());
+    }
+
+    match state.db.get_app_storage(&app_id).await {
+        Ok(Some(row)) => (StatusCode::OK, Json(app_storage_info_from_row(row))).into_response(),
+        Ok(None) => internal_error("storage config vanished after write"),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// DELETE /v1/apps/{app_id}/storage — remove BYO storage config (storage_cred:delete).
+#[utoipa::path(
+    delete,
+    path = "/v1/apps/{app_id}/storage",
+    params(("app_id" = String, Path, description = "Application ID")),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+        (status = 404, description = "Not found", body = crate::types::ErrorResponse),
+    ),
+    tag = "Applications"
+)]
+pub async fn delete_app_storage(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+    Path(app_id): Path<String>,
+) -> Response {
+    let (_, org_id) = match org_for_app(&state, &app_id).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::StorageCredDelete).await
+    {
+        return resp;
+    }
+    match state.db.delete_app_storage(&app_id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => err(StatusCode::NOT_FOUND, "storage_not_found", "Storage config not found"),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests;

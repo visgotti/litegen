@@ -249,6 +249,9 @@ impl Client {
     async fn delete(&mut self, path: &str, headers: &[(&str, &str)]) -> Resp {
         self.send(reqwest::Method::DELETE, path, None, headers).await
     }
+    async fn put_with(&mut self, path: &str, body: Value, headers: &[(&str, &str)]) -> Resp {
+        self.send(reqwest::Method::PUT, path, Some(body), headers).await
+    }
 
     /// Fetch the CSRF token for the current session.
     async fn csrf(&mut self) -> String {
@@ -1181,4 +1184,118 @@ async fn byo_credential_reaches_upstream() {
         auth, "Bearer APPKEY",
         "upstream should receive the per-app BYO key, got {auth:?}"
     );
+}
+
+// ─── BYO app storage: API surface ────────────────────────────────────────────
+
+#[tokio::test]
+async fn app_storage_crud_roundtrip_and_no_secret_leak() {
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, _secret) = signup_app_and_key(&mut c, "stg-crud").await;
+    let csrf = c.csrf().await;
+
+    let g0 = c.get(&format!("/v1/apps/{app_id}/storage")).await;
+    assert_eq!(g0.status, 200, "{:?}", g0.body);
+    assert_eq!(g0.body["configured"], serde_json::json!(false));
+
+    let put = c
+        .put_with(
+            &format!("/v1/apps/{app_id}/storage"),
+            json!({
+                "bucket_name": "acme-bucket",
+                "region": "us-west-2",
+                "endpoint_url": "https://minio.example.com",
+                "path_prefix": "litegen/images",
+                "access_key_id": "AKIAEXAMPLE9999",
+                "secret_access_key": "top-secret-value"
+            }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(put.status, 200, "put storage failed: {:?}", put.body);
+
+    let g1 = c.get(&format!("/v1/apps/{app_id}/storage")).await;
+    assert_eq!(g1.body["configured"], serde_json::json!(true));
+    assert_eq!(g1.body["bucket_name"], "acme-bucket");
+    assert_eq!(g1.body["region"], "us-west-2");
+    assert_eq!(g1.body["access_key_id_hint"], "…9999");
+    let raw = serde_json::to_string(&g1.body).unwrap();
+    assert!(!raw.contains("top-secret-value"), "secret leaked in GET: {raw}");
+    assert!(!raw.contains("AKIAEXAMPLE9999"), "access key id leaked in GET: {raw}");
+
+    let del = c.delete(&format!("/v1/apps/{app_id}/storage"), &[("x-csrf-token", &csrf)]).await;
+    assert_eq!(del.status, 204, "{:?}", del.body);
+    let g2 = c.get(&format!("/v1/apps/{app_id}/storage")).await;
+    assert_eq!(g2.body["configured"], serde_json::json!(false));
+}
+
+#[tokio::test]
+async fn app_storage_upsert_retains_secret_when_keys_omitted() {
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, _secret) = signup_app_and_key(&mut c, "stg-retain").await;
+    let csrf = c.csrf().await;
+
+    let p1 = c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({ "bucket_name": "b1", "access_key_id": "AKIA1111", "secret_access_key": "sek" }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+    assert_eq!(p1.status, 200, "{:?}", p1.body);
+
+    let p2 = c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({ "bucket_name": "b2" }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+    assert_eq!(p2.status, 200, "retain-secret put failed: {:?}", p2.body);
+    let g = c.get(&format!("/v1/apps/{app_id}/storage")).await;
+    assert_eq!(g.body["bucket_name"], "b2");
+    assert_eq!(g.body["access_key_id_hint"], "…1111");
+
+    let p3 = c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({ "bucket_name": "b3", "access_key_id": "AKIA2222" }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+    assert_eq!(p3.status, 400, "incomplete creds should 400: {:?}", p3.body);
+
+    let _ = c.delete(&format!("/v1/apps/{app_id}/storage"), &[("x-csrf-token", &csrf)]).await;
+    let p4 = c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({ "bucket_name": "b4" }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+    assert_eq!(p4.status, 400, "create without keys should 400: {:?}", p4.body);
+}
+
+#[tokio::test]
+async fn app_storage_cross_tenant_isolation() {
+    let app = spawn_app().await;
+
+    let mut a = Client::new(&app.base);
+    let (app_a, _) = signup_app_and_key(&mut a, "stg-orga").await;
+    let csrf_a = a.csrf().await;
+    let put = a.put_with(
+        &format!("/v1/apps/{app_a}/storage"),
+        json!({ "bucket_name": "a-bucket", "access_key_id": "AKIAAAAA", "secret_access_key": "sek" }),
+        &[("x-csrf-token", &csrf_a)],
+    ).await;
+    assert_eq!(put.status, 200, "{:?}", put.body);
+
+    let mut b = Client::new(&app.base);
+    signup(&mut b, &unique_email("stg-orgb"), "OrgB").await;
+    let csrf_b = b.csrf().await;
+
+    let g = b.get(&format!("/v1/apps/{app_a}/storage")).await;
+    assert!(g.status == 403 || g.status == 404, "cross-tenant GET leaked: {} {:?}", g.status, g.body);
+    let p = b.put_with(
+        &format!("/v1/apps/{app_a}/storage"),
+        json!({ "bucket_name": "hijack", "access_key_id": "x", "secret_access_key": "y" }),
+        &[("x-csrf-token", &csrf_b)],
+    ).await;
+    assert!(p.status == 403 || p.status == 404, "cross-tenant PUT allowed: {} {:?}", p.status, p.body);
+    let d = b.delete(&format!("/v1/apps/{app_a}/storage"), &[("x-csrf-token", &csrf_b)]).await;
+    assert!(d.status == 403 || d.status == 404, "cross-tenant DELETE allowed: {} {:?}", d.status, d.body);
 }
