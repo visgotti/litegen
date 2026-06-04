@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { client } from '../sdk-client';
 import type { AuditLogEntry } from '@litegen/sdk';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const API_BASE = __LITEGEN_API_BASE__;
 
 async function exportCsv(path: string, filename: string) {
   const apiKey = localStorage.getItem('litegen_api_key') ?? '';

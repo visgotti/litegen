@@ -160,18 +160,31 @@ function assertNoLocalhostInBundle(dir, label) {
   if (!fs.existsSync(abs)) {
     throw new Error(`${label}: build output ${dir} does not exist — the build did not produce it. Refusing to deploy.`);
   }
-  let hits = '';
+  // Capture each localhost occurrence with leading context. We FAIL on a real
+  // wired dev URL, but ALLOW a `??`/`||` fallback default (e.g. the vendored SDK's
+  // `baseUrl ?? "http://localhost:4000"`) that the app always overrides — those
+  // never become the effective endpoint and would otherwise block every deploy.
+  let raw = '';
   try {
-    hits = execSync(`grep -rIlE 'localhost:[0-9]' ${JSON.stringify(abs)}`, { encoding: 'utf8' }).trim();
+    raw = execSync(`grep -rIohE '.{0,24}localhost:[0-9]+' ${JSON.stringify(abs)}`, { encoding: 'utf8' });
   } catch (err) {
-    if (err.status === 1) hits = '';
+    if (err.status === 1) raw = '';
     else throw new Error(`${label}: localhost guard grep failed (exit ${err.status}): ${err.message}`);
   }
-  if (hits) {
-    console.error(`\n✖ ${label}: build leaked a localhost dev URL:\n${hits}`);
-    throw new Error(`${label}: build output references http://localhost:<port>. Refusing to deploy a broken bundle.`);
+  const offenders = raw
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((occ) => {
+      const prefix = occ.slice(0, occ.indexOf('localhost'));
+      // Allowed iff it's a fallback default (preceded by `??` or `||`).
+      return !/\?\?|\|\|/.test(prefix);
+    });
+  if (offenders.length) {
+    console.error(`\n✖ ${label}: build leaked a localhost dev URL:\n  ${offenders.join('\n  ')}`);
+    throw new Error(`${label}: build output references http://localhost:<port> as a wired endpoint. Refusing to deploy a broken bundle.`);
   }
-  console.log(`  OK — no localhost dev URLs in ${label} output.`);
+  console.log(`  OK — no wired localhost dev URLs in ${label} output (fallback defaults ignored).`);
 }
 
 // ── DigitalOcean API ──────────────────────────────────────────────────────

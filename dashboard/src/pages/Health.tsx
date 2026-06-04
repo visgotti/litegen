@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { client } from '../sdk-client';
 import type { HealthResponse } from '@litegen/sdk';
 
-const BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const BASE = __LITEGEN_API_BASE__;
 
 type ProbeStatus = 'unknown' | 'alive' | 'ready' | 'not_ready' | 'error';
 
