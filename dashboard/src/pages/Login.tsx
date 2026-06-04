@@ -3,12 +3,20 @@ import { useNavigate, Link } from 'react-router-dom';
 import { client, API_BASE } from '../sdk-client';
 import { LiteGenAPIError, type AuthConfigResponse } from '@litegen/sdk';
 
+/** Read the post-login target from the `?next=` query param (default `/`). */
+function resolveNext(): string {
+  const raw = new URLSearchParams(window.location.search).get('next');
+  // Only allow same-site, relative paths; never an auth page (would loop).
+  if (raw && raw.startsWith('/') && !raw.startsWith('//') && raw !== '/login' && raw !== '/signup') {
+    return raw;
+  }
+  return '/';
+}
+
 /** Browser-navigate to the provider's OAuth start, preserving the post-login target. */
 function oauthStart(provider: 'github' | 'google') {
-  const next = window.location.pathname + window.location.search;
-  const safeNext = next.startsWith('/') && !next.startsWith('//') ? next : '/';
   window.location.href =
-    `${API_BASE}/v1/auth/oauth/${provider}/start?next=${encodeURIComponent(safeNext === '/login' ? '/' : safeNext)}`;
+    `${API_BASE}/v1/auth/oauth/${provider}/start?next=${encodeURIComponent(resolveNext())}`;
 }
 
 const providerBtnStyle: React.CSSProperties = {
@@ -81,7 +89,7 @@ export default function Login() {
     setLoading(true);
     try {
       await client.auth.login({ email, password });
-      navigate('/');
+      navigate(resolveNext());
     } catch (err) {
       if (err instanceof LiteGenAPIError) {
         if (err.status === 401) {
@@ -107,10 +115,11 @@ export default function Login() {
   const googleEnabled = providers.includes('google');
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', background: '#0d1117' }}>
-      <div style={{ width: 380, padding: 32, background: '#161b22', borderRadius: 12, border: '1px solid #30363d' }}>
+    <div className="auth-page" data-testid="auth-page">
+      <div className="auth-card">
+        <div className="auth-brand">⚡ LiteGen</div>
         <h2 style={{ margin: '0 0 24px', color: '#e6edf3', fontSize: 24, fontWeight: 600, textAlign: 'center' }}>
-          Sign in to LiteGen
+          Sign in
         </h2>
 
         {passwordEnabled && (
@@ -192,6 +201,11 @@ export default function Login() {
             </Link>
           </div>
         )}
+
+        <div className="auth-switch-link">
+          Don't have an account?{' '}
+          <Link to={`/signup${window.location.search}`} data-testid="login-signup-link">Sign up</Link>
+        </div>
       </div>
     </div>
   );

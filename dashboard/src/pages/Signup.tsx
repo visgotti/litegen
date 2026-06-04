@@ -1,10 +1,19 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { client, API_BASE } from '../sdk-client';
 import { LiteGenAPIError, type AuthConfigResponse } from '@litegen/sdk';
 
+/** Read the post-login target from the `?next=` query param (default `/`). */
+function resolveNext(): string {
+  const raw = new URLSearchParams(window.location.search).get('next');
+  if (raw && raw.startsWith('/') && !raw.startsWith('//') && raw !== '/login' && raw !== '/signup') {
+    return raw;
+  }
+  return '/';
+}
+
 function oauthStart(provider: 'github' | 'google') {
-  window.location.href = `${API_BASE}/v1/auth/oauth/${provider}/start?next=${encodeURIComponent('/')}`;
+  window.location.href = `${API_BASE}/v1/auth/oauth/${provider}/start?next=${encodeURIComponent(resolveNext())}`;
 }
 
 const providerBtnStyle: React.CSSProperties = {
@@ -88,7 +97,7 @@ export default function Signup() {
     try {
       const trimmedOrg = orgName.trim();
       await client.auth.signup({ email, password, ...(trimmedOrg ? { org_name: trimmedOrg } : {}) });
-      navigate('/');
+      navigate(resolveNext());
     } catch (err) {
       if (err instanceof LiteGenAPIError) {
         if (err.status === 409) {
@@ -115,8 +124,9 @@ export default function Signup() {
   const googleEnabled = providers.includes('google');
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', background: '#0d1117' }}>
-      <div style={{ width: 380, padding: 32, background: '#161b22', borderRadius: 12, border: '1px solid #30363d' }}>
+    <div className="auth-page" data-testid="auth-page">
+      <div className="auth-card">
+        <div className="auth-brand">⚡ LiteGen</div>
         <h2 style={{ margin: '0 0 24px', color: '#e6edf3', fontSize: 24, fontWeight: 600, textAlign: 'center' }}>
           Create your account
         </h2>
@@ -221,12 +231,10 @@ export default function Signup() {
           </div>
         )}
 
-        {passwordEnabled && (
-          <div style={{ marginTop: 20, textAlign: 'center', color: '#8b949e', fontSize: 13 }}>
-            Already have an account?{' '}
-            <a href="/login" style={{ color: '#58a6ff', textDecoration: 'none' }}>Sign in</a>
-          </div>
-        )}
+        <div className="auth-switch-link">
+          Already have an account?{' '}
+          <Link to={`/login${window.location.search}`} data-testid="signup-login-link">Sign in</Link>
+        </div>
       </div>
     </div>
   );

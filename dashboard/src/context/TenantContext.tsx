@@ -26,6 +26,8 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   );
   const [apps, setApps] = useState<Application[]>([]);
   const [loading, setLoading] = useState(true);
+  // null = still checking; true = session valid (or API-key flow); false = 401.
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   // Track which org's apps are loaded (also guards StrictMode double-mount in dev).
   const loadedAppsForOrg = useRef<string | null>(null);
 
@@ -57,8 +59,10 @@ export function TenantProvider({ children }: { children: ReactNode }) {
   }, [persistApp]);
 
   const refresh = useCallback(async (): Promise<void> => {
-    // API-key flow has no org/app session context — skip tenant resolution.
+    // API-key flow has no org/app session context — skip tenant resolution,
+    // but treat the master-key path as authenticated so the shell still renders.
     if (getApiKey()) {
+      setAuthenticated(true);
       setLoading(false);
       return;
     }
@@ -66,6 +70,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       const resp = (await client.auth.me()) as MeResponse;
       const fetchedOrgs = resp.orgs ?? [];
       setOrgs(fetchedOrgs);
+      setAuthenticated(true);
 
       const storedOrg = localStorage.getItem(ACTIVE_ORG_KEY);
       const storedApp = localStorage.getItem(ACTIVE_APP_KEY);
@@ -91,6 +96,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     } catch {
       // Not authenticated (401) or backend not in hosted mode — leave tenant unset.
       setOrgs([]);
+      setAuthenticated(false);
     } finally {
       setLoading(false);
     }
@@ -102,6 +108,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     const onUnauth = () => {
       setOrgs([]);
       setApps([]);
+      setAuthenticated(false);
     };
     window.addEventListener('litegen:unauthenticated', onUnauth);
     return () => window.removeEventListener('litegen:unauthenticated', onUnauth);
@@ -135,10 +142,11 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     apps,
     activeOrgRole,
     loading,
+    authenticated,
     switchOrg,
     switchApp,
     refresh,
-  }), [orgs, activeOrg, activeApp, apps, activeOrgRole, loading, switchOrg, switchApp, refresh]);
+  }), [orgs, activeOrg, activeApp, apps, activeOrgRole, loading, authenticated, switchOrg, switchApp, refresh]);
 
   return <TenantContext.Provider value={value}>{children}</TenantContext.Provider>;
 }
