@@ -3,8 +3,11 @@
 
   "known_uncovered": {
     "_comment": "METHOD path operations the OpenAPI spec declares but the hand-written SDK facade does NOT yet surface a method for. Per language. Adding a method for one of these must be accompanied by removing it here (the 'no now-covered entries' check enforces that). A brand-new spec operation with no method and no entry here fails the suite.",
-    "typescript": [],
+    "typescript": [
+      "GET /auth/redirect"
+    ],
     "python": [
+      "DELETE /v1/apps/{}/storage",
       "DELETE /v1/account/sessions/{}",
       "DELETE /v1/apps/{}",
       "DELETE /v1/apps/{}/provider-credentials/{}",
@@ -13,8 +16,10 @@
       "DELETE /v1/users/{}",
       "GET /v1/account",
       "GET /v1/account/sessions",
+      "GET /auth/redirect",
       "GET /v1/apps/{}",
       "GET /v1/apps/{}/provider-credentials",
+      "GET /v1/apps/{}/storage",
       "GET /v1/auth/config",
       "GET /v1/auth/csrf",
       "GET /v1/auth/invitations/{}",
@@ -34,6 +39,7 @@
       "PATCH /v1/orgs/{}/members/{}",
       "PATCH /v1/users/{}",
       "POST /v1/apps/{}/provider-credentials",
+      "PUT /v1/apps/{}/storage",
       "POST /v1/auth/invitations/{}/accept",
       "POST /v1/auth/login",
       "POST /v1/auth/logout",
