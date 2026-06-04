@@ -73,6 +73,16 @@ async fn spawn_app() -> TestApp {
 /// credential present, or `init_from_config` skips them — pass a placeholder
 /// `api_key`; a per-app BYO credential overrides it per request.)
 async fn spawn_app_with_providers(extra_providers: &[(&str, Value)]) -> TestApp {
+    spawn_app_cfg(extra_providers, Some([7u8; 32])).await
+}
+
+/// Like [`spawn_app`] but with `secrets_key: None` — exercises the
+/// `secrets_not_configured` error path in storage/credential handlers.
+async fn spawn_app_no_secrets() -> TestApp {
+    spawn_app_cfg(&[], None).await
+}
+
+async fn spawn_app_cfg(extra_providers: &[(&str, Value)], secrets_key: Option<[u8; 32]>) -> TestApp {
     let tmp = tempfile::NamedTempFile::new().expect("tempfile");
     let url = format!("sqlite://{}?mode=rwc", tmp.path().display());
     let db: Arc<dyn DatabaseStore> = Arc::new(
@@ -129,7 +139,7 @@ async fn spawn_app_with_providers(extra_providers: &[(&str, Value)]) -> TestApp 
         oauth: litegen::auth::oauth::OAuthConfig::default(),
         mode: Mode::Hosted,
         allow_password: true,
-        secrets_key: Some([7u8; 32]),
+        secrets_key,
         dev: DevFlags {
             expose_invite_tokens: true,
             expose_reset_tokens: true,
@@ -1496,4 +1506,128 @@ async fn delete_storage_reverts_to_global_store() {
 
     let received = s3.received_requests().await.expect("recorded requests");
     assert_eq!(received.len(), 1, "exactly one S3 PUT total (before delete)");
+}
+
+// ─── BYO app storage: secrets_key required for PUT ───────────────────────────
+//
+// When the server is started without a `secrets_key`, the PUT handler must
+// return 400 `secrets_not_configured` immediately (it cannot encrypt credentials
+// without the key). The error lives at `body["error"]["code"]` per the `err()`
+// helper in orgs.rs.
+
+#[tokio::test]
+async fn app_storage_put_requires_secrets_key() {
+    let app = spawn_app_no_secrets().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, _secret) = signup_app_and_key(&mut c, "stg-nokey").await;
+    let csrf = c.csrf().await;
+
+    let put = c
+        .put_with(
+            &format!("/v1/apps/{app_id}/storage"),
+            json!({ "bucket_name": "b", "access_key_id": "AKIA", "secret_access_key": "s" }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(put.status, 400, "expected 400 without secrets key: {:?}", put.body);
+    // Error code is nested at body["error"]["code"] per the orgs.rs `err()` helper.
+    let code = put.body["error"]["code"].as_str().unwrap_or("");
+    assert_eq!(code, "secrets_not_configured", "unexpected error body: {:?}", put.body);
+}
+
+// ─── BYO app storage: Viewer role is read-only ───────────────────────────────
+//
+// A Viewer has `StorageCredRead` (GET 200) but not `StorageCredWrite` (PUT 403)
+// or `StorageCredDelete` (DELETE 403). This test invites a Viewer using the same
+// invite→accept→login flow as `invite_and_role_enforcement`.
+
+#[tokio::test]
+async fn app_storage_viewer_read_only() {
+    let app = spawn_app().await;
+
+    // Owner creates an app with storage configured.
+    let mut owner = Client::new(&app.base);
+    let (app_id, _secret) = signup_app_and_key(&mut owner, "stg-viewer-org").await;
+    let org_id = first_org_id(&mut owner).await;
+    let owner_csrf = owner.csrf().await;
+
+    // PUT storage so the app is configured (gives the viewer something to read).
+    let put = owner
+        .put_with(
+            &format!("/v1/apps/{app_id}/storage"),
+            json!({
+                "bucket_name": "viewer-bucket",
+                "access_key_id": "AKIAVIEWER",
+                "secret_access_key": "viewer-secret"
+            }),
+            &[("x-csrf-token", &owner_csrf)],
+        )
+        .await;
+    assert_eq!(put.status, 200, "owner put storage failed: {:?}", put.body);
+
+    // Owner invites a Viewer; dev.expose_invite_tokens=true → token in `_dev_token`.
+    let viewer_email = unique_email("viewer");
+    let invite = owner
+        .post_with(
+            &format!("/v1/orgs/{org_id}/members"),
+            json!({ "email": viewer_email, "role": "viewer" }),
+            &[("x-csrf-token", &owner_csrf)],
+        )
+        .await;
+    assert_eq!(invite.status, 200, "invite viewer failed: {:?}", invite.body);
+    let token = invite.body["_dev_token"]
+        .as_str()
+        .expect("dev invite token")
+        .to_string();
+
+    // Accept the invitation (creates the viewer account + a session).
+    let mut viewer = Client::new(&app.base);
+    let accept = viewer
+        .post(
+            &format!("/v1/auth/invitations/{token}/accept"),
+            json!({ "password": PASSWORD }),
+        )
+        .await;
+    assert_eq!(accept.status, 200, "accept invite failed: {:?}", accept.body);
+    assert!(
+        viewer.cookies.contains_key("litegen_session"),
+        "viewer session cookie not set after accept"
+    );
+
+    let viewer_csrf = viewer.csrf().await;
+
+    // GET /v1/apps/{app_id}/storage → 200 (Viewer has StorageCredRead).
+    let get = viewer.get(&format!("/v1/apps/{app_id}/storage")).await;
+    assert_eq!(
+        get.status, 200,
+        "viewer should be able to GET storage (StorageCredRead), got {} {:?}",
+        get.status, get.body
+    );
+
+    // PUT /v1/apps/{app_id}/storage → 403 (Viewer lacks StorageCredWrite).
+    let put_viewer = viewer
+        .put_with(
+            &format!("/v1/apps/{app_id}/storage"),
+            json!({ "bucket_name": "hijack", "access_key_id": "AKIA", "secret_access_key": "s" }),
+            &[("x-csrf-token", &viewer_csrf)],
+        )
+        .await;
+    assert_eq!(
+        put_viewer.status, 403,
+        "viewer must not PUT storage (lacks StorageCredWrite), got {} {:?}",
+        put_viewer.status, put_viewer.body
+    );
+
+    // DELETE /v1/apps/{app_id}/storage → 403 (Viewer lacks StorageCredDelete).
+    let del_viewer = viewer
+        .delete(
+            &format!("/v1/apps/{app_id}/storage"),
+            &[("x-csrf-token", &viewer_csrf)],
+        )
+        .await;
+    assert_eq!(
+        del_viewer.status, 403,
+        "viewer must not DELETE storage (lacks StorageCredDelete), got {} {:?}",
+        del_viewer.status, del_viewer.body
+    );
 }
