@@ -531,6 +531,10 @@ pub async fn password_reset_request(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PasswordResetRequestBody>,
 ) -> Response {
+    if !state.allow_password {
+        return password_disabled_resp();
+    }
+
     let email = body.email.trim().to_lowercase();
 
     if let Ok(Some(user)) = state.db.get_user_by_email(&email).await {
@@ -581,6 +585,10 @@ pub async fn password_reset_confirm(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PasswordResetConfirmBody>,
 ) -> Response {
+    if !state.allow_password {
+        return password_disabled_resp();
+    }
+
     let reset = match state.db.get_password_reset(&body.token).await {
         Ok(Some(r)) => r,
         _ => return error_resp(StatusCode::BAD_REQUEST, "invalid_token", "Token not found or invalid"),
@@ -1461,6 +1469,42 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN, "login must be 403 when password disabled");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["type"], "password_auth_disabled");
+    }
+
+    #[tokio::test]
+    async fn password_reset_disabled_when_password_off() {
+        let state = build_hosted_state_no_password().await;
+        let app = Router::new()
+            .route("/v1/auth/password-reset/request", post(password_reset_request))
+            .route("/v1/auth/password-reset/confirm", post(password_reset_confirm))
+            .with_state(state);
+
+        // request → 403 password_auth_disabled
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/password-reset/request")
+            .header("content-type", "application/json")
+            .body(json_body(json!({ "email": "no@pw.com" })))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "reset request must be 403 when password disabled");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["type"], "password_auth_disabled");
+        assert_eq!(body["error"]["code"], 403);
+
+        // confirm → 403 password_auth_disabled
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/password-reset/confirm")
+            .header("content-type", "application/json")
+            .body(json_body(json!({ "token": "whatever", "new_password": "strongpassword123" })))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "reset confirm must be 403 when password disabled");
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["error"]["type"], "password_auth_disabled");

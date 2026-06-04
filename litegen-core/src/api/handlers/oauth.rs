@@ -84,14 +84,35 @@ fn clear_oauth_next_cookie() -> axum::http::HeaderValue {
     )
 }
 
+/// Build a `Set-Cookie` header value recording which provider (`github`/`google`)
+/// initiated the flow, so the unified `/auth/redirect` callback can dispatch.
+fn make_oauth_provider_cookie(provider: &str) -> axum::http::HeaderValue {
+    let secure = std::env::var("LITEGEN__COOKIE_INSECURE_DEV").as_deref() != Ok("true");
+    let secure_str = if secure { "; Secure" } else { "" };
+    let val = format!(
+        "litegen_oauth_provider={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600{}",
+        provider, secure_str
+    );
+    axum::http::HeaderValue::from_str(&val)
+        .unwrap_or_else(|_| axum::http::HeaderValue::from_static(""))
+}
+
+/// Build a `Set-Cookie` header value that clears the `litegen_oauth_provider` cookie.
+fn clear_oauth_provider_cookie() -> axum::http::HeaderValue {
+    axum::http::HeaderValue::from_static(
+        "litegen_oauth_provider=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+    )
+}
+
 /// Resolve the post-login redirect target. Reads the `litegen_oauth_next`
 /// cookie set at `start`; only accepts same-origin relative paths (must start
-/// with `/` but not `//`), defaulting to `/`.
+/// with `/`, not `//`, and contain no backslash — browsers normalize `\` to
+/// `/`, so `/\evil.com` would otherwise escape the origin), defaulting to `/`.
 fn resolve_next_target(headers: &HeaderMap) -> String {
     let raw = cookie_value(headers, "litegen_oauth_next")
         .and_then(|v| urlencoding::decode(&v).ok().map(|c| c.into_owned()));
     match raw {
-        Some(n) if n.starts_with('/') && !n.starts_with("//") => n,
+        Some(n) if n.starts_with('/') && !n.starts_with("//") && !n.contains('\\') => n,
         _ => "/".to_string(),
     }
 }
@@ -163,6 +184,7 @@ async fn finish_oauth_login(state: &Arc<AppState>, user_id: &str, headers: &Head
             resp.headers_mut().append("set-cookie", cc);
             resp.headers_mut().append("set-cookie", clear_oauth_state_cookie());
             resp.headers_mut().append("set-cookie", clear_oauth_next_cookie());
+            resp.headers_mut().append("set-cookie", clear_oauth_provider_cookie());
             resp
         }
         Err(e) => error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
@@ -205,7 +227,9 @@ pub async fn github_start(
 
     let oauth_state = generate_session_token();
     let callback_base = state.oauth.callback_base.as_deref().unwrap_or("");
-    let redirect_uri = format!("{}/v1/auth/oauth/github/callback", callback_base);
+    // Unified callback: both providers redirect to `{base}/auth/redirect`; the
+    // `litegen_oauth_provider` cookie tells the callback which provider it is.
+    let redirect_uri = format!("{}/auth/redirect", callback_base);
 
     let authorize_base = state
         .oauth
@@ -228,7 +252,13 @@ pub async fn github_start(
     );
     resp.headers_mut()
         .append("set-cookie", make_oauth_state_cookie(&oauth_state));
-    if let Some(next) = params.next.as_deref().filter(|n| n.starts_with('/') && !n.starts_with("//")) {
+    resp.headers_mut()
+        .append("set-cookie", make_oauth_provider_cookie("github"));
+    if let Some(next) = params
+        .next
+        .as_deref()
+        .filter(|n| n.starts_with('/') && !n.starts_with("//") && !n.contains('\\'))
+    {
         resp.headers_mut()
             .append("set-cookie", make_oauth_next_cookie(next));
     }
@@ -255,8 +285,19 @@ pub async fn github_callback(
     headers: HeaderMap,
     Query(params): Query<CallbackParams>,
 ) -> Response {
+    handle_github_callback(&state, &headers, params).await
+}
+
+/// Core GitHub OAuth callback logic, shared by the legacy
+/// `/v1/auth/oauth/github/callback` route and the unified `/auth/redirect`
+/// dispatcher.
+pub async fn handle_github_callback(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    params: CallbackParams,
+) -> Response {
     // 1. Verify state cookie
-    let Some(cookie_state) = cookie_value(&headers, "litegen_oauth_state") else {
+    let Some(cookie_state) = cookie_value(headers, "litegen_oauth_state") else {
         return error_resp_clear_state(StatusCode::BAD_REQUEST, "state_missing", "OAuth state cookie missing");
     };
     if !constant_time_eq(&cookie_state, &params.state) {
@@ -389,7 +430,7 @@ pub async fn github_callback(
     // 5. Resolve the user: existing (by oauth id / linked email) or, in hosted
     //    mode, auto-create account + org + first app. single_tenant stays
     //    invite-only (403 account_not_invited).
-    let user = match resolve_or_create_user(&state, "github", &gh_id, &email).await {
+    let user = match resolve_or_create_user(state, "github", &gh_id, &email).await {
         Ok(Some(u)) => u,
         Ok(None) => {
             return error_resp_clear_state(
@@ -408,7 +449,7 @@ pub async fn github_callback(
     let _ = state.db.touch_last_login(&user.id).await;
 
     // 6. Create session
-    finish_oauth_login(&state, &user.id, &headers).await
+    finish_oauth_login(state, &user.id, headers).await
 }
 
 // ─── Google ───────────────────────────────────────────────────────────────────
@@ -433,7 +474,9 @@ pub async fn google_start(
 
     let oauth_state = generate_session_token();
     let callback_base = state.oauth.callback_base.as_deref().unwrap_or("");
-    let redirect_uri = format!("{}/v1/auth/oauth/google/callback", callback_base);
+    // Unified callback: both providers redirect to `{base}/auth/redirect`; the
+    // `litegen_oauth_provider` cookie tells the callback which provider it is.
+    let redirect_uri = format!("{}/auth/redirect", callback_base);
 
     let authorize_base = state
         .oauth
@@ -457,7 +500,13 @@ pub async fn google_start(
     );
     resp.headers_mut()
         .append("set-cookie", make_oauth_state_cookie(&oauth_state));
-    if let Some(next) = params.next.as_deref().filter(|n| n.starts_with('/') && !n.starts_with("//")) {
+    resp.headers_mut()
+        .append("set-cookie", make_oauth_provider_cookie("google"));
+    if let Some(next) = params
+        .next
+        .as_deref()
+        .filter(|n| n.starts_with('/') && !n.starts_with("//") && !n.contains('\\'))
+    {
         resp.headers_mut()
             .append("set-cookie", make_oauth_next_cookie(next));
     }
@@ -484,8 +533,19 @@ pub async fn google_callback(
     headers: HeaderMap,
     Query(params): Query<CallbackParams>,
 ) -> Response {
+    handle_google_callback(&state, &headers, params).await
+}
+
+/// Core Google OAuth callback logic, shared by the legacy
+/// `/v1/auth/oauth/google/callback` route and the unified `/auth/redirect`
+/// dispatcher.
+pub async fn handle_google_callback(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    params: CallbackParams,
+) -> Response {
     // 1. Verify state cookie
-    let Some(cookie_state) = cookie_value(&headers, "litegen_oauth_state") else {
+    let Some(cookie_state) = cookie_value(headers, "litegen_oauth_state") else {
         return error_resp_clear_state(StatusCode::BAD_REQUEST, "state_missing", "OAuth state cookie missing");
     };
     if !constant_time_eq(&cookie_state, &params.state) {
@@ -504,7 +564,8 @@ pub async fn google_callback(
         .unwrap_or("https://oauth2.googleapis.com");
     let token_url = format!("{}/token", token_base);
     let callback_base = state.oauth.callback_base.as_deref().unwrap_or("");
-    let redirect_uri = format!("{}/v1/auth/oauth/google/callback", callback_base);
+    // Must match the `redirect_uri` sent at `google_start` (unified callback).
+    let redirect_uri = format!("{}/auth/redirect", callback_base);
     let client = reqwest::Client::new();
 
     #[derive(Deserialize)]
@@ -600,7 +661,7 @@ pub async fn google_callback(
     // 4. Resolve the user: existing (by oauth id / linked email) or, in hosted
     //    mode, auto-create account + org + first app. single_tenant stays
     //    invite-only (403 account_not_invited).
-    let user = match resolve_or_create_user(&state, "google", &google_id, &email).await {
+    let user = match resolve_or_create_user(state, "google", &google_id, &email).await {
         Ok(Some(u)) => u,
         Ok(None) => {
             return error_resp_clear_state(
@@ -619,7 +680,52 @@ pub async fn google_callback(
     let _ = state.db.touch_last_login(&user.id).await;
 
     // 5. Create session
-    finish_oauth_login(&state, &user.id, &headers).await
+    finish_oauth_login(state, &user.id, headers).await
+}
+
+// ─── Unified callback ───────────────────────────────────────────────────────────
+
+/// GET /auth/redirect — Unified OAuth callback for BOTH providers.
+///
+/// The deployed Google + GitHub OAuth apps share a single redirect URI
+/// (`https://app.litegen.ai/api/auth/redirect`, served to the backend as
+/// `/auth/redirect` once nginx strips `/api`). We disambiguate the provider via
+/// the short-lived `litegen_oauth_provider` cookie set at `*_start`, then
+/// dispatch to the matching core callback fn.
+#[utoipa::path(
+    get,
+    path = "/auth/redirect",
+    params(
+        ("code" = String, Query, description = "Authorization code from the provider"),
+        ("state" = String, Query, description = "State for CSRF verification"),
+    ),
+    responses(
+        (status = 302, description = "Redirect to app after successful auth"),
+        (status = 400, description = "Missing/invalid provider context or state", body = crate::types::ErrorResponse),
+        (status = 403, description = "Account not found or inactive", body = crate::types::ErrorResponse),
+    ),
+    tag = "Auth"
+)]
+pub async fn oauth_redirect(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<CallbackParams>,
+) -> Response {
+    match cookie_value(&headers, "litegen_oauth_provider").as_deref() {
+        Some("github") => handle_github_callback(&state, &headers, params).await,
+        Some("google") => handle_google_callback(&state, &headers, params).await,
+        _ => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "type": "invalid_oauth_state",
+                    "code": 400,
+                    "message": "Missing or invalid OAuth provider context"
+                }
+            })),
+        )
+            .into_response(),
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -1353,5 +1459,164 @@ mod tests {
         let linked = state.db.get_user_by_oauth("github", "4242").await.unwrap()
             .expect("github id should be linked to the existing user");
         assert_eq!(linked.email, "linker@example.com");
+    }
+
+    // ─── Unified /auth/redirect callback ────────────────────────────────────────
+
+    fn build_redirect_router(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/auth/redirect", get(oauth_redirect))
+            .with_state(state)
+    }
+
+    /// Mount a GitHub-backed wiremock server (token + /user + /user/emails) and
+    /// return its OAuthConfig, reused by the dispatch tests.
+    async fn github_mock_oauth(server: &MockServer, gh_id: i64, email: &str) -> OAuthConfig {
+        Mock::given(method("POST"))
+            .and(path("/login/oauth/access_token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "gh-test-token", "token_type": "bearer", "scope": "user:email"
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": gh_id, "login": "u" })))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user/emails"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"email": email, "primary": true, "verified": true}
+            ])))
+            .mount(server)
+            .await;
+        let uri = server.uri();
+        OAuthConfig {
+            github: Some(ProviderConfig {
+                client_id: "gh-id".to_string(),
+                client_secret: "gh-secret".to_string(),
+            }),
+            github_token_base: Some(uri.clone()),
+            github_api_base: Some(uri),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_redirect_dispatches_by_provider_cookie() {
+        // ── github cookie → github path (hosted auto-create → 302 + user) ──
+        let gh_server = MockServer::start().await;
+        let gh_oauth = github_mock_oauth(&gh_server, 5150, "gh@example.com").await;
+        let gh_state = build_hosted_state_with_oauth(gh_oauth).await;
+        let gh_app = build_redirect_router(gh_state.clone());
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/auth/redirect?code=testcode&state=teststate")
+            .header("cookie", "litegen_oauth_state=teststate; litegen_oauth_provider=github")
+            .body(Body::empty())
+            .unwrap();
+        let resp = gh_app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND, "github dispatch should redirect");
+        let cookies: Vec<_> = resp.headers().get_all("set-cookie").iter()
+            .map(|v| v.to_str().unwrap_or("").to_string()).collect();
+        assert!(cookies.iter().any(|c| c.contains("litegen_session=")), "github path should set session; got {:?}", cookies);
+        // provider cookie cleared on success
+        assert!(
+            cookies.iter().any(|c| c.contains("litegen_oauth_provider=") && c.contains("Max-Age=0")),
+            "provider cookie must be cleared on success; got {:?}", cookies
+        );
+        let user = gh_state.db.get_user_by_email("gh@example.com").await.unwrap()
+            .expect("github user auto-created via /auth/redirect");
+        assert_eq!(user.oauth_github_id.as_deref(), Some("5150"));
+
+        // ── google cookie → google path (hosted auto-create → 302 + user) ──
+        let g_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "g-test-token", "id_token": "id-tok", "expires_in": 3600, "token_type": "Bearer"
+            })))
+            .mount(&g_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/userinfo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "sub": "g-sub-9001", "email": "g@example.com", "email_verified": true, "name": "G"
+            })))
+            .mount(&g_server)
+            .await;
+        let g_uri = g_server.uri();
+        let g_oauth = OAuthConfig {
+            google: Some(ProviderConfig {
+                client_id: "g-id".to_string(),
+                client_secret: "g-secret".to_string(),
+            }),
+            google_token_base: Some(g_uri.clone()),
+            google_userinfo_base: Some(g_uri),
+            ..Default::default()
+        };
+        let g_state = build_hosted_state_with_oauth(g_oauth).await;
+        let g_app = build_redirect_router(g_state.clone());
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/auth/redirect?code=testcode&state=teststate")
+            .header("cookie", "litegen_oauth_state=teststate; litegen_oauth_provider=google")
+            .body(Body::empty())
+            .unwrap();
+        let resp = g_app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND, "google dispatch should redirect");
+        let user = g_state.db.get_user_by_email("g@example.com").await.unwrap()
+            .expect("google user auto-created via /auth/redirect");
+        assert_eq!(user.oauth_google_id.as_deref(), Some("g-sub-9001"));
+
+        // ── no provider cookie → 400 invalid_oauth_state ──
+        let n_server = MockServer::start().await;
+        let n_oauth = github_mock_oauth(&n_server, 1, "n@example.com").await;
+        let n_state = build_hosted_state_with_oauth(n_oauth).await;
+        let n_app = build_redirect_router(n_state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/auth/redirect?code=testcode&state=teststate")
+            .header("cookie", "litegen_oauth_state=teststate")
+            .body(Body::empty())
+            .unwrap();
+        let resp = n_app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "missing provider cookie must be 400");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["type"], "invalid_oauth_state");
+        assert_eq!(body["error"]["code"], 400);
+    }
+
+    #[tokio::test]
+    async fn next_with_backslash_is_rejected() {
+        // A `next` cookie of `/\evil.com` (backslash) must NOT be honored: browsers
+        // normalize `\`→`/`, turning it into the external `//evil.com`. The callback
+        // must fall back to `/`.
+        let server = MockServer::start().await;
+        let oauth = github_mock_oauth(&server, 7777, "back@example.com").await;
+        let state = build_hosted_state_with_oauth(oauth).await;
+        let app = build_redirect_router(state);
+
+        let next = urlencoding::encode("/\\evil.com").into_owned();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/auth/redirect?code=testcode&state=teststate")
+            .header(
+                "cookie",
+                format!(
+                    "litegen_oauth_state=teststate; litegen_oauth_provider=github; litegen_oauth_next={}",
+                    next
+                ),
+            )
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert_eq!(location, "/", "backslash `next` must fall back to `/`, not redirect off-origin");
     }
 }

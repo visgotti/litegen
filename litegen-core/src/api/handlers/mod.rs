@@ -8,7 +8,7 @@ pub use auth_password::{
     auth_config, csrf_token, login, logout, me, password_reset_confirm, password_reset_request,
     signup,
 };
-pub use oauth::{github_callback, github_start, google_callback, google_start};
+pub use oauth::{github_callback, github_start, google_callback, google_start, oauth_redirect};
 pub use users::{
     accept_invitation, delete_user, get_invitation, invite_user, list_users, patch_user,
     transfer_owner,
@@ -1812,7 +1812,10 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/auth/oauth/github/start", get(github_start))
         .route("/v1/auth/oauth/github/callback", get(github_callback))
         .route("/v1/auth/oauth/google/start", get(google_start))
-        .route("/v1/auth/oauth/google/callback", get(google_callback));
+        .route("/v1/auth/oauth/google/callback", get(google_callback))
+        // Unified callback for both providers (single deployed redirect URI).
+        // nginx strips `/api`, so `…/api/auth/redirect` arrives here as `/auth/redirect`.
+        .route("/auth/redirect", get(oauth_redirect));
 
     // Auth middleware only wraps routes that need authentication/authorization context.
     // Unauthenticated routes (signup, login, invitations, oauth, health probes) are kept separate.
