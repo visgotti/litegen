@@ -10,6 +10,61 @@
         "version": "0.1.0"
     },
     "paths": {
+        "/auth/redirect": {
+            "get": {
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "GET /auth/redirect \u2014 Unified OAuth callback for BOTH providers.",
+                "description": "The deployed Google + GitHub OAuth apps share a single redirect URI\n(`https://app.litegen.ai/api/auth/redirect`, served to the backend as\n`/auth/redirect` once nginx strips `/api`). We disambiguate the provider via\nthe short-lived `litegen_oauth_provider` cookie set at `*_start`, then\ndispatch to the matching core callback fn.",
+                "operationId": "oauth_redirect",
+                "parameters": [
+                    {
+                        "name": "code",
+                        "in": "query",
+                        "description": "Authorization code from the provider",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "state",
+                        "in": "query",
+                        "description": "State for CSRF verification",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "302": {
+                        "description": "Redirect to app after successful auth"
+                    },
+                    "400": {
+                        "description": "Missing/invalid provider context or state",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Account not found or inactive",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/health": {
             "get": {
                 "tags": [
@@ -492,6 +547,151 @@
                         "name": "provider",
                         "in": "path",
                         "description": "Provider name",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Deleted"
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/apps/{app_id}/storage": {
+            "get": {
+                "tags": [
+                    "Applications"
+                ],
+                "summary": "GET /v1/apps/{app_id}/storage \u2014 read BYO storage config (storage_cred:read). No secret.",
+                "operationId": "get_app_storage",
+                "parameters": [
+                    {
+                        "name": "app_id",
+                        "in": "path",
+                        "description": "Application ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Storage config (no secret)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AppStorageInfo"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "tags": [
+                    "Applications"
+                ],
+                "summary": "PUT /v1/apps/{app_id}/storage \u2014 upsert BYO storage config (storage_cred:write).",
+                "operationId": "put_app_storage",
+                "parameters": [
+                    {
+                        "name": "app_id",
+                        "in": "path",
+                        "description": "Application ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PutAppStorageRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Stored (no secret)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AppStorageInfo"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad request / secrets key unavailable",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Applications"
+                ],
+                "summary": "DELETE /v1/apps/{app_id}/storage \u2014 remove BYO storage config (storage_cred:delete).",
+                "operationId": "delete_app_storage",
+                "parameters": [
+                    {
+                        "name": "app_id",
+                        "in": "path",
+                        "description": "Application ID",
                         "required": true,
                         "schema": {
                             "type": "string"
@@ -2729,6 +2929,67 @@
                     }
                 }
             },
+            "AppStorageInfo": {
+                "type": "object",
+                "description": "Public view of per-app BYO storage config \u2014 NEVER includes the secret.",
+                "required": [
+                    "configured"
+                ],
+                "properties": {
+                    "access_key_id_hint": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "backend": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "bucket_name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "configured": {
+                        "type": "boolean"
+                    },
+                    "custom_public_url": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "endpoint_url": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "path_prefix": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "region": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "updated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    }
+                }
+            },
             "Application": {
                 "type": "object",
                 "required": [
@@ -4653,6 +4914,61 @@
                     },
                     "role": {
                         "type": "string"
+                    }
+                }
+            },
+            "PutAppStorageRequest": {
+                "type": "object",
+                "required": [
+                    "bucket_name"
+                ],
+                "properties": {
+                    "access_key_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Write-only. Provide WITH `secret_access_key` to set/rotate; omit BOTH to keep existing."
+                    },
+                    "backend": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "bucket_name": {
+                        "type": "string"
+                    },
+                    "custom_public_url": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "endpoint_url": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "path_prefix": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "region": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "secret_access_key": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Write-only."
                     }
                 }
             },

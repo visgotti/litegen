@@ -45,6 +45,8 @@ type OrgSummary = Schemas["OrgSummary"];
 type MemberView = Schemas["MemberView"];
 type Application = Schemas["Application"];
 type ProviderCredentialInfo = Schemas["ProviderCredentialInfo"];
+type AppStorageInfo = Schemas["AppStorageInfo"];
+type PutAppStorageRequest = Schemas["PutAppStorageRequest"];
 type CreateOrgRequest = Schemas["CreateOrgRequest"];
 type UpdateOrgRequest = Schemas["UpdateOrgRequest"];
 type CreateAppRequest = Schemas["CreateAppRequest"];
@@ -891,11 +893,46 @@ class AppProviderCredentialsNamespace {
   }
 }
 
+class AppStorageNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+
+  get(appId: string, signal?: AbortSignal): Promise<AppStorageInfo> {
+    return this.client.request(
+      "GET",
+      `/v1/apps/${encodeURIComponent(appId)}/storage`,
+      undefined,
+      signal,
+    );
+  }
+  put(
+    appId: string,
+    req: PutAppStorageRequest,
+    signal?: AbortSignal,
+  ): Promise<AppStorageInfo> {
+    return this.client.request(
+      "PUT",
+      `/v1/apps/${encodeURIComponent(appId)}/storage`,
+      req,
+      signal,
+    );
+  }
+  delete(appId: string, signal?: AbortSignal): Promise<void> {
+    return this.client.request(
+      "DELETE",
+      `/v1/apps/${encodeURIComponent(appId)}/storage`,
+      undefined,
+      signal,
+    );
+  }
+}
+
 class AppsNamespace {
   readonly providerCredentials: AppProviderCredentialsNamespace;
+  readonly storage: AppStorageNamespace;
 
   constructor(private readonly client: LiteGenClient) {
     this.providerCredentials = new AppProviderCredentialsNamespace(client);
+    this.storage = new AppStorageNamespace(client);
   }
 
   get(appId: string, signal?: AbortSignal): Promise<Application> {
