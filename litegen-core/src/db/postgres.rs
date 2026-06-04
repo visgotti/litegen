@@ -364,7 +364,7 @@ impl DatabaseStore for PostgresDatabase {
         .bind(key_prefix)
         .bind(now)
         .bind(token_quota)
-        .bind(rpm_limit.map(|v| v as i64))
+        .bind(rpm_limit.map(|v| v as i32))
         .bind(scopes)
         .bind(webhook_url)
         .bind(org_id)
@@ -426,7 +426,7 @@ impl DatabaseStore for PostgresDatabase {
         let mut q = sqlx::query(&sql);
         if let Some(ref v) = req.name { q = q.bind(v); }
         if let Some(v) = req.token_quota { q = q.bind(v); }
-        if let Some(v) = req.rpm_limit { q = q.bind(v as i64); }
+        if let Some(v) = req.rpm_limit { q = q.bind(v as i32); }
         if let Some(ref v) = req.scopes { q = q.bind(v); }
         if let Some(ref v) = req.webhook_url { q = q.bind(v); }
         if let Some(v) = req.expires_at { q = q.bind(v); }
@@ -873,7 +873,7 @@ impl DatabaseStore for PostgresDatabase {
         use super::sqlite::{RequestArtifactRow, artifact_from_row};
         let row = sqlx::query_as::<_, RequestArtifactRow>(
             "SELECT request_id, media_type, prompt, negative_prompt, params_json, refs_meta_json, \
-             output_kind, output_value, output_mime, output_truncated::int AS output_truncated, \
+             output_kind, output_value, output_mime, output_truncated, \
              error_message, created_at, org_id, app_id \
              FROM request_artifacts WHERE request_id = $1"
         )
@@ -912,7 +912,7 @@ impl DatabaseStore for PostgresDatabase {
     async fn get_user_by_email(&self, email: &str) -> Result<Option<User>, sqlx::Error> {
         let row = sqlx::query_as::<_, UserRow>(
             "SELECT id, email, password_hash, role, oauth_github_id, oauth_google_id, \
-             created_at, updated_at, last_login_at, is_active::int AS is_active \
+             created_at, updated_at, last_login_at, is_active \
              FROM users WHERE email = $1"
         )
         .bind(email)
@@ -924,7 +924,7 @@ impl DatabaseStore for PostgresDatabase {
     async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, sqlx::Error> {
         let row = sqlx::query_as::<_, UserRow>(
             "SELECT id, email, password_hash, role, oauth_github_id, oauth_google_id, \
-             created_at, updated_at, last_login_at, is_active::int AS is_active \
+             created_at, updated_at, last_login_at, is_active \
              FROM users WHERE id = $1"
         )
         .bind(id)
@@ -941,7 +941,7 @@ impl DatabaseStore for PostgresDatabase {
         };
         let sql = format!(
             "SELECT id, email, password_hash, role, oauth_github_id, oauth_google_id, \
-             created_at, updated_at, last_login_at, is_active::int AS is_active \
+             created_at, updated_at, last_login_at, is_active \
              FROM users WHERE {} = $1",
             col
         );
@@ -999,7 +999,7 @@ impl DatabaseStore for PostgresDatabase {
     async fn list_users(&self) -> Result<Vec<User>, sqlx::Error> {
         let rows = sqlx::query_as::<_, UserRow>(
             "SELECT id, email, password_hash, role, oauth_github_id, oauth_google_id, \
-             created_at, updated_at, last_login_at, is_active::int AS is_active \
+             created_at, updated_at, last_login_at, is_active \
              FROM users ORDER BY created_at DESC"
         )
         .fetch_all(&self.pool)
@@ -1588,7 +1588,7 @@ impl DatabaseStore for PostgresDatabase {
         .bind(key_hash)
         .bind(key_prefix)
         .bind(token_quota)
-        .bind(rpm_limit.map(|v| v as i64))
+        .bind(rpm_limit.map(|v| v as i32))
         .bind(scopes)
         .bind(webhook_url)
         .execute(&self.pool)

@@ -1760,7 +1760,7 @@ pub(crate) struct ApiKeyRow {
     pub is_active: bool,
     pub token_quota: Option<f64>,
     pub tokens_used: f64,
-    pub rpm_limit: Option<i64>,
+    pub rpm_limit: Option<i32>,
     pub scopes: String,
     pub webhook_url: Option<String>,
     pub owner_user_id: Option<String>,
@@ -1896,7 +1896,7 @@ pub(crate) struct GenerationRow {
     pub provider: String,
     pub media_type: String,
     pub status: String,
-    pub progress: i64,
+    pub progress: i32,
     pub provider_job_id: Option<String>,
     pub result_url: Option<String>,
     pub error_message: Option<String>,
@@ -1916,7 +1916,7 @@ pub(crate) fn generation_from_row(r: GenerationRow) -> Generation {
         provider: r.provider,
         media_type: r.media_type,
         status: parse_status(&r.status),
-        progress: r.progress as i32,
+        progress: r.progress,
         provider_job_id: r.provider_job_id,
         result_url: r.result_url,
         error_message: r.error_message,
@@ -2006,7 +2006,7 @@ pub struct RequestArtifactRow {
     pub output_kind: String,
     pub output_value: Option<String>,
     pub output_mime: Option<String>,
-    pub output_truncated: i64,
+    pub output_truncated: bool,
     pub error_message: Option<String>,
     pub created_at: DateTime<Utc>,
     pub org_id: Option<String>,
@@ -2024,7 +2024,7 @@ pub fn artifact_from_row(r: RequestArtifactRow) -> RequestArtifact {
         output_kind: r.output_kind,
         output_value: r.output_value,
         output_mime: r.output_mime,
-        output_truncated: r.output_truncated != 0,
+        output_truncated: r.output_truncated,
         error_message: r.error_message,
         created_at: r.created_at,
         org_id: r.org_id,
@@ -2062,7 +2062,7 @@ pub(crate) struct UserRow {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
-    pub is_active: i64,
+    pub is_active: bool,
 }
 
 pub(crate) fn user_from_row(r: UserRow) -> User {
@@ -2076,7 +2076,7 @@ pub(crate) fn user_from_row(r: UserRow) -> User {
         created_at: r.created_at,
         updated_at: r.updated_at,
         last_login_at: r.last_login_at,
-        is_active: r.is_active != 0,
+        is_active: r.is_active,
     }
 }
 
