@@ -353,6 +353,11 @@ async function deployProxy() {
       // SECRETS_KEY enables per-app BYO provider-credential encryption. COOKIE_INSECURE_DEV
       // lets session cookies work over plain http until TLS is fronted.
       'LITEGEN__MODE', 'LITEGEN__SECRETS_KEY', 'LITEGEN__COOKIE_INSECURE_DEV',
+      // OAuth-only auth (Google + GitHub; no password). CALLBACK_BASE includes the
+      // /api prefix so the constructed redirect_uri is https://app.litegen.ai/api/auth/redirect.
+      'LITEGEN__AUTH__ALLOW_PASSWORD', 'LITEGEN__OAUTH__CALLBACK_BASE',
+      'LITEGEN__OAUTH__GOOGLE__CLIENT_ID', 'LITEGEN__OAUTH__GOOGLE__CLIENT_SECRET',
+      'LITEGEN__OAUTH__GITHUB__CLIENT_ID', 'LITEGEN__OAUTH__GITHUB__CLIENT_SECRET',
       'OPENAI_API_KEY', 'REPLICATE_API_TOKEN', 'GOOGLE_API_KEY', 'FAL_KEY',
     ]) {
       if (env(k)) envLines.push(`${k}=${env(k)}`);
