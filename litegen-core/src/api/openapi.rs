@@ -38,6 +38,7 @@ use utoipa::OpenApi;
         crate::api::handlers::oauth::github_callback,
         crate::api::handlers::oauth::google_start,
         crate::api::handlers::oauth::google_callback,
+        crate::api::handlers::oauth::oauth_redirect,
         // Users + invitations
         crate::api::handlers::users::list_users,
         crate::api::handlers::users::invite_user,
