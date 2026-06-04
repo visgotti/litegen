@@ -611,14 +611,19 @@ async function deployWeb() {
     console.log(`  [scp] ${webCompose} -> /opt/litegen/docker-compose.web.yml`);
     if (!DRY_RUN) { await ssh.putFile(webCompose, '/opt/litegen/docker-compose.web.yml'); }
 
+    // Clear contents IN PLACE (not rm+mkdir): the Caddy container bind-mounts these
+    // dirs, and replacing the directory inode (rm -rf + mkdir) leaves the running
+    // container pointed at the old, deleted inode → empty mount → 404s until restart.
+    // Emptying the existing dir preserves the inode so the live mount keeps serving.
     await sshExec(ssh,
       `cd /opt/litegen && \
-       rm -rf dashboard-dist && mkdir dashboard-dist && \
+       mkdir -p dashboard-dist landing-dist && \
+       find dashboard-dist -mindepth 1 -delete && \
        tar -C dashboard-dist --strip-components=1 -xzf litegen-dashboard-dist.tgz && \
-       rm -rf landing-dist && mkdir landing-dist && \
+       find landing-dist -mindepth 1 -delete && \
        tar -C landing-dist --strip-components=1 -xzf litegen-landing-dist.tgz && \
        docker compose -f docker-compose.prod.yml -f docker-compose.web.yml --env-file .env up -d`,
-      'unpack dashboard + landing dists + compose up web (Caddy)');
+      'unpack dashboard + landing dists (in place) + compose up web (Caddy)');
 
     if (!DRY_RUN) {
       await sshExec(ssh,
