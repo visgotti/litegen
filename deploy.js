@@ -424,7 +424,10 @@ async function buildOnDroplet(ssh, host, imageSha, imageLatest) {
     if (have.stdout.trim() === 'yes') { console.log('  Image already built on droplet — skipping build.'); return; }
     // If a build is already in progress (e.g. an orphan from a dropped run),
     // adopt it: poll for the image instead of starting a competing build.
-    const running = await ssh.execCommand(`pgrep -f "docker build -t ${imageSha}" >/dev/null 2>&1 && echo yes || echo no`);
+    // The `[d]ocker` char-class keeps this pattern from matching the shell that
+    // runs the pgrep itself (whose argv literally contains the pattern string),
+    // which would otherwise always report a phantom "build already running".
+    const running = await ssh.execCommand(`pgrep -f "[d]ocker build -t ${imageSha}" >/dev/null 2>&1 && echo yes || echo no`);
     if (running.stdout.trim() === 'yes') {
       console.log('  A build for this image is already running on the droplet — waiting for it.');
       return await waitForImage(host, ssh, imageSha);
