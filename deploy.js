@@ -6,8 +6,9 @@
  *
  *   node deploy.js provision   Create/reuse the DigitalOcean droplet (proxy + db).
  *   node deploy.js proxy       Build amd64 image -> push GHCR -> droplet pulls + runs.
+ *   node deploy.js web         Build dashboard -> ship dist + nginx -> compose up web tier.
  *   node deploy.js landing     Static-export the Next.js site -> Cloudflare Pages.
- *   node deploy.js all         provision -> proxy -> landing.
+ *   node deploy.js all         provision -> proxy -> web -> landing  (full redeploy).
  *
  * Flags:  --dry-run   Print intended actions; make no real API/SSH/registry calls.
  *
@@ -374,7 +375,7 @@ async function deployProxy() {
       ? 'docker compose --env-file .env -f docker-compose.prod.yml pull && '
       : '';
     await sshExec(ssh,
-      `cd /opt/litegen && ${pullStep}docker compose --env-file .env -f docker-compose.prod.yml up -d --remove-orphans`,
+      `cd /opt/litegen && ${pullStep}docker compose --env-file .env -f docker-compose.prod.yml up -d`,
       'compose up');
 
     // Health check.
@@ -498,6 +499,61 @@ async function waitForImage(host, ssh, imageSha) {
   throw new Error('On-droplet build timed out after ~45 minutes.');
 }
 
+// ── Target: web (build dashboard -> ship dist + nginx -> compose up web tier) ─
+async function deployWeb() {
+  const host = required('DO_DROPLET_IP');
+  const appUrl = env('APP_URL') || 'https://app.litegen.ai';
+  const apiBase = `${appUrl}/api`;
+
+  const dashboardDir = path.join(ROOT, 'dashboard');
+  const distTgz = '/tmp/litegen-dashboard-dist.tgz';
+  const remoteDistTgz = '/opt/litegen/litegen-dashboard-dist.tgz';
+
+  console.log(`\n=== Building dashboard (VITE_API_URL=${apiBase}) ===`);
+  run(`npm run build`, {
+    cwd: dashboardDir,
+    env: { ...process.env, VITE_API_URL: apiBase },
+  });
+  if (!DRY_RUN) assertNoLocalhostInBundle('dashboard/dist', 'dashboard');
+
+  console.log('\n=== Packaging dashboard dist ===');
+  run(`COPYFILE_DISABLE=1 tar -C ${JSON.stringify(dashboardDir)} -czf ${distTgz} dist`);
+
+  console.log(`\n=== Shipping dashboard + nginx.conf + web compose to ${host} ===`);
+  let ssh = DRY_RUN ? null : await sshConnect(host);
+  try {
+    await sshExec(ssh, 'mkdir -p /opt/litegen', 'mkdir /opt/litegen');
+
+    console.log(`  [scp] ${distTgz} -> ${remoteDistTgz}`);
+    if (!DRY_RUN) { await ssh.putFile(distTgz, remoteDistTgz); }
+
+    const nginxConf = path.join(ROOT, 'deploy', 'nginx.conf');
+    console.log(`  [scp] ${nginxConf} -> /opt/litegen/nginx.conf`);
+    if (!DRY_RUN) { await ssh.putFile(nginxConf, '/opt/litegen/nginx.conf'); }
+
+    const webCompose = path.join(ROOT, 'deploy', 'docker-compose.web.yml');
+    console.log(`  [scp] ${webCompose} -> /opt/litegen/docker-compose.web.yml`);
+    if (!DRY_RUN) { await ssh.putFile(webCompose, '/opt/litegen/docker-compose.web.yml'); }
+
+    await sshExec(ssh,
+      `cd /opt/litegen && rm -rf dashboard-dist && mkdir dashboard-dist && \
+       tar -C dashboard-dist --strip-components=1 -xzf litegen-dashboard-dist.tgz && \
+       docker compose -f docker-compose.prod.yml -f docker-compose.web.yml --env-file .env up -d`,
+      'unpack dist + compose up web');
+
+    if (!DRY_RUN) {
+      await sshExec(ssh,
+        'cd /opt/litegen && docker compose -f docker-compose.prod.yml -f docker-compose.web.yml ps',
+        'compose ps');
+    }
+
+    console.log(`\n  Dashboard live at ${appUrl}/  (API at ${apiBase})`);
+  } finally {
+    if (ssh) { try { ssh.dispose(); } catch { /* ignore */ } }
+    if (!DRY_RUN) { try { fs.unlinkSync(distTgz); } catch { /* ignore */ } }
+  }
+}
+
 // ── Target: landing (static export -> Cloudflare Pages) ────────────────────
 function deployLanding() {
   required('CLOUDFLARE_API_TOKEN');
@@ -533,14 +589,16 @@ function deployLanding() {
 
 // ── CLI ─────────────────────────────────────────────────────────────────
 const TARGETS = {
-  provision: { fn: provision, desc: 'Create/reuse the DigitalOcean droplet (proxy + db)' },
-  proxy: { fn: deployProxy, desc: 'Build amd64 image → push GHCR → droplet pulls + runs' },
-  landing: { fn: deployLanding, desc: 'Static-export the Next.js site → Cloudflare Pages' },
+  provision: { fn: provision,    desc: 'Create/reuse the DigitalOcean droplet (proxy + db)' },
+  proxy:     { fn: deployProxy,  desc: 'Build amd64 image → push GHCR → droplet pulls + runs' },
+  web:       { fn: deployWeb,    desc: 'Build dashboard → ship dist + nginx → compose up web tier' },
+  landing:   { fn: deployLanding, desc: 'Static-export the Next.js site → Cloudflare Pages' },
 };
 
 async function deployAll() {
   await provision();
   await deployProxy();
+  await deployWeb();
   await deployLanding();
 }
 
@@ -553,8 +611,9 @@ async function main() {
   Targets:
     provision   ${TARGETS.provision.desc}
     proxy       ${TARGETS.proxy.desc}
+    web         ${TARGETS.web.desc}
     landing     ${TARGETS.landing.desc}
-    all         provision → proxy → landing
+    all         provision → proxy → web → landing  (full redeploy)
 
   Config: .env.deploy (see .env.deploy.template)
 `);
@@ -564,7 +623,7 @@ async function main() {
 
   if (target === 'all') { await deployAll(); return; }
   const entry = TARGETS[target];
-  if (!entry) { console.error(`Unknown target "${target}". Use: provision, proxy, landing, all`); process.exit(1); }
+  if (!entry) { console.error(`Unknown target "${target}". Use: provision, proxy, web, landing, all`); process.exit(1); }
   console.log(`Deploying: ${target} → ${entry.desc}`);
   await entry.fn();
 }
