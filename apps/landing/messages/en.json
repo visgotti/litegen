@@ -23,7 +23,6 @@
     "heading": "One prompt. Every image & video model.",
     "subheading": "Send a single OpenAI-style request. LiteGen fans it out to whichever model you want — DALL·E, FLUX, Imagen, Veo, Ray — falls back when one is down, and streams the finished image or video straight back. Hover a model to light up its route.",
     "app": "Your prompt",
-    "hint": "Hover a model to light up its route",
     "pillsLabel": "Gateway capabilities",
     "providersLabel": "Image & video models",
     "figcaption": "Diagram: one OpenAI-style prompt enters the LiteGen gateway, which applies routing, fallback, caching, per-model schemas, key management, and webhooks, then dispatches to image models (OpenAI DALL·E 3, Stability SDXL, Replicate FLUX) and video models (Runway Gen-4, Luma Ray 2) and streams the generated media back.",
@@ -81,12 +80,23 @@
       }
     }
   },
+  "socialProof": {
+    "eyebrow": "Trusted by",
+    "heading": "Industry leaders worldwide",
+    "subheading": "Join the teams shipping generative media on LiteGen."
+  },
   "providers": {
     "heading": "Works with the providers you already use",
     "subheading": "18 image & video providers and counting — swap or combine them without touching your code.",
     "image": "Image",
     "video": "Video",
     "more": "+ self-hosted & OpenAI-compatible"
+  },
+  "comparison": {
+    "eyebrow": "Model comparison",
+    "heading": "Same prompt, every model",
+    "subheading": "Identical evaluation prompts run across providers — compare the raw outputs side by side.",
+    "selectLabel": "Choose a prompt"
   },
   "quickstart": {
     "heading": "Up and running in minutes",
@@ -131,7 +141,18 @@
     "refsRoles": "up to {n} ({roles})",
     "defaultEq": "default {v}",
     "restHeading": "REST API",
-    "restSub": "The complete HTTP contract, generated from the OpenAPI spec — for calling LiteGen directly without an SDK."
+    "restSub": "The complete HTTP contract, generated from the OpenAPI spec — for calling LiteGen directly without an SDK.",
+    "downloadSpec": "Download OpenAPI",
+    "endpointCount": "{n, plural, one {# endpoint} other {# endpoints}}",
+    "searchEndpoints": "Search endpoints, paths, methods…",
+    "noEndpoints": "No endpoints match your search.",
+    "parameters": "Parameters",
+    "requestBody": "Request body",
+    "optionalBody": "optional",
+    "responses": "Responses",
+    "example": "Example request",
+    "copy": "Copy to clipboard",
+    "deprecated": "deprecated"
   },
   "footer": {
     "tagline": "The universal proxy for AI image & video generation.",

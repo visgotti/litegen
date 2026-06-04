@@ -1,0 +1,95 @@
+.section {
+  padding: 72px 0;
+  border-top: 1px solid var(--border);
+  overflow: hidden; /* contain the full-bleed marquee */
+}
+
+.head {
+  max-width: 640px;
+  margin: 0 auto 36px;
+  text-align: center;
+}
+
+.heading {
+  margin-top: 10px;
+  font-size: clamp(1.6rem, 3.5vw, 2.3rem);
+  font-weight: 800;
+}
+
+.sub {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 1.05rem;
+}
+
+/* Full-bleed scrolling viewport with faded left/right edges. */
+.marquee {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 10%, #000 90%, transparent);
+  mask-image: linear-gradient(to right, transparent, #000 10%, #000 90%, transparent);
+}
+
+.track {
+  display: flex;
+  width: max-content;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  animation: scroll 42s linear infinite;
+  will-change: transform;
+}
+
+/* Pause the conveyor belt so people can read the fine print. */
+.track:hover {
+  animation-play-state: paused;
+}
+
+.item {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  /* Uniform trailing gap on every item (incl. set boundary) keeps the
+     -50% loop seamless — don't switch this to `gap` on the track. */
+  margin-right: 72px;
+  color: var(--muted);
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.icon {
+  flex-shrink: 0;
+  color: var(--muted-2);
+}
+
+@keyframes scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+/* No motion: drop the animation and show one static, centered, wrapped row. */
+@media (prefers-reduced-motion: reduce) {
+  .marquee {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+  .track {
+    animation: none;
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: center;
+    row-gap: 20px;
+  }
+  .dup {
+    display: none;
+  }
+}

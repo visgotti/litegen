@@ -23,7 +23,6 @@
     "heading": "Un prompt. Todos los modelos de imagen y vídeo.",
     "subheading": "Envía una única petición estilo OpenAI. LiteGen la reparte al modelo que quieras — DALL·E, FLUX, Imagen, Veo, Ray —, hace failover cuando uno cae y te devuelve la imagen o el vídeo terminado. Pasa por un modelo para iluminar su ruta.",
     "app": "Tu prompt",
-    "hint": "Pasa por un modelo para iluminar su ruta",
     "pillsLabel": "Capacidades de la pasarela",
     "providersLabel": "Modelos de imagen y vídeo",
     "figcaption": "Diagrama: un único prompt estilo OpenAI entra en la pasarela de LiteGen, que aplica enrutado, failover, caché, esquemas por modelo, gestión de claves y webhooks, y luego lo despacha a modelos de imagen (OpenAI DALL·E 3, Stability SDXL, Replicate FLUX) y de vídeo (Runway Gen-4, Luma Ray 2) y te devuelve el contenido generado.",
@@ -81,12 +80,23 @@
       }
     }
   },
+  "socialProof": {
+    "eyebrow": "Con la confianza de",
+    "heading": "Líderes del sector en todo el mundo",
+    "subheading": "Únete a los equipos que envían medios generativos sobre LiteGen."
+  },
   "providers": {
     "heading": "Funciona con los proveedores que ya usas",
     "subheading": "18 proveedores de imagen y vídeo y subiendo: cámbialos o combínalos sin tocar tu código.",
     "image": "Imagen",
     "video": "Vídeo",
     "more": "+ autoalojado y compatible con OpenAI"
+  },
+  "comparison": {
+    "eyebrow": "Comparación de modelos",
+    "heading": "El mismo prompt, todos los modelos",
+    "subheading": "Prompts de evaluación idénticos ejecutados en todos los proveedores — compara los resultados en bruto lado a lado.",
+    "selectLabel": "Elige un prompt"
   },
   "quickstart": {
     "heading": "Funcionando en minutos",
@@ -131,7 +141,18 @@
     "refsRoles": "hasta {n} ({roles})",
     "defaultEq": "predet. {v}",
     "restHeading": "API REST",
-    "restSub": "El contrato HTTP completo, generado a partir de la especificación OpenAPI — para llamar a LiteGen directamente sin un SDK."
+    "restSub": "El contrato HTTP completo, generado a partir de la especificación OpenAPI — para llamar a LiteGen directamente sin un SDK.",
+    "downloadSpec": "Descargar OpenAPI",
+    "endpointCount": "{n, plural, one {# endpoint} other {# endpoints}}",
+    "searchEndpoints": "Buscar endpoints, rutas, métodos…",
+    "noEndpoints": "Ningún endpoint coincide con tu búsqueda.",
+    "parameters": "Parámetros",
+    "requestBody": "Cuerpo de la petición",
+    "optionalBody": "opcional",
+    "responses": "Respuestas",
+    "example": "Petición de ejemplo",
+    "copy": "Copiar al portapapeles",
+    "deprecated": "obsoleto"
   },
   "footer": {
     "tagline": "El proxy universal para la generación de imágenes y vídeo con IA.",

@@ -61,7 +61,7 @@
 }
 
 /* Cross-fade between fallback wires and the live canvas. The accessible label
-   overlay (.overlay / .hint) always sits above both via a higher z-index. */
+   overlay (.overlay) always sits above both via a higher z-index. */
 .canvas {
   z-index: 1;
   opacity: 0;
@@ -249,6 +249,38 @@
   transform: translateY(-2px);
   box-shadow: 0 0 26px -4px color-mix(in srgb, var(--accent) 70%, transparent);
 }
+/* When the mark holds a brand logo, the badge becomes a light card so full-colour
+   (incl. dark/black) logos stay legible on the stage — same 38×38 footprint the
+   renderer measures, so the spokes/halos are unaffected. */
+.pmarkLogo {
+  background: #fff;
+  padding: 6px;
+  border-color: rgba(0, 0, 0, 0.08);
+}
+.pmark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Debug badge shown only when the ?renderer= flag pins a backend. */
+.badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 7;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  background: color-mix(in srgb, #0b0c12 78%, transparent);
+  border: 1px solid var(--border-strong);
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+}
 .pname {
   font-size: 0.82rem;
   font-weight: 650;
@@ -374,29 +406,6 @@
   text-align: center;
 }
 
-/* Hint line */
-.hint {
-  position: absolute;
-  left: 50%;
-  bottom: 14px;
-  transform: translateX(-50%);
-  z-index: 3;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  /* --muted (not --muted-2): the hint overlays the live canvas, and --muted-2
-     fails WCAG AA for small text (~3.8:1). A backing plate guarantees contrast
-     regardless of what the shader paints underneath. */
-  font-size: 0.78rem;
-  color: var(--muted);
-  padding: 4px 12px;
-  border-radius: 999px;
-  background: color-mix(in srgb, #0b0c12 68%, transparent);
-  backdrop-filter: blur(4px);
-  pointer-events: none;
-  white-space: nowrap;
-}
-
 /* ---- Hover: light the active route, dim the rest ----
    This is the DOM/SVG counterpart to the shader's focus bloom, so "trace its
    route" works even when WebGPU is unavailable. The app→gateway trunk and the
@@ -493,13 +502,6 @@
   .pmodel {
     max-width: 66px;
     overflow-wrap: anywhere;
-  }
-  .hint {
-    bottom: 12px;
-    font-size: 0.72rem;
-    text-align: center;
-    max-width: 92%;
-    white-space: normal;
   }
 }
 

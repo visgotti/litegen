@@ -4,7 +4,9 @@ import { Nav } from '@/components/Nav';
 import { Hero } from '@/components/Hero';
 import { InfraFlow } from '@/components/InfraFlow';
 import { Features } from '@/components/Features';
+import { SocialProof } from '@/components/SocialProof';
 import { Providers } from '@/components/Providers';
+import { ModelComparison } from '@/components/ModelComparison';
 import { Quickstart } from '@/components/Quickstart';
 import { Footer } from '@/components/Footer';
 
@@ -22,7 +24,9 @@ export default async function Home({ params }: Props) {
         <Hero />
         <InfraFlow />
         <Features />
+        <SocialProof />
         <Providers />
+        <ModelComparison />
         <Quickstart />
       </main>
       <Footer />
