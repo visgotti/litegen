@@ -14,6 +14,10 @@ services:
       LITEGEN__DATABASE_URL: "postgres://litegen:${POSTGRES_PASSWORD}@db:5432/litegen"
       LITEGEN__MASTER_KEY: "${LITEGEN__MASTER_KEY:?LITEGEN__MASTER_KEY must be set}"
       LITEGEN_CORS_ORIGINS: "${LITEGEN_CORS_ORIGINS:-}"
+      # Hosted multi-tenant mode (defaults to single_tenant when unset).
+      LITEGEN__MODE: "${LITEGEN__MODE:-single_tenant}"
+      LITEGEN__SECRETS_KEY: "${LITEGEN__SECRETS_KEY:-}"
+      LITEGEN__COOKIE_INSECURE_DEV: "${LITEGEN__COOKIE_INSECURE_DEV:-}"
       # Optional provider keys — passed through from .env.deploy when present.
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       REPLICATE_API_TOKEN: "${REPLICATE_API_TOKEN:-}"
