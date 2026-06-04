@@ -56,6 +56,12 @@ struct TestApp {
     _tmp: tempfile::NamedTempFile,
 }
 
+impl TestApp {
+    fn db_path(&self) -> std::path::PathBuf {
+        self._tmp.path().to_path_buf()
+    }
+}
+
 async fn spawn_app() -> TestApp {
     spawn_app_with_providers(&[]).await
 }
@@ -1304,4 +1310,190 @@ async fn app_storage_cross_tenant_isolation() {
     assert!(p.status == 403 || p.status == 404, "cross-tenant PUT allowed: {} {:?}", p.status, p.body);
     let d = b.delete(&format!("/v1/apps/{app_a}/storage"), &[("x-csrf-token", &csrf_b)]).await;
     assert!(d.status == 403 || d.status == 404, "cross-tenant DELETE allowed: {} {:?}", d.status, d.body);
+}
+
+// ─── BYO app storage: generation behavior ────────────────────────────────────
+
+#[tokio::test]
+async fn app_storage_uploads_generation_to_per_app_bucket() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let s3 = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&s3)
+        .await;
+
+    let app = spawn_app().await; // global image_store is LocalStore (b64 fallback)
+    let mut c = Client::new(&app.base);
+    let (app_id, secret) = signup_app_and_key(&mut c, "stg-upload").await;
+    let csrf = c.csrf().await;
+
+    let put = c
+        .put_with(
+            &format!("/v1/apps/{app_id}/storage"),
+            json!({
+                "bucket_name": "test-bucket",
+                "region": "us-east-1",
+                "endpoint_url": s3.uri(),
+                "custom_public_url": "https://cdn.example.test",
+                "path_prefix": "litegen/images",
+                "access_key_id": "AKIATEST",
+                "secret_access_key": "secret"
+            }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(put.status, 200, "put storage failed: {:?}", put.body);
+
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    let r = bearer
+        .post_with(
+            "/v1/images/generations",
+            json!({ "model": MOCK_MODEL, "prompt": "a cat" }),
+            &[("authorization", &bearer_hdr)],
+        )
+        .await;
+    assert_eq!(r.status, 200, "generation failed: {:?}", r.body);
+
+    let url = r.body["data"][0]["url"].as_str().unwrap_or("");
+    assert!(
+        url.starts_with("https://cdn.example.test/litegen/images/"),
+        "expected per-app bucket URL, got {url:?} (body {:?})",
+        r.body
+    );
+
+    let received = s3.received_requests().await.expect("recorded requests");
+    assert_eq!(received.len(), 1, "expected one S3 PUT, got {}", received.len());
+    let p = received[0].url.path();
+    assert!(
+        p.starts_with("/test-bucket/litegen/images/"),
+        "unexpected S3 key path: {p}"
+    );
+}
+
+#[tokio::test]
+async fn unconfigured_app_falls_back_to_global_store() {
+    let app = spawn_app().await; // global LocalStore => b64 inline
+    let mut c = Client::new(&app.base);
+    let (_app_id, secret) = signup_app_and_key(&mut c, "stg-nofb").await;
+
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    let r = bearer
+        .post_with(
+            "/v1/images/generations",
+            json!({ "model": MOCK_MODEL, "prompt": "x" }),
+            &[("authorization", &bearer_hdr)],
+        )
+        .await;
+    assert_eq!(r.status, 200, "{:?}", r.body);
+    assert!(r.body["data"][0]["b64_json"].is_string(), "expected b64 fallback: {:?}", r.body);
+    assert!(r.body["data"][0]["url"].is_null(), "expected no url: {:?}", r.body);
+}
+
+#[tokio::test]
+async fn corrupt_storage_config_falls_back_without_failing() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let s3 = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&s3)
+        .await;
+
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, secret) = signup_app_and_key(&mut c, "stg-corrupt").await;
+    let csrf = c.csrf().await;
+
+    let put = c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({
+            "bucket_name": "test-bucket",
+            "endpoint_url": s3.uri(),
+            "access_key_id": "AKIATEST",
+            "secret_access_key": "secret"
+        }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+    assert_eq!(put.status, 200, "{:?}", put.body);
+
+    let url = format!("sqlite://{}?mode=rwc", app.db_path().display());
+    let pool = sqlx::sqlite::SqlitePool::connect(&url).await.expect("open sqlite");
+    sqlx::query("UPDATE app_storage_credentials SET secret_ciphertext = 'not-base64-$$$' WHERE app_id = ?")
+        .bind(&app_id)
+        .execute(&pool)
+        .await
+        .expect("corrupt row");
+    pool.close().await;
+
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    let r = bearer
+        .post_with(
+            "/v1/images/generations",
+            json!({ "model": MOCK_MODEL, "prompt": "x" }),
+            &[("authorization", &bearer_hdr)],
+        )
+        .await;
+    assert_eq!(r.status, 200, "corrupt config must fail-open, got {:?}", r.body);
+    assert!(r.body["data"][0]["b64_json"].is_string(), "expected b64 fallback: {:?}", r.body);
+    let received = s3.received_requests().await.expect("recorded requests");
+    assert_eq!(received.len(), 0, "corrupt config must NOT hit per-app S3");
+}
+
+#[tokio::test]
+async fn delete_storage_reverts_to_global_store() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let s3 = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&s3)
+        .await;
+
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, secret) = signup_app_and_key(&mut c, "stg-revert").await;
+    let csrf = c.csrf().await;
+
+    c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({
+            "bucket_name": "test-bucket",
+            "endpoint_url": s3.uri(),
+            "custom_public_url": "https://cdn.example.test",
+            "access_key_id": "AKIATEST",
+            "secret_access_key": "secret"
+        }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    let r1 = bearer.post_with(
+        "/v1/images/generations",
+        json!({ "model": MOCK_MODEL, "prompt": "x" }),
+        &[("authorization", &bearer_hdr)],
+    ).await;
+    assert_eq!(r1.status, 200, "{:?}", r1.body);
+    assert!(r1.body["data"][0]["url"].as_str().unwrap_or("").starts_with("https://cdn.example.test/"));
+
+    let del = c.delete(&format!("/v1/apps/{app_id}/storage"), &[("x-csrf-token", &csrf)]).await;
+    assert_eq!(del.status, 204, "{:?}", del.body);
+    let r2 = bearer.post_with(
+        "/v1/images/generations",
+        json!({ "model": MOCK_MODEL, "prompt": "y" }),
+        &[("authorization", &bearer_hdr)],
+    ).await;
+    assert_eq!(r2.status, 200, "{:?}", r2.body);
+    assert!(r2.body["data"][0]["b64_json"].is_string(), "expected b64 after delete: {:?}", r2.body);
+
+    let received = s3.received_requests().await.expect("recorded requests");
+    assert_eq!(received.len(), 1, "exactly one S3 PUT total (before delete)");
 }
