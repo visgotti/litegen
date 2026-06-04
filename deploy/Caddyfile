@@ -1,0 +1,26 @@
+{
+    email jvisgotti@gmail.com
+}
+
+www.litegen.ai {
+    redir https://litegen.ai{uri} permanent
+}
+
+litegen.ai {
+    root * /srv/landing
+    try_files {path} {path}/ /index.html
+    file_server
+    encode gzip
+}
+
+app.litegen.ai {
+    handle_path /api/* {
+        reverse_proxy litegen:4000
+    }
+    handle {
+        root * /srv/app
+        try_files {path} /index.html
+        file_server
+        encode gzip
+    }
+}
