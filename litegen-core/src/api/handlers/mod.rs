@@ -2093,7 +2093,7 @@ async fn resolve_app_image_store(
         Ok(Some(r)) => r,
         Ok(None) => return None,
         Err(e) => {
-            tracing::warn!(error = %e, "byo storage: lookup failed, using global store");
+            tracing::warn!(app_id, error = %e, "byo storage: lookup failed, using global store");
             return None;
         }
     };
