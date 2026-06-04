@@ -155,3 +155,42 @@ test('hosted multi-tenant: signup, apps, keys, BYO creds, invites, isolation, re
   });
   expect(r.status()).toBe(200);
 });
+
+test('hosted multi-tenant: BYO S3 storage configure, persist-without-secret, remove', async ({ page }) => {
+  const rand = () => Math.random().toString(36).slice(2, 10);
+  const owner = `stg+${rand()}@litegen.test`;
+  const PW = 'super-secret-password-123';
+  const SECRET = 'super-secret-access-key-DO-NOT-ECHO';
+
+  // Sign up org + first app.
+  await page.goto('/signup');
+  await page.locator('[data-testid="signup-org-name"]').fill('Storage Co');
+  await page.locator('[data-testid="signup-email"]').fill(owner);
+  await page.locator('[data-testid="signup-password"]').fill(PW);
+  await page.locator('[data-testid="signup-confirm-password"]').fill(PW);
+  await page.locator('[data-testid="signup-submit"]').click();
+  await page.waitForURL('**/');
+  await page.goto('/');
+  await expect(page.locator('[data-testid="user-menu-email"]')).toContainText(owner, { timeout: 15_000 });
+
+  // Configure storage.
+  await page.goto('/organization');
+  await page.locator('[data-testid="storage-bucket"]').fill('e2e-bucket');
+  await page.locator('[data-testid="storage-region"]').fill('us-east-1');
+  await page.locator('[data-testid="storage-endpoint"]').fill('http://127.0.0.1:5599'); // never called in this test
+  await page.locator('[data-testid="storage-access-key-id"]').fill('AKIAE2E1234');
+  await page.locator('[data-testid="storage-secret"]').fill(SECRET);
+  await page.locator('[data-testid="storage-save"]').click();
+  await expect(page.locator('[data-testid="storage-configured"]')).toContainText('e2e-bucket', { timeout: 15_000 });
+
+  // Reload → config persists; bucket shown; secret NEVER rendered; hint shown.
+  await page.goto('/organization');
+  await expect(page.locator('[data-testid="storage-configured"]')).toContainText('e2e-bucket', { timeout: 15_000 });
+  await expect(page.locator('[data-testid="storage-configured"]')).toContainText('…1234');
+  await expect(page.locator('[data-testid="storage-secret"]')).toHaveValue('');
+  await expect(page.locator('body')).not.toContainText(SECRET);
+
+  // Remove → configured banner disappears.
+  await page.locator('[data-testid="storage-remove"]').click();
+  await expect(page.locator('[data-testid="storage-configured"]')).toHaveCount(0, { timeout: 15_000 });
+});

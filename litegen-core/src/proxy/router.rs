@@ -90,7 +90,7 @@ impl ProxyRouter {
     /// (fallback, weighted_round_robin, lowest_cost, lowest_latency). Otherwise,
     /// falls back to single-provider direct dispatch using schema.provider.
     #[tracing::instrument(
-        skip(self, schema, base, extras, materialized),
+        skip(self, schema, base, extras, materialized, app_store),
         fields(model = %schema.id, provider = %schema.provider)
     )]
     pub async fn generate_image(
@@ -100,6 +100,7 @@ impl ProxyRouter {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
         app_creds: Option<ProviderCredentials>,
+        app_store: Option<Arc<dyn ImageStore>>,
     ) -> Result<ImageGenerationResponse, ProxyError> {
         let start = Instant::now();
 
@@ -177,7 +178,12 @@ impl ProxyRouter {
 
         let response = ImageGenerationResponse {
             created: chrono::Utc::now().timestamp(),
-            data: build_image_results(&output, extras, &self.image_store).await,
+            data: build_image_results(
+                &output,
+                extras,
+                app_store.as_ref().unwrap_or(&self.image_store),
+            )
+            .await,
             model: schema.id.clone(),
             provider: provider_name.clone(),
             usage,

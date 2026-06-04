@@ -1540,6 +1540,60 @@ impl DatabaseStore for SqliteDatabase {
         Ok(result.rows_affected() > 0)
     }
 
+    async fn upsert_app_storage(&self, input: &AppStorageUpsert) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO app_storage_credentials \
+                (app_id, backend, bucket_name, region, endpoint_url, custom_public_url, \
+                 path_prefix, access_key_id_hint, secret_ciphertext, secret_nonce, \
+                 created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')) \
+             ON CONFLICT (app_id) DO UPDATE SET \
+                backend = excluded.backend, \
+                bucket_name = excluded.bucket_name, \
+                region = excluded.region, \
+                endpoint_url = excluded.endpoint_url, \
+                custom_public_url = excluded.custom_public_url, \
+                path_prefix = excluded.path_prefix, \
+                access_key_id_hint = excluded.access_key_id_hint, \
+                secret_ciphertext = excluded.secret_ciphertext, \
+                secret_nonce = excluded.secret_nonce, \
+                updated_at = datetime('now')",
+        )
+        .bind(&input.app_id)
+        .bind(&input.backend)
+        .bind(&input.bucket_name)
+        .bind(&input.region)
+        .bind(&input.endpoint_url)
+        .bind(&input.custom_public_url)
+        .bind(&input.path_prefix)
+        .bind(&input.access_key_id_hint)
+        .bind(&input.secret_ciphertext)
+        .bind(&input.secret_nonce)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_app_storage(&self, app_id: &str) -> Result<Option<AppStorageRow>, sqlx::Error> {
+        let row = sqlx::query_as::<_, AppStorageRow>(
+            "SELECT backend, bucket_name, region, endpoint_url, custom_public_url, \
+                    path_prefix, access_key_id_hint, secret_ciphertext, secret_nonce, updated_at \
+             FROM app_storage_credentials WHERE app_id = ?",
+        )
+        .bind(app_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    async fn delete_app_storage(&self, app_id: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM app_storage_credentials WHERE app_id = ?")
+            .bind(app_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     // ─── API Keys (tenant-scoped) ───────────────────────────────────────
 
     async fn create_api_key_scoped(

@@ -531,6 +531,20 @@ pub trait DatabaseStore: Send + Sync {
         Ok(false)
     }
 
+    // ─── Per-app BYO storage config ─────────────────────────────────────
+
+    async fn upsert_app_storage(&self, _input: &AppStorageUpsert) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+
+    async fn get_app_storage(&self, _app_id: &str) -> Result<Option<AppStorageRow>, sqlx::Error> {
+        Ok(None)
+    }
+
+    async fn delete_app_storage(&self, _app_id: &str) -> Result<bool, sqlx::Error> {
+        Ok(false)
+    }
+
     // ─── API Keys (tenant-scoped create / list) ─────────────────────────
 
     async fn create_api_key_scoped(

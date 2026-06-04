@@ -516,6 +516,22 @@ LITEGEN__SECRETS_KEY=$(head -c 32 /dev/urandom | base64)
 
 At generation time (and during background video-status polling) each request is dispatched using that app's decrypted provider credentials, keeping tenants' upstream keys isolated. Resolution order per provider is: **the app's stored credential → the global env-configured credential (if any) → `400 provider_not_configured`** when neither exists. Cost-estimate endpoints follow the same rule. Decryption/parse failures surface as `500` (server misconfiguration), never a silent fallback to another key.
 
+### BYO object storage (per app)
+
+Each application can store its generated images in its own S3-compatible bucket
+(AWS S3, MinIO, Cloudflare R2, DigitalOcean Spaces). Configure it per app:
+
+- `GET /v1/apps/{app_id}/storage` — current config (never returns the secret)
+- `PUT /v1/apps/{app_id}/storage` — set/update; body: `bucket_name` (required),
+  `region`, `endpoint_url`, `custom_public_url`, `path_prefix`, and the write-only
+  `access_key_id` + `secret_access_key` (send both to set/rotate; omit both to keep
+  the existing pair)
+- `DELETE /v1/apps/{app_id}/storage` — revert to the platform default store
+
+The credential pair is encrypted at rest with AES-256-GCM using
+`LITEGEN__SECRETS_KEY` (required in hosted mode). Apps with no storage configured
+fall back to the global `image_storage` backend (S3 if set, else base64 inline).
+
 ### Scaling roadmap
 
 Hosted mode is fully functional on a single instance. Horizontal multi-instance scaling — shared **Redis** for rate limits and circuit-breaker state, and **object storage** for generation artifacts — is a follow-up (**Phase 3**), and automated infrastructure provisioning is **Phase 4**.
