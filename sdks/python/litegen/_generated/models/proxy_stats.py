@@ -4,6 +4,7 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 if TYPE_CHECKING:
+    from ..models.latency_percentiles import LatencyPercentiles
     from ..models.model_usage_stat import ModelUsageStat
     from ..models.provider_usage_stat import ProviderUsageStat
 
@@ -18,6 +19,7 @@ class ProxyStats:
     Attributes:
         avg_latency_ms (float):
         failed_requests (int):
+        latency_percentiles (LatencyPercentiles): Latency percentiles for the last N minutes.
         models_used (List['ModelUsageStat']):
         providers_used (List['ProviderUsageStat']):
         requests_per_minute (float):
@@ -28,6 +30,7 @@ class ProxyStats:
 
     avg_latency_ms: float
     failed_requests: int
+    latency_percentiles: "LatencyPercentiles"
     models_used: List["ModelUsageStat"]
     providers_used: List["ProviderUsageStat"]
     requests_per_minute: float
@@ -40,6 +43,8 @@ class ProxyStats:
         avg_latency_ms = self.avg_latency_ms
 
         failed_requests = self.failed_requests
+
+        latency_percentiles = self.latency_percentiles.to_dict()
 
         models_used = []
         for models_used_item_data in self.models_used:
@@ -65,6 +70,7 @@ class ProxyStats:
             {
                 "avg_latency_ms": avg_latency_ms,
                 "failed_requests": failed_requests,
+                "latency_percentiles": latency_percentiles,
                 "models_used": models_used,
                 "providers_used": providers_used,
                 "requests_per_minute": requests_per_minute,
@@ -78,6 +84,7 @@ class ProxyStats:
 
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
+        from ..models.latency_percentiles import LatencyPercentiles
         from ..models.model_usage_stat import ModelUsageStat
         from ..models.provider_usage_stat import ProviderUsageStat
 
@@ -85,6 +92,8 @@ class ProxyStats:
         avg_latency_ms = d.pop("avg_latency_ms")
 
         failed_requests = d.pop("failed_requests")
+
+        latency_percentiles = LatencyPercentiles.from_dict(d.pop("latency_percentiles"))
 
         models_used = []
         _models_used = d.pop("models_used")
@@ -111,6 +120,7 @@ class ProxyStats:
         proxy_stats = cls(
             avg_latency_ms=avg_latency_ms,
             failed_requests=failed_requests,
+            latency_percentiles=latency_percentiles,
             models_used=models_used,
             providers_used=providers_used,
             requests_per_minute=requests_per_minute,

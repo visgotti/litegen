@@ -42,6 +42,9 @@ pub enum Permission {
     ProviderCredRead,
     ProviderCredWrite,
     ProviderCredDelete,
+    StorageCredRead,
+    StorageCredWrite,
+    StorageCredDelete,
 }
 
 impl Permission {
@@ -86,6 +89,9 @@ impl Permission {
             Self::ProviderCredRead => "provider_cred:read",
             Self::ProviderCredWrite => "provider_cred:write",
             Self::ProviderCredDelete => "provider_cred:delete",
+            Self::StorageCredRead => "storage_cred:read",
+            Self::StorageCredWrite => "storage_cred:write",
+            Self::StorageCredDelete => "storage_cred:delete",
         }
     }
 }
@@ -133,6 +139,9 @@ pub fn permissions_for(role: Role) -> &'static [Permission] {
             ProviderCredRead,
             ProviderCredWrite,
             ProviderCredDelete,
+            StorageCredRead,
+            StorageCredWrite,
+            StorageCredDelete,
         ],
         Role::Admin => &[
             UserReadSelf,
@@ -172,6 +181,9 @@ pub fn permissions_for(role: Role) -> &'static [Permission] {
             ProviderCredRead,
             ProviderCredWrite,
             ProviderCredDelete,
+            StorageCredRead,
+            StorageCredWrite,
+            StorageCredDelete,
         ],
         Role::Member => &[
             UserReadSelf,
@@ -189,6 +201,8 @@ pub fn permissions_for(role: Role) -> &'static [Permission] {
             MemberRead,
             ProviderCredRead,
             ProviderCredWrite,
+            StorageCredRead,
+            StorageCredWrite,
         ],
         Role::Viewer => &[
             UserReadSelf,
@@ -200,6 +214,7 @@ pub fn permissions_for(role: Role) -> &'static [Permission] {
             AppRead,
             MemberRead,
             ProviderCredRead,
+            StorageCredRead,
         ],
     }
 }
@@ -252,6 +267,24 @@ mod tests {
         assert!(role_has(Role::Admin, Permission::OrgWrite));
         assert!(!role_has(Role::Admin, Permission::OrgTransferOwner));
         assert!(!role_has(Role::Admin, Permission::OrgDelete));
+    }
+
+    #[test]
+    fn storage_cred_role_mapping_mirrors_provider_cred() {
+        use Permission::*;
+        for r in [Role::Owner, Role::Admin] {
+            assert!(role_has(r, StorageCredRead));
+            assert!(role_has(r, StorageCredWrite));
+            assert!(role_has(r, StorageCredDelete));
+        }
+        assert!(role_has(Role::Member, StorageCredRead));
+        assert!(role_has(Role::Member, StorageCredWrite));
+        assert!(!role_has(Role::Member, StorageCredDelete));
+        assert!(role_has(Role::Viewer, StorageCredRead));
+        assert!(!role_has(Role::Viewer, StorageCredWrite));
+        assert_eq!(StorageCredRead.as_str(), "storage_cred:read");
+        assert_eq!(StorageCredWrite.as_str(), "storage_cred:write");
+        assert_eq!(StorageCredDelete.as_str(), "storage_cred:delete");
     }
 
     #[test]

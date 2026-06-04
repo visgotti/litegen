@@ -1,31 +1,24 @@
 from http import HTTPStatus
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, cast
 
 import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.paginated_response_request_log import PaginatedResponseRequestLog
-from ...types import UNSET, Response, Unset
+from ...models.error_response import ErrorResponse
+from ...types import Response
 
 
 def _get_kwargs(
-    *,
-    page: Union[Unset, int] = UNSET,
-    per_page: Union[Unset, int] = UNSET,
+    app_id: str,
+    provider: str,
 ) -> Dict[str, Any]:
-    params: Dict[str, Any] = {}
-
-    params["page"] = page
-
-    params["per_page"] = per_page
-
-    params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
-
     _kwargs: Dict[str, Any] = {
-        "method": "get",
-        "url": "/v1/logs",
-        "params": params,
+        "method": "delete",
+        "url": "/v1/apps/{app_id}/provider-credentials/{provider}".format(
+            app_id=app_id,
+            provider=provider,
+        ),
     }
 
     return _kwargs
@@ -33,11 +26,18 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[PaginatedResponseRequestLog]:
-    if response.status_code == 200:
-        response_200 = PaginatedResponseRequestLog.from_dict(response.json())
+) -> Optional[Union[Any, ErrorResponse]]:
+    if response.status_code == 204:
+        response_204 = cast(Any, None)
+        return response_204
+    if response.status_code == 403:
+        response_403 = ErrorResponse.from_dict(response.json())
 
-        return response_200
+        return response_403
+    if response.status_code == 404:
+        response_404 = ErrorResponse.from_dict(response.json())
+
+        return response_404
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -46,7 +46,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[PaginatedResponseRequestLog]:
+) -> Response[Union[Any, ErrorResponse]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -56,28 +56,29 @@ def _build_response(
 
 
 def sync_detailed(
+    app_id: str,
+    provider: str,
     *,
     client: Union[AuthenticatedClient, Client],
-    page: Union[Unset, int] = UNSET,
-    per_page: Union[Unset, int] = UNSET,
-) -> Response[PaginatedResponseRequestLog]:
-    """GET /v1/logs — Get request logs (paginated).
+) -> Response[Union[Any, ErrorResponse]]:
+    """DELETE /v1/apps/{app_id}/provider-credentials/{provider} — Delete a credential
+    (provider_cred:delete).
 
     Args:
-        page (Union[Unset, int]):
-        per_page (Union[Unset, int]):
+        app_id (str):
+        provider (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[PaginatedResponseRequestLog]
+        Response[Union[Any, ErrorResponse]]
     """
 
     kwargs = _get_kwargs(
-        page=page,
-        per_page=per_page,
+        app_id=app_id,
+        provider=provider,
     )
 
     response = client.get_httpx_client().request(
@@ -88,55 +89,57 @@ def sync_detailed(
 
 
 def sync(
+    app_id: str,
+    provider: str,
     *,
     client: Union[AuthenticatedClient, Client],
-    page: Union[Unset, int] = UNSET,
-    per_page: Union[Unset, int] = UNSET,
-) -> Optional[PaginatedResponseRequestLog]:
-    """GET /v1/logs — Get request logs (paginated).
+) -> Optional[Union[Any, ErrorResponse]]:
+    """DELETE /v1/apps/{app_id}/provider-credentials/{provider} — Delete a credential
+    (provider_cred:delete).
 
     Args:
-        page (Union[Unset, int]):
-        per_page (Union[Unset, int]):
+        app_id (str):
+        provider (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        PaginatedResponseRequestLog
+        Union[Any, ErrorResponse]
     """
 
     return sync_detailed(
+        app_id=app_id,
+        provider=provider,
         client=client,
-        page=page,
-        per_page=per_page,
     ).parsed
 
 
 async def asyncio_detailed(
+    app_id: str,
+    provider: str,
     *,
     client: Union[AuthenticatedClient, Client],
-    page: Union[Unset, int] = UNSET,
-    per_page: Union[Unset, int] = UNSET,
-) -> Response[PaginatedResponseRequestLog]:
-    """GET /v1/logs — Get request logs (paginated).
+) -> Response[Union[Any, ErrorResponse]]:
+    """DELETE /v1/apps/{app_id}/provider-credentials/{provider} — Delete a credential
+    (provider_cred:delete).
 
     Args:
-        page (Union[Unset, int]):
-        per_page (Union[Unset, int]):
+        app_id (str):
+        provider (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[PaginatedResponseRequestLog]
+        Response[Union[Any, ErrorResponse]]
     """
 
     kwargs = _get_kwargs(
-        page=page,
-        per_page=per_page,
+        app_id=app_id,
+        provider=provider,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -145,29 +148,30 @@ async def asyncio_detailed(
 
 
 async def asyncio(
+    app_id: str,
+    provider: str,
     *,
     client: Union[AuthenticatedClient, Client],
-    page: Union[Unset, int] = UNSET,
-    per_page: Union[Unset, int] = UNSET,
-) -> Optional[PaginatedResponseRequestLog]:
-    """GET /v1/logs — Get request logs (paginated).
+) -> Optional[Union[Any, ErrorResponse]]:
+    """DELETE /v1/apps/{app_id}/provider-credentials/{provider} — Delete a credential
+    (provider_cred:delete).
 
     Args:
-        page (Union[Unset, int]):
-        per_page (Union[Unset, int]):
+        app_id (str):
+        provider (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        PaginatedResponseRequestLog
+        Union[Any, ErrorResponse]
     """
 
     return (
         await asyncio_detailed(
+            app_id=app_id,
+            provider=provider,
             client=client,
-            page=page,
-            per_page=per_page,
         )
     ).parsed

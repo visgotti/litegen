@@ -4,6 +4,30 @@
  */
 
 export interface paths {
+    "/auth/redirect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /auth/redirect — Unified OAuth callback for BOTH providers.
+         * @description The deployed Google + GitHub OAuth apps share a single redirect URI
+         *     (`https://app.litegen.ai/api/auth/redirect`, served to the backend as
+         *     `/auth/redirect` once nginx strips `/api`). We disambiguate the provider via
+         *     the short-lived `litegen_oauth_provider` cookie set at `*_start`, then
+         *     dispatch to the matching core callback fn.
+         */
+        get: operations["oauth_redirect"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -145,6 +169,25 @@ export interface paths {
         post?: never;
         /** DELETE /v1/apps/{app_id}/provider-credentials/{provider} — Delete a credential (provider_cred:delete). */
         delete: operations["delete_provider_credential"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/apps/{app_id}/storage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/apps/{app_id}/storage — read BYO storage config (storage_cred:read). No secret. */
+        get: operations["get_app_storage"];
+        /** PUT /v1/apps/{app_id}/storage — upsert BYO storage config (storage_cred:write). */
+        put: operations["put_app_storage"];
+        post?: never;
+        /** DELETE /v1/apps/{app_id}/storage — remove BYO storage config (storage_cred:delete). */
+        delete: operations["delete_app_storage"];
         options?: never;
         head?: never;
         patch?: never;
@@ -866,6 +909,19 @@ export interface components {
         ApiKeyListResponse: {
             data: components["schemas"]["ApiKeyInfo"][];
         };
+        /** @description Public view of per-app BYO storage config — NEVER includes the secret. */
+        AppStorageInfo: {
+            access_key_id_hint?: string | null;
+            backend?: string | null;
+            bucket_name?: string | null;
+            configured: boolean;
+            custom_public_url?: string | null;
+            endpoint_url?: string | null;
+            path_prefix?: string | null;
+            region?: string | null;
+            /** Format: date-time */
+            updated_at?: string | null;
+        };
         Application: {
             /** Format: date-time */
             created_at: string;
@@ -1468,6 +1524,18 @@ export interface components {
             last_login_at?: string | null;
             role: string;
         };
+        PutAppStorageRequest: {
+            /** @description Write-only. Provide WITH `secret_access_key` to set/rotate; omit BOTH to keep existing. */
+            access_key_id?: string | null;
+            backend?: string | null;
+            bucket_name: string;
+            custom_public_url?: string | null;
+            endpoint_url?: string | null;
+            path_prefix?: string | null;
+            region?: string | null;
+            /** @description Write-only. */
+            secret_access_key?: string | null;
+        };
         /** @enum {string} */
         RefImageKind: "base64" | "url" | "blob";
         RefInputSpec: {
@@ -1660,6 +1728,47 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    oauth_redirect: {
+        parameters: {
+            query: {
+                /** @description Authorization code from the provider */
+                code: string;
+                /** @description State for CSRF verification */
+                state: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to app after successful auth */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing/invalid provider context or state */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Account not found or inactive */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     health_check: {
         parameters: {
             query?: never;
@@ -2050,6 +2159,122 @@ export interface operations {
                 app_id: string;
                 /** @description Provider name */
                 provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_app_storage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application ID */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Storage config (no secret) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppStorageInfo"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    put_app_storage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application ID */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutAppStorageRequest"];
+            };
+        };
+        responses: {
+            /** @description Stored (no secret) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppStorageInfo"];
+                };
+            };
+            /** @description Bad request / secrets key unavailable */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_app_storage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application ID */
+                app_id: string;
             };
             cookie?: never;
         };
