@@ -6,7 +6,7 @@
  *
  *   node deploy.js provision   Create/reuse the DigitalOcean droplet (proxy + db).
  *   node deploy.js proxy       Build amd64 image -> push GHCR -> droplet pulls + runs.
- *   node deploy.js web         Build dashboard -> ship dist + nginx -> compose up web tier.
+ *   node deploy.js web         Build dashboard + landing -> ship dist + Caddyfile -> compose up Caddy web tier.
  *   node deploy.js landing     Static-export the Next.js site -> Cloudflare Pages.
  *   node deploy.js all         provision -> proxy -> web -> landing  (full redeploy).
  *
@@ -499,47 +499,111 @@ async function waitForImage(host, ssh, imageSha) {
   throw new Error('On-droplet build timed out after ~45 minutes.');
 }
 
-// ── Target: web (build dashboard -> ship dist + nginx -> compose up web tier) ─
+// ── Target: web (build dashboard + landing -> ship dist + Caddyfile -> compose up web tier) ─
+//
+// Caddy (the `web` service) terminates TLS via automatic Let's Encrypt and serves
+//   litegen.ai      → the static Next.js landing export   (/srv/landing)
+//   app.litegen.ai  → the dashboard SPA (/srv/app) + the API reverse-proxied under /api
 async function deployWeb() {
   const host = required('DO_DROPLET_IP');
   const appUrl = env('APP_URL') || 'https://app.litegen.ai';
   const apiBase = `${appUrl}/api`;
 
   const dashboardDir = path.join(ROOT, 'dashboard');
-  const distTgz = '/tmp/litegen-dashboard-dist.tgz';
-  const remoteDistTgz = '/opt/litegen/litegen-dashboard-dist.tgz';
+  const dashboardTgz = '/tmp/litegen-dashboard-dist.tgz';
+  const remoteDashboardTgz = '/opt/litegen/litegen-dashboard-dist.tgz';
 
+  const landingDir = path.join(ROOT, 'apps', 'landing');
+  const landingOut = path.join(landingDir, 'out');
+  const landingFallbackDir = '/tmp/litegen-landing-fallback';
+  const landingTgz = '/tmp/litegen-landing-dist.tgz';
+  const remoteLandingTgz = '/opt/litegen/litegen-landing-dist.tgz';
+
+  // ── Build dashboard (Vite SPA → dashboard/dist) ──
   console.log(`\n=== Building dashboard (VITE_API_URL=${apiBase}) ===`);
-  run(`npm run build`, {
-    cwd: dashboardDir,
-    env: { ...process.env, VITE_API_URL: apiBase },
-  });
-  if (!DRY_RUN) assertNoLocalhostInBundle('dashboard/dist', 'dashboard');
+  if (!DRY_RUN) {
+    run(`npm run build`, {
+      cwd: dashboardDir,
+      env: { ...process.env, VITE_API_URL: apiBase },
+    });
+    assertNoLocalhostInBundle('dashboard/dist', 'dashboard');
+  } else {
+    console.log('  [dry-run] skipping dashboard build.');
+  }
 
+  // ── Build landing (Next.js static export → apps/landing/out) ──
+  // If the landing build fails (e.g. due to in-progress edits to apps/landing),
+  // don't abort the whole web deploy — ship a minimal valid placeholder so
+  // litegen.ai still returns valid HTML.
+  let landingSrcDir = landingOut; // what we tar up; flips to the fallback on failure
+  console.log('\n=== Building landing (Next.js static export → apps/landing/out) ===');
+  if (!DRY_RUN) {
+    try {
+      run(`npm run build`, {
+        cwd: landingDir,
+        env: { ...process.env, NODE_ENV: 'production' },
+      });
+      if (!fs.existsSync(landingOut)) {
+        throw new Error(`landing build produced no ${landingOut} directory`);
+      }
+      assertNoLocalhostInBundle('apps/landing/out', 'landing');
+      console.log('  Landing build OK.');
+    } catch (err) {
+      console.warn(`\n  ⚠ Landing build FAILED: ${err.message}`);
+      console.warn('  ⚠ Shipping a minimal placeholder index.html so litegen.ai still serves valid HTML.');
+      fs.rmSync(landingFallbackDir, { recursive: true, force: true });
+      fs.mkdirSync(landingFallbackDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(landingFallbackDir, 'index.html'),
+        '<!doctype html><html><head><meta charset=utf-8><title>LiteGen</title></head><body><h1>LiteGen</h1><p>Coming soon.</p></body></html>\n',
+      );
+      landingSrcDir = landingFallbackDir;
+    }
+  } else {
+    console.log('  [dry-run] skipping landing build.');
+  }
+
+  // ── Package both dists separately ──
   console.log('\n=== Packaging dashboard dist ===');
-  run(`COPYFILE_DISABLE=1 tar -C ${JSON.stringify(dashboardDir)} -czf ${distTgz} dist`);
+  if (!DRY_RUN) {
+    run(`COPYFILE_DISABLE=1 tar -C ${JSON.stringify(dashboardDir)} -czf ${dashboardTgz} dist`);
+  }
 
-  console.log(`\n=== Shipping dashboard + nginx.conf + web compose to ${host} ===`);
+  console.log('\n=== Packaging landing dist ===');
+  if (!DRY_RUN) {
+    // Tar the chosen source dir's contents under a single top-level component so
+    // the remote `--strip-components=1` extraction lands the files at the root.
+    const landingBase = path.basename(landingSrcDir);
+    run(`COPYFILE_DISABLE=1 tar -C ${JSON.stringify(path.dirname(landingSrcDir))} -czf ${landingTgz} ${JSON.stringify(landingBase)}`);
+  }
+
+  console.log(`\n=== Shipping dashboard-dist + landing-dist + Caddyfile + web compose to ${host} ===`);
   let ssh = DRY_RUN ? null : await sshConnect(host);
   try {
     await sshExec(ssh, 'mkdir -p /opt/litegen', 'mkdir /opt/litegen');
 
-    console.log(`  [scp] ${distTgz} -> ${remoteDistTgz}`);
-    if (!DRY_RUN) { await ssh.putFile(distTgz, remoteDistTgz); }
+    console.log(`  [scp] ${dashboardTgz} -> ${remoteDashboardTgz}`);
+    if (!DRY_RUN) { await ssh.putFile(dashboardTgz, remoteDashboardTgz); }
 
-    const nginxConf = path.join(ROOT, 'deploy', 'nginx.conf');
-    console.log(`  [scp] ${nginxConf} -> /opt/litegen/nginx.conf`);
-    if (!DRY_RUN) { await ssh.putFile(nginxConf, '/opt/litegen/nginx.conf'); }
+    console.log(`  [scp] ${landingTgz} -> ${remoteLandingTgz}`);
+    if (!DRY_RUN) { await ssh.putFile(landingTgz, remoteLandingTgz); }
+
+    const caddyfile = path.join(ROOT, 'deploy', 'Caddyfile');
+    console.log(`  [scp] ${caddyfile} -> /opt/litegen/Caddyfile`);
+    if (!DRY_RUN) { await ssh.putFile(caddyfile, '/opt/litegen/Caddyfile'); }
 
     const webCompose = path.join(ROOT, 'deploy', 'docker-compose.web.yml');
     console.log(`  [scp] ${webCompose} -> /opt/litegen/docker-compose.web.yml`);
     if (!DRY_RUN) { await ssh.putFile(webCompose, '/opt/litegen/docker-compose.web.yml'); }
 
     await sshExec(ssh,
-      `cd /opt/litegen && rm -rf dashboard-dist && mkdir dashboard-dist && \
+      `cd /opt/litegen && \
+       rm -rf dashboard-dist && mkdir dashboard-dist && \
        tar -C dashboard-dist --strip-components=1 -xzf litegen-dashboard-dist.tgz && \
+       rm -rf landing-dist && mkdir landing-dist && \
+       tar -C landing-dist --strip-components=1 -xzf litegen-landing-dist.tgz && \
        docker compose -f docker-compose.prod.yml -f docker-compose.web.yml --env-file .env up -d`,
-      'unpack dist + compose up web');
+      'unpack dashboard + landing dists + compose up web (Caddy)');
 
     if (!DRY_RUN) {
       await sshExec(ssh,
@@ -547,10 +611,15 @@ async function deployWeb() {
         'compose ps');
     }
 
-    console.log(`\n  Dashboard live at ${appUrl}/  (API at ${apiBase})`);
+    console.log(`\n  Landing live at https://litegen.ai/`);
+    console.log(`  Dashboard live at ${appUrl}/  (API at ${apiBase})`);
   } finally {
     if (ssh) { try { ssh.dispose(); } catch { /* ignore */ } }
-    if (!DRY_RUN) { try { fs.unlinkSync(distTgz); } catch { /* ignore */ } }
+    if (!DRY_RUN) {
+      try { fs.unlinkSync(dashboardTgz); } catch { /* ignore */ }
+      try { fs.unlinkSync(landingTgz); } catch { /* ignore */ }
+      try { fs.rmSync(landingFallbackDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
   }
 }
 
@@ -591,7 +660,7 @@ function deployLanding() {
 const TARGETS = {
   provision: { fn: provision,    desc: 'Create/reuse the DigitalOcean droplet (proxy + db)' },
   proxy:     { fn: deployProxy,  desc: 'Build amd64 image → push GHCR → droplet pulls + runs' },
-  web:       { fn: deployWeb,    desc: 'Build dashboard → ship dist + nginx → compose up web tier' },
+  web:       { fn: deployWeb,    desc: 'Build dashboard + landing → ship dist + Caddyfile → compose up Caddy web tier' },
   landing:   { fn: deployLanding, desc: 'Static-export the Next.js site → Cloudflare Pages' },
 };
 
