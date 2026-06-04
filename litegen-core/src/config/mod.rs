@@ -31,6 +31,23 @@ pub struct DevFlags {
     #[serde(default)] pub expose_reset_tokens: bool,
 }
 
+/// Authentication configuration.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuthConfig {
+    /// Allow email/password signup + login. Default `true` (preserves
+    /// single-tenant/dev behavior). Set `LITEGEN__AUTH__ALLOW_PASSWORD=false`
+    /// in hosted OAuth-only deployments to disable the password endpoints and
+    /// hide the password form in the dashboard.
+    #[serde(default = "default_true")]
+    pub allow_password: bool,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self { allow_password: true }
+    }
+}
+
 /// Top-level application configuration.
 /// Loaded from `litegen.yaml`, environment variables, and CLI args.
 #[derive(Debug, Clone, Deserialize)]
@@ -81,6 +98,9 @@ pub struct AppConfig {
     /// Development-only feature flags.
     #[serde(default)]
     pub dev: DevFlags,
+    /// Authentication configuration (password-auth toggle, etc.).
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 impl Default for AppConfig {
@@ -101,6 +121,7 @@ impl Default for AppConfig {
             mode: Mode::default(),
             secrets_key: None,
             dev: DevFlags::default(),
+            auth: AuthConfig::default(),
         }
     }
 }
@@ -534,5 +555,12 @@ mod tests {
         assert_eq!(Mode::parse("hosted"), Some(Mode::Hosted));
         assert_eq!(Mode::parse("single_tenant"), Some(Mode::SingleTenant));
         assert_eq!(Mode::parse("bogus"), None);
+    }
+
+    #[test]
+    fn auth_allow_password_defaults_to_true() {
+        let cfg = AppConfig::default();
+        assert!(cfg.auth.allow_password, "password auth must default to enabled");
+        assert!(AuthConfig::default().allow_password);
     }
 }

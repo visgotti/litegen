@@ -33,6 +33,68 @@ fn error_resp(code: StatusCode, error_code: &str, message: &str) -> Response {
         .into_response()
 }
 
+/// 403 response returned by `signup`/`login` when password auth is disabled
+/// (`AppState.allow_password == false`). Numeric `code` per the OAuth-only spec.
+fn password_disabled_resp() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": {
+                "type": "password_auth_disabled",
+                "code": 403,
+                "message": "Password authentication is disabled; use Google or GitHub."
+            }
+        })),
+    )
+        .into_response()
+}
+
+/// Provision a freshly-created hosted user with an Organization, an owner
+/// membership, and a first ("Default") Application. Shared by password signup
+/// and OAuth auto-create so both go through one code path.
+///
+/// `org_name` defaults to the email local-part when `None`/empty. Returns a
+/// JSON view of the created org (`{id,name,slug}`).
+///
+/// NOTE: this is a sequence of non-atomic DB calls (org → membership → app);
+/// there is no cross-method transaction, so a mid-sequence failure can leave a
+/// partial tenant. Acceptable for Phase 1.
+pub async fn create_org_for_user(
+    db: &Arc<dyn crate::db::DatabaseStore>,
+    user_id: &str,
+    email: &str,
+    org_name: Option<String>,
+) -> Result<serde_json::Value, sqlx::Error> {
+    let now = chrono::Utc::now();
+    let org_name = org_name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| default_org_name_from_email(email));
+    let slug = unique_org_slug(db.as_ref(), &slugify(&org_name)).await?;
+    let org = Organization {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: org_name,
+        slug,
+        plan: "free".into(),
+        status: "active".into(),
+        created_at: now,
+        updated_at: now,
+    };
+    db.create_organization(&org).await?;
+    db.add_org_member(&org.id, user_id, Role::Owner).await?;
+    let app = Application {
+        id: uuid::Uuid::new_v4().to_string(),
+        org_id: org.id.clone(),
+        name: "Default".into(),
+        slug: "default".into(),
+        status: "active".into(),
+        created_at: now,
+        updated_at: now,
+    };
+    db.create_application(&app).await?;
+    Ok(json!({ "id": org.id, "name": org.name, "slug": org.slug }))
+}
+
 /// Public view of a user (no password_hash).
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct PublicUser {
@@ -90,6 +152,10 @@ pub async fn signup(
     State(state): State<Arc<AppState>>,
     Json(body): Json<SignupRequest>,
 ) -> Response {
+    if !state.allow_password {
+        return password_disabled_resp();
+    }
+
     let email = body.email.trim().to_lowercase();
 
     // single_tenant: the first user claims the (single) owner account.
@@ -182,44 +248,10 @@ pub async fn signup(
             }
         }
         Mode::Hosted => {
-            let org_name = body
-                .org_name
-                .clone()
-                .map(|n| n.trim().to_string())
-                .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| default_org_name_from_email(&email));
-            let slug = match unique_org_slug(state.db.as_ref(), &slugify(&org_name)).await {
-                Ok(s) => s,
+            match create_org_for_user(&state.db, &user.id, &email, body.org_name.clone()).await {
+                Ok(view) => view,
                 Err(e) => return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
-            };
-            let org = Organization {
-                id: uuid::Uuid::new_v4().to_string(),
-                name: org_name,
-                slug,
-                plan: "free".into(),
-                status: "active".into(),
-                created_at: now,
-                updated_at: now,
-            };
-            if let Err(e) = state.db.create_organization(&org).await {
-                return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
             }
-            if let Err(e) = state.db.add_org_member(&org.id, &user.id, Role::Owner).await {
-                return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
-            }
-            let app = Application {
-                id: uuid::Uuid::new_v4().to_string(),
-                org_id: org.id.clone(),
-                name: "Default".into(),
-                slug: "default".into(),
-                status: "active".into(),
-                created_at: now,
-                updated_at: now,
-            };
-            if let Err(e) = state.db.create_application(&app).await {
-                return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
-            }
-            json!({ "id": org.id, "name": org.name, "slug": org.slug })
         }
     };
 
@@ -263,6 +295,10 @@ pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(body): Json<LoginRequest>,
 ) -> Response {
+    if !state.allow_password {
+        return password_disabled_resp();
+    }
+
     let email = body.email.trim().to_lowercase();
 
     // Lockout check
@@ -354,6 +390,43 @@ pub async fn logout(
     resp.headers_mut().append("set-cookie", sc);
     resp.headers_mut().append("set-cookie", cc);
     resp
+}
+
+// ─── GET /v1/auth/config ──────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct AuthConfigResponse {
+    /// Whether email/password signup + login is enabled.
+    pub password_enabled: bool,
+    /// OAuth providers with both CLIENT_ID and CLIENT_SECRET configured
+    /// (e.g. `["github", "google"]`).
+    pub providers_enabled: Vec<String>,
+    /// Whether self-service signup is open (true in hosted mode).
+    pub signup_open: bool,
+}
+
+/// GET /v1/auth/config — Public auth-method discovery for the dashboard.
+#[utoipa::path(
+    get,
+    path = "/v1/auth/config",
+    responses(
+        (status = 200, description = "Enabled auth methods", body = AuthConfigResponse),
+    ),
+    tag = "Auth"
+)]
+pub async fn auth_config(State(state): State<Arc<AppState>>) -> Response {
+    let providers_enabled: Vec<String> = state
+        .oauth
+        .enabled_providers()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+    let body = AuthConfigResponse {
+        password_enabled: state.allow_password,
+        providers_enabled,
+        signup_open: state.mode == Mode::Hosted,
+    };
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 // ─── GET /v1/auth/me ──────────────────────────────────────────────────────────
@@ -586,6 +659,16 @@ mod tests {
         state
     }
 
+    /// Hosted mode with password auth disabled (OAuth-only deployment).
+    async fn build_hosted_state_no_password() -> Arc<AppState> {
+        let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.expect("in-memory db"));
+        let mut state = build_state_with_db(db).await;
+        let s = Arc::get_mut(&mut state).expect("unique Arc");
+        s.mode = crate::config::Mode::Hosted;
+        s.allow_password = false;
+        state
+    }
+
     async fn build_state_with_db(db: Arc<SqliteDatabase>) -> Arc<AppState> {
         let registry = Arc::new(ProviderRegistry::new());
         let config = Arc::new(AppConfig::default());
@@ -610,6 +693,7 @@ mod tests {
             mode: crate::config::Mode::SingleTenant,
             secrets_key: None,
             dev: crate::config::DevFlags::default(),
+            allow_password: true,
         })
     }
 
@@ -1337,5 +1421,114 @@ mod tests {
         // Session should be deleted
         let sess = state.db.get_session(&session_token).await.unwrap();
         assert!(sess.is_none(), "Session should be deleted after password reset");
+    }
+
+    // ── Password auth disabled (OAuth-only) ─────────────────────────────────────
+
+    fn build_config_router(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/v1/auth/config", get(auth_config))
+            .route("/v1/auth/signup", post(signup))
+            .route("/v1/auth/login", post(login))
+            .with_state(state)
+    }
+
+    #[tokio::test]
+    async fn password_disabled_blocks_signup_and_login() {
+        let state = build_hosted_state_no_password().await;
+        let app = build_config_router(state);
+
+        // Signup → 403 password_auth_disabled
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/signup")
+            .header("content-type", "application/json")
+            .body(json_body(json!({ "email": "no@pw.com", "password": "strongpassword123" })))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "signup must be 403 when password disabled");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["type"], "password_auth_disabled");
+        assert_eq!(body["error"]["code"], 403);
+
+        // Login → 403 password_auth_disabled
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/login")
+            .header("content-type", "application/json")
+            .body(json_body(json!({ "email": "no@pw.com", "password": "strongpassword123" })))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "login must be 403 when password disabled");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["type"], "password_auth_disabled");
+    }
+
+    #[tokio::test]
+    async fn password_enabled_by_default_allows_signup() {
+        // Default state has allow_password = true → signup must still work.
+        let state = build_state().await;
+        let app = build_config_router(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/signup")
+            .header("content-type", "application/json")
+            .body(json_body(json!({ "email": "owner@default.com", "password": "strongpassword123" })))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "default (password-enabled) signup must work");
+    }
+
+    // ── GET /v1/auth/config ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn auth_config_reports_methods() {
+        use crate::auth::oauth::{OAuthConfig, ProviderConfig};
+
+        // Hosted, OAuth-only, github configured.
+        let mut state = build_hosted_state_no_password().await;
+        Arc::get_mut(&mut state).expect("unique Arc").oauth = OAuthConfig {
+            github: Some(ProviderConfig {
+                client_id: "gh-id".to_string(),
+                client_secret: "gh-secret".to_string(),
+            }),
+            ..Default::default()
+        };
+        let app = build_config_router(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/auth/config")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["password_enabled"], false, "password disabled in OAuth-only mode");
+        assert_eq!(body["signup_open"], true, "signup open in hosted mode");
+        let providers = body["providers_enabled"].as_array().expect("providers array");
+        assert!(providers.iter().any(|p| p == "github"), "github should be enabled");
+        assert!(!providers.iter().any(|p| p == "google"), "google should not be enabled");
+    }
+
+    #[tokio::test]
+    async fn auth_config_defaults_password_enabled() {
+        // Default single-tenant state: password enabled, no providers, signup closed.
+        let state = build_state().await;
+        let app = build_config_router(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/auth/config")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["password_enabled"], true);
+        assert_eq!(body["signup_open"], false, "single-tenant signup is not open");
     }
 }

@@ -25,6 +25,8 @@ type SignupRequest = Schemas["SignupRequest"];
 type LoginRequest = Schemas["LoginRequest"];
 type AuthResponse = Schemas["AuthResponse"];
 type CsrfResponse = Schemas["CsrfResponse"];
+/** Public auth-method discovery (`GET /v1/auth/config`). */
+export type AuthConfigResponse = Schemas["AuthConfigResponse"];
 type PasswordResetRequestBody = Schemas["PasswordResetRequestBody"];
 type PasswordResetConfirmBody = Schemas["PasswordResetConfirmBody"];
 type InvitationView = Schemas["InvitationView"];
@@ -601,6 +603,10 @@ class CacheNamespace {
 class AuthNamespace {
   constructor(private readonly client: LiteGenClient) {}
 
+  /** GET /v1/auth/config — public; reports which auth methods are enabled. */
+  config(signal?: AbortSignal): Promise<AuthConfigResponse> {
+    return this.client.request("GET", "/v1/auth/config", undefined, signal);
+  }
   signup(req: SignupRequest, signal?: AbortSignal): Promise<AuthResponse> {
     return this.client.request("POST", "/v1/auth/signup", req, signal);
   }

@@ -419,6 +419,7 @@ mod tests {
             mode: crate::config::Mode::SingleTenant,
             secrets_key: None,
             dev: crate::config::DevFlags::default(),
+            allow_password: true,
         })
     }
 
