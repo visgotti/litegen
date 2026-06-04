@@ -5,7 +5,7 @@ import type { RequestLog, ModelInfo } from '@litegen/sdk';
 import type { PaginatedResponse } from '@litegen/sdk';
 import TracePanel from '../components/TracePanel';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const API_BASE = __LITEGEN_API_BASE__;
 
 async function exportCsv(path: string, filename: string) {
   const apiKey = localStorage.getItem('litegen_api_key') ?? '';
