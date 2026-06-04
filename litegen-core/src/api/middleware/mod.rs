@@ -108,6 +108,10 @@ pub struct AppState {
     pub mode: crate::config::Mode,
     pub secrets_key: Option<[u8; 32]>,
     pub dev: crate::config::DevFlags,
+    /// Whether email/password signup + login is enabled. Default `true`.
+    /// When `false` (OAuth-only hosted deployments), the password endpoints
+    /// reject with 403 `password_auth_disabled`.
+    pub allow_password: bool,
 }
 
 // ─── Auth middleware ─────────────────────────────────────────────────────────

@@ -70,6 +70,7 @@ async fn build_state(db: Arc<SqliteDatabase>, secrets_key: Option<[u8; 32]>) -> 
         mode: Mode::Hosted,
         secrets_key,
         dev: DevFlags::default(),
+        allow_password: true,
     })
 }
 
@@ -474,6 +475,7 @@ async fn create_org_requires_session_not_just_auth() {
         mode: Mode::Hosted,
         secrets_key: None,
         dev: DevFlags::default(),
+        allow_password: true,
     });
     let app = create_router(state);
 

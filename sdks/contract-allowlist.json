@@ -15,6 +15,7 @@
       "GET /v1/account/sessions",
       "GET /v1/apps/{}",
       "GET /v1/apps/{}/provider-credentials",
+      "GET /v1/auth/config",
       "GET /v1/auth/csrf",
       "GET /v1/auth/invitations/{}",
       "GET /v1/auth/me",

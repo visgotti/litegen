@@ -150,6 +150,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/auth/config — Public auth-method discovery for the dashboard. */
+        get: operations["auth_config"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/auth/csrf": {
         parameters: {
             query?: never;
@@ -464,8 +481,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GET /v1/logs — Get request logs (paginated). */
-        get: operations["get_logs"];
+        /** GET /v1/logs — Paginated + filtered request logs. Supports `?format=csv`. */
+        get: operations["get_logs_filtered"];
         put?: never;
         post?: never;
         delete?: never;
@@ -859,6 +876,17 @@ export interface components {
             status: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        AuthConfigResponse: {
+            /** @description Whether email/password signup + login is enabled. */
+            password_enabled: boolean;
+            /**
+             * @description OAuth providers with both CLIENT_ID and CLIENT_SECRET configured
+             *     (e.g. `["github", "google"]`).
+             */
+            providers_enabled: string[];
+            /** @description Whether self-service signup is open (true in hosted mode). */
+            signup_open: boolean;
         };
         AuthResponse: {
             user: components["schemas"]["PublicUser"];
@@ -2054,6 +2082,26 @@ export interface operations {
             };
         };
     };
+    auth_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Enabled auth methods */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthConfigResponse"];
+                };
+            };
+        };
+    };
     csrf_token: {
         parameters: {
             query?: never;
@@ -2674,7 +2722,7 @@ export interface operations {
             };
         };
     };
-    get_logs: {
+    get_logs_filtered: {
         parameters: {
             query?: {
                 /** @description Page number */

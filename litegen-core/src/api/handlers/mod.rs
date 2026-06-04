@@ -5,7 +5,8 @@ pub mod account;
 pub mod orgs;
 
 pub use auth_password::{
-    csrf_token, login, logout, me, password_reset_confirm, password_reset_request, signup,
+    auth_config, csrf_token, login, logout, me, password_reset_confirm, password_reset_request,
+    signup,
 };
 pub use oauth::{github_callback, github_start, google_callback, google_start};
 pub use users::{
@@ -1799,6 +1800,7 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
 
     // Unauthenticated auth routes
     let unauth_routes = axum::Router::new()
+        .route("/v1/auth/config", get(auth_config))
         .route("/v1/auth/signup", post(signup))
         .route("/v1/auth/login", post(login))
         .route("/v1/auth/password-reset/request", post(password_reset_request))
@@ -2119,6 +2121,7 @@ mod key_endpoint_tests {
             mode: crate::config::Mode::SingleTenant,
             secrets_key: None,
             dev: crate::config::DevFlags::default(),
+            allow_password: true,
         })
     }
 
@@ -2287,6 +2290,7 @@ mod new_endpoint_tests {
             mode: crate::config::Mode::SingleTenant,
             secrets_key: None,
             dev: crate::config::DevFlags::default(),
+            allow_password: true,
         })
     }
 
@@ -2657,6 +2661,7 @@ mod permission_scoping_tests {
             mode: crate::config::Mode::SingleTenant,
             secrets_key: None,
             dev: crate::config::DevFlags::default(),
+            allow_password: true,
         })
     }
 
@@ -2823,6 +2828,7 @@ mod health_tests {
             mode: crate::config::Mode::SingleTenant,
             secrets_key: None,
             dev: crate::config::DevFlags::default(),
+            allow_password: true,
         })
     }
 
@@ -2912,6 +2918,7 @@ mod health_tests {
             mode: crate::config::Mode::SingleTenant,
             secrets_key: None,
             dev: crate::config::DevFlags::default(),
+            allow_password: true,
         });
 
         let app = build_health_router(state);
@@ -3040,6 +3047,7 @@ mod tenant_scoping_tests {
             mode,
             secrets_key: None,
             dev: crate::config::DevFlags::default(),
+            allow_password: true,
         })
     }
 

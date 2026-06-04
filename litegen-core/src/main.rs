@@ -137,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
         mode: config.mode,
         secrets_key,
         dev: config.dev.clone(),
+        allow_password: config.auth.allow_password,
     });
 
     // Shutdown coordination: one signal fans out to the poller and to

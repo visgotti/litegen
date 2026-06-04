@@ -24,7 +24,8 @@ use utoipa::OpenApi;
         crate::api::handlers::list_api_keys,
         crate::api::handlers::revoke_api_key,
         crate::api::handlers::clear_cache,
-        // Auth — password
+        // Auth — config + password
+        crate::api::handlers::auth_password::auth_config,
         crate::api::handlers::auth_password::signup,
         crate::api::handlers::auth_password::login,
         crate::api::handlers::auth_password::logout,
@@ -121,6 +122,7 @@ use utoipa::OpenApi;
         crate::types::Invitation,
         crate::types::PasswordReset,
         // Auth handler schemas
+        crate::api::handlers::auth_password::AuthConfigResponse,
         crate::api::handlers::auth_password::PublicUser,
         crate::api::handlers::auth_password::AuthResponse,
         crate::api::handlers::auth_password::SignupRequest,

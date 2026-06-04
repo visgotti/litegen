@@ -525,6 +525,27 @@
                 }
             }
         },
+        "/v1/auth/config": {
+            "get": {
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "GET /v1/auth/config \u2014 Public auth-method discovery for the dashboard.",
+                "operationId": "auth_config",
+                "responses": {
+                    "200": {
+                        "description": "Enabled auth methods",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AuthConfigResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v1/auth/csrf": {
             "get": {
                 "tags": [
@@ -1248,8 +1269,8 @@
                 "tags": [
                     "Dashboard"
                 ],
-                "summary": "GET /v1/logs \u2014 Get request logs (paginated).",
-                "operationId": "get_logs",
+                "summary": "GET /v1/logs \u2014 Paginated + filtered request logs. Supports `?format=csv`.",
+                "operationId": "get_logs_filtered",
                 "parameters": [
                     {
                         "name": "page",
@@ -2742,6 +2763,31 @@
                     "updated_at": {
                         "type": "string",
                         "format": "date-time"
+                    }
+                }
+            },
+            "AuthConfigResponse": {
+                "type": "object",
+                "required": [
+                    "password_enabled",
+                    "providers_enabled",
+                    "signup_open"
+                ],
+                "properties": {
+                    "password_enabled": {
+                        "type": "boolean",
+                        "description": "Whether email/password signup + login is enabled."
+                    },
+                    "providers_enabled": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "OAuth providers with both CLIENT_ID and CLIENT_SECRET configured\n(e.g. `[\"github\", \"google\"]`)."
+                    },
+                    "signup_open": {
+                        "type": "boolean",
+                        "description": "Whether self-service signup is open (true in hosted mode)."
                     }
                 }
             },

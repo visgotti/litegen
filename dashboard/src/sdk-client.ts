@@ -15,7 +15,10 @@ export function clearApiKey(): void {
   localStorage.removeItem('litegen_api_key');
 }
 
-const BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+// API base the SDK talks to. In prod this is e.g. https://app.litegen.ai/api.
+// Exported so pages (Login/Signup) can build OAuth start URLs against the same origin.
+export const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:4000').replace(/\/$/, '');
+const BASE = API_BASE;
 
 let csrfCache: { token: string; fetchedAt: number } | null = null;
 const CSRF_TTL_MS = 60_000;

@@ -15,8 +15,11 @@ use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
+use crate::api::handlers::auth_password::create_org_for_user;
 use crate::api::middleware::{create_session_cookies, cookie_value, AppState};
 use crate::auth::tokens::{constant_time_eq, generate_session_token};
+use crate::config::Mode;
+use crate::types::{Role, User};
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -61,6 +64,111 @@ fn make_oauth_state_cookie(token: &str) -> axum::http::HeaderValue {
         .unwrap_or_else(|_| axum::http::HeaderValue::from_static(""))
 }
 
+/// Build a `Set-Cookie` header value storing the post-login `next` target.
+fn make_oauth_next_cookie(next: &str) -> axum::http::HeaderValue {
+    let secure = std::env::var("LITEGEN__COOKIE_INSECURE_DEV").as_deref() != Ok("true");
+    let secure_str = if secure { "; Secure" } else { "" };
+    let val = format!(
+        "litegen_oauth_next={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600{}",
+        urlencoding::encode(next),
+        secure_str
+    );
+    axum::http::HeaderValue::from_str(&val)
+        .unwrap_or_else(|_| axum::http::HeaderValue::from_static(""))
+}
+
+/// Build a `Set-Cookie` header value that clears the `litegen_oauth_next` cookie.
+fn clear_oauth_next_cookie() -> axum::http::HeaderValue {
+    axum::http::HeaderValue::from_static(
+        "litegen_oauth_next=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+    )
+}
+
+/// Resolve the post-login redirect target. Reads the `litegen_oauth_next`
+/// cookie set at `start`; only accepts same-origin relative paths (must start
+/// with `/` but not `//`), defaulting to `/`.
+fn resolve_next_target(headers: &HeaderMap) -> String {
+    let raw = cookie_value(headers, "litegen_oauth_next")
+        .and_then(|v| urlencoding::decode(&v).ok().map(|c| c.into_owned()));
+    match raw {
+        Some(n) if n.starts_with('/') && !n.starts_with("//") => n,
+        _ => "/".to_string(),
+    }
+}
+
+/// Resolve an OAuth identity to a `User`, auto-creating in hosted mode.
+///
+/// Order:
+///  1. existing user by `(provider, oauth_id)` → use as-is.
+///  2. existing user by verified `email` → LINK the oauth id, use it.
+///  3. no user:
+///       - hosted: AUTO-CREATE user (no password; role Owner) + org + app.
+///       - single_tenant: invite-only → return `None` (caller emits 403).
+///
+/// `email` MUST already be lowercased by the caller.
+/// Returns `Ok(Some(user))` on success, `Ok(None)` for the single-tenant
+/// invite-only rejection, and `Err` on a DB failure.
+async fn resolve_or_create_user(
+    state: &Arc<AppState>,
+    provider: &str,
+    oauth_id: &str,
+    email: &str,
+) -> Result<Option<User>, sqlx::Error> {
+    if let Some(u) = state.db.get_user_by_oauth(provider, oauth_id).await? {
+        return Ok(Some(u));
+    }
+    if let Some(u) = state.db.get_user_by_email(email).await? {
+        // Same email created via another provider (or password) → link this id.
+        state.db.link_oauth(&u.id, provider, oauth_id).await?;
+        return Ok(Some(u));
+    }
+    if state.mode != Mode::Hosted {
+        // single_tenant is invite-only: an admin must create the account first.
+        return Ok(None);
+    }
+
+    // Hosted auto-create: new owner user with the matching oauth id.
+    let now = chrono::Utc::now();
+    let user = User {
+        id: format!("user-{}", uuid::Uuid::new_v4()),
+        email: email.to_string(),
+        password_hash: None,
+        role: Role::Owner,
+        oauth_github_id: if provider == "github" { Some(oauth_id.to_string()) } else { None },
+        oauth_google_id: if provider == "google" { Some(oauth_id.to_string()) } else { None },
+        created_at: now,
+        updated_at: now,
+        last_login_at: None,
+        is_active: true,
+    };
+    state.db.create_user(&user).await?;
+    // Provision org + owner membership + first app (shared with password signup).
+    create_org_for_user(&state.db, &user.id, email, None).await?;
+    Ok(Some(user))
+}
+
+/// Create a session for `user_id`, set the session + csrf cookies, clear the
+/// OAuth state + next cookies, and redirect (302) to the resolved `next` target.
+async fn finish_oauth_login(state: &Arc<AppState>, user_id: &str, headers: &HeaderMap) -> Response {
+    let next = resolve_next_target(headers);
+    match create_session_cookies(&state.db, user_id, None, None).await {
+        Ok((_st, _ct, sc, cc)) => {
+            let mut resp = StatusCode::FOUND.into_response();
+            resp.headers_mut().insert(
+                "location",
+                axum::http::HeaderValue::from_str(&next)
+                    .unwrap_or_else(|_| axum::http::HeaderValue::from_static("/")),
+            );
+            resp.headers_mut().append("set-cookie", sc);
+            resp.headers_mut().append("set-cookie", cc);
+            resp.headers_mut().append("set-cookie", clear_oauth_state_cookie());
+            resp.headers_mut().append("set-cookie", clear_oauth_next_cookie());
+            resp
+        }
+        Err(e) => error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
+    }
+}
+
 // ─── Query params ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -89,7 +197,7 @@ pub struct CallbackParams {
 )]
 pub async fn github_start(
     State(state): State<Arc<AppState>>,
-    Query(_params): Query<StartParams>,
+    Query(params): Query<StartParams>,
 ) -> Response {
     let Some(cfg) = &state.oauth.github else {
         return (StatusCode::NOT_FOUND, Json(json!({"error": {"code": "oauth_not_configured", "message": "GitHub OAuth is not configured"}}))).into_response();
@@ -120,6 +228,10 @@ pub async fn github_start(
     );
     resp.headers_mut()
         .append("set-cookie", make_oauth_state_cookie(&oauth_state));
+    if let Some(next) = params.next.as_deref().filter(|n| n.starts_with('/') && !n.starts_with("//")) {
+        resp.headers_mut()
+            .append("set-cookie", make_oauth_next_cookie(next));
+    }
     resp
 }
 
@@ -274,18 +386,19 @@ pub async fn github_callback(
         return error_resp_clear_state(StatusCode::BAD_REQUEST, "no_verified_email", "No verified primary email on GitHub");
     };
 
-    // 5. Look up user by oauth_github_id first, then by email
-    let user = if let Ok(Some(u)) = state.db.get_user_by_oauth("github", &gh_id).await {
-        u
-    } else if let Ok(Some(u)) = state.db.get_user_by_email(&email).await {
-        let _ = state.db.link_oauth(&u.id, "github", &gh_id).await;
-        u
-    } else {
-        return error_resp_clear_state(
-            StatusCode::FORBIDDEN,
-            "account_not_invited",
-            "No account exists for this email. Ask an admin to invite you.",
-        );
+    // 5. Resolve the user: existing (by oauth id / linked email) or, in hosted
+    //    mode, auto-create account + org + first app. single_tenant stays
+    //    invite-only (403 account_not_invited).
+    let user = match resolve_or_create_user(&state, "github", &gh_id, &email).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            return error_resp_clear_state(
+                StatusCode::FORBIDDEN,
+                "account_not_invited",
+                "No account exists for this email. Ask an admin to invite you.",
+            );
+        }
+        Err(e) => return error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
     };
 
     if !user.is_active {
@@ -295,19 +408,7 @@ pub async fn github_callback(
     let _ = state.db.touch_last_login(&user.id).await;
 
     // 6. Create session
-    match create_session_cookies(&state.db, &user.id, None, None).await {
-        Ok((_st, _ct, sc, cc)) => {
-            let mut resp = StatusCode::FOUND.into_response();
-            resp.headers_mut()
-                .insert("location", axum::http::HeaderValue::from_static("/"));
-            resp.headers_mut().append("set-cookie", sc);
-            resp.headers_mut().append("set-cookie", cc);
-            resp.headers_mut()
-                .append("set-cookie", clear_oauth_state_cookie());
-            resp
-        }
-        Err(e) => error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
-    }
+    finish_oauth_login(&state, &user.id, &headers).await
 }
 
 // ─── Google ───────────────────────────────────────────────────────────────────
@@ -324,7 +425,7 @@ pub async fn github_callback(
 )]
 pub async fn google_start(
     State(state): State<Arc<AppState>>,
-    Query(_params): Query<StartParams>,
+    Query(params): Query<StartParams>,
 ) -> Response {
     let Some(cfg) = &state.oauth.google else {
         return (StatusCode::NOT_FOUND, Json(json!({"error": {"code": "oauth_not_configured", "message": "Google OAuth is not configured"}}))).into_response();
@@ -356,6 +457,10 @@ pub async fn google_start(
     );
     resp.headers_mut()
         .append("set-cookie", make_oauth_state_cookie(&oauth_state));
+    if let Some(next) = params.next.as_deref().filter(|n| n.starts_with('/') && !n.starts_with("//")) {
+        resp.headers_mut()
+            .append("set-cookie", make_oauth_next_cookie(next));
+    }
     resp
 }
 
@@ -492,18 +597,19 @@ pub async fn google_callback(
     let google_id = userinfo.sub.clone();
     let email = userinfo.email.to_lowercase();
 
-    // 4. Look up user by oauth_google_id first, then by email
-    let user = if let Ok(Some(u)) = state.db.get_user_by_oauth("google", &google_id).await {
-        u
-    } else if let Ok(Some(u)) = state.db.get_user_by_email(&email).await {
-        let _ = state.db.link_oauth(&u.id, "google", &google_id).await;
-        u
-    } else {
-        return error_resp_clear_state(
-            StatusCode::FORBIDDEN,
-            "account_not_invited",
-            "No account exists for this email. Ask an admin to invite you.",
-        );
+    // 4. Resolve the user: existing (by oauth id / linked email) or, in hosted
+    //    mode, auto-create account + org + first app. single_tenant stays
+    //    invite-only (403 account_not_invited).
+    let user = match resolve_or_create_user(&state, "google", &google_id, &email).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            return error_resp_clear_state(
+                StatusCode::FORBIDDEN,
+                "account_not_invited",
+                "No account exists for this email. Ask an admin to invite you.",
+            );
+        }
+        Err(e) => return error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
     };
 
     if !user.is_active {
@@ -513,19 +619,7 @@ pub async fn google_callback(
     let _ = state.db.touch_last_login(&user.id).await;
 
     // 5. Create session
-    match create_session_cookies(&state.db, &user.id, None, None).await {
-        Ok((_st, _ct, sc, cc)) => {
-            let mut resp = StatusCode::FOUND.into_response();
-            resp.headers_mut()
-                .insert("location", axum::http::HeaderValue::from_static("/"));
-            resp.headers_mut().append("set-cookie", sc);
-            resp.headers_mut().append("set-cookie", cc);
-            resp.headers_mut()
-                .append("set-cookie", clear_oauth_state_cookie());
-            resp
-        }
-        Err(e) => error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
-    }
+    finish_oauth_login(&state, &user.id, &headers).await
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -590,7 +684,16 @@ mod tests {
             mode: crate::config::Mode::SingleTenant,
             secrets_key: None,
             dev: crate::config::DevFlags::default(),
+            allow_password: true,
         })
+    }
+
+    /// Same as `build_state_with_oauth` but in hosted mode (enables OAuth
+    /// auto-create of account + org on first login).
+    pub async fn build_hosted_state_with_oauth(oauth: OAuthConfig) -> Arc<AppState> {
+        let mut state = build_state_with_oauth(oauth).await;
+        Arc::get_mut(&mut state).expect("unique Arc").mode = crate::config::Mode::Hosted;
+        state
     }
 
     fn build_github_router(state: Arc<AppState>) -> Router {
@@ -1119,5 +1222,136 @@ mod tests {
             has_clear_state_cookie(&cookies),
             "Google account_not_invited error must clear state cookie; got: {:?}", cookies
         );
+    }
+
+    // ─── Hosted auto-create ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn oauth_unknown_user_autocreates_in_hosted_mode() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/login/oauth/access_token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "gh-test-token", "token_type": "bearer", "scope": "user:email"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 778899, "login": "newbie"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user/emails"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"email": "Newbie@Example.com", "primary": true, "verified": true}
+            ])))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let oauth = OAuthConfig {
+            github: Some(ProviderConfig {
+                client_id: "gh-id".to_string(),
+                client_secret: "gh-secret".to_string(),
+            }),
+            github_token_base: Some(server_uri.clone()),
+            github_api_base: Some(server_uri.clone()),
+            ..Default::default()
+        };
+        // Hosted mode — unknown user must be auto-created (no 403).
+        let state = build_hosted_state_with_oauth(oauth).await;
+        let app = build_github_router(state.clone());
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/auth/oauth/github/callback?code=testcode&state=teststate")
+            .header("cookie", "litegen_oauth_state=teststate")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND, "auto-create should redirect (200/302)");
+        let cookies: Vec<_> = resp.headers().get_all("set-cookie").iter()
+            .map(|v| v.to_str().unwrap_or("").to_string())
+            .collect();
+        assert!(
+            cookies.iter().any(|c| c.contains("litegen_session=")),
+            "should set a session cookie; got: {:?}", cookies
+        );
+
+        // Email is lowercased on storage + lookup.
+        let user = state.db.get_user_by_email("newbie@example.com").await.unwrap()
+            .expect("auto-created user must exist");
+        assert_eq!(user.oauth_github_id.as_deref(), Some("778899"));
+        assert!(user.password_hash.is_none(), "OAuth user has no password");
+        assert_eq!(user.role, Role::Owner);
+
+        // Org + owner membership + first app were provisioned.
+        let orgs = state.db.list_orgs_for_user(&user.id).await.unwrap();
+        assert_eq!(orgs.len(), 1, "should have created exactly one org");
+        let (org, role) = &orgs[0];
+        assert_eq!(*role, Role::Owner);
+        let apps = state.db.list_apps_for_org(&org.id).await.unwrap();
+        assert_eq!(apps.len(), 1, "should create exactly one default application");
+        assert_eq!(apps[0].slug, "default");
+    }
+
+    #[tokio::test]
+    async fn oauth_existing_email_links_id_in_hosted_mode() {
+        // A user already exists with this email (e.g. created by another flow);
+        // OAuth login must LINK the github id rather than duplicate the account.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/login/oauth/access_token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "gh-test-token", "token_type": "bearer", "scope": "user:email"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 4242, "login": "linker" })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user/emails"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"email": "linker@example.com", "primary": true, "verified": true}
+            ])))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let oauth = OAuthConfig {
+            github: Some(ProviderConfig {
+                client_id: "gh-id".to_string(),
+                client_secret: "gh-secret".to_string(),
+            }),
+            github_token_base: Some(server_uri.clone()),
+            github_api_base: Some(server_uri.clone()),
+            ..Default::default()
+        };
+        let state = build_hosted_state_with_oauth(oauth).await;
+        // Pre-existing user with this email, no github id.
+        create_user(&state, "linker@example.com", None, None).await;
+
+        let app = build_github_router(state.clone());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/auth/oauth/github/callback?code=testcode&state=teststate")
+            .header("cookie", "litegen_oauth_state=teststate")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+
+        // Github id is now linked to the existing user; no duplicate created.
+        let linked = state.db.get_user_by_oauth("github", "4242").await.unwrap()
+            .expect("github id should be linked to the existing user");
+        assert_eq!(linked.email, "linker@example.com");
     }
 }

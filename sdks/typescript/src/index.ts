@@ -14,6 +14,7 @@ export {
   type ListAuditLogOptions,
   type GetLogsOptions,
   type ListWebhookDeliveriesOptions,
+  type AuthConfigResponse,
 } from "./client";
 export {
   LiteGenError,
