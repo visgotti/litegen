@@ -8,9 +8,12 @@ www.litegen.ai {
 
 litegen.ai {
     root * /srv/landing
-    try_files {path} {path}/ /index.html
-    file_server
     encode gzip
+    # Next.js static export with next-intl: pages are emitted as <path>.html and
+    # the home route lives at /en.html (the CF-Pages _redirects file that maps
+    # `/` → `/en` is ignored by Caddy), so fall back to the default locale.
+    try_files {path} {path}.html {path}/index.html /en.html
+    file_server
 }
 
 app.litegen.ai {
