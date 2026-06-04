@@ -1214,6 +1214,9 @@ async fn app_storage_crud_roundtrip_and_no_secret_leak() {
         )
         .await;
     assert_eq!(put.status, 200, "put storage failed: {:?}", put.body);
+    // PUT echoes the stored config (not just status) — guards against a {}-body regression.
+    assert_eq!(put.body["configured"], serde_json::json!(true));
+    assert_eq!(put.body["bucket_name"], "acme-bucket");
 
     let g1 = c.get(&format!("/v1/apps/{app_id}/storage")).await;
     assert_eq!(g1.body["configured"], serde_json::json!(true));
@@ -1228,6 +1231,9 @@ async fn app_storage_crud_roundtrip_and_no_secret_leak() {
     assert_eq!(del.status, 204, "{:?}", del.body);
     let g2 = c.get(&format!("/v1/apps/{app_id}/storage")).await;
     assert_eq!(g2.body["configured"], serde_json::json!(false));
+    // Deleting an already-absent config is a 404.
+    let del2 = c.delete(&format!("/v1/apps/{app_id}/storage"), &[("x-csrf-token", &csrf)]).await;
+    assert_eq!(del2.status, 404, "second delete should 404: {:?}", del2.body);
 }
 
 #[tokio::test]
