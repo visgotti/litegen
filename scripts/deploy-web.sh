@@ -11,11 +11,14 @@ cd "$(dirname "$0")/.."   # repo root
 set -a; . ./.env.deploy; set +a
 KEY="${DO_SSH_KEY_PATH/#\~/$HOME}"
 IP="${DO_DROPLET_IP:?DO_DROPLET_IP not set}"
-ORIGIN="http://${IP}"
+# Public origin of the app (Cloudflare-fronted). Override for testing, e.g.
+#   APP_URL=http://$IP ./scripts/deploy-web.sh
+APP_URL="${APP_URL:-https://app.litegen.ai}"
+API_BASE="${APP_URL}/api"   # API is served under /api (nginx strips the prefix)
 SSH="ssh -i ${KEY} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 root@${IP}"
 
-echo "==> Building dashboard (VITE_API_URL=${ORIGIN})"
-( cd dashboard && VITE_API_URL="${ORIGIN}" npm run build )
+echo "==> Building dashboard (VITE_API_URL=${API_BASE})"
+( cd dashboard && VITE_API_URL="${API_BASE}" npm run build )
 
 echo "==> Packaging dist"
 tar -C dashboard -czf /tmp/litegen-dashboard-dist.tgz dist
@@ -37,4 +40,4 @@ $SSH '
   echo "--- compose ps ---"
   docker compose -f docker-compose.prod.yml -f docker-compose.web.yml ps
 '
-echo "==> Done. Dashboard live at ${ORIGIN}/"
+echo "==> Done. Dashboard live at ${APP_URL}/ (API at ${API_BASE})"
