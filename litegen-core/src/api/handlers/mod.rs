@@ -171,7 +171,10 @@ pub async fn generate_image(
         return provider_not_configured_response(&validated.schema.provider);
     }
 
-    match state.router.generate_image(&validated.schema, &validated.request.base, &extras, &materialized, app_creds).await {
+    // Resolve the calling app's BYO image store (None → global store fallback).
+    let app_store = resolve_app_image_store(&state, &key_ctx).await;
+
+    match state.router.generate_image(&validated.schema, &validated.request.base, &extras, &materialized, app_creds, app_store).await {
         Ok(response) => {
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
@@ -2074,6 +2077,66 @@ async fn resolve_app_credential(
             Json(error_response("provider credential lookup failed", 500)),
         )
             .into_response()),
+    }
+}
+
+/// Resolve the calling app's BYO image store, if configured & usable. Returns
+/// `None` (→ caller uses the global store) on any miss or, for a configured-but-
+/// broken row, after logging a warning (fail-open — never breaks a generation).
+async fn resolve_app_image_store(
+    state: &AppState,
+    key_ctx: &Option<KeyContext>,
+) -> Option<std::sync::Arc<dyn crate::proxy::storage::ImageStore>> {
+    let app_id = key_ctx.as_ref().and_then(|c| c.app_id.as_deref())?;
+    let secrets_key = state.secrets_key?;
+    let row = match state.db.get_app_storage(app_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return None,
+        Err(e) => {
+            tracing::warn!(error = %e, "byo storage: lookup failed, using global store");
+            return None;
+        }
+    };
+
+    #[derive(serde::Deserialize)]
+    struct StorageSecret {
+        access_key_id: String,
+        secret_access_key: String,
+    }
+
+    let plaintext = match crate::auth::secrets::decrypt(&secrets_key, &row.secret_ciphertext, &row.secret_nonce) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(app_id, error = %e, "byo storage: decrypt failed, using global store");
+            return None;
+        }
+    };
+    let secret: StorageSecret = match serde_json::from_slice(&plaintext) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(app_id, error = %e, "byo storage: corrupt secret, using global store");
+            return None;
+        }
+    };
+
+    let cfg = crate::config::ImageStorageConfig {
+        backend: row.backend.clone(),
+        path_prefix: row.path_prefix.clone(),
+        s3: Some(crate::config::S3StorageConfig {
+            bucket_name: row.bucket_name.clone(),
+            region: row.region.clone(),
+            access_key_id: Some(secret.access_key_id),
+            secret_access_key: Some(secret.secret_access_key),
+            endpoint_url: row.endpoint_url.clone(),
+            custom_public_url: row.custom_public_url.clone(),
+        }),
+    };
+    match crate::proxy::storage::S3Store::from_config(&cfg) {
+        Ok(store) => Some(std::sync::Arc::new(store) as std::sync::Arc<dyn crate::proxy::storage::ImageStore>),
+        Err(e) => {
+            tracing::warn!(app_id, error = %e, "byo storage: build failed, using global store");
+            None
+        }
     }
 }
 
