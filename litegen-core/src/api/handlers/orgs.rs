@@ -1080,7 +1080,7 @@ pub async fn put_app_storage(
         None => {
             return err(
                 StatusCode::BAD_REQUEST,
-                "secrets_key_unavailable",
+                "secrets_not_configured",
                 "Storage credentials require a configured secrets key",
             );
         }
@@ -1153,9 +1153,9 @@ pub async fn put_app_storage(
         backend,
         bucket_name,
         region,
-        endpoint_url: body.endpoint_url.clone().filter(|s| !s.trim().is_empty()),
-        custom_public_url: body.custom_public_url.clone().filter(|s| !s.trim().is_empty()),
-        path_prefix: body.path_prefix.clone().filter(|s| !s.trim().is_empty()),
+        endpoint_url: body.endpoint_url.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+        custom_public_url: body.custom_public_url.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+        path_prefix: body.path_prefix.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
         access_key_id_hint,
         secret_ciphertext,
         secret_nonce,
