@@ -38,6 +38,9 @@ export default function UserMenu() {
   const [me, setMe] = useState<MeUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  // OAuth-only (hosted) mode disables the legacy master-API-key path entirely.
+  // Default to "password enabled" until config resolves so dev behavior is unchanged.
+  const [passwordEnabled, setPasswordEnabled] = useState(true);
   // useApiKey: explicit override from localStorage.
   // null = no preference stored → auto-show unless we confirm a session exists.
   // We start with null and resolve it after the me() check.
@@ -68,6 +71,15 @@ export default function UserMenu() {
       .finally(() => {
         setAuthChecked(true);
       });
+  }, []);
+
+  // Resolve auth mode: in OAuth-only mode the master-key widget is hidden.
+  useEffect(() => {
+    let cancelled = false;
+    client.auth.config()
+      .then(cfg => { if (!cancelled) setPasswordEnabled(cfg.password_enabled); })
+      .catch(() => { /* keep default (enabled) on failure */ });
+    return () => { cancelled = true; };
   }, []);
 
   // Close dropdown when clicking outside
@@ -113,9 +125,12 @@ export default function UserMenu() {
   // Show the API key bar if:
   // 1. User explicitly enabled it, OR
   // 2. No explicit preference AND no session (unauthenticated) — fallback for master-key flow
-  const showApiKeyBar = useApiKey !== null
-    ? useApiKey
-    : (authChecked && !me);
+  // …but never in OAuth-only mode, where the master-key path is disabled entirely.
+  const showApiKeyBar = passwordEnabled && (
+    useApiKey !== null
+      ? useApiKey
+      : (authChecked && !me)
+  );
 
   return (
     <div style={{ background: '#161b22', borderBottom: '1px solid #30363d', marginBottom: 16 }}>
@@ -223,23 +238,25 @@ export default function UserMenu() {
           <div style={{ flex: 1 }} />
         )}
 
-        {/* Right: "Use API key instead" toggle */}
-        <button
-          data-testid="user-menu-use-api-key"
-          onClick={toggleApiKey}
-          style={{
-            background: 'transparent',
-            border: '1px solid #30363d',
-            borderRadius: 6,
-            padding: '4px 10px',
-            color: showApiKeyBar ? '#58a6ff' : '#8b949e',
-            cursor: 'pointer',
-            fontSize: 12,
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {showApiKeyBar ? 'Using API key' : 'Use API key instead'}
-        </button>
+        {/* Right: "Use API key instead" toggle — hidden in OAuth-only mode */}
+        {passwordEnabled && (
+          <button
+            data-testid="user-menu-use-api-key"
+            onClick={toggleApiKey}
+            style={{
+              background: 'transparent',
+              border: '1px solid #30363d',
+              borderRadius: 6,
+              padding: '4px 10px',
+              color: showApiKeyBar ? '#58a6ff' : '#8b949e',
+              cursor: 'pointer',
+              fontSize: 12,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {showApiKeyBar ? 'Using API key' : 'Use API key instead'}
+          </button>
+        )}
       </div>
 
       {/* AuthBar: always shown when no session, or when explicitly toggled on */}

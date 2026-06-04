@@ -23,6 +23,13 @@ export interface TenantContextValue {
   activeOrgRole: string | null;
   /** True until the first me() resolves. */
   loading: boolean;
+  /**
+   * Auth state derived from the session:
+   *  - null  → still checking (initial me() not yet resolved)
+   *  - true  → me() succeeded (or the API-key flow is active)
+   *  - false → 401 / unauthenticated
+   */
+  authenticated: boolean | null;
   switchOrg: (orgId: string) => Promise<void>;
   switchApp: (appId: string) => void;
   refresh: () => Promise<void>;

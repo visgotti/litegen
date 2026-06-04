@@ -18,6 +18,7 @@ import Organization from './pages/Organization';
 import Members from './pages/Members';
 import UserMenu from './components/UserMenu';
 import RequirePermission from './components/RequirePermission';
+import RequireAuth from './components/RequireAuth';
 import ToastContainer from './components/Toast';
 import { TenantProvider } from './context/TenantContext';
 import { client, getApiKey } from './sdk-client';
@@ -53,7 +54,8 @@ function useMe() {
   return role;
 }
 
-function App() {
+/** The authenticated application shell: sidebar + header + the app routes. */
+function AppShell() {
   const role = useMe();
 
   // Admin-or-higher roles can see the Users nav item
@@ -65,65 +67,71 @@ function App() {
   ];
 
   return (
+    <div className="app">
+      <nav className="sidebar">
+        <div className="sidebar-header">
+          <h1>⚡ LiteGen</h1>
+          <span className="subtitle">Proxy Dashboard</span>
+        </div>
+        <ul className="nav-list">
+          {navItems.map(({ to, icon: Icon, label, testid }) => (
+            <li key={to}>
+              <NavLink
+                to={to}
+                end={to === '/'}
+                data-testid={testid}
+                className={({ isActive }) => isActive ? 'active' : ''}
+              >
+                <Icon size={18} />
+                <span>{label}</span>
+              </NavLink>
+            </li>
+          ))}
+        </ul>
+      </nav>
+      <main className="content">
+        <UserMenu />
+        <Routes>
+          <Route path="/" element={<Overview />} />
+          <Route path="/logs" element={<Logs />} />
+          <Route path="/models" element={<Models />} />
+          <Route path="/health" element={<Health />} />
+          <Route path="/keys" element={<Keys />} />
+          <Route path="/playground" element={<Playground />} />
+          <Route path="/generations" element={<Generations />} />
+          <Route path="/audit" element={<Audit />} />
+          <Route path="/account" element={<Account />} />
+          <Route path="/organization" element={<Organization />} />
+          <Route path="/members" element={<Members />} />
+          <Route path="/users" element={
+            <RequirePermission perm="user:read:any">
+              <Users />
+            </RequirePermission>
+          } />
+        </Routes>
+      </main>
+    </div>
+  );
+}
+
+function App() {
+  return (
     <BrowserRouter>
       <TenantProvider>
-        <div className="app">
-          <nav className="sidebar">
-            <div className="sidebar-header">
-              <h1>⚡ LiteGen</h1>
-              <span className="subtitle">Proxy Dashboard</span>
-            </div>
-            <ul className="nav-list">
-              {navItems.map(({ to, icon: Icon, label, testid }) => (
-                <li key={to}>
-                  <NavLink
-                    to={to}
-                    end={to === '/'}
-                    data-testid={testid}
-                    className={({ isActive }) => isActive ? 'active' : ''}
-                  >
-                    <Icon size={18} />
-                    <span>{label}</span>
-                  </NavLink>
-                </li>
-              ))}
-            </ul>
-          </nav>
-          <main className="content">
-            <ToastContainer />
-            <Routes>
-              {/* Unauthenticated routes — no UserMenu header */}
-              <Route path="/login" element={<Login />} />
-              <Route path="/signup" element={<Signup />} />
-              <Route path="/invite/:token" element={<AcceptInvite />} />
+        <ToastContainer />
+        <Routes>
+          {/* Public full-screen routes — rendered WITHOUT the sidebar/app chrome. */}
+          <Route path="/login" element={<Login />} />
+          <Route path="/signup" element={<Signup />} />
+          <Route path="/invite/:token" element={<AcceptInvite />} />
 
-              {/* Authenticated app routes — with UserMenu header */}
-              <Route path="*" element={
-                <>
-                  <UserMenu />
-                  <Routes>
-                    <Route path="/" element={<Overview />} />
-                    <Route path="/logs" element={<Logs />} />
-                    <Route path="/models" element={<Models />} />
-                    <Route path="/health" element={<Health />} />
-                    <Route path="/keys" element={<Keys />} />
-                    <Route path="/playground" element={<Playground />} />
-                    <Route path="/generations" element={<Generations />} />
-                    <Route path="/audit" element={<Audit />} />
-                    <Route path="/account" element={<Account />} />
-                    <Route path="/organization" element={<Organization />} />
-                    <Route path="/members" element={<Members />} />
-                    <Route path="/users" element={
-                      <RequirePermission perm="user:read:any">
-                        <Users />
-                      </RequirePermission>
-                    } />
-                  </Routes>
-                </>
-              } />
-            </Routes>
-          </main>
-        </div>
+          {/* Everything else requires a session and renders the full app shell. */}
+          <Route path="*" element={
+            <RequireAuth>
+              <AppShell />
+            </RequireAuth>
+          } />
+        </Routes>
       </TenantProvider>
     </BrowserRouter>
   );
