@@ -358,6 +358,9 @@ async function deployProxy() {
       'LITEGEN__AUTH__ALLOW_PASSWORD', 'LITEGEN__OAUTH__CALLBACK_BASE',
       'LITEGEN__OAUTH__GOOGLE__CLIENT_ID', 'LITEGEN__OAUTH__GOOGLE__CLIENT_SECRET',
       'LITEGEN__OAUTH__GITHUB__CLIENT_ID', 'LITEGEN__OAUTH__GITHUB__CLIENT_SECRET',
+      // Object storage: Scaleway S3 (S3-compatible) for generated-image artifacts.
+      'LITEGEN__IMAGE_STORAGE__BACKEND', 'LITEGEN_S3_BUCKET', 'LITEGEN_S3_REGION',
+      'LITEGEN_S3_ENDPOINT_URL', 'LITEGEN_S3_ACCESS_KEY_ID', 'LITEGEN_S3_SECRET_ACCESS_KEY',
       'OPENAI_API_KEY', 'REPLICATE_API_TOKEN', 'GOOGLE_API_KEY', 'FAL_KEY',
     ]) {
       if (env(k)) envLines.push(`${k}=${env(k)}`);
