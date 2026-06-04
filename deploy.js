@@ -347,7 +347,14 @@ async function deployProxy() {
       `LITEGEN__MASTER_KEY=${env('LITEGEN__MASTER_KEY')}`,
       `POSTGRES_PASSWORD=${env('POSTGRES_PASSWORD')}`,
     ];
-    for (const k of ['LITEGEN_CORS_ORIGINS', 'OPENAI_API_KEY', 'REPLICATE_API_TOKEN', 'GOOGLE_API_KEY', 'FAL_KEY']) {
+    for (const k of [
+      'LITEGEN_CORS_ORIGINS',
+      // Hosted multi-tenant mode: open signup creates orgs, master key is platform-admin,
+      // SECRETS_KEY enables per-app BYO provider-credential encryption. COOKIE_INSECURE_DEV
+      // lets session cookies work over plain http until TLS is fronted.
+      'LITEGEN__MODE', 'LITEGEN__SECRETS_KEY', 'LITEGEN__COOKIE_INSECURE_DEV',
+      'OPENAI_API_KEY', 'REPLICATE_API_TOKEN', 'GOOGLE_API_KEY', 'FAL_KEY',
+    ]) {
       if (env(k)) envLines.push(`${k}=${env(k)}`);
     }
     await sshExec(ssh,
