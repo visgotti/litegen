@@ -579,6 +579,58 @@ pub struct ProviderCredentialInfo {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Internal row for per-app BYO storage config (DB → resolution/handlers).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AppStorageRow {
+    pub backend: String,
+    pub bucket_name: String,
+    pub region: String,
+    pub endpoint_url: Option<String>,
+    pub custom_public_url: Option<String>,
+    pub path_prefix: Option<String>,
+    pub access_key_id_hint: Option<String>,
+    pub secret_ciphertext: String,
+    pub secret_nonce: String,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Owned input for upserting per-app BYO storage config.
+#[derive(Debug, Clone)]
+pub struct AppStorageUpsert {
+    pub app_id: String,
+    pub backend: String,
+    pub bucket_name: String,
+    pub region: String,
+    pub endpoint_url: Option<String>,
+    pub custom_public_url: Option<String>,
+    pub path_prefix: Option<String>,
+    pub access_key_id_hint: Option<String>,
+    pub secret_ciphertext: String,
+    pub secret_nonce: String,
+}
+
+/// Public view of per-app BYO storage config — NEVER includes the secret.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AppStorageInfo {
+    pub configured: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bucket_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_public_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_prefix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_key_id_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 // ─── API Key Auth ───────────────────────────────────────────────────────────
 
 /// API key for authenticating with the LiteGen proxy.

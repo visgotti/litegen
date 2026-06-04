@@ -56,6 +56,12 @@ struct TestApp {
     _tmp: tempfile::NamedTempFile,
 }
 
+impl TestApp {
+    fn db_path(&self) -> std::path::PathBuf {
+        self._tmp.path().to_path_buf()
+    }
+}
+
 async fn spawn_app() -> TestApp {
     spawn_app_with_providers(&[]).await
 }
@@ -67,6 +73,16 @@ async fn spawn_app() -> TestApp {
 /// credential present, or `init_from_config` skips them — pass a placeholder
 /// `api_key`; a per-app BYO credential overrides it per request.)
 async fn spawn_app_with_providers(extra_providers: &[(&str, Value)]) -> TestApp {
+    spawn_app_cfg(extra_providers, Some([7u8; 32])).await
+}
+
+/// Like [`spawn_app`] but with `secrets_key: None` — exercises the
+/// `secrets_not_configured` error path in storage/credential handlers.
+async fn spawn_app_no_secrets() -> TestApp {
+    spawn_app_cfg(&[], None).await
+}
+
+async fn spawn_app_cfg(extra_providers: &[(&str, Value)], secrets_key: Option<[u8; 32]>) -> TestApp {
     let tmp = tempfile::NamedTempFile::new().expect("tempfile");
     let url = format!("sqlite://{}?mode=rwc", tmp.path().display());
     let db: Arc<dyn DatabaseStore> = Arc::new(
@@ -122,7 +138,8 @@ async fn spawn_app_with_providers(extra_providers: &[(&str, Value)]) -> TestApp 
         in_flight: Arc::new(litegen::api::middleware::backpressure::InFlightLimit::new(64)),
         oauth: litegen::auth::oauth::OAuthConfig::default(),
         mode: Mode::Hosted,
-        secrets_key: Some([7u8; 32]),
+        allow_password: true,
+        secrets_key,
         dev: DevFlags {
             expose_invite_tokens: true,
             expose_reset_tokens: true,
@@ -247,6 +264,9 @@ impl Client {
     }
     async fn delete(&mut self, path: &str, headers: &[(&str, &str)]) -> Resp {
         self.send(reqwest::Method::DELETE, path, None, headers).await
+    }
+    async fn put_with(&mut self, path: &str, body: Value, headers: &[(&str, &str)]) -> Resp {
+        self.send(reqwest::Method::PUT, path, Some(body), headers).await
     }
 
     /// Fetch the CSRF token for the current session.
@@ -1179,5 +1199,435 @@ async fn byo_credential_reaches_upstream() {
     assert_eq!(
         auth, "Bearer APPKEY",
         "upstream should receive the per-app BYO key, got {auth:?}"
+    );
+}
+
+// ─── BYO app storage: API surface ────────────────────────────────────────────
+
+#[tokio::test]
+async fn app_storage_crud_roundtrip_and_no_secret_leak() {
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, _secret) = signup_app_and_key(&mut c, "stg-crud").await;
+    let csrf = c.csrf().await;
+
+    let g0 = c.get(&format!("/v1/apps/{app_id}/storage")).await;
+    assert_eq!(g0.status, 200, "{:?}", g0.body);
+    assert_eq!(g0.body["configured"], serde_json::json!(false));
+
+    let put = c
+        .put_with(
+            &format!("/v1/apps/{app_id}/storage"),
+            json!({
+                "bucket_name": "acme-bucket",
+                "region": "us-west-2",
+                "endpoint_url": "https://minio.example.com",
+                "path_prefix": "litegen/images",
+                "access_key_id": "AKIAEXAMPLE9999",
+                "secret_access_key": "top-secret-value"
+            }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(put.status, 200, "put storage failed: {:?}", put.body);
+    // PUT echoes the stored config (not just status) — guards against a {}-body regression.
+    assert_eq!(put.body["configured"], serde_json::json!(true));
+    assert_eq!(put.body["bucket_name"], "acme-bucket");
+
+    let g1 = c.get(&format!("/v1/apps/{app_id}/storage")).await;
+    assert_eq!(g1.body["configured"], serde_json::json!(true));
+    assert_eq!(g1.body["bucket_name"], "acme-bucket");
+    assert_eq!(g1.body["region"], "us-west-2");
+    assert_eq!(g1.body["access_key_id_hint"], "…9999");
+    let raw = serde_json::to_string(&g1.body).unwrap();
+    assert!(!raw.contains("top-secret-value"), "secret leaked in GET: {raw}");
+    assert!(!raw.contains("AKIAEXAMPLE9999"), "access key id leaked in GET: {raw}");
+
+    let del = c.delete(&format!("/v1/apps/{app_id}/storage"), &[("x-csrf-token", &csrf)]).await;
+    assert_eq!(del.status, 204, "{:?}", del.body);
+    let g2 = c.get(&format!("/v1/apps/{app_id}/storage")).await;
+    assert_eq!(g2.body["configured"], serde_json::json!(false));
+    // Deleting an already-absent config is a 404.
+    let del2 = c.delete(&format!("/v1/apps/{app_id}/storage"), &[("x-csrf-token", &csrf)]).await;
+    assert_eq!(del2.status, 404, "second delete should 404: {:?}", del2.body);
+}
+
+#[tokio::test]
+async fn app_storage_upsert_retains_secret_when_keys_omitted() {
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, _secret) = signup_app_and_key(&mut c, "stg-retain").await;
+    let csrf = c.csrf().await;
+
+    let p1 = c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({ "bucket_name": "b1", "access_key_id": "AKIA1111", "secret_access_key": "sek" }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+    assert_eq!(p1.status, 200, "{:?}", p1.body);
+
+    let p2 = c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({ "bucket_name": "b2" }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+    assert_eq!(p2.status, 200, "retain-secret put failed: {:?}", p2.body);
+    let g = c.get(&format!("/v1/apps/{app_id}/storage")).await;
+    assert_eq!(g.body["bucket_name"], "b2");
+    assert_eq!(g.body["access_key_id_hint"], "…1111");
+
+    let p3 = c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({ "bucket_name": "b3", "access_key_id": "AKIA2222" }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+    assert_eq!(p3.status, 400, "incomplete creds should 400: {:?}", p3.body);
+
+    let _ = c.delete(&format!("/v1/apps/{app_id}/storage"), &[("x-csrf-token", &csrf)]).await;
+    let p4 = c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({ "bucket_name": "b4" }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+    assert_eq!(p4.status, 400, "create without keys should 400: {:?}", p4.body);
+}
+
+#[tokio::test]
+async fn app_storage_cross_tenant_isolation() {
+    let app = spawn_app().await;
+
+    let mut a = Client::new(&app.base);
+    let (app_a, _) = signup_app_and_key(&mut a, "stg-orga").await;
+    let csrf_a = a.csrf().await;
+    let put = a.put_with(
+        &format!("/v1/apps/{app_a}/storage"),
+        json!({ "bucket_name": "a-bucket", "access_key_id": "AKIAAAAA", "secret_access_key": "sek" }),
+        &[("x-csrf-token", &csrf_a)],
+    ).await;
+    assert_eq!(put.status, 200, "{:?}", put.body);
+
+    let mut b = Client::new(&app.base);
+    signup(&mut b, &unique_email("stg-orgb"), "OrgB").await;
+    let csrf_b = b.csrf().await;
+
+    let g = b.get(&format!("/v1/apps/{app_a}/storage")).await;
+    assert!(g.status == 403 || g.status == 404, "cross-tenant GET leaked: {} {:?}", g.status, g.body);
+    let p = b.put_with(
+        &format!("/v1/apps/{app_a}/storage"),
+        json!({ "bucket_name": "hijack", "access_key_id": "x", "secret_access_key": "y" }),
+        &[("x-csrf-token", &csrf_b)],
+    ).await;
+    assert!(p.status == 403 || p.status == 404, "cross-tenant PUT allowed: {} {:?}", p.status, p.body);
+    let d = b.delete(&format!("/v1/apps/{app_a}/storage"), &[("x-csrf-token", &csrf_b)]).await;
+    assert!(d.status == 403 || d.status == 404, "cross-tenant DELETE allowed: {} {:?}", d.status, d.body);
+}
+
+// ─── BYO app storage: generation behavior ────────────────────────────────────
+
+#[tokio::test]
+async fn app_storage_uploads_generation_to_per_app_bucket() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let s3 = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&s3)
+        .await;
+
+    let app = spawn_app().await; // global image_store is LocalStore (b64 fallback)
+    let mut c = Client::new(&app.base);
+    let (app_id, secret) = signup_app_and_key(&mut c, "stg-upload").await;
+    let csrf = c.csrf().await;
+
+    let put = c
+        .put_with(
+            &format!("/v1/apps/{app_id}/storage"),
+            json!({
+                "bucket_name": "test-bucket",
+                "region": "us-east-1",
+                "endpoint_url": s3.uri(),
+                "custom_public_url": "https://cdn.example.test",
+                "path_prefix": "litegen/images",
+                "access_key_id": "AKIATEST",
+                "secret_access_key": "secret"
+            }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(put.status, 200, "put storage failed: {:?}", put.body);
+
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    let r = bearer
+        .post_with(
+            "/v1/images/generations",
+            json!({ "model": MOCK_MODEL, "prompt": "a cat" }),
+            &[("authorization", &bearer_hdr)],
+        )
+        .await;
+    assert_eq!(r.status, 200, "generation failed: {:?}", r.body);
+
+    let url = r.body["data"][0]["url"].as_str().unwrap_or("");
+    assert!(
+        url.starts_with("https://cdn.example.test/litegen/images/"),
+        "expected per-app bucket URL, got {url:?} (body {:?})",
+        r.body
+    );
+
+    let received = s3.received_requests().await.expect("recorded requests");
+    assert_eq!(received.len(), 1, "expected one S3 PUT, got {}", received.len());
+    let p = received[0].url.path();
+    assert!(
+        p.starts_with("/test-bucket/litegen/images/"),
+        "unexpected S3 key path: {p}"
+    );
+}
+
+#[tokio::test]
+async fn unconfigured_app_falls_back_to_global_store() {
+    let app = spawn_app().await; // global LocalStore => b64 inline
+    let mut c = Client::new(&app.base);
+    let (_app_id, secret) = signup_app_and_key(&mut c, "stg-nofb").await;
+
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    let r = bearer
+        .post_with(
+            "/v1/images/generations",
+            json!({ "model": MOCK_MODEL, "prompt": "x" }),
+            &[("authorization", &bearer_hdr)],
+        )
+        .await;
+    assert_eq!(r.status, 200, "{:?}", r.body);
+    assert!(r.body["data"][0]["b64_json"].is_string(), "expected b64 fallback: {:?}", r.body);
+    assert!(r.body["data"][0]["url"].is_null(), "expected no url: {:?}", r.body);
+}
+
+#[tokio::test]
+async fn corrupt_storage_config_falls_back_without_failing() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let s3 = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&s3)
+        .await;
+
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, secret) = signup_app_and_key(&mut c, "stg-corrupt").await;
+    let csrf = c.csrf().await;
+
+    let put = c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({
+            "bucket_name": "test-bucket",
+            "endpoint_url": s3.uri(),
+            "access_key_id": "AKIATEST",
+            "secret_access_key": "secret"
+        }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+    assert_eq!(put.status, 200, "{:?}", put.body);
+
+    let url = format!("sqlite://{}?mode=rwc", app.db_path().display());
+    let pool = sqlx::sqlite::SqlitePool::connect(&url).await.expect("open sqlite");
+    sqlx::query("UPDATE app_storage_credentials SET secret_ciphertext = 'not-base64-$$$' WHERE app_id = ?")
+        .bind(&app_id)
+        .execute(&pool)
+        .await
+        .expect("corrupt row");
+    pool.close().await;
+
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    let r = bearer
+        .post_with(
+            "/v1/images/generations",
+            json!({ "model": MOCK_MODEL, "prompt": "x" }),
+            &[("authorization", &bearer_hdr)],
+        )
+        .await;
+    assert_eq!(r.status, 200, "corrupt config must fail-open, got {:?}", r.body);
+    assert!(r.body["data"][0]["b64_json"].is_string(), "expected b64 fallback: {:?}", r.body);
+    let received = s3.received_requests().await.expect("recorded requests");
+    assert_eq!(received.len(), 0, "corrupt config must NOT hit per-app S3");
+}
+
+#[tokio::test]
+async fn delete_storage_reverts_to_global_store() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let s3 = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&s3)
+        .await;
+
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, secret) = signup_app_and_key(&mut c, "stg-revert").await;
+    let csrf = c.csrf().await;
+
+    c.put_with(
+        &format!("/v1/apps/{app_id}/storage"),
+        json!({
+            "bucket_name": "test-bucket",
+            "endpoint_url": s3.uri(),
+            "custom_public_url": "https://cdn.example.test",
+            "access_key_id": "AKIATEST",
+            "secret_access_key": "secret"
+        }),
+        &[("x-csrf-token", &csrf)],
+    ).await;
+
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    let r1 = bearer.post_with(
+        "/v1/images/generations",
+        json!({ "model": MOCK_MODEL, "prompt": "x" }),
+        &[("authorization", &bearer_hdr)],
+    ).await;
+    assert_eq!(r1.status, 200, "{:?}", r1.body);
+    assert!(r1.body["data"][0]["url"].as_str().unwrap_or("").starts_with("https://cdn.example.test/"));
+
+    let del = c.delete(&format!("/v1/apps/{app_id}/storage"), &[("x-csrf-token", &csrf)]).await;
+    assert_eq!(del.status, 204, "{:?}", del.body);
+    let r2 = bearer.post_with(
+        "/v1/images/generations",
+        json!({ "model": MOCK_MODEL, "prompt": "y" }),
+        &[("authorization", &bearer_hdr)],
+    ).await;
+    assert_eq!(r2.status, 200, "{:?}", r2.body);
+    assert!(r2.body["data"][0]["b64_json"].is_string(), "expected b64 after delete: {:?}", r2.body);
+
+    let received = s3.received_requests().await.expect("recorded requests");
+    assert_eq!(received.len(), 1, "exactly one S3 PUT total (before delete)");
+}
+
+// ─── BYO app storage: secrets_key required for PUT ───────────────────────────
+//
+// When the server is started without a `secrets_key`, the PUT handler must
+// return 400 `secrets_not_configured` immediately (it cannot encrypt credentials
+// without the key). The error lives at `body["error"]["code"]` per the `err()`
+// helper in orgs.rs.
+
+#[tokio::test]
+async fn app_storage_put_requires_secrets_key() {
+    let app = spawn_app_no_secrets().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, _secret) = signup_app_and_key(&mut c, "stg-nokey").await;
+    let csrf = c.csrf().await;
+
+    let put = c
+        .put_with(
+            &format!("/v1/apps/{app_id}/storage"),
+            json!({ "bucket_name": "b", "access_key_id": "AKIA", "secret_access_key": "s" }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(put.status, 400, "expected 400 without secrets key: {:?}", put.body);
+    // Error code is nested at body["error"]["code"] per the orgs.rs `err()` helper.
+    let code = put.body["error"]["code"].as_str().unwrap_or("");
+    assert_eq!(code, "secrets_not_configured", "unexpected error body: {:?}", put.body);
+}
+
+// ─── BYO app storage: Viewer role is read-only ───────────────────────────────
+//
+// A Viewer has `StorageCredRead` (GET 200) but not `StorageCredWrite` (PUT 403)
+// or `StorageCredDelete` (DELETE 403). This test invites a Viewer using the same
+// invite→accept→login flow as `invite_and_role_enforcement`.
+
+#[tokio::test]
+async fn app_storage_viewer_read_only() {
+    let app = spawn_app().await;
+
+    // Owner creates an app with storage configured.
+    let mut owner = Client::new(&app.base);
+    let (app_id, _secret) = signup_app_and_key(&mut owner, "stg-viewer-org").await;
+    let org_id = first_org_id(&mut owner).await;
+    let owner_csrf = owner.csrf().await;
+
+    // PUT storage so the app is configured (gives the viewer something to read).
+    let put = owner
+        .put_with(
+            &format!("/v1/apps/{app_id}/storage"),
+            json!({
+                "bucket_name": "viewer-bucket",
+                "access_key_id": "AKIAVIEWER",
+                "secret_access_key": "viewer-secret"
+            }),
+            &[("x-csrf-token", &owner_csrf)],
+        )
+        .await;
+    assert_eq!(put.status, 200, "owner put storage failed: {:?}", put.body);
+
+    // Owner invites a Viewer; dev.expose_invite_tokens=true → token in `_dev_token`.
+    let viewer_email = unique_email("viewer");
+    let invite = owner
+        .post_with(
+            &format!("/v1/orgs/{org_id}/members"),
+            json!({ "email": viewer_email, "role": "viewer" }),
+            &[("x-csrf-token", &owner_csrf)],
+        )
+        .await;
+    assert_eq!(invite.status, 200, "invite viewer failed: {:?}", invite.body);
+    let token = invite.body["_dev_token"]
+        .as_str()
+        .expect("dev invite token")
+        .to_string();
+
+    // Accept the invitation (creates the viewer account + a session).
+    let mut viewer = Client::new(&app.base);
+    let accept = viewer
+        .post(
+            &format!("/v1/auth/invitations/{token}/accept"),
+            json!({ "password": PASSWORD }),
+        )
+        .await;
+    assert_eq!(accept.status, 200, "accept invite failed: {:?}", accept.body);
+    assert!(
+        viewer.cookies.contains_key("litegen_session"),
+        "viewer session cookie not set after accept"
+    );
+
+    let viewer_csrf = viewer.csrf().await;
+
+    // GET /v1/apps/{app_id}/storage → 200 (Viewer has StorageCredRead).
+    let get = viewer.get(&format!("/v1/apps/{app_id}/storage")).await;
+    assert_eq!(
+        get.status, 200,
+        "viewer should be able to GET storage (StorageCredRead), got {} {:?}",
+        get.status, get.body
+    );
+
+    // PUT /v1/apps/{app_id}/storage → 403 (Viewer lacks StorageCredWrite).
+    let put_viewer = viewer
+        .put_with(
+            &format!("/v1/apps/{app_id}/storage"),
+            json!({ "bucket_name": "hijack", "access_key_id": "AKIA", "secret_access_key": "s" }),
+            &[("x-csrf-token", &viewer_csrf)],
+        )
+        .await;
+    assert_eq!(
+        put_viewer.status, 403,
+        "viewer must not PUT storage (lacks StorageCredWrite), got {} {:?}",
+        put_viewer.status, put_viewer.body
+    );
+
+    // DELETE /v1/apps/{app_id}/storage → 403 (Viewer lacks StorageCredDelete).
+    let del_viewer = viewer
+        .delete(
+            &format!("/v1/apps/{app_id}/storage"),
+            &[("x-csrf-token", &viewer_csrf)],
+        )
+        .await;
+    assert_eq!(
+        del_viewer.status, 403,
+        "viewer must not DELETE storage (lacks StorageCredDelete), got {} {:?}",
+        del_viewer.status, del_viewer.body
     );
 }
