@@ -554,7 +554,8 @@ async function deployWeb() {
     try {
       run(`npm run build`, {
         cwd: landingDir,
-        env: { ...process.env, NODE_ENV: 'production' },
+        // NEXT_DIST_DIR keeps this build off a running `next dev`'s `.next`.
+        env: { ...process.env, NODE_ENV: 'production', NEXT_DIST_DIR: '.next-prod' },
       });
       if (!fs.existsSync(landingOut)) {
         throw new Error(`landing build produced no ${landingOut} directory`);
@@ -659,7 +660,10 @@ function deployLanding() {
 
   console.log('\n=== Building landing (static export) ===');
   run('npm --prefix apps/landing install', { stdio: 'inherit' });
-  run('npm --prefix apps/landing run build', { env: { ...process.env, NODE_ENV: 'production' } });
+  // NEXT_DIST_DIR isolates this build's `.next` from a running `next dev`
+  // (port 8019) so the dev watcher can't clobber the build mid-flight
+  // (→ `ENOENT … _ssgManifest.js`).
+  run('npm --prefix apps/landing run build', { env: { ...process.env, NODE_ENV: 'production', NEXT_DIST_DIR: '.next-prod' } });
   if (!DRY_RUN) assertNoLocalhostInBundle(outDir, 'landing');
 
   // `pages deploy` does not auto-create the project. Create it once (idempotent);
