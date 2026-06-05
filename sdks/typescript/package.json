@@ -1,6 +1,6 @@
 {
   "name": "@litegen/sdk",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "First-party TypeScript SDK for LiteGen — universal AI image & video generation proxy.",
   "license": "MIT",
   "homepage": "https://litegen.ai",
