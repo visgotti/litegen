@@ -1,4 +1,4 @@
-📖 **Docs, SDKs & API reference → [visgotti.github.io/litegen](https://visgotti.github.io/litegen/)**
+🌐 **[litegen.ai](https://litegen.ai)**  ·  📖 **Docs, SDKs & API reference → [visgotti.github.io/litegen](https://visgotti.github.io/litegen/)**
 
 # LiteGen
 

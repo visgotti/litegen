@@ -1,5 +1,5 @@
-# Claude Code (personal, machine-local overrides)
-.claude/settings.local.json
+# Claude Code (personal, machine-local overrides + worktrees — never publish)
+.claude/
 
 # Rust
 litegen-core/target/
