@@ -120,6 +120,7 @@ models:
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2000 }
     params:
+      negative_prompt: { kind: string, max_length: 2000 }
       duration_seconds: { kind: float, min: 2.0, max: 10.0 }
       seed: { kind: seed, min: 0, max: 4294967294 }
     ref_inputs:
@@ -128,5 +129,9 @@ models:
       provider_format: { form: url }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [version]
+    # AnimateDiff (the resolved backing model) accepts steps/guidance_scale as
+    # diffusion controls; allow them through `extra` so they reach the model.
+    # `duration_seconds` is declared above for intent/pricing but is NOT forwarded
+    # to AnimateDiff (it hardcodes the frame count and rejects fps/num_frames).
+    extra_allowlist: [version, steps, guidance_scale]
     tags: [text-to-video, image-to-video]

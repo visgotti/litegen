@@ -58,6 +58,13 @@ models:
     params:
       duration_seconds: { kind: int, min: 5, max: 10, default: 5 }
       seed: { kind: seed, min: 0, max: 4294967294 }
+      # Runway video `ratio` is a pixel-pair string (gen3a_turbo supports landscape
+      # 1280:768 and portrait 768:1280). The provider always sends one, defaulting
+      # to 1280:768 when unset.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1280:768","768:1280"]
+        default: "1280:768"
     ref_inputs:
       max_total: 1
       default_role: init
@@ -77,6 +84,13 @@ models:
     params:
       duration_seconds: { kind: int, min: 5, max: 10, default: 5 }
       seed: { kind: seed, min: 0, max: 4294967294 }
+      # Runway video `ratio` is a pixel-pair string (gen3a_turbo supports landscape
+      # 1280:768 and portrait 768:1280). The provider always sends one, defaulting
+      # to 1280:768 when unset.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1280:768","768:1280"]
+        default: "1280:768"
     ref_inputs:
       max_total: 1
       default_role: init

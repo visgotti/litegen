@@ -19,7 +19,7 @@ const VCLM_VERSION: &str = "2024-05-23";
 ///
 /// RPC-style, TC3-HMAC-SHA256 signed. Async: `SubmitImageToVideoJob` (on
 /// `vclm.tencentcloudapi.com`) returns `Response.JobId`; poll
-/// `QueryImageToVideoJob` until done, then read the result video URL. Region
+/// `DescribeImageToVideoJob` until done, then read the result video URL. Region
 /// `ap-guangzhou`. The vclm product is separate from the Hunyuan image product.
 ///
 /// @see <https://github.com/TencentCloud/tencentcloud-sdk-nodejs/blob/master/src/services/vclm/v20240523/vclm_client.ts>
@@ -136,12 +136,20 @@ impl VideoProvider for HunyuanVideoProvider {
         let creds = self.creds()?;
         let region = self.region(&creds);
 
-        let mut body = json!({ "Prompt": base.prompt });
-        // Driving/first-frame image: ImageUrl (URL) or ImageBase64 (base64).
+        // SubmitImageToVideoJob requires a Model selector (Kling-branded on vclm);
+        // resolve via the instance model_mapping, falling back to a stable enum value.
+        let native_model = self
+            .config
+            .as_ref()
+            .and_then(|c| c.model_mapping.get(&model.id).cloned())
+            .unwrap_or_else(|| "Kling-V1-6".to_string());
+
+        let mut body = json!({ "Prompt": base.prompt, "Model": native_model });
+        // Driving/first-frame image: nested Image{Url} (URL) or Image{Base64} (base64).
         for r in &materialized.refs {
             match &r.form {
-                MaterializedRefForm::Url(u) => body["ImageUrl"] = Value::String(u.clone()),
-                MaterializedRefForm::Base64(b64) => body["ImageBase64"] = Value::String(b64.clone()),
+                MaterializedRefForm::Url(u) => body["Image"] = json!({ "Url": u }),
+                MaterializedRefForm::Base64(b64) => body["Image"] = json!({ "Base64": b64 }),
                 _ => {}
             }
         }
@@ -174,7 +182,7 @@ impl VideoProvider for HunyuanVideoProvider {
     ) -> Result<VideoGenerationPollResult, ProviderError> {
         let creds = self.creds()?;
         let region = self.region(&creds);
-        let q = self.rpc(&creds, &region, "QueryImageToVideoJob", &json!({ "JobId": handle.provider_job_id })).await?;
+        let q = self.rpc(&creds, &region, "DescribeImageToVideoJob", &json!({ "JobId": handle.provider_job_id })).await?;
         let resp = &q["Response"];
 
         // vclm reports status via a Status/StatusCode string; the finished video
@@ -195,7 +203,12 @@ impl VideoProvider for HunyuanVideoProvider {
             video_url,
             video_data: None,
             content_type: Some("video/mp4".into()),
-            error: resp["StatusMsg"].as_str().filter(|_| status == GenerationStatus::Failed).map(String::from),
+            error: resp["ErrorMessage"]
+                .as_str()
+                .or_else(|| resp["ErrorCode"].as_str())
+                .or_else(|| resp["StatusMsg"].as_str())
+                .filter(|_| status == GenerationStatus::Failed)
+                .map(String::from),
             metadata: HashMap::new(),
         })
     }
@@ -270,7 +283,7 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(header("x-tc-action", "QueryImageToVideoJob"))
+            .and(header("x-tc-action", "DescribeImageToVideoJob"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "Response": { "Status": "DONE", "ResultVideoUrl": "https://cdn.tencent/v.mp4" }
             })))

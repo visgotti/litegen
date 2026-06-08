@@ -203,6 +203,11 @@ impl ImageProvider for FalProvider {
             body["strength"] = json!(strength);
         }
 
+        // Style (e.g. recraft-v3: realistic_image, digital_illustration, vector_illustration)
+        if let Some(style) = extras.style.as_deref() {
+            body["style"] = Value::String(style.to_string());
+        }
+
         // Reference images (URL format for Fal)
         for r in &materialized.refs {
             match &r.form {

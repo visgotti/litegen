@@ -279,74 +279,183 @@ impl ImageProvider for StabilityProvider {
                 metadata,
             })
         } else {
-            // V1 engine API — JSON body, returns base64
-            let url = format!(
-                "{}/v1/generation/{}/text-to-image",
-                self.api_base(),
-                model_name
-            );
-
-            let mut text_prompts = vec![json!({
-                "text": base.prompt,
-                "weight": 1.0
-            })];
-
-            if let Some(np) = base.negative_prompt.as_deref() {
-                text_prompts.push(json!({ "text": np, "weight": -1.0 }));
-            }
-
-            let mut body = json!({
-                "text_prompts": text_prompts,
-                "samples": base.n.max(1),
-            });
-
-            if let Some(size) = extras.size.as_deref() {
-                let parts: Vec<&str> = size.split('x').collect();
-                if parts.len() == 2 {
-                    if let (Ok(w), Ok(h)) = (parts[0].parse::<u64>(), parts[1].parse::<u64>()) {
-                        body["width"] = Value::Number(w.into());
-                        body["height"] = Value::Number(h.into());
+            // V1 engine API. Plain text-to-image POSTs a JSON body. When init/mask
+            // refs are present (SDXL image_to_image / inpainting), Stability requires
+            // a *separate* multipart endpoint:
+            //   /v1/generation/{engine}/image-to-image          (init_image present)
+            //   /v1/generation/{engine}/image-to-image/masking  (mask_image present)
+            // All three return the same JSON `artifacts[].base64` payload.
+            //
+            // @see <https://platform.stability.ai/docs/api-reference> — V1 `image-to-image`
+            //   (multipart `init_image`, `image_strength`, `text_prompts[*][text|weight]`) and
+            //   `image-to-image/masking` (multipart `init_image`, `mask_image`, `mask_source`).
+            let mut has_init = false;
+            let mut has_mask = false;
+            for r in &materialized.refs {
+                if let MaterializedRefForm::MultipartField { field_name, .. } = &r.form {
+                    match field_name.as_str() {
+                        "init_image" => has_init = true,
+                        "mask_image" => has_mask = true,
+                        _ => {}
                     }
                 }
             }
+            let use_multipart = has_init || has_mask;
 
-            if let Some(steps) = extras.steps {
-                body["steps"] = Value::Number(steps.into());
-            }
+            let resp = if use_multipart {
+                // Multipart image-to-image / masking path.
+                let route = if has_mask {
+                    "image-to-image/masking"
+                } else {
+                    "image-to-image"
+                };
+                let url = format!(
+                    "{}/v1/generation/{}/{}",
+                    self.api_base(),
+                    model_name,
+                    route
+                );
 
-            if let Some(gs) = extras.guidance_scale {
-                body["cfg_scale"] = json!(gs);
-            }
+                let mut form = reqwest::multipart::Form::new()
+                    .text("text_prompts[0][text]", base.prompt.clone())
+                    .text("text_prompts[0][weight]", "1.0")
+                    .text("samples", base.n.max(1).to_string());
 
-            if let Some(seed) = base.seed {
-                body["seed"] = Value::Number(seed.into());
-            }
+                if let Some(np) = base.negative_prompt.as_deref() {
+                    form = form
+                        .text("text_prompts[1][text]", np.to_string())
+                        .text("text_prompts[1][weight]", "-1.0");
+                }
 
-            // Shallow-merge extra
-            if let Some(Value::Object(extra_map)) = &extras.extra {
-                if let Some(body_map) = body.as_object_mut() {
+                if let Some(steps) = extras.steps {
+                    form = form.text("steps", steps.to_string());
+                }
+
+                if let Some(gs) = extras.guidance_scale {
+                    form = form.text("cfg_scale", gs.to_string());
+                }
+
+                if let Some(seed) = base.seed {
+                    form = form.text("seed", seed.to_string());
+                }
+
+                // init_strength controls how much the init image is preserved.
+                if let Some(strength) = extras.strength {
+                    form = form.text("image_strength", format!("{:.2}", strength));
+                }
+
+                // Masking requires telling the API how the mask is encoded.
+                if has_mask {
+                    form = form.text("mask_source", "MASK_IMAGE_WHITE");
+                }
+
+                // extra fields shallow-merged (allowlist enforced by validator).
+                if let Some(Value::Object(extra_map)) = &extras.extra {
                     for (k, v) in extra_map {
-                        body_map.insert(k.clone(), v.clone());
+                        let val_str = match v {
+                            Value::String(s) => s.clone(),
+                            _ => v.to_string(),
+                        };
+                        form = form.text(k.clone(), val_str);
                     }
                 }
-            }
 
-            let resp = crate::providers::inject_trace_headers(
-                self.client
-                    .post(&url)
-                    .header("Authorization", format!("Bearer {api_key}"))
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "application/json")
-                    .json(&body),
-            )
-            .send()
-            .await
-            .map_err(|e| ProviderError::RequestFailed {
-                message: format!("Stability V1 request failed: {e}"),
-                status_code: e.status().map(|s| s.as_u16()),
-                provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
-            })?;
+                // Attach materialized init_image / mask_image ref bytes.
+                for r in &materialized.refs {
+                    if let MaterializedRefForm::MultipartField { field_name, bytes, content_type } = &r.form {
+                        let part = reqwest::multipart::Part::bytes(bytes.to_vec())
+                            .mime_str(content_type)
+                            .unwrap_or_else(|_| reqwest::multipart::Part::bytes(bytes.to_vec()))
+                            .file_name("image.png");
+                        form = form.part(field_name.clone(), part);
+                    }
+                }
+
+                crate::providers::inject_trace_headers(
+                    self.client
+                        .post(&url)
+                        .header("Authorization", format!("Bearer {api_key}"))
+                        .header("Accept", "application/json")
+                        .multipart(form),
+                )
+                .send()
+                .await
+                .map_err(|e| ProviderError::RequestFailed {
+                    message: format!("Stability V1 request failed: {e}"),
+                    status_code: e.status().map(|s| s.as_u16()),
+                    provider_error: None,
+                    retryable: e.is_timeout() || e.is_connect(),
+                })?
+            } else {
+                // Plain text-to-image — JSON body, returns base64.
+                let url = format!(
+                    "{}/v1/generation/{}/text-to-image",
+                    self.api_base(),
+                    model_name
+                );
+
+                let mut text_prompts = vec![json!({
+                    "text": base.prompt,
+                    "weight": 1.0
+                })];
+
+                if let Some(np) = base.negative_prompt.as_deref() {
+                    text_prompts.push(json!({ "text": np, "weight": -1.0 }));
+                }
+
+                let mut body = json!({
+                    "text_prompts": text_prompts,
+                    "samples": base.n.max(1),
+                });
+
+                if let Some(size) = extras.size.as_deref() {
+                    let parts: Vec<&str> = size.split('x').collect();
+                    if parts.len() == 2 {
+                        if let (Ok(w), Ok(h)) = (parts[0].parse::<u64>(), parts[1].parse::<u64>()) {
+                            body["width"] = Value::Number(w.into());
+                            body["height"] = Value::Number(h.into());
+                        }
+                    }
+                }
+
+                if let Some(steps) = extras.steps {
+                    body["steps"] = Value::Number(steps.into());
+                }
+
+                if let Some(gs) = extras.guidance_scale {
+                    body["cfg_scale"] = json!(gs);
+                }
+
+                if let Some(seed) = base.seed {
+                    body["seed"] = Value::Number(seed.into());
+                }
+
+                // Shallow-merge extra
+                if let Some(Value::Object(extra_map)) = &extras.extra {
+                    if let Some(body_map) = body.as_object_mut() {
+                        for (k, v) in extra_map {
+                            body_map.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+
+                crate::providers::inject_trace_headers(
+                    self.client
+                        .post(&url)
+                        .header("Authorization", format!("Bearer {api_key}"))
+                        .header("Content-Type", "application/json")
+                        .header("Accept", "application/json")
+                        .json(&body),
+                )
+                .send()
+                .await
+                .map_err(|e| ProviderError::RequestFailed {
+                    message: format!("Stability V1 request failed: {e}"),
+                    status_code: e.status().map(|s| s.as_u16()),
+                    provider_error: None,
+                    retryable: e.is_timeout() || e.is_connect(),
+                })?
+            };
 
             let status = resp.status();
             let resp_json: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {

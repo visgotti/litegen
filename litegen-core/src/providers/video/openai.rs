@@ -306,16 +306,55 @@ impl VideoProvider for OpenAiVideoProvider {
             _ => GenerationStatus::Pending,
         };
 
-        // On completion the MP4 is retrieved from the /content sub-resource.
-        let video_url = if status == GenerationStatus::Completed {
-            Some(format!(
-                "{}/videos/{}/content",
-                self.api_base(),
-                handle.provider_job_id
-            ))
-        } else {
-            None
-        };
+        // On completion the MP4 lives at the /content sub-resource, which is an
+        // auth-gated OpenAI REST endpoint (NOT a public/pre-signed URL): it must be
+        // fetched with the same `Authorization: Bearer` header as every other call.
+        // Handing the bare URL to the customer leaves them unable to download it, so
+        // we download the bytes here and surface them as `video_data`.
+        let content_url = format!(
+            "{}/videos/{}/content",
+            self.api_base(),
+            handle.provider_job_id
+        );
+        let mut video_url = None;
+        let mut video_data = None;
+        if status == GenerationStatus::Completed {
+            let content_resp = crate::providers::inject_trace_headers(
+                self.client
+                    .get(&content_url)
+                    .header("Authorization", format!("Bearer {api_key}")),
+            )
+            .send()
+            .await
+            .map_err(|e| ProviderError::RequestFailed {
+                message: format!("Failed to fetch Sora video content: {e}"),
+                status_code: e.status().map(|s| s.as_u16()),
+                provider_error: None,
+                retryable: e.is_timeout() || e.is_connect(),
+            })?;
+            if !content_resp.status().is_success() {
+                return Err(ProviderError::RequestFailed {
+                    message: format!(
+                        "Sora video content returned HTTP {}",
+                        content_resp.status()
+                    ),
+                    status_code: Some(content_resp.status().as_u16()),
+                    provider_error: None,
+                    retryable: content_resp.status().as_u16() >= 500,
+                });
+            }
+            let bytes = content_resp
+                .bytes()
+                .await
+                .map_err(|e| ProviderError::RequestFailed {
+                    message: format!("Failed to read Sora video bytes: {e}"),
+                    status_code: None,
+                    provider_error: None,
+                    retryable: false,
+                })?;
+            video_data = Some(bytes.to_vec());
+            video_url = Some(content_url);
+        }
 
         let error = data["error"]
             .as_str()
@@ -330,7 +369,7 @@ impl VideoProvider for OpenAiVideoProvider {
                 _ => 10,
             },
             video_url,
-            video_data: None,
+            video_data,
             content_type: Some("video/mp4".into()),
             error,
             metadata: HashMap::new(),

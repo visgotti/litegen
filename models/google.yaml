@@ -3,7 +3,7 @@ models:
     provider: google
     media_type: image
     display_name: Imagen 3
-    description: Google Imagen 3 via Gemini API.
+    description: Google Imagen 3 (imagen-3.0-generate-002) via the Imagen :predict API.
     pricing: { base_cost_usd: 0.04 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 4000 }
@@ -14,7 +14,7 @@ models:
         kind: aspect_ratio
         allowed: ["1:1","9:16","16:9","3:4","4:3"]
         default: "1:1"
-    extra_allowlist: [person_generation]
+    extra_allowlist: [personGeneration]
     tags: [text-to-image]
 
   - id: google/gemini-2.5-flash-image
