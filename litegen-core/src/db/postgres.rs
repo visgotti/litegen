@@ -541,8 +541,8 @@ impl DatabaseStore for PostgresDatabase {
             r#"
             SELECT
                 COUNT(*) as total,
-                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as success,
-                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) as success,
+                COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
                 COALESCE(SUM(cost_usd), 0.0) as total_cost,
                 COALESCE(AVG(latency_ms), 0.0) as avg_latency
             FROM request_logs
@@ -611,8 +611,8 @@ impl DatabaseStore for PostgresDatabase {
 
         let totals_sql = format!(
             "SELECT COUNT(*) as total, \
-             SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as success, \
-             SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed, \
+             COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) as success, \
+             COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed, \
              COALESCE(SUM(cost_usd), 0.0) as total_cost, \
              COALESCE(AVG(latency_ms), 0.0) as avg_latency \
              FROM request_logs WHERE {tenant_clause}"

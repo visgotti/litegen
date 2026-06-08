@@ -1079,4 +1079,46 @@ mod tests {
         let allowed = !fetched.org_id.as_deref().map(|o| o != caller_org_a).unwrap_or(false);
         assert!(allowed, "org A should be allowed to access their own artifact");
     }
+
+    // ─── Stats on an empty DB / tenant ────────────────────────────────────────
+
+    /// Regression: `get_stats` / `get_stats_for_tenant` over a DB/tenant with NO
+    /// request_logs must return zeroes, not a SQLx decode error. The success/failed
+    /// columns use SUM(CASE ...), which returns NULL over an empty row set; without
+    /// a COALESCE that NULL fails to decode into i64 ("error occurred while decoding
+    /// column 1: unexpected null"). This is the crash a freshly-created org hit on
+    /// the dashboard Overview page right after logging in.
+    #[tokio::test]
+    async fn stats_on_empty_db_and_tenant_returns_zeroes() {
+        let db = in_memory_db().await;
+
+        // Global stats over an empty request_logs table.
+        let global = db.get_stats().await.expect("get_stats must not error on empty table");
+        assert_eq!(global.total_requests, 0);
+        assert_eq!(global.successful_requests, 0);
+        assert_eq!(global.failed_requests, 0);
+        assert_eq!(global.total_cost_usd, 0.0);
+
+        // Tenant-scoped stats for a brand-new org/app with no logs (the Overview path).
+        let org = make_org(&Uuid::new_v4().to_string(), "empty-stats");
+        db.create_organization(&org).await.unwrap();
+        let app = make_app(&Uuid::new_v4().to_string(), &org.id, "empty-app");
+        db.create_application(&app).await.unwrap();
+
+        let by_org = db
+            .get_stats_for_tenant(&org.id, None)
+            .await
+            .expect("get_stats_for_tenant (org only) must not error with no logs");
+        assert_eq!(by_org.total_requests, 0);
+        assert_eq!(by_org.successful_requests, 0);
+        assert_eq!(by_org.failed_requests, 0);
+
+        let by_app = db
+            .get_stats_for_tenant(&org.id, Some(&app.id))
+            .await
+            .expect("get_stats_for_tenant (org+app) must not error with no logs");
+        assert_eq!(by_app.total_requests, 0);
+        assert_eq!(by_app.successful_requests, 0);
+        assert_eq!(by_app.failed_requests, 0);
+    }
 }
