@@ -169,11 +169,11 @@ impl ImageProvider for HunyuanImageProvider {
         if let Some(seed) = base.seed {
             submit["Seed"] = Value::Number(seed.max(0).into());
         }
-        // Optional reference/control image (base64 or URL).
+        // Optional reference/control image: nested ContentImage{ImageBase64|ImageUrl}.
         for r in &materialized.refs {
             match &r.form {
-                MaterializedRefForm::Base64(b64) => submit["InputImage"] = Value::String(b64.clone()),
-                MaterializedRefForm::Url(u) => submit["InputUrl"] = Value::String(u.clone()),
+                MaterializedRefForm::Base64(b64) => submit["ContentImage"] = json!({ "ImageBase64": b64 }),
+                MaterializedRefForm::Url(u) => submit["ContentImage"] = json!({ "ImageUrl": u }),
                 _ => {}
             }
         }

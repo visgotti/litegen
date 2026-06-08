@@ -1,6 +1,8 @@
 models:
   # Recraft (external.api.recraft.ai/v1). Sync, OpenAI-compatible. Bearer auth.
-  # `style` selects the recraft style family; `size` is WxH (1024-2048).
+  # `style` selects the recraft style family (V2/V3 only); `size` is an enumerated
+  # set of WxH pairs that Recraft documents as supported (freeform pixel sizes are
+  # rejected upstream).
   - id: recraft/recraftv3
     provider: recraft
     media_type: image
@@ -17,11 +19,8 @@ models:
         default: realistic_image
       size:
         kind: size
-        mode: freeform
-        min_width: 1024
-        max_width: 2048
-        min_height: 1024
-        max_height: 2048
+        mode: enum
+        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024]]
     extra_allowlist: [style_id, controls, text_layout, substyle]
     tags: [text-to-image]
 
@@ -41,11 +40,8 @@ models:
         default: vector_illustration
       size:
         kind: size
-        mode: freeform
-        min_width: 1024
-        max_width: 2048
-        min_height: 1024
-        max_height: 2048
+        mode: enum
+        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024]]
     extra_allowlist: [style_id, controls, substyle]
     tags: [text-to-image, vector]
 
@@ -64,11 +60,8 @@ models:
         default: realistic_image
       size:
         kind: size
-        mode: freeform
-        min_width: 1024
-        max_width: 2048
-        min_height: 1024
-        max_height: 2048
+        mode: enum
+        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024]]
     extra_allowlist: [style_id, controls, substyle]
     tags: [text-to-image]
 
@@ -88,11 +81,8 @@ models:
         default: realistic_image
       size:
         kind: size
-        mode: freeform
-        min_width: 1024
-        max_width: 2048
-        min_height: 1024
-        max_height: 2048
+        mode: enum
+        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024]]
     extra_allowlist: [style_id, controls, text_layout, substyle]
     tags: [text-to-image]
 
@@ -112,10 +102,7 @@ models:
         default: realistic_image
       size:
         kind: size
-        mode: freeform
-        min_width: 1024
-        max_width: 2048
-        min_height: 1024
-        max_height: 2048
+        mode: enum
+        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024]]
     extra_allowlist: [style_id, controls, text_layout, substyle]
     tags: [text-to-image]

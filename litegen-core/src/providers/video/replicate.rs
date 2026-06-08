@@ -38,9 +38,12 @@ struct ModelVersion {
     model: &'static str,
     /// SHA256 version hash (from Replicate model page)
     version: &'static str,
-    /// Default FPS for this model
+    /// Default FPS for this model (informational; AnimateDiff hardcodes frame count,
+    /// so this is not sent as an input field — kept for the documented named arms)
+    #[allow(dead_code)]
     default_fps: u32,
-    /// Max frames this model can generate
+    /// Max frames this model can generate (informational; not sent as an input field)
+    #[allow(dead_code)]
     max_frames: u32,
     /// Whether this model requires an input image (kept for future use)
     #[allow(dead_code)]
@@ -169,8 +172,10 @@ impl VideoProvider for ReplicateVideoProvider {
     /// Create a prediction (`POST {api_base}/predictions`) with a `version` hash.
     ///
     /// @see <https://replicate.com/docs/reference/http#create-a-prediction> — create a prediction.
-    ///   Proves the `{version, input}` body, the `input` fields (`prompt`, `fps`, `num_frames`,
-    ///   `seed`, `negative_prompt`, `init_image`), and the `id`/`urls.get` response fields.
+    ///   Proves the `{version, input}` body, the `input` fields (`prompt`, `n_prompt`,
+    ///   `seed`, `init_image`, plus `steps`/`guidance_scale` via `extra`), and the
+    ///   `id`/`urls.get` response fields. The backing AnimateDiff model does not accept
+    ///   `fps`/`num_frames`/`negative_prompt`, so those are intentionally not sent.
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -180,29 +185,43 @@ impl VideoProvider for ReplicateVideoProvider {
     ) -> Result<VideoGenerationHandle, ProviderError> {
         let api_key = self.api_key()?;
         let mv = resolve_model_version(&model.id);
+        // Honor an operator-supplied `version` override via model_mapping
+        // (value form: "owner/name:version" or just a bare "version" hash).
+        let version = self
+            .config
+            .as_ref()
+            .and_then(|c| c.model_mapping.get(&model.id))
+            .map(|mapped| {
+                mapped
+                    .rsplit_once(':')
+                    .map(|(_, v)| v.to_string())
+                    .unwrap_or_else(|| mapped.clone())
+            })
+            .unwrap_or_else(|| mv.version.to_string());
         let url = format!("{}/predictions", self.api_base());
 
-        // Build input payload
+        // Build input payload.
+        //
+        // The only catalog-exposed video id (`replicate/video`) resolves to
+        // lucataco/animate-diff, whose Cog input schema is exactly
+        // {motion_module, path, prompt, n_prompt, steps, guidance_scale, seed}.
+        // It does NOT accept `fps`, `num_frames`, or `negative_prompt`; it uses
+        // `n_prompt` for the negative prompt and hardcodes the frame count. So we
+        // send only the widely-safe fields it accepts (prompt, n_prompt, seed) and
+        // let `extras.extra` supply `steps`/`guidance_scale` via the shallow-merge
+        // below. `fps`/`num_frames`/`negative_prompt` are intentionally NOT sent —
+        // Replicate rejects unknown input keys (or silently drops them), so emitting
+        // them either 422s the request or makes duration/fps a no-op.
         let mut input = json!({
             "prompt": base.prompt,
         });
-
-        let fps = extras.fps.unwrap_or(mv.default_fps);
-        input["fps"] = json!(fps);
 
         if let Some(seed) = base.seed {
             input["seed"] = json!(seed);
         }
 
-        if extras.duration_seconds > 0.0 {
-            // Compute num_frames from duration and fps if model accepts it
-            let num_frames = (extras.duration_seconds * fps as f64).round() as u32;
-            let clamped = num_frames.min(mv.max_frames);
-            input["num_frames"] = json!(clamped);
-        }
-
         if let Some(np) = base.negative_prompt.as_deref() {
-            input["negative_prompt"] = Value::String(np.to_string());
+            input["n_prompt"] = Value::String(np.to_string());
         }
 
         // Reference image for image-to-video models
@@ -231,7 +250,7 @@ impl VideoProvider for ReplicateVideoProvider {
         }
 
         let body = json!({
-            "version": mv.version,
+            "version": version,
             "input": input,
         });
 

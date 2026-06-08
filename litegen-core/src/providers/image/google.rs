@@ -54,11 +54,27 @@ impl GoogleProvider {
             .unwrap_or("https://generativelanguage.googleapis.com/v1beta")
     }
 
+    /// Build the request URL. Imagen models use the `:predict` surface
+    /// (`instances`/`parameters` body), while Gemini native image models use
+    /// `:generateContent`.
+    ///
+    /// @see <https://ai.google.dev/api/imagen> — `models.predict` for Imagen
     fn api_url(&self, model: &str) -> String {
-        format!("{}/models/{model}:generateContent", self.api_base())
+        let verb = if Self::is_imagen_model(model) {
+            "predict"
+        } else {
+            "generateContent"
+        };
+        format!("{}/models/{model}:{verb}", self.api_base())
     }
 
-    /// Map internal litegen model IDs to actual Gemini API model names.
+    /// True if the resolved native model id belongs to the Imagen family,
+    /// which is served on the `:predict` endpoint (distinct from Gemini).
+    fn is_imagen_model(model: &str) -> bool {
+        model.starts_with("imagen")
+    }
+
+    /// Map internal litegen model IDs to actual Gemini/Imagen API model names.
     fn resolve_model(model_id: &str) -> &'static str {
         // Strip provider prefix first
         let native = if let Some(rest) = model_id.strip_prefix("google/") {
@@ -68,7 +84,7 @@ impl GoogleProvider {
         };
 
         match native {
-            "imagen-3" => "gemini-2.5-flash-image",
+            "imagen-3" => "imagen-3.0-generate-002",
             "gemini-2.5-flash-image" | "gemini-2.5-flash" => "gemini-2.5-flash-image",
             "gemini-3-pro-image" | "gemini-3-pro" => "gemini-3-pro-image-preview",
             "gemini-2.0-flash" => "gemini-2.0-flash",
@@ -137,12 +153,17 @@ impl ImageProvider for GoogleProvider {
             .is_some_and(|c| !c.api_key.is_empty() || self.key_pool.is_some())
     }
 
-    /// Generate an image via `POST {api_base}/models/{model}:generateContent`.
+    /// Generate an image. Imagen models route through `POST
+    /// {api_base}/models/{model}:predict` (`instances`/`parameters` body,
+    /// `predictions[].bytesBase64Encoded` response); Gemini native image models
+    /// route through `POST {api_base}/models/{model}:generateContent`.
     ///
     /// @see <https://ai.google.dev/api/generate-content> — `models.generateContent`.
     ///   Proves the `contents[].parts[]` request structure (text + `inlineData`/`fileData`),
-    ///   the `generationConfig` (`responseModalities`, `aspectRatio`, `seed`), `?key=` auth,
-    ///   and the `candidates[].content.parts[].inlineData` response this method reads.
+    ///   the `generationConfig` (`responseModalities`, `seed`, nested
+    ///   `imageConfig.aspectRatio`), `?key=` auth, and the
+    ///   `candidates[].content.parts[].inlineData` response this method reads.
+    /// @see <https://ai.google.dev/api/imagen> — `models.predict` for Imagen.
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -153,85 +174,125 @@ impl ImageProvider for GoogleProvider {
         let api_key = self.api_key()?;
         let gemini_model = Self::resolve_model(&model.id);
         let url = self.api_url(gemini_model);
+        let is_imagen = Self::is_imagen_model(gemini_model);
 
-        // Build the parts array for the content
-        let mut parts: Vec<Value> = vec![json!({
-            "text": base.prompt
-        })];
+        // Resolve the requested aspect ratio (explicit, else derived from size).
+        let aspect_ratio: Option<String> = extras
+            .aspect_ratio
+            .as_deref()
+            .map(|s| s.to_string())
+            .or_else(|| {
+                extras
+                    .size
+                    .as_deref()
+                    .and_then(Self::aspect_ratio_from_size)
+                    .map(|s| s.to_string())
+            });
 
-        // Append reference images as inlineData parts
-        for r in &materialized.refs {
-            match &r.form {
-                MaterializedRefForm::Base64(b64) => {
-                    parts.push(json!({
-                        "inlineData": {
-                            "mimeType": "image/png",
-                            "data": b64
-                        }
-                    }));
-                }
-                MaterializedRefForm::Url(url) => {
-                    // Gemini can handle file URIs — include as fileData
-                    parts.push(json!({
-                        "fileData": {
-                            "fileUri": url,
-                            "mimeType": "image/png"
-                        }
-                    }));
-                }
-                _ => {}
+        let body = if is_imagen {
+            // ── Imagen :predict surface ───────────────────────────────────
+            // {"instances":[{"prompt":...}],"parameters":{"sampleCount":...,
+            //  "aspectRatio":...}}
+            // @see <https://ai.google.dev/api/imagen> — models.predict
+            let mut instance = json!({ "prompt": base.prompt });
+            if let Some(np) = base.negative_prompt.as_deref() {
+                instance["negativePrompt"] = Value::String(np.to_string());
             }
-        }
 
-        // Build generationConfig
-        let mut gen_config = json!({
-            "responseModalities": ["image"]
-        });
-
-        // Aspect ratio
-        if let Some(ar) = extras.aspect_ratio.as_deref() {
-            gen_config["aspectRatio"] = Value::String(ar.to_string());
-        } else if let Some(size) = extras.size.as_deref() {
-            if let Some(ar) = Self::aspect_ratio_from_size(size) {
-                gen_config["aspectRatio"] = Value::String(ar.to_string());
+            let mut parameters = json!({
+                "sampleCount": base.n.max(1)
+            });
+            if let Some(ar) = &aspect_ratio {
+                parameters["aspectRatio"] = Value::String(ar.clone());
             }
-        }
-
-        if let Some(seed) = base.seed {
-            gen_config["seed"] = Value::Number(seed.into());
-        }
-
-        // Number of images
-        gen_config["numberOfImages"] = Value::Number(base.n.max(1).into());
-
-        // Shallow-merge extra fields into generationConfig
-        if let Some(Value::Object(extra_map)) = &extras.extra {
-            if let Some(cfg_obj) = gen_config.as_object_mut() {
-                for (k, v) in extra_map {
-                    cfg_obj.insert(k.clone(), v.clone());
-                }
+            if let Some(seed) = base.seed {
+                parameters["seed"] = Value::Number(seed.into());
             }
-        }
 
-        // Build the request body
-        let mut body = json!({
-            "contents": [{
-                "parts": parts
-            }],
-            "generationConfig": gen_config
-        });
-
-        // Add safety/persona config for Gemini models
-        if let Some(np) = base.negative_prompt.as_deref() {
-            // Gemini doesn't have a direct negative_prompt; append as a secondary text part
-            if let Some(contents) = body["contents"].as_array_mut() {
-                if let Some(first) = contents.first_mut() {
-                    if let Some(parts_arr) = first["parts"].as_array_mut() {
-                        parts_arr.push(json!({ "text": format!("Do not include: {np}") }));
+            // Shallow-merge extra fields into parameters (e.g. personGeneration).
+            if let Some(Value::Object(extra_map)) = &extras.extra {
+                if let Some(p_obj) = parameters.as_object_mut() {
+                    for (k, v) in extra_map {
+                        p_obj.insert(k.clone(), v.clone());
                     }
                 }
             }
-        }
+
+            json!({
+                "instances": [instance],
+                "parameters": parameters
+            })
+        } else {
+            // ── Gemini :generateContent surface ───────────────────────────
+            // Build the parts array for the content
+            let mut parts: Vec<Value> = vec![json!({
+                "text": base.prompt
+            })];
+
+            // Append reference images as inlineData parts
+            for r in &materialized.refs {
+                match &r.form {
+                    MaterializedRefForm::Base64(b64) => {
+                        parts.push(json!({
+                            "inlineData": {
+                                "mimeType": "image/png",
+                                "data": b64
+                            }
+                        }));
+                    }
+                    MaterializedRefForm::Url(url) => {
+                        // Gemini can handle file URIs — include as fileData
+                        parts.push(json!({
+                            "fileData": {
+                                "fileUri": url,
+                                "mimeType": "image/png"
+                            }
+                        }));
+                    }
+                    _ => {}
+                }
+            }
+
+            // Gemini doesn't have a direct negative_prompt; append as a text part
+            if let Some(np) = base.negative_prompt.as_deref() {
+                parts.push(json!({ "text": format!("Do not include: {np}") }));
+            }
+
+            // Build generationConfig
+            let mut gen_config = json!({
+                "responseModalities": ["image"]
+            });
+
+            // Aspect ratio must be nested under imageConfig for the
+            // generateContent image surface — Google ignores a top-level
+            // generationConfig.aspectRatio key.
+            if let Some(ar) = &aspect_ratio {
+                gen_config["imageConfig"] = json!({ "aspectRatio": ar });
+            }
+
+            if let Some(seed) = base.seed {
+                gen_config["seed"] = Value::Number(seed.into());
+            }
+
+            // Number of images
+            gen_config["numberOfImages"] = Value::Number(base.n.max(1).into());
+
+            // Shallow-merge extra fields into generationConfig
+            if let Some(Value::Object(extra_map)) = &extras.extra {
+                if let Some(cfg_obj) = gen_config.as_object_mut() {
+                    for (k, v) in extra_map {
+                        cfg_obj.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+
+            json!({
+                "contents": [{
+                    "parts": parts
+                }],
+                "generationConfig": gen_config
+            })
+        };
 
         let resp = crate::providers::inject_trace_headers(
             self.client
@@ -270,77 +331,112 @@ impl ImageProvider for GoogleProvider {
             });
         }
 
-        // Extract image data from response
-        // Gemini returns: candidates[0].content.parts[{inlineData.data, inlineData.mimeType}]
-        let candidates = resp_json["candidates"].as_array().ok_or_else(|| {
-            ProviderError::RequestFailed {
-                message: "Google response missing candidates".to_string(),
-                status_code: None,
-                provider_error: Some(resp_json.clone()),
-                retryable: false,
-            }
-        })?;
+        let mut metadata = HashMap::new();
+        metadata.insert("model".to_string(), Value::String(gemini_model.to_string()));
 
-        let first_candidate = candidates.first().ok_or_else(|| {
-            ProviderError::RequestFailed {
-                message: "Google response has empty candidates".to_string(),
+        let (b64_data, mime_type): (String, String) = if is_imagen {
+            // Imagen :predict returns:
+            //   predictions[0].{bytesBase64Encoded, mimeType}
+            // @see <https://ai.google.dev/api/imagen> — models.predict response
+            let predictions = resp_json["predictions"].as_array().ok_or_else(|| {
+                ProviderError::RequestFailed {
+                    message: "Google response missing predictions".to_string(),
+                    status_code: None,
+                    provider_error: Some(resp_json.clone()),
+                    retryable: false,
+                }
+            })?;
+
+            let first = predictions.first().ok_or_else(|| ProviderError::RequestFailed {
+                message: "Google response has empty predictions".to_string(),
                 status_code: None,
                 provider_error: None,
-                retryable: false,
-            }
-        })?;
-
-        let parts_arr = first_candidate["content"]["parts"].as_array().ok_or_else(|| {
-            ProviderError::RequestFailed {
-                message: "Google response missing parts".to_string(),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
-            }
-        })?;
-
-        // Find the part with inlineData (image)
-        let image_part = parts_arr
-            .iter()
-            .find(|p| p["inlineData"].is_object())
-            .ok_or_else(|| ProviderError::RequestFailed {
-                message: "Google response missing image inlineData part".to_string(),
-                status_code: None,
-                provider_error: Some(resp_json.clone()),
                 retryable: false,
             })?;
 
-        let mime_type = image_part["inlineData"]["mimeType"]
-            .as_str()
-            .unwrap_or("image/png")
-            .to_string();
+            let data = first["bytesBase64Encoded"].as_str().ok_or_else(|| {
+                ProviderError::RequestFailed {
+                    message: "Google prediction missing bytesBase64Encoded".to_string(),
+                    status_code: None,
+                    provider_error: Some(resp_json.clone()),
+                    retryable: false,
+                }
+            })?;
 
-        let b64_data = image_part["inlineData"]["data"].as_str().ok_or_else(|| {
-            ProviderError::RequestFailed {
-                message: "Google inlineData missing data".to_string(),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
+            let mime = first["mimeType"].as_str().unwrap_or("image/png").to_string();
+            (data.to_string(), mime)
+        } else {
+            // Gemini returns:
+            //   candidates[0].content.parts[{inlineData.data, inlineData.mimeType}]
+            let candidates = resp_json["candidates"].as_array().ok_or_else(|| {
+                ProviderError::RequestFailed {
+                    message: "Google response missing candidates".to_string(),
+                    status_code: None,
+                    provider_error: Some(resp_json.clone()),
+                    retryable: false,
+                }
+            })?;
+
+            let first_candidate = candidates.first().ok_or_else(|| {
+                ProviderError::RequestFailed {
+                    message: "Google response has empty candidates".to_string(),
+                    status_code: None,
+                    provider_error: None,
+                    retryable: false,
+                }
+            })?;
+
+            let parts_arr = first_candidate["content"]["parts"].as_array().ok_or_else(|| {
+                ProviderError::RequestFailed {
+                    message: "Google response missing parts".to_string(),
+                    status_code: None,
+                    provider_error: None,
+                    retryable: false,
+                }
+            })?;
+
+            // Include any text parts (e.g. revised prompt)
+            for part in parts_arr {
+                if let Some(text) = part["text"].as_str() {
+                    metadata.insert("text".to_string(), Value::String(text.to_string()));
+                    break;
+                }
             }
-        })?;
 
-        let image_bytes = B64.decode(b64_data).map_err(|e| ProviderError::RequestFailed {
+            // Find the part with inlineData (image)
+            let image_part = parts_arr
+                .iter()
+                .find(|p| p["inlineData"].is_object())
+                .ok_or_else(|| ProviderError::RequestFailed {
+                    message: "Google response missing image inlineData part".to_string(),
+                    status_code: None,
+                    provider_error: Some(resp_json.clone()),
+                    retryable: false,
+                })?;
+
+            let mime = image_part["inlineData"]["mimeType"]
+                .as_str()
+                .unwrap_or("image/png")
+                .to_string();
+
+            let data = image_part["inlineData"]["data"].as_str().ok_or_else(|| {
+                ProviderError::RequestFailed {
+                    message: "Google inlineData missing data".to_string(),
+                    status_code: None,
+                    provider_error: None,
+                    retryable: false,
+                }
+            })?;
+
+            (data.to_string(), mime)
+        };
+
+        let image_bytes = B64.decode(&b64_data).map_err(|e| ProviderError::RequestFailed {
             message: format!("Failed to decode Google image data: {e}"),
             status_code: None,
             provider_error: None,
             retryable: false,
         })?;
-
-        let mut metadata = HashMap::new();
-        metadata.insert("model".to_string(), Value::String(gemini_model.to_string()));
-
-        // Include any text parts (e.g. revised prompt)
-        for part in parts_arr {
-            if let Some(text) = part["text"].as_str() {
-                metadata.insert("text".to_string(), Value::String(text.to_string()));
-                break;
-            }
-        }
 
         Ok(GenerationOutput {
             data: image_bytes,

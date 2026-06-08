@@ -139,9 +139,14 @@ impl VideoProvider for RunwayProvider {
             body["promptImage"] = Value::String(img_url);
         }
 
-        if let Some(ar) = extras.aspect_ratio.as_deref() {
-            body["ratio"] = Value::String(ar.to_string());
-        }
+        // Runway video requires `ratio` as a pixel-pair string (e.g. "1280:768").
+        // gen3a_turbo supports landscape 1280:768 and portrait 768:1280. The
+        // unified aspect_ratio (validated against the model's allowed pixel-pair
+        // ratios in models/runway.yaml) is forwarded verbatim; default to the
+        // landscape ratio when none was supplied so the required field is always
+        // present.
+        let ratio = extras.aspect_ratio.as_deref().unwrap_or("1280:768");
+        body["ratio"] = Value::String(ratio.to_string());
 
         if let Some(seed) = base.seed {
             body["seed"] = json!(seed);

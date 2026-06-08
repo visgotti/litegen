@@ -117,8 +117,15 @@ impl ImageProvider for RecraftProvider {
         if let Some(size) = extras.size.as_deref() {
             body["size"] = Value::String(size.to_string());
         }
-        if let Some(style) = extras.style.as_deref() {
-            body["style"] = Value::String(style.to_string());
+        // Recraft only accepts `style` (and `style_id`) on V2/V3 models. V4/V4.1
+        // models reject it with a 400; for those, style selection is implicit in
+        // the model id (e.g. the `_vector` suffix). So only forward style for
+        // recraftv2/recraftv3* native ids.
+        let supports_style = native.starts_with("recraftv2") || native.starts_with("recraftv3");
+        if supports_style {
+            if let Some(style) = extras.style.as_deref() {
+                body["style"] = Value::String(style.to_string());
+            }
         }
         if let Some(np) = base.negative_prompt.as_deref() {
             body["negative_prompt"] = Value::String(np.to_string());

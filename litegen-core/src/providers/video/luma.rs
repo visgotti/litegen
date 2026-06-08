@@ -140,6 +140,16 @@ impl VideoProvider for LumaProvider {
             body["aspect_ratio"] = Value::String(ar.to_string());
         }
 
+        // Duration — Luma expects a string like "5s"
+        if extras.duration_seconds > 0.0 {
+            body["duration"] = Value::String(format!("{}s", extras.duration_seconds as u32));
+        }
+
+        // Resolution — Luma expects a string like "720p"/"1080p"/"4k"
+        if let Some(res) = extras.resolution.as_deref() {
+            body["resolution"] = Value::String(res.to_string());
+        }
+
         // Camera motion from extra
         if let Some(Value::Object(extra_map)) = &extras.extra {
             if let Some(motion) = extra_map.get("camera_motion").and_then(|v| v.as_str()) {
