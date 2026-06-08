@@ -1,6 +1,7 @@
 {
   "name": "litegen-monorepo",
   "private": true,
+  "license": "MIT",
   "description": "Convenience scripts for the LiteGen repo. The Rust proxy lives in litegen-core; JS/TS apps live under apps/ and dashboard/.",
   "scripts": {
     "landing": "npm --prefix apps/landing run dev",
