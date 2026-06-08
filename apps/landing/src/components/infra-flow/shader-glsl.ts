@@ -187,7 +187,11 @@ vec3 packets(vec2 p, vec2 app, vec2 gate, vec2 model,
   vec3 vidTint = vec3(0.18, 0.80, 1.0);
 
   // OUTBOUND request: client -> gateway -> model.
-  float ospd = 0.10 + 0.09 * boost;
+  // Speed is CONSTANT (not boost-scaled). Phase is mt*spd and mt grows unbounded,
+  // so coupling spd to boost made any boost change — e.g. the scan beam sweeping
+  // onto this spoke, or a hover — jump the packet by mt*delta and streak it across
+  // the wire. boost still drives the glyph's brightness below, just not velocity.
+  float ospd = 0.10;
   float oRaw = mt * ospd + hash1(spokeId * 3.17 + 1.0);
   float oFrac = rm > 0.5 ? 0.25 : fract(oRaw);
   if (oFrac < 0.45) {
@@ -203,7 +207,7 @@ vec3 packets(vec2 p, vec2 app, vec2 gate, vec2 model,
   }
 
   // INBOUND result: model -> gateway -> client.
-  float tspd = 0.075 + 0.10 * boost;
+  float tspd = 0.075;   // constant — see the OUTBOUND note on why speed isn't boost-scaled
   float tRaw = mt * tspd + hash1(spokeId * 5.41 + 2.0);
   float tFrac = rm > 0.5 ? 0.30 : fract(tRaw);
   if (tFrac < 0.5) {

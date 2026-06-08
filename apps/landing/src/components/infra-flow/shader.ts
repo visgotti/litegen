@@ -235,7 +235,11 @@ fn packets(p : vec2<f32>, app : vec2<f32>, gate : vec2<f32>, model : vec2<f32>,
   let vidTint = vec3<f32>(0.18, 0.80, 1.0);   // electric cyan — video
 
   // OUTBOUND request: client -> gateway -> model.
-  let ospd = 0.10 + 0.09 * boost;
+  // Speed is CONSTANT (not boost-scaled). Phase is mt*spd and mt grows unbounded,
+  // so coupling spd to boost made any boost change — e.g. the scan beam sweeping
+  // onto this spoke, or a hover — jump the packet by mt*delta and streak it across
+  // the wire. boost still drives the glyph's brightness below, just not velocity.
+  let ospd = 0.10;
   let oRaw = mt * ospd + hash1(spokeId * 3.17 + 1.0);
   let oFrac = select(fract(oRaw), 0.25, rm > 0.5);     // park mid-route under rm
   if (oFrac < 0.45) {
@@ -254,7 +258,7 @@ fn packets(p : vec2<f32>, app : vec2<f32>, gate : vec2<f32>, model : vec2<f32>,
   // growing + gaining vibrancy across the whole trip so it reads as "resolving"
   // and then delivered to you. A both-capable provider alternates an image tile
   // vs an animated video film-strip. Parks mid-route + freezes under rm.
-  let tspd = 0.075 + 0.10 * boost;
+  let tspd = 0.075;   // constant — see the OUTBOUND note on why speed isn't boost-scaled
   let tRaw = mt * tspd + hash1(spokeId * 5.41 + 2.0);
   let tFrac = select(fract(tRaw), 0.30, rm > 0.5);
   if (tFrac < 0.5) {
