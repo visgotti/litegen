@@ -520,3 +520,33 @@ tr:hover {
   max-height: 300px;
   overflow-y: auto;
 }
+
+/* ── Multi-model playground ───────────────────────────────────────────── */
+.pg-mode-toggle { display: flex; gap: 4px; margin-bottom: 16px; }
+.pg-picker { border: 1px solid #30363d; border-radius: 6px; padding: 8px; margin-bottom: 16px; }
+.pg-picker-count { font-size: 12px; color: #8b949e; margin: 6px 0; }
+.pg-picker-list { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.pg-picker-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; font-size: 13px; cursor: pointer; }
+.pg-picker-row:hover { background: #161b22; }
+.pg-picker-id { flex: 1; font-family: monospace; }
+.pg-badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; white-space: nowrap; }
+.pg-badge-live { color: #3fb950; border: 1px solid #238636; }
+.pg-badge-mock { color: #58a6ff; border: 1px solid #1f6feb; }
+.pg-badge-setup { color: #8b949e; border: 1px solid #30363d; }
+.pg-params { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+.pg-param-row { display: flex; flex-direction: column; gap: 4px; }
+.pg-param-label { display: flex; justify-content: space-between; align-items: center; font-size: 13px; text-transform: none; }
+.pg-param-applies { font-size: 11px; color: #8b949e; }
+.pg-cost { font-size: 13px; color: #3fb950; margin: 8px 0; }
+.pg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.pg-grid-empty { color: #8b949e; padding: 24px; text-align: center; }
+.pg-tile { border: 1px solid #30363d; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; }
+.pg-tile-head { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; background: #161b22; }
+.pg-tile-model { font-size: 11px; }
+.pg-tile-rerun { padding: 2px 8px; font-size: 12px; }
+.pg-tile-image { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; background: #0d1117; }
+.pg-tile-image img { width: 100%; height: 100%; object-fit: contain; }
+.pg-tile-status { color: #8b949e; font-size: 12px; }
+.pg-tile-error { color: #f85149; font-size: 12px; padding: 8px; text-align: center; }
+.pg-tile-meta { display: flex; gap: 10px; padding: 6px 8px; font-size: 11px; color: #8b949e; }
+.pg-requests { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 16px; font-size: 12px; color: #e1e4e8; white-space: pre-wrap; word-break: break-all; min-height: 200px; }
