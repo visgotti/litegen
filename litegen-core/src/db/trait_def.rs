@@ -347,8 +347,8 @@ pub trait DatabaseStore: Send + Sync {
         Ok(None)
     }
 
-    async fn mark_invitation_used(&self, _token: &str) -> Result<(), sqlx::Error> {
-        Ok(())
+    async fn mark_invitation_used(&self, _token: &str) -> Result<bool, sqlx::Error> {
+        Ok(true)
     }
 
     async fn delete_invitation(&self, _id: &str) -> Result<(), sqlx::Error> {
