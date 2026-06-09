@@ -86,18 +86,39 @@ export interface PaginatedResponse<T> {
   total_pages: number;
 }
 
+/**
+ * A DB-backed generation row (video or image). Mirrors the backend
+ * `Generation` struct in litegen-core (`src/types/mod.rs`) exactly — field names
+ * and nullability match the serialized JSON. The real failure reason is
+ * `error_message` (there is no `error` field), and there is no `request_body`.
+ */
 export interface Generation {
+  /** Locally-minted ID (e.g. "litegen-vid-<uuid>"). */
   id: string;
-  key_id: string;
+  /** API key that submitted this generation; null when the master key was used. */
+  key_id: string | null;
   model: string;
   provider: string;
+  /** "image" | "video". */
+  media_type: string;
   status: "pending" | "processing" | "completed" | "failed" | "cancelled";
+  /** Progress percentage (0–100). */
+  progress: number;
+  /** Provider-assigned job ID used for polling. */
+  provider_job_id?: string | null;
+  /** Final result URL when completed. */
+  result_url?: string | null;
+  /** Failure reason when status is "failed". */
+  error_message?: string | null;
   cost_usd: number;
   created_at: string;
-  completed_at?: string;
-  result_url?: string;
-  request_body?: Record<string, unknown>;
-  error?: string;
+  completed_at?: string | null;
+  /** Arbitrary JSON metadata. */
+  metadata?: Record<string, unknown> | null;
+  /** Owning tenant (organization). Absent for pre-tenancy / untenanted rows. */
+  org_id?: string;
+  /** Owning application. Absent for pre-tenancy / untenanted rows. */
+  app_id?: string;
 }
 
 export interface RequestArtifact {
@@ -163,6 +184,9 @@ export interface ListAuditLogOptions {
   to?: string;
 }
 
+/** Filter options for `audit.exportCsv` (same filters as `audit.list`, sans pagination). */
+export type ExportAuditLogOptions = Omit<ListAuditLogOptions, "page" | "per_page">;
+
 export interface GetLogsOptions {
   page?: number;
   per_page?: number;
@@ -172,6 +196,9 @@ export interface GetLogsOptions {
   from?: string;
   to?: string;
 }
+
+/** Filter options for `logs.exportCsv` (same filters as `logs.list`, sans pagination). */
+export type ExportLogsOptions = Omit<GetLogsOptions, "page" | "per_page">;
 
 export interface ListWebhookDeliveriesOptions {
   page?: number;
@@ -293,17 +320,20 @@ export class LiteGenClient {
     return this.activeAppId;
   }
 
-  /** @internal */
-  async request<T>(
+  /**
+   * Build the headers sent on every request — Bearer token, active-tenant
+   * context (`X-Litegen-Org-Id` / `X-Litegen-App-Id`), and (for mutating
+   * methods) the CSRF token. Shared by {@link request} and {@link requestRaw}
+   * so non-JSON downloads (e.g. CSV export) are scoped to the same tenant.
+   */
+  private async buildHeaders(
     method: string,
-    path: string,
-    body?: unknown,
-    signal?: AbortSignal,
-  ): Promise<T> {
-    const url = `${this.baseUrl}${path}`;
+    extra?: Record<string, string>,
+  ): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       ...this.defaultHeaders,
+      ...extra,
     };
 
     // Bearer token: static apiKey takes precedence, then dynamic getter.
@@ -320,6 +350,26 @@ export class LiteGenClient {
       const csrf = await this.getCsrfToken();
       if (csrf) headers["X-CSRF-Token"] = csrf;
     }
+
+    return headers;
+  }
+
+  /**
+   * Execute a fetch with the shared auth/tenant/CSRF headers, timeout, and
+   * abort wiring. Returns the raw {@link Response} (no JSON parsing) and throws
+   * {@link LiteGenAPIError} on non-2xx. Used by {@link request} and by raw
+   * binary/text downloads such as CSV export.
+   * @internal
+   */
+  async fetchOk(
+    method: string,
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+    extraHeaders?: Record<string, string>,
+  ): Promise<Response> {
+    const url = `${this.baseUrl}${path}`;
+    const headers = await this.buildHeaders(method, extraHeaders);
 
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), this.timeoutMs);
@@ -362,11 +412,38 @@ export class LiteGenClient {
       this.onError?.(res.status, parsedBody);
       throw new LiteGenAPIError(res.status, detail);
     }
+    return res;
+  }
+
+  /** @internal */
+  async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const res = await this.fetchOk(method, path, body, signal);
     // 204 No Content and similar empty responses — return undefined cast to T.
     if (res.status === 204 || res.headers.get("content-length") === "0") {
       return undefined as unknown as T;
     }
     return (await res.json()) as T;
+  }
+
+  /**
+   * Like {@link request} but returns the response body as a {@link Blob} —
+   * for non-JSON downloads such as CSV export. Reuses the same auth +
+   * active-tenant headers, so the download is scoped to the caller's active
+   * org/app rather than the server-side first-org fallback.
+   * @internal
+   */
+  async requestBlob(
+    method: string,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<Blob> {
+    const res = await this.fetchOk(method, path, undefined, signal);
+    return await res.blob();
   }
 }
 
@@ -518,25 +595,49 @@ class StatsNamespace {
   }
 }
 
+/** Append the shared request-log filters (model/provider/status/from/to) to a query string. */
+function applyLogFilters(params: URLSearchParams, opts: ExportLogsOptions): void {
+  if (opts.model) params.set("model", opts.model);
+  if (opts.provider) params.set("provider", opts.provider);
+  if (opts.status) params.set("status", opts.status);
+  if (opts.from) params.set("from", opts.from);
+  if (opts.to) params.set("to", opts.to);
+}
+
+/** Append the shared audit-log filters (actor_key_id/action/from/to) to a query string. */
+function applyAuditFilters(params: URLSearchParams, opts: ExportAuditLogOptions): void {
+  if (opts.actor_key_id) params.set("actor_key_id", opts.actor_key_id);
+  if (opts.action) params.set("action", opts.action);
+  if (opts.from) params.set("from", opts.from);
+  if (opts.to) params.set("to", opts.to);
+}
+
 class LogsNamespace {
   constructor(private readonly client: LiteGenClient) {}
   list(
     opts: GetLogsOptions = {},
     signal?: AbortSignal,
   ): Promise<PaginatedResponse<RequestLog>> {
-    const { page = 1, per_page = 50, model, provider, status, from, to } = opts;
+    const { page = 1, per_page = 50 } = opts;
     const params = new URLSearchParams({ page: String(page), per_page: String(per_page) });
-    if (model) params.set("model", model);
-    if (provider) params.set("provider", provider);
-    if (status) params.set("status", status);
-    if (from) params.set("from", from);
-    if (to) params.set("to", to);
+    applyLogFilters(params, opts);
     return this.client.request(
       "GET",
       `/v1/logs?${params.toString()}`,
       undefined,
       signal,
     );
+  }
+  /**
+   * Download the request logs as CSV for the given filters. Hits the same
+   * `/v1/logs` endpoint with `format=csv` and returns the body as a {@link Blob}.
+   * Reuses the client's auth + active-tenant headers, so the export is scoped
+   * to the caller's active org/app (not the server-side first-org fallback).
+   */
+  exportCsv(opts: ExportLogsOptions = {}, signal?: AbortSignal): Promise<Blob> {
+    const params = new URLSearchParams({ format: "csv" });
+    applyLogFilters(params, opts);
+    return this.client.requestBlob("GET", `/v1/logs?${params.toString()}`, signal);
   }
   getArtifact(id: string, signal?: AbortSignal): Promise<RequestArtifact> {
     return this.client.request(
@@ -716,18 +817,26 @@ class AuditNamespace {
   constructor(private readonly client: LiteGenClient) {}
 
   list(opts: ListAuditLogOptions = {}, signal?: AbortSignal): Promise<PaginatedResponse<AuditLogEntry>> {
-    const { page = 1, per_page = 50, actor_key_id, action, from, to } = opts;
+    const { page = 1, per_page = 50 } = opts;
     const params = new URLSearchParams({ page: String(page), per_page: String(per_page) });
-    if (actor_key_id) params.set("actor_key_id", actor_key_id);
-    if (action) params.set("action", action);
-    if (from) params.set("from", from);
-    if (to) params.set("to", to);
+    applyAuditFilters(params, opts);
     return this.client.request(
       "GET",
       `/v1/audit?${params.toString()}`,
       undefined,
       signal,
     );
+  }
+  /**
+   * Download the audit log as CSV for the given filters. Hits the same
+   * `/v1/audit` endpoint with `format=csv` and returns the body as a {@link Blob}.
+   * Reuses the client's auth + active-tenant headers, so the export is scoped
+   * to the caller's active org/app (not the server-side first-org fallback).
+   */
+  exportCsv(opts: ExportAuditLogOptions = {}, signal?: AbortSignal): Promise<Blob> {
+    const params = new URLSearchParams({ format: "csv" });
+    applyAuditFilters(params, opts);
+    return this.client.requestBlob("GET", `/v1/audit?${params.toString()}`, signal);
   }
 }
 

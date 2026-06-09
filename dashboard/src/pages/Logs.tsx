@@ -5,19 +5,7 @@ import type { RequestLog, ModelInfo } from '@litegen/sdk';
 import type { PaginatedResponse } from '@litegen/sdk';
 import TracePanel from '../components/TracePanel';
 
-const API_BASE = __LITEGEN_API_BASE__;
-
-async function exportCsv(path: string, filename: string) {
-  const apiKey = localStorage.getItem('litegen_api_key') ?? '';
-  const authHeaders: Record<string, string> = apiKey
-    ? { Authorization: `Bearer ${apiKey}` }
-    : {};
-  const res = await fetch(`${API_BASE}${path}&format=csv`, {
-    headers: authHeaders,
-    credentials: 'include',
-  });
-  if (!res.ok) return;
-  const blob = await res.blob();
+function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -89,21 +77,20 @@ export default function Logs() {
     setSearchParams({});
   };
 
-  const handleExportCsv = () => {
-    const params = new URLSearchParams();
-    const model = searchParams.get('model');
-    const provider = searchParams.get('provider');
-    const status = searchParams.get('status');
-    const from = searchParams.get('from');
-    const to = searchParams.get('to');
-    if (model) params.set('model', model);
-    if (provider) params.set('provider', provider);
-    if (status) params.set('status', status);
-    if (from) params.set('from', from);
-    if (to) params.set('to', to);
-    const qs = params.toString();
+  const handleExportCsv = async () => {
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    exportCsv(`/v1/logs?${qs}`, `logs-${today}.csv`);
+    try {
+      const blob = await client.logs.exportCsv({
+        model: searchParams.get('model') || undefined,
+        provider: searchParams.get('provider') || undefined,
+        status: searchParams.get('status') || undefined,
+        from: searchParams.get('from') || undefined,
+        to: searchParams.get('to') || undefined,
+      });
+      downloadBlob(blob, `logs-${today}.csv`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'CSV export failed');
+    }
   };
 
   if (error) return <div className="alert alert-error">{error}</div>;
