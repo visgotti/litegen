@@ -3,20 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { client } from '../sdk-client';
 import type { AuditLogEntry } from '@litegen/sdk';
 
-const API_BASE = __LITEGEN_API_BASE__;
-
-async function exportCsv(path: string, filename: string) {
-  const apiKey = localStorage.getItem('litegen_api_key') ?? '';
-  const authHeaders: Record<string, string> = apiKey
-    ? { Authorization: `Bearer ${apiKey}` }
-    : {};
-  const sep = path.includes('?') ? '&' : '?';
-  const res = await fetch(`${API_BASE}${path}${sep}format=csv`, {
-    headers: authHeaders,
-    credentials: 'include',
-  });
-  if (!res.ok) return;
-  const blob = await res.blob();
+function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -107,15 +94,19 @@ export default function Audit() {
     return s.length > len ? s.slice(0, len) + '…' : s;
   };
 
-  const handleExportCsv = () => {
-    const params = new URLSearchParams();
-    if (actorParam) params.set('actor_key_id', actorParam);
-    if (actionParam) params.set('action', actionParam);
-    if (fromParam) params.set('from', fromParam);
-    if (toParam) params.set('to', toParam);
-    const qs = params.toString();
+  const handleExportCsv = async () => {
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    exportCsv(`/v1/audit${qs ? '?' + qs : ''}`, `audit-${today}.csv`);
+    try {
+      const blob = await client.audit.exportCsv({
+        actor_key_id: actorParam || undefined,
+        action: actionParam || undefined,
+        from: fromParam || undefined,
+        to: toParam || undefined,
+      });
+      downloadBlob(blob, `audit-${today}.csv`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'CSV export failed');
+    }
   };
 
   return (

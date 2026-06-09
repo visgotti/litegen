@@ -12,7 +12,9 @@ export {
   type PatchKeyBody,
   type CreateKeyBody,
   type ListAuditLogOptions,
+  type ExportAuditLogOptions,
   type GetLogsOptions,
+  type ExportLogsOptions,
   type ListWebhookDeliveriesOptions,
   type AuthConfigResponse,
 } from "./client";
