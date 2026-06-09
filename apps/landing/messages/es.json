@@ -9,12 +9,14 @@
     "providers": "Proveedores",
     "quickstart": "Inicio rápido",
     "reference": "Referencia",
+    "dashboard": "Panel",
     "github": "GitHub"
   },
   "hero": {
     "badge": "Código abierto",
     "title": "Una API para todos los modelos de imagen y vídeo con IA",
     "subtitle": "LiteGen es el proxy universal para la generación de imágenes y vídeo con IA. Como LiteLLM, pero para multimedia: enruta entre todos los proveedores con failover automático, balanceo de carga, caché y seguimiento de costes.",
+    "ctaApp": "Panel",
     "ctaPrimary": "Empezar",
     "ctaSecondary": "Ver en GitHub",
     "codeCaption": "Compatible con OpenAI: apunta tu cliente actual a LiteGen."

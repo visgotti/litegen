@@ -6,6 +6,8 @@
 export const siteConfig = {
   name: 'LiteGen',
   url: process.env.NEXT_PUBLIC_SITE_URL ?? 'https://litegen.dev',
+  /** Hosted dashboard / app (OAuth sign-in). The "Dashboard" CTAs point here. */
+  appUrl: 'https://app.litegen.ai',
   githubUrl: 'https://github.com/visgotti/litegen',
   docsUrl: 'https://github.com/visgotti/litegen#readme',
   licenseUrl: 'https://github.com/visgotti/litegen/blob/main/LICENSE',
