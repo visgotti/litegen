@@ -142,7 +142,14 @@ impl ProviderCredentials {
     /// Build from a decrypted stored credential JSON, e.g. `{"api_key":"sk-…"}`
     /// or `{"key_id":"…","key_secret":"…","region":"…"}`. Recognized keys map to
     /// their fields; any other string-valued key lands in `extra` (non-string
-    /// values are ignored). `api_keys` is not parsed here (single-key BYO).
+    /// values are ignored).
+    ///
+    /// `api_keys` enables weighted multi-key BYO load balancing. It accepts
+    /// either a structured array (`[{"key":"sk-1","weight":3,"label":"x"}, …]`,
+    /// missing `weight` defaults to 1) or the env-style string form
+    /// (`"sk-1:3,sk-2"`). Entries with an empty key are dropped, since an empty
+    /// bearer token is never valid. A coexisting single `api_key` is preserved
+    /// as a fallback for providers that don't build a pool.
     pub fn from_json(v: &serde_json::Value) -> Self {
         let obj = v.as_object();
         let s = |k: &str| {
@@ -150,6 +157,19 @@ impl ProviderCredentials {
                 .and_then(|x| x.as_str())
                 .map(|x| x.to_string())
         };
+        let api_keys = match obj.and_then(|o| o.get("api_keys")) {
+            Some(serde_json::Value::Array(_)) => {
+                serde_json::from_value::<Vec<crate::types::ApiKeyEntry>>(
+                    obj.and_then(|o| o.get("api_keys")).cloned().unwrap_or_default(),
+                )
+                .unwrap_or_default()
+            }
+            Some(serde_json::Value::String(raw)) => crate::providers::parse_api_keys(raw),
+            _ => Vec::new(),
+        }
+        .into_iter()
+        .filter(|e| !e.key.is_empty())
+        .collect();
         let mut extra = HashMap::new();
         if let Some(o) = obj {
             for (k, val) in o {
@@ -164,7 +184,7 @@ impl ProviderCredentials {
         }
         ProviderCredentials {
             api_key: s("api_key"),
-            api_keys: Vec::new(),
+            api_keys,
             key_id: s("key_id"),
             key_secret: s("key_secret"),
             region: s("region"),
@@ -332,5 +352,64 @@ mod tests {
         assert_eq!(c.api_key.as_deref(), Some("sk-y"));
         assert_eq!(c.extra.get("group_id").map(String::as_str), Some("g-1"));
         assert!(!c.extra.contains_key("ignored_num"));
+
+        // No api_keys present → empty pool entries.
+        let c = ProviderCredentials::from_json(&json!({"api_key": "sk-z"}));
+        assert!(c.api_keys.is_empty());
+    }
+
+    #[test]
+    fn from_json_parses_api_keys_array() {
+        use serde_json::json;
+
+        // Structured array: weight + label honored, missing weight defaults to 1.
+        let c = ProviderCredentials::from_json(&json!({
+            "api_keys": [
+                {"key": "sk-1", "weight": 3, "label": "primary"},
+                {"key": "sk-2"}
+            ]
+        }));
+        assert_eq!(c.api_keys.len(), 2);
+        assert_eq!(c.api_keys[0].key, "sk-1");
+        assert_eq!(c.api_keys[0].weight, 3);
+        assert_eq!(c.api_keys[0].label.as_deref(), Some("primary"));
+        assert_eq!(c.api_keys[1].key, "sk-2");
+        assert_eq!(c.api_keys[1].weight, 1); // default
+        assert!(c.api_keys[1].label.is_none());
+
+        // Both a single api_key and a weighted pool may coexist.
+        let c = ProviderCredentials::from_json(&json!({
+            "api_key": "sk-fallback",
+            "api_keys": [{"key": "sk-a", "weight": 2}]
+        }));
+        assert_eq!(c.api_key.as_deref(), Some("sk-fallback"));
+        assert_eq!(c.api_keys.len(), 1);
+        assert_eq!(c.api_keys[0].weight, 2);
+
+        // Entries with an empty key are dropped (an empty bearer token is never valid).
+        let c = ProviderCredentials::from_json(&json!({
+            "api_keys": [{"key": ""}, {"key": "sk-real"}]
+        }));
+        assert_eq!(c.api_keys.len(), 1);
+        assert_eq!(c.api_keys[0].key, "sk-real");
+
+        // A malformed (non-array, non-string) api_keys value yields no entries.
+        let c = ProviderCredentials::from_json(&json!({"api_keys": 5}));
+        assert!(c.api_keys.is_empty());
+    }
+
+    #[test]
+    fn from_json_parses_api_keys_env_string() {
+        use serde_json::json;
+
+        // The env-style "key:weight,key" string form is also accepted.
+        let c = ProviderCredentials::from_json(&json!({
+            "api_keys": "sk-1:3,sk-2"
+        }));
+        assert_eq!(c.api_keys.len(), 2);
+        assert_eq!(c.api_keys[0].key, "sk-1");
+        assert_eq!(c.api_keys[0].weight, 3);
+        assert_eq!(c.api_keys[1].key, "sk-2");
+        assert_eq!(c.api_keys[1].weight, 1);
     }
 }
