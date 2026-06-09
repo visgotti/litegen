@@ -1,7 +1,18 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { client } from '../sdk-client';
-import { LiteGenAPIError } from '@litegen/sdk';
+import { client, API_BASE } from '../sdk-client';
+import { LiteGenAPIError, type AuthConfigResponse } from '@litegen/sdk';
+
+function oauthAccept(provider: 'github' | 'google', token: string) {
+  window.location.href =
+    `${API_BASE}/v1/auth/oauth/${provider}/start?invite=${encodeURIComponent(token)}&next=${encodeURIComponent('/')}`;
+}
+
+const INVITE_ERROR_MESSAGES: Record<string, string> = {
+  email_mismatch: "That account’s email does not match this invitation. Sign in with the invited email.",
+  invitation_invalid: 'This invitation is no longer valid (already used or expired).',
+  account_inactive: 'This account is inactive. Contact an administrator.',
+};
 
 interface InvitationView {
   email: string;
@@ -21,6 +32,21 @@ export default function AcceptInvite() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [authConfig, setAuthConfig] = useState<AuthConfigResponse | null>(null);
+  const inviteErrorCode = new URLSearchParams(window.location.search).get('invite_error') ?? '';
+
+  useEffect(() => {
+    let cancelled = false;
+    client.auth.config()
+      .then(cfg => { if (!cancelled) setAuthConfig(cfg); })
+      .catch(() => {
+        if (!cancelled) setAuthConfig({ password_enabled: true, providers_enabled: ['github', 'google'], signup_open: false });
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const providers = authConfig?.providers_enabled ?? ['github', 'google'];
+  const passwordEnabled = authConfig?.password_enabled ?? true;
 
   useEffect(() => {
     if (!token) {
@@ -95,7 +121,7 @@ export default function AcceptInvite() {
           Accept invitation
         </h2>
         <p style={{ margin: '0 0 24px', color: '#8b949e', fontSize: 13, textAlign: 'center' }}>
-          Set a password to complete your registration
+          {passwordEnabled ? 'Continue with a provider, or set a password' : 'Continue with your provider to join'}
         </p>
 
         {invitation && (
@@ -124,6 +150,29 @@ export default function AcceptInvite() {
           </div>
         )}
 
+        {inviteErrorCode && (
+          <div data-testid="invite-error" style={{ marginBottom: 16, padding: '10px 14px', background: '#3d1a1a', border: '1px solid #f85149', borderRadius: 6, color: '#f85149', fontSize: 13 }}>
+            {INVITE_ERROR_MESSAGES[inviteErrorCode] ?? 'Could not accept this invitation.'}
+          </div>
+        )}
+
+        {(providers.includes('google') || providers.includes('github')) && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: passwordEnabled ? 20 : 0 }}>
+            {providers.includes('google') && (
+              <button type="button" data-testid="accept-oauth-google" className="btn" onClick={() => oauthAccept('google', token!)}>
+                Continue with Google
+              </button>
+            )}
+            {providers.includes('github') && (
+              <button type="button" data-testid="accept-oauth-github" className="btn" onClick={() => oauthAccept('github', token!)}>
+                Continue with GitHub
+              </button>
+            )}
+          </div>
+        )}
+
+        {passwordEnabled && (
+          <>
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div>
             <label style={{ display: 'block', marginBottom: 6, color: '#8b949e', fontSize: 13 }}>
@@ -182,6 +231,8 @@ export default function AcceptInvite() {
             {loading ? 'Setting up account…' : 'Set password & join'}
           </button>
         </form>
+          </>
+        )}
       </div>
     </div>
   );
