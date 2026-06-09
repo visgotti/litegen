@@ -646,3 +646,44 @@ async fn delete_org_endpoint_requires_membership() {
         "non-member must be denied delete"
     );
 }
+
+#[test]
+fn derive_display_hint_covers_pools_and_singles() {
+    use super::derive_display_hint;
+
+    // Single bearer key → last 4 chars.
+    assert_eq!(
+        derive_display_hint(&json!({ "api_key": "sk-secret1234" })).as_deref(),
+        Some("…1234")
+    );
+
+    // Weighted key pool → first key's last 4 + a count of the rest.
+    assert_eq!(
+        derive_display_hint(&json!({ "api_keys": [
+            { "key": "sk-aaaa1111", "weight": 3 },
+            { "key": "sk-bbbb2222" }
+        ] }))
+        .as_deref(),
+        Some("…1111 (+1 more)")
+    );
+
+    // Signing credential pool → first key_id's last 4 + count.
+    assert_eq!(
+        derive_display_hint(&json!({ "credential_sets": [
+            { "key_id": "AKIAEXAMPLE9999", "key_secret": "x" },
+            { "key_id": "AKIAEXAMPLE8888", "key_secret": "y" }
+        ] }))
+        .as_deref(),
+        Some("…9999 (+1 more)")
+    );
+
+    // Single signing credential → key_id's last 4 (the secret is never shown).
+    assert_eq!(
+        derive_display_hint(&json!({ "key_id": "AKIAEXAMPLE4321", "key_secret": "top" })).as_deref(),
+        Some("…4321")
+    );
+
+    // Nothing usable → no hint.
+    assert_eq!(derive_display_hint(&json!({ "note": "n/a" })), None);
+    assert_eq!(derive_display_hint(&json!({ "api_keys": [] })), None);
+}

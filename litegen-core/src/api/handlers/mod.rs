@@ -675,6 +675,22 @@ fn extract_sizes(s: &crate::capabilities::ModelSchema) -> Vec<String> {
     }
 }
 
+// ─── Providers ────────────────────────────────────────────────────────────────
+
+/// GET /v1/providers — Catalog of supported providers and the credential fields
+/// each one needs. Drives the dashboard's dynamic credential form.
+#[utoipa::path(
+    get,
+    path = "/v1/providers",
+    responses(
+        (status = 200, description = "Provider catalog", body = [crate::types::ProviderCatalogEntry]),
+    ),
+    tag = "Providers"
+)]
+pub async fn list_providers() -> impl IntoResponse {
+    Json(crate::proxy::registry::provider_catalog())
+}
+
 // ─── Health ─────────────────────────────────────────────────────────────────
 
 /// GET /health — Health check for all providers.
@@ -1744,6 +1760,7 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
     let read_routes = axum::Router::new()
         .route("/v1/models", get(list_models))
         .route("/v1/models/{*id}", get(get_model_schema))
+        .route("/v1/providers", get(list_providers))
         .route("/health", get(health_check))
         .route("/v1/stats", get(get_stats))
         .route("/v1/logs", get(get_logs_filtered))

@@ -373,31 +373,84 @@ pub fn build_cost_estimate(
     }
 }
 
-// ─── API Key Pool (weighted round-robin) ────────────────────────────────────
+// ─── Weighted round-robin pools ─────────────────────────────────────────────
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+/// Process-global rotation cursors keyed by a fingerprint of a pool's entries.
+///
+/// The registry rebuilds a fresh provider instance — and therefore a fresh pool
+/// — on every per-app BYO request. A cursor owned by the instance would reset to
+/// 0 each time, so a weighted pool would always return its first key. Sharing
+/// the cursor process-wide (by credential fingerprint) lets rotation persist
+/// across those rebuilds. The credential *values* are still rebuilt per request,
+/// so editing a credential takes effect immediately; only the rotation index is
+/// shared. Stale entries for deleted credentials are harmless (just integers).
+static POOL_CURSORS: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<u64, Arc<AtomicUsize>>>> =
+    std::sync::OnceLock::new();
+
+fn shared_cursor(fingerprint: u64) -> Arc<AtomicUsize> {
+    let map = POOL_CURSORS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+    if let Some(c) = map.read().unwrap().get(&fingerprint) {
+        return Arc::clone(c);
+    }
+    Arc::clone(
+        map.write()
+            .unwrap()
+            .entry(fingerprint)
+            .or_insert_with(|| Arc::new(AtomicUsize::new(0))),
+    )
+}
+
+fn hash_with<F: FnOnce(&mut std::collections::hash_map::DefaultHasher)>(tag: &str, f: F) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    tag.hash(&mut h);
+    f(&mut h);
+    h.finish()
+}
 
 /// Weighted round-robin API key pool for distributing requests across
 /// multiple keys to avoid per-key rate limits.
 pub struct ApiKeyPool {
     entries: Vec<crate::types::ApiKeyEntry>,
     schedule: Vec<usize>,
-    cursor: std::sync::atomic::AtomicUsize,
+    cursor: Arc<AtomicUsize>,
 }
 
 impl ApiKeyPool {
+    /// Pool with a private cursor that starts at 0 — deterministic rotation,
+    /// used for direct/unit construction.
     pub fn new(entries: Vec<crate::types::ApiKeyEntry>) -> Self {
+        Self::build(entries, Arc::new(AtomicUsize::new(0)))
+    }
+
+    /// Pool whose rotation cursor is shared process-wide by credential
+    /// fingerprint, so rotation survives the per-request instance rebuilds the
+    /// registry performs for BYO credentials. Use this on the request path.
+    pub fn shared(entries: Vec<crate::types::ApiKeyEntry>) -> Self {
+        use std::hash::Hash;
+        let fp = hash_with("api_keys", |h| {
+            for e in &entries {
+                e.key.hash(h);
+                e.weight.hash(h);
+            }
+        });
+        let cursor = shared_cursor(fp);
+        Self::build(entries, cursor)
+    }
+
+    fn build(entries: Vec<crate::types::ApiKeyEntry>, cursor: Arc<AtomicUsize>) -> Self {
         assert!(!entries.is_empty(), "ApiKeyPool requires at least one key");
-        let schedule = Self::build_schedule(&entries);
-        Self {
-            entries,
-            schedule,
-            cursor: std::sync::atomic::AtomicUsize::new(0),
-        }
+        let schedule = build_weighted_schedule(entries.iter().map(|e| e.weight));
+        Self { entries, schedule, cursor }
     }
 
     /// Get the next API key using weighted round-robin.
     /// Thread-safe via atomic increment.
     pub fn next(&self) -> &str {
-        let pos = self.cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let pos = self.cursor.fetch_add(1, Ordering::Relaxed);
         let idx = self.schedule[pos % self.schedule.len()];
         &self.entries[idx].key
     }
@@ -405,15 +458,67 @@ impl ApiKeyPool {
     pub fn size(&self) -> usize {
         self.entries.len()
     }
+}
 
-    fn build_schedule(entries: &[crate::types::ApiKeyEntry]) -> Vec<usize> {
-        let mut schedule = Vec::new();
-        for (i, entry) in entries.iter().enumerate() {
-            for _ in 0..entry.weight.max(1) {
-                schedule.push(i);
-            }
+/// Build a weighted round-robin schedule: index `i` appears `weights[i].max(1)`
+/// times (so a weight of 0 still gets one slot — a key is never silently
+/// dropped). Shared by [`ApiKeyPool`] and [`CredentialPool`].
+fn build_weighted_schedule(weights: impl Iterator<Item = u32>) -> Vec<usize> {
+    let mut schedule = Vec::new();
+    for (i, w) in weights.enumerate() {
+        for _ in 0..w.max(1) {
+            schedule.push(i);
         }
-        schedule
+    }
+    schedule
+}
+
+/// Weighted round-robin pool over signing credential *sets* (the SigV4/TC3/JWT
+/// analogue of [`ApiKeyPool`]). Distributes requests across multiple
+/// `key_id`/`key_secret`(/`region`) accounts to spread per-account limits.
+pub struct CredentialPool {
+    entries: Vec<crate::types::CredentialEntry>,
+    schedule: Vec<usize>,
+    cursor: Arc<AtomicUsize>,
+}
+
+impl CredentialPool {
+    /// Pool with a private cursor that starts at 0 (deterministic).
+    pub fn new(entries: Vec<crate::types::CredentialEntry>) -> Self {
+        Self::build(entries, Arc::new(AtomicUsize::new(0)))
+    }
+
+    /// Pool whose rotation cursor is shared process-wide by credential
+    /// fingerprint — see [`ApiKeyPool::shared`].
+    pub fn shared(entries: Vec<crate::types::CredentialEntry>) -> Self {
+        use std::hash::Hash;
+        let fp = hash_with("credential_sets", |h| {
+            for e in &entries {
+                e.key_id.hash(h);
+                e.key_secret.hash(h);
+                e.region.hash(h);
+                e.weight.hash(h);
+            }
+        });
+        let cursor = shared_cursor(fp);
+        Self::build(entries, cursor)
+    }
+
+    fn build(entries: Vec<crate::types::CredentialEntry>, cursor: Arc<AtomicUsize>) -> Self {
+        assert!(!entries.is_empty(), "CredentialPool requires at least one credential");
+        let schedule = build_weighted_schedule(entries.iter().map(|e| e.weight));
+        Self { entries, schedule, cursor }
+    }
+
+    /// Get the next credential set using weighted round-robin. Thread-safe.
+    pub fn next(&self) -> &crate::types::CredentialEntry {
+        let pos = self.cursor.fetch_add(1, Ordering::Relaxed);
+        let idx = self.schedule[pos % self.schedule.len()];
+        &self.entries[idx]
+    }
+
+    pub fn size(&self) -> usize {
+        self.entries.len()
     }
 }
 

@@ -378,6 +378,98 @@ fn build_video_provider(
     }
 }
 
+/// Canonical list of providers with an image implementation. Keep in sync with
+/// [`build_image_provider`]'s match arms — the `provider_catalog_covers_registry`
+/// test asserts every name here actually builds.
+pub const IMAGE_PROVIDERS: &[&str] = &[
+    "openai", "stability", "replicate", "google", "fal", "runway", "luma", "bfl",
+    "ideogram", "recraft", "minimax", "hunyuan", "bedrock", "kling", "leonardo",
+    "bytedance", "mock",
+];
+
+/// Canonical list of providers with a video implementation. Mirrors
+/// [`build_video_provider`].
+pub const VIDEO_PROVIDERS: &[&str] = &[
+    "openai", "replicate", "google", "fal", "runway", "luma", "minimax", "vidu",
+    "hunyuan", "bedrock", "kling", "leonardo", "pixverse", "bytedance", "mock",
+];
+
+/// Build the provider catalog that drives the dashboard credential form. Each
+/// entry says which media a provider serves, which credential fields to collect,
+/// and which JSON array to submit them in — `api_keys` for bearer schemes,
+/// `credential_sets` for signing schemes (Bedrock/Hunyuan/Kling). The dashboard
+/// renders dynamic weighted rows generically from this, so it never drifts.
+pub fn provider_catalog() -> Vec<crate::types::ProviderCatalogEntry> {
+    use crate::types::{CredentialFieldSpec, ProviderCatalogEntry};
+
+    // Union of image+video names, de-duplicated and stably ordered.
+    let mut names: Vec<&str> = Vec::new();
+    for n in IMAGE_PROVIDERS.iter().chain(VIDEO_PROVIDERS.iter()) {
+        if !names.contains(n) {
+            names.push(n);
+        }
+    }
+    names.sort_unstable();
+
+    let field = |key: &str, label: &str, secret: bool, optional: bool| CredentialFieldSpec {
+        key: key.to_string(),
+        label: label.to_string(),
+        secret,
+        optional,
+    };
+
+    names
+        .into_iter()
+        .map(|name| {
+            let mut modalities = Vec::new();
+            if IMAGE_PROVIDERS.contains(&name) {
+                modalities.push("image".to_string());
+            }
+            if VIDEO_PROVIDERS.contains(&name) {
+                modalities.push("video".to_string());
+            }
+            // Only the three signing providers need a credential set; everything
+            // else is a single bearer api_key.
+            let (auth_scheme, pool_field, fields) = match name {
+                "bedrock" => (
+                    "aws_sigv4",
+                    "credential_sets",
+                    vec![
+                        field("key_id", "Access key ID", false, false),
+                        field("key_secret", "Secret access key", true, false),
+                        field("region", "Region", false, true),
+                    ],
+                ),
+                "hunyuan" => (
+                    "tencent_tc3",
+                    "credential_sets",
+                    vec![
+                        field("key_id", "Secret ID", false, false),
+                        field("key_secret", "Secret key", true, false),
+                        field("region", "Region", false, true),
+                    ],
+                ),
+                "kling" => (
+                    "kling_jwt",
+                    "credential_sets",
+                    vec![
+                        field("key_id", "Access key", false, false),
+                        field("key_secret", "Secret key", true, false),
+                    ],
+                ),
+                _ => ("api_key", "api_keys", vec![field("key", "API key", true, false)]),
+            };
+            ProviderCatalogEntry {
+                name: name.to_string(),
+                modalities,
+                auth_scheme: auth_scheme.to_string(),
+                pool_field: pool_field.to_string(),
+                fields,
+            }
+        })
+        .collect()
+}
+
 fn build_instance_config(env_config: &ProviderEnvConfig) -> ProviderInstanceConfig {
     let api_key = env_config.api_key.clone().unwrap_or_default();
     let api_keys = env_config
@@ -399,6 +491,8 @@ fn build_instance_config(env_config: &ProviderEnvConfig) -> ProviderInstanceConf
     let credentials = crate::providers::ProviderCredentials {
         api_key: if api_key.is_empty() { None } else { Some(api_key.clone()) },
         api_keys: api_keys.clone(),
+        // Signing credential pools arrive via per-app BYO credentials, not env.
+        credential_sets: Vec::new(),
         key_id: env_config.key_id.clone().filter(|s| !s.is_empty()),
         key_secret: env_config.key_secret.clone().filter(|s| !s.is_empty()),
         region: env_config.region.clone().filter(|s| !s.is_empty()),
@@ -600,5 +694,75 @@ mod tests {
             .await
             .expect("stored-JSON multi-key creds build a configured provider");
         assert!(prov.is_configured());
+    }
+
+    /// The signing-scheme analogue: a weighted `credential_sets` pool from stored
+    /// JSON → `from_json` → registry → a configured Bedrock (SigV4) provider,
+    /// with no single key_id/key_secret present.
+    #[tokio::test]
+    async fn byo_signing_credential_pool_builds_configured_provider() {
+        let creds = ProviderCredentials::from_json(&serde_json::json!({
+            "credential_sets": [
+                {"key_id": "AKIA1", "key_secret": "s1", "region": "us-east-1", "weight": 2},
+                {"key_id": "AKIA2", "key_secret": "s2", "region": "eu-west-1"}
+            ]
+        }));
+        assert_eq!(creds.credential_sets.len(), 2);
+        assert!(creds.key_id.is_none(), "pool-only: no single credential");
+
+        let reg = ProviderRegistry::new();
+        let prov = reg
+            .image_provider_for_request("bedrock", Some(creds))
+            .await
+            .expect("stored-JSON credential_sets build a configured signing provider");
+        assert!(prov.is_configured(), "a credential pool alone configures the signing provider");
+    }
+
+    /// The catalog must cover exactly the providers the registry can build, and
+    /// describe each with at least one credential field + a valid pool field.
+    /// This ties the IMAGE_PROVIDERS/VIDEO_PROVIDERS lists to the build matches.
+    #[test]
+    fn provider_catalog_covers_registry() {
+        let default = ProviderInstanceConfig::default();
+
+        for entry in provider_catalog() {
+            let builds = build_image_provider(&entry.name, &default).is_some()
+                || build_video_provider(&entry.name, &default).is_some();
+            assert!(builds, "catalog provider '{}' does not build in the registry", entry.name);
+            assert!(!entry.fields.is_empty(), "{} exposes no credential fields", entry.name);
+            assert!(
+                entry.pool_field == "api_keys" || entry.pool_field == "credential_sets",
+                "{} has an unexpected pool_field {}",
+                entry.name,
+                entry.pool_field
+            );
+        }
+
+        // Every registered provider name appears in the catalog (no drift).
+        let catalog: std::collections::BTreeSet<String> =
+            provider_catalog().into_iter().map(|e| e.name).collect();
+        for name in IMAGE_PROVIDERS.iter().chain(VIDEO_PROVIDERS.iter()) {
+            assert!(catalog.contains(*name), "registered provider '{name}' missing from catalog");
+        }
+
+        // Signing providers expose a credential set (key_id/key_secret), not an
+        // api_key; the region field is optional. Bearer providers expose `key`.
+        let bedrock = provider_catalog().into_iter().find(|e| e.name == "bedrock").unwrap();
+        assert_eq!(bedrock.pool_field, "credential_sets");
+        assert_eq!(bedrock.modalities, vec!["image".to_string(), "video".to_string()]);
+        assert!(bedrock.fields.iter().any(|f| f.key == "key_id"));
+        assert!(bedrock.fields.iter().any(|f| f.key == "region" && f.optional));
+
+        let openai = provider_catalog().into_iter().find(|e| e.name == "openai").unwrap();
+        assert_eq!(openai.pool_field, "api_keys");
+        assert_eq!(openai.fields.len(), 1);
+        assert_eq!(openai.fields[0].key, "key");
+        assert!(openai.fields[0].secret);
+
+        // Image-only and video-only vendors report a single modality.
+        let stability = provider_catalog().into_iter().find(|e| e.name == "stability").unwrap();
+        assert_eq!(stability.modalities, vec!["image".to_string()]);
+        let pixverse = provider_catalog().into_iter().find(|e| e.name == "pixverse").unwrap();
+        assert_eq!(pixverse.modalities, vec!["video".to_string()]);
     }
 }

@@ -7,7 +7,7 @@ use crate::capabilities::ModelSchema;
 use crate::proxy::materializer::{MaterializedRefForm, MaterializedRequest};
 use crate::providers::auth::{AuthSpec, ProviderCredentials};
 use crate::providers::{
-    BaseGenerationRequest, GenerationOutput, HealthCheckResult, ImageExtras, ImageProvider,
+    BaseGenerationRequest, CredentialPool, GenerationOutput, HealthCheckResult, ImageExtras, ImageProvider,
     ProviderError, ProviderInstanceConfig, build_cost_estimate,
 };
 use crate::types::*;
@@ -25,6 +25,7 @@ use crate::types::*;
 ///   {code, message, data:{task_id, task_status, task_result}})
 pub struct KlingImageProvider {
     config: Option<ProviderInstanceConfig>,
+    cred_pool: Option<CredentialPool>,
     auth: AuthSpec,
     client: Client,
 }
@@ -33,6 +34,7 @@ impl KlingImageProvider {
     pub fn new() -> Self {
         Self {
             config: None,
+            cred_pool: None,
             auth: AuthSpec::KlingJwt,
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(180))
@@ -49,10 +51,15 @@ impl KlingImageProvider {
     }
 
     fn creds(&self) -> Result<ProviderCredentials, ProviderError> {
-        self.config
+        let base = self
+            .config
             .as_ref()
             .map(|c| c.credentials.clone())
-            .ok_or_else(|| ProviderError::NotConfigured("kling".into()))
+            .ok_or_else(|| ProviderError::NotConfigured("kling".into()))?;
+        if let Some(pool) = &self.cred_pool {
+            return Ok(base.with_signing(pool.next()));
+        }
+        Ok(base)
     }
 
     fn resolve_model(model_id: &str) -> &str {
@@ -127,11 +134,16 @@ impl ImageProvider for KlingImageProvider {
     }
 
     fn configure(&mut self, config: ProviderInstanceConfig) {
+        if !config.credentials.credential_sets.is_empty() {
+            self.cred_pool = Some(CredentialPool::shared(config.credentials.credential_sets.clone()));
+        }
         self.config = Some(config);
     }
 
     fn is_configured(&self) -> bool {
-        self.config.as_ref().is_some_and(|c| self.auth.is_satisfied_by(&c.credentials))
+        self.config
+            .as_ref()
+            .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.cred_pool.is_some())
     }
 
     async fn generate(
