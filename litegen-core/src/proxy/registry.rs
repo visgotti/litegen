@@ -562,4 +562,43 @@ mod tests {
         assert!(reg.video_provider_for("pixverse").await.is_some());
         assert!(reg.image_provider_for("pixverse").await.is_none());
     }
+
+    /// BYO with a weighted multi-key pool and NO single api_key: the per-request
+    /// instance is configured purely from the pool, proving with_credentials →
+    /// configure → ApiKeyPool flows end to end.
+    #[tokio::test]
+    async fn image_provider_for_request_byo_weighted_pool() {
+        let reg = ProviderRegistry::new();
+        let app = ProviderCredentials {
+            api_key: None,
+            api_keys: vec![
+                crate::types::ApiKeyEntry { key: "sk-1".into(), weight: 3, label: None },
+                crate::types::ApiKeyEntry { key: "sk-2".into(), weight: 1, label: None },
+            ],
+            ..Default::default()
+        };
+        let prov = reg
+            .image_provider_for_request("openai", Some(app))
+            .await
+            .expect("BYO builds an instance from a key pool alone");
+        assert!(prov.is_configured(), "a multi-key pool alone configures the provider");
+    }
+
+    /// The full stored-credential chain: decrypted JSON (as persisted in
+    /// `provider_credentials`) → `from_json` → registry → a configured, pooled
+    /// provider. This is the path a multi-tenant BYO customer exercises.
+    #[tokio::test]
+    async fn byo_from_stored_json_builds_pooled_provider() {
+        let creds = ProviderCredentials::from_json(&serde_json::json!({
+            "api_keys": [{"key": "sk-1", "weight": 2}, {"key": "sk-2"}]
+        }));
+        assert_eq!(creds.api_keys.len(), 2, "stored JSON yields a two-key pool");
+
+        let reg = ProviderRegistry::new();
+        let prov = reg
+            .image_provider_for_request("openai", Some(creds))
+            .await
+            .expect("stored-JSON multi-key creds build a configured provider");
+        assert!(prov.is_configured());
+    }
 }

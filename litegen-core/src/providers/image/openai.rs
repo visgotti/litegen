@@ -522,4 +522,64 @@ mod tests {
         assert_eq!(body["n"], 1);
         assert_eq!(body["response_format"], "b64_json");
     }
+
+    // ─── Key-pool wiring (configure → api_key) ──────────────────────────
+    // These characterize the already-shipped multi-key path end to end within
+    // a real provider: configure() must build the pool, is_configured() must
+    // honor a pool-only setup, and api_key() must draw from the pool.
+
+    fn cfg_with_keys(keys: Vec<crate::types::ApiKeyEntry>) -> ProviderInstanceConfig {
+        ProviderInstanceConfig {
+            credentials: Default::default(),
+            api_key: String::new(),
+            api_keys: keys,
+            api_base: None,
+            model_mapping: Default::default(),
+            extra_headers: Default::default(),
+            options: None,
+        }
+    }
+
+    fn key(k: &str, weight: u32) -> crate::types::ApiKeyEntry {
+        crate::types::ApiKeyEntry { key: k.to_string(), weight, label: None }
+    }
+
+    #[test]
+    fn configure_with_pool_cycles_keys() {
+        let mut p = OpenAiProvider::new();
+        // No single api_key — only a pool.
+        p.configure(cfg_with_keys(vec![key("sk-a", 1), key("sk-b", 1)]));
+        assert!(p.is_configured(), "a key pool alone makes the provider configured");
+
+        let k1 = p.api_key().unwrap();
+        let k2 = p.api_key().unwrap();
+        let k3 = p.api_key().unwrap();
+        assert_ne!(k1, k2, "consecutive picks differ");
+        assert_eq!(k1, k3, "round-robin wraps back to the first key");
+    }
+
+    #[test]
+    fn configure_with_weighted_pool_respects_weights() {
+        let mut p = OpenAiProvider::new();
+        p.configure(cfg_with_keys(vec![key("sk-a", 3), key("sk-b", 1)]));
+
+        let mut a = 0;
+        let mut b = 0;
+        for _ in 0..8 {
+            match p.api_key().unwrap().as_str() {
+                "sk-a" => a += 1,
+                "sk-b" => b += 1,
+                other => panic!("unexpected key {other}"),
+            }
+        }
+        assert_eq!(a, 6, "weight 3 of 4 over 8 calls");
+        assert_eq!(b, 2, "weight 1 of 4 over 8 calls");
+    }
+
+    #[test]
+    fn configure_without_key_or_pool_is_not_configured() {
+        let mut p = OpenAiProvider::new();
+        p.configure(cfg_with_keys(vec![]));
+        assert!(!p.is_configured(), "no api_key and no pool → not configured");
+    }
 }
