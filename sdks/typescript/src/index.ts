@@ -17,6 +17,8 @@ export {
   type ExportLogsOptions,
   type ListWebhookDeliveriesOptions,
   type AuthConfigResponse,
+  type CredentialFieldSpec,
+  type ProviderCatalogEntry,
 } from "./client";
 export {
   LiteGenError,
