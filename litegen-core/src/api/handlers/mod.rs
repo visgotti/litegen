@@ -1732,7 +1732,13 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/videos/{id}", get(get_video_status))
         .layer(middleware::from_fn(|req: axum::extract::Request, next: middleware::Next| async {
             check_scope(Scope::Generate, req, next).await
-        }));
+        }))
+        // CSRF: no-ops for safe methods and Bearer/API-key auth; only enforces
+        // on mutating cookie-session requests. Same layer as auth_required_routes.
+        .layer(middleware::from_fn_with_state(
+            csrf_state.clone(),
+            csrf_middleware,
+        ));
 
     // Read routes — require Scope::Read
     let read_routes = axum::Router::new()
@@ -1747,7 +1753,13 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/generations/{id}", patch(cancel_generation))
         .layer(middleware::from_fn(|req: axum::extract::Request, next: middleware::Next| async {
             check_scope(Scope::Read, req, next).await
-        }));
+        }))
+        // CSRF: no-ops for safe methods and Bearer/API-key auth; only enforces
+        // on mutating cookie-session requests (e.g. PATCH cancel_generation).
+        .layer(middleware::from_fn_with_state(
+            csrf_state.clone(),
+            csrf_middleware,
+        ));
 
     // Admin routes — require Scope::Admin
     let admin_routes = axum::Router::new()
@@ -1763,7 +1775,14 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/audit", get(list_audit))
         .layer(middleware::from_fn(|req: axum::extract::Request, next: middleware::Next| async {
             check_scope(Scope::Admin, req, next).await
-        }));
+        }))
+        // CSRF: no-ops for safe methods and Bearer/API-key auth; only enforces
+        // on mutating cookie-session requests (POST/DELETE/PATCH /v1/keys,
+        // DELETE /v1/cache, etc.). Same layer as auth_required_routes.
+        .layer(middleware::from_fn_with_state(
+            csrf_state.clone(),
+            csrf_middleware,
+        ));
 
     // Auth-required routes (auth middleware inserts KeyContext)
     let auth_required_routes = axum::Router::new()
