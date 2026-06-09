@@ -56,7 +56,7 @@ join the org they were invited to.
 ### Flow
 
 ```
-AcceptInvite page (/accept/{token})
+AcceptInvite page (/invite/{token})
   └─ "Continue with Google"  →  GET /v1/auth/oauth/google/start?invite={token}&next=/
         start: sets litegen_oauth_{state,provider,next} (existing) + litegen_oauth_invite={token} (new)
         302 → Google
@@ -80,7 +80,7 @@ AcceptInvite page (/accept/{token})
   `litegen_oauth_invite`. If **absent** → existing `resolve_or_create_user` path,
   unchanged. If **present** → new `apply_invitation_oauth(...)` branch:
   1. Load invitation by token. Not found / `used_at` set / expired → **redirect
-     302** to the accept page with an error param (see below); clear invite +
+     302** to the AcceptInvite page (/invite/{token}) with an error param (see below); clear invite +
      state cookies.
   2. `invitation.email.to_lowercase() != email` → **redirect 302** to the accept
      page with `?invite_error=email_mismatch`; clear cookies. **Does not** consume
@@ -114,7 +114,7 @@ AcceptInvite page (/accept/{token})
 - Keep the password form, shown only when password auth is enabled (read the same
   `AuthConfigResponse` the Login/Signup pages use; if password is disabled, show
   OAuth only).
-- On an invite error the callback redirects to `/accept/{token}?invite_error=<code>`
+- On an invite error the callback redirects to `/invite/{token}?invite_error=<code>`
   (`email_mismatch` | `invitation_invalid`). The page reads the param and shows a
   friendly message (e.g. "This invitation is for <email> — sign in with that
   account"), rather than the raw-JSON page the existing OAuth error paths return.
