@@ -84,6 +84,26 @@ fn clear_oauth_next_cookie() -> axum::http::HeaderValue {
     )
 }
 
+/// Build a `Set-Cookie` header value storing the pending invitation token.
+fn make_oauth_invite_cookie(token: &str) -> axum::http::HeaderValue {
+    let secure = std::env::var("LITEGEN__COOKIE_INSECURE_DEV").as_deref() != Ok("true");
+    let secure_str = if secure { "; Secure" } else { "" };
+    let val = format!(
+        "litegen_oauth_invite={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600{}",
+        urlencoding::encode(token),
+        secure_str
+    );
+    axum::http::HeaderValue::from_str(&val)
+        .unwrap_or_else(|_| axum::http::HeaderValue::from_static(""))
+}
+
+/// Build a `Set-Cookie` header value that clears the `litegen_oauth_invite` cookie.
+fn clear_oauth_invite_cookie() -> axum::http::HeaderValue {
+    axum::http::HeaderValue::from_static(
+        "litegen_oauth_invite=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+    )
+}
+
 /// Build a `Set-Cookie` header value recording which provider (`github`/`google`)
 /// initiated the flow, so the unified `/auth/redirect` callback can dispatch.
 fn make_oauth_provider_cookie(provider: &str) -> axum::http::HeaderValue {
@@ -197,6 +217,8 @@ async fn finish_oauth_login(state: &Arc<AppState>, user_id: &str, headers: &Head
 pub struct StartParams {
     #[serde(default)]
     pub next: Option<String>,
+    #[serde(default)]
+    pub invite: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,6 +283,10 @@ pub async fn github_start(
     {
         resp.headers_mut()
             .append("set-cookie", make_oauth_next_cookie(next));
+    }
+    if let Some(invite) = params.invite.as_deref().filter(|t| !t.is_empty()) {
+        resp.headers_mut()
+            .append("set-cookie", make_oauth_invite_cookie(invite));
     }
     resp
 }
@@ -509,6 +535,10 @@ pub async fn google_start(
     {
         resp.headers_mut()
             .append("set-cookie", make_oauth_next_cookie(next));
+    }
+    if let Some(invite) = params.invite.as_deref().filter(|t| !t.is_empty()) {
+        resp.headers_mut()
+            .append("set-cookie", make_oauth_invite_cookie(invite));
     }
     resp
 }
@@ -1589,6 +1619,31 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["error"]["type"], "invalid_oauth_state");
         assert_eq!(body["error"]["code"], 400);
+    }
+
+    #[tokio::test]
+    async fn oauth_start_with_invite_sets_invite_cookie() {
+        let oauth = OAuthConfig {
+            google: Some(ProviderConfig { client_id: "g-id".into(), client_secret: "g-secret".into() }),
+            callback_base: Some("https://app.example.com".into()),
+            ..Default::default()
+        };
+        let state = build_state_with_oauth(oauth).await;
+        let app = build_google_router(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/auth/oauth/google/start?invite=invtok123&next=/")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let cookies: Vec<_> = resp.headers().get_all("set-cookie").iter()
+            .map(|v| v.to_str().unwrap_or("").to_string()).collect();
+        assert!(
+            cookies.iter().any(|c| c.starts_with("litegen_oauth_invite=invtok123")),
+            "start must set the invite cookie; got {:?}", cookies
+        );
     }
 
     #[tokio::test]
