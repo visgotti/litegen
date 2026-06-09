@@ -205,6 +205,32 @@ export interface ListWebhookDeliveriesOptions {
   per_page?: number;
 }
 
+/** One field the dashboard must collect for a provider credential, per pool entry. */
+export interface CredentialFieldSpec {
+  /** JSON key within each pool entry (e.g. "key", "key_id", "key_secret", "region"). */
+  key: string;
+  /** Human-readable label for the input. */
+  label: string;
+  /** Whether the value is secret and should be rendered masked. */
+  secret: boolean;
+  /** Whether the field may be left empty. */
+  optional?: boolean;
+}
+
+/** Describes a provider and how to render its credential form (from GET /v1/providers). */
+export interface ProviderCatalogEntry {
+  /** Provider id (e.g. "openai", "bedrock"). */
+  name: string;
+  /** Which media this provider serves — any of "image", "video". */
+  modalities: string[];
+  /** Coarse auth scheme: "api_key" | "aws_sigv4" | "tencent_tc3" | "kling_jwt". */
+  auth_scheme: string;
+  /** Which credentials array to submit: "api_keys" (bearer) or "credential_sets" (signing). */
+  pool_field: string;
+  /** Fields to collect per pool entry, besides the universal weight/label. */
+  fields: CredentialFieldSpec[];
+}
+
 // ─── Client options ──────────────────────────────────────────────────────────
 
 export type FetchLike = typeof fetch;
@@ -255,6 +281,7 @@ export class LiteGenClient {
   readonly images: ImagesNamespace;
   readonly videos: VideosNamespace;
   readonly models: ModelsNamespace;
+  readonly providers: ProvidersNamespace;
   readonly health: HealthNamespace;
   readonly stats: StatsNamespace;
   readonly logs: LogsNamespace;
@@ -282,6 +309,7 @@ export class LiteGenClient {
     this.images = new ImagesNamespace(this);
     this.videos = new VideosNamespace(this);
     this.models = new ModelsNamespace(this);
+    this.providers = new ProvidersNamespace(this);
     this.health = new HealthNamespace(this);
     this.stats = new StatsNamespace(this);
     this.logs = new LogsNamespace(this);
@@ -568,6 +596,15 @@ class ModelsNamespace {
   /** Alias kept for compatibility with older callers. */
   getSchema(id: string, signal?: AbortSignal): Promise<ModelSchema> {
     return this.get(id, signal);
+  }
+}
+
+class ProvidersNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+  /** Catalog of providers and the credential fields each one needs. Drives the
+   *  dashboard's dynamic credential form so it never hard-codes per-provider knowledge. */
+  list(signal?: AbortSignal): Promise<ProviderCatalogEntry[]> {
+    return this.client.request("GET", "/v1/providers", undefined, signal);
   }
 }
 
