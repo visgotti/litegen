@@ -1126,12 +1126,14 @@ impl DatabaseStore for SqliteDatabase {
         Ok(row.map(invitation_from_row))
     }
 
-    async fn mark_invitation_used(&self, token: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE invitations SET used_at = datetime('now') WHERE token = ?")
-            .bind(token)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+    async fn mark_invitation_used(&self, token: &str) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query(
+            "UPDATE invitations SET used_at = datetime('now') WHERE token = ? AND used_at IS NULL",
+        )
+        .bind(token)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     async fn delete_invitation(&self, id: &str) -> Result<(), sqlx::Error> {

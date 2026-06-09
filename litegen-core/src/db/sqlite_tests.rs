@@ -1121,4 +1121,24 @@ mod tests {
         assert_eq!(by_app.successful_requests, 0);
         assert_eq!(by_app.failed_requests, 0);
     }
+
+    #[tokio::test]
+    async fn mark_invitation_used_is_atomic_single_use() {
+        let db = in_memory_db().await;
+        let inv = Invitation {
+            id: format!("inv-{}", Uuid::new_v4()),
+            email: "alice@x.com".into(),
+            role: Role::Member,
+            token: "tok-atomic".into(),
+            invited_by: None,
+            org_id: crate::api::middleware::DEFAULT_ORG_ID.to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::days(7),
+            used_at: None,
+            created_at: chrono::Utc::now(),
+        };
+        db.create_invitation(&inv).await.unwrap();
+
+        assert!(db.mark_invitation_used("tok-atomic").await.unwrap(), "first consume must win");
+        assert!(!db.mark_invitation_used("tok-atomic").await.unwrap(), "second consume must lose (already used)");
+    }
 }
