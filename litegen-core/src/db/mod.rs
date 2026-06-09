@@ -2,6 +2,7 @@ mod postgres;
 pub mod sqlite;
 mod trait_def;
 #[cfg(test)] mod sqlite_tests;
+#[cfg(test)] mod postgres_tests;
 
 pub use postgres::PostgresDatabase;
 pub use sqlite::SqliteDatabase;
