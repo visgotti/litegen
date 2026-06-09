@@ -342,7 +342,38 @@ pub async fn accept_invitation(
     // simply gain membership in the invited org. Password hashing is deferred
     // to the new-user branch so an existing invitee doesn't pay the hash cost.
     let user = match state.db.get_user_by_email(&inv.email).await {
-        Ok(Some(existing)) => existing,
+        Ok(Some(existing)) => {
+            // SECURITY: a valid invitation token is NOT proof of control over a
+            // pre-existing account. The invited email is chosen freely by an org
+            // admin, so without authenticating the caller as the existing user we
+            // would let anyone holding the token mint a session AS that account
+            // (account takeover / privilege escalation). Require the existing
+            // account's password — the same check `login` performs.
+            match existing.password_hash.as_deref() {
+                Some(hash) => {
+                    if !crate::auth::password::verify_password(&password, hash).unwrap_or(false) {
+                        // Do NOT consume the invitation, create a session, or add
+                        // membership on a failed authentication.
+                        return err(
+                            StatusCode::UNAUTHORIZED,
+                            "invalid_credentials",
+                            "Incorrect password for the existing account associated with this invitation",
+                        );
+                    }
+                }
+                None => {
+                    // OAuth-only account (no password set): the password path
+                    // cannot authenticate them. They must accept while signed in
+                    // via their OAuth identity, not with a password.
+                    return err(
+                        StatusCode::UNAUTHORIZED,
+                        "password_login_unavailable",
+                        "This account has no password; sign in with your OAuth provider to accept this invitation",
+                    );
+                }
+            }
+            existing
+        }
         Ok(None) => {
             // Hash password only when a new account must be created.
             let hash = match crate::auth::password::hash_password(&password) {
@@ -960,6 +991,214 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Insert an existing user with a real argon2 password hash and return them.
+    async fn seed_existing_password_user(
+        db: &Arc<SqliteDatabase>,
+        email: &str,
+        plaintext_password: &str,
+        role: Role,
+    ) -> User {
+        let hash = crate::auth::password::hash_password(plaintext_password).expect("hash");
+        let user = User {
+            id: format!("u-{}", Uuid::new_v4()),
+            email: email.to_string(),
+            password_hash: Some(hash),
+            role,
+            oauth_github_id: None,
+            oauth_google_id: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            last_login_at: None,
+            is_active: true,
+        };
+        db.create_user(&user).await.expect("create existing user");
+        user
+    }
+
+    fn make_invitation(email: &str, token: &str, role: Role, org_id: &str) -> Invitation {
+        Invitation {
+            id: Uuid::new_v4().to_string(),
+            email: email.to_string(),
+            role,
+            token: token.to_string(),
+            invited_by: None,
+            org_id: org_id.to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::days(7),
+            used_at: None,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    /// SECURITY (account-takeover): accepting an invitation for an email that
+    /// already maps to an existing account must NOT mint a session for that
+    /// account when the supplied password is wrong. A valid invitation token is
+    /// not proof of control over a pre-existing account.
+    #[tokio::test]
+    async fn accept_invitation_existing_user_wrong_password_is_rejected() {
+        let db = build_db().await;
+        let org_id = crate::api::middleware::DEFAULT_ORG_ID.to_string();
+        // Victim account already exists with a known password.
+        let victim = seed_existing_password_user(
+            &db,
+            "victim@example.com",
+            "victim-real-password-9000",
+            Role::Owner,
+        )
+        .await;
+        // An org admin invites the victim's email into some org as a member.
+        let inv = make_invitation("victim@example.com", "takeover-token", Role::Member, &org_id);
+        db.create_invitation(&inv).await.unwrap();
+        let app = build_users_router(build_state(db.clone()).await);
+
+        // Attacker accepts with a WRONG password.
+        let body = serde_json::to_vec(&json!({ "password": "totally-wrong-password" })).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/invitations/takeover-token/accept")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        // Must be rejected with 401 — no session for the victim.
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "wrong password must be rejected, not silently logged in as the existing user"
+        );
+        // No session cookie must be issued.
+        assert!(
+            resp.headers().get("set-cookie").is_none(),
+            "no session/set-cookie may be issued on a failed existing-user accept"
+        );
+        // No membership may have been granted to the victim in the invited org.
+        let membership = db.get_membership(&org_id, &victim.id).await.unwrap();
+        assert!(
+            membership.is_none(),
+            "no membership may be added on a failed existing-user accept"
+        );
+        // Invitation must remain unused so it isn't burned by a failed attempt.
+        let inv_after = db.get_invitation("takeover-token").await.unwrap().unwrap();
+        assert!(
+            inv_after.used_at.is_none(),
+            "a rejected accept must not consume the invitation"
+        );
+    }
+
+    /// Regression: an existing user accepting with the CORRECT password succeeds —
+    /// a session is issued and the membership is added.
+    #[tokio::test]
+    async fn accept_invitation_existing_user_correct_password_succeeds() {
+        let db = build_db().await;
+        let org_id = crate::api::middleware::DEFAULT_ORG_ID.to_string();
+        let user = seed_existing_password_user(
+            &db,
+            "existing@example.com",
+            "existing-real-password-1",
+            Role::Admin,
+        )
+        .await;
+        let inv = make_invitation("existing@example.com", "good-token", Role::Member, &org_id);
+        db.create_invitation(&inv).await.unwrap();
+        let app = build_users_router(build_state(db.clone()).await);
+
+        let body = serde_json::to_vec(&json!({ "password": "existing-real-password-1" })).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/invitations/good-token/accept")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            resp.headers().get("set-cookie").is_some(),
+            "a correct-password accept must issue a session"
+        );
+        // Membership added in the invited org.
+        let membership = db.get_membership(&org_id, &user.id).await.unwrap();
+        assert!(membership.is_some(), "membership must be added on success");
+        // Invitation consumed.
+        let inv_after = db.get_invitation("good-token").await.unwrap().unwrap();
+        assert!(inv_after.used_at.is_some(), "successful accept consumes the invitation");
+    }
+
+    /// Regression: an OAuth-only existing user (no password_hash) cannot be
+    /// authenticated via the password path, so accept must be rejected.
+    #[tokio::test]
+    async fn accept_invitation_oauth_only_existing_user_is_rejected() {
+        let db = build_db().await;
+        let org_id = crate::api::middleware::DEFAULT_ORG_ID.to_string();
+        // OAuth-only user: password_hash = None.
+        let victim = User {
+            id: format!("u-{}", Uuid::new_v4()),
+            email: "oauth@example.com".to_string(),
+            password_hash: None,
+            role: Role::Owner,
+            oauth_github_id: None,
+            oauth_google_id: Some("google-123".to_string()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            last_login_at: None,
+            is_active: true,
+        };
+        db.create_user(&victim).await.unwrap();
+        let inv = make_invitation("oauth@example.com", "oauth-token", Role::Member, &org_id);
+        db.create_invitation(&inv).await.unwrap();
+        let app = build_users_router(build_state(db.clone()).await);
+
+        let body = serde_json::to_vec(&json!({ "password": "any-password-at-all-1" })).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/invitations/oauth-token/accept")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "OAuth-only users cannot be authenticated via the password path"
+        );
+        assert!(
+            resp.headers().get("set-cookie").is_none(),
+            "no session may be issued for an OAuth-only existing user"
+        );
+        let membership = db.get_membership(&org_id, &victim.id).await.unwrap();
+        assert!(membership.is_none(), "no membership added for rejected OAuth-only accept");
+    }
+
+    /// Regression: a brand-new email (no existing account) still creates the
+    /// account and issues a session.
+    #[tokio::test]
+    async fn accept_invitation_new_user_still_succeeds() {
+        let db = build_db().await;
+        let org_id = crate::api::middleware::DEFAULT_ORG_ID.to_string();
+        let inv = make_invitation("brand-new@example.com", "newuser-token", Role::Member, &org_id);
+        db.create_invitation(&inv).await.unwrap();
+        let app = build_users_router(build_state(db.clone()).await);
+
+        let body = serde_json::to_vec(&json!({ "password": "brand-new-password-123" })).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/invitations/newuser-token/accept")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().get("set-cookie").is_some(), "new user gets a session");
+        let created = db.get_user_by_email("brand-new@example.com").await.unwrap();
+        assert!(created.is_some(), "new account created");
+        let created = created.unwrap();
+        assert!(created.password_hash.is_some(), "new account has a password hash");
+        let membership = db.get_membership(&org_id, &created.id).await.unwrap();
+        assert!(membership.is_some(), "new user gains membership");
     }
 
     // ── PATCH /v1/users/{id} ──────────────────────────────────────────────────

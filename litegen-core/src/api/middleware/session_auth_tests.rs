@@ -446,4 +446,116 @@ mod tests {
             "App belonging to a different org must be 403"
         );
     }
+
+    // ─── CSRF protection on admin/state-changing routes (router assembly) ─────
+    //
+    // These tests drive the REAL `create_router` so they exercise the actual
+    // layer wiring on `generate_routes` / `read_routes` / `admin_routes`, not a
+    // synthetic `/test` route. The target is `DELETE /v1/cache` (Admin scope,
+    // no request body) — the simplest mutating admin route to drive.
+
+    /// RED → GREEN: a SESSION-authenticated (cookie) request to a mutating admin
+    /// route WITHOUT a CSRF token must be rejected with 403. Before the fix the
+    /// admin routes had no CSRF layer, so this mutation succeeded (200).
+    #[tokio::test]
+    async fn session_admin_mutation_without_csrf_is_rejected() {
+        let db = build_test_db().await;
+        // Owner so there is no doubt about scope/permission — cookie sessions
+        // are granted all scopes (incl. Admin) by auth_middleware regardless.
+        let (_user, sess) = seed_user_and_session(&db, Role::Owner).await;
+        let state = build_state_with_db(db).await;
+        let app = crate::api::handlers::create_router(state);
+
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/v1/cache")
+            .header("cookie", format!("litegen_session={}", sess.id))
+            // No X-CSRF-Token header — this is the cross-site forgery scenario.
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "Cookie session admin mutation without CSRF token must be 403"
+        );
+    }
+
+    /// Regression (a): the SAME cookie request WITH a valid CSRF token succeeds.
+    /// Proves legit dashboard mutations still work AND that the RED test above
+    /// was not failing on scope/auth (the session does carry Admin scope).
+    #[tokio::test]
+    async fn session_admin_mutation_with_valid_csrf_succeeds() {
+        let db = build_test_db().await;
+        let (_user, sess) = seed_user_and_session(&db, Role::Owner).await;
+        let state = build_state_with_db(db).await;
+        let app = crate::api::handlers::create_router(state);
+
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/v1/cache")
+            .header("cookie", format!("litegen_session={}", sess.id))
+            .header("x-csrf-token", &sess.csrf_token)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "Cookie session admin mutation WITH valid CSRF token must succeed"
+        );
+    }
+
+    /// Regression (b) — THE CRITICAL ONE: a Bearer (API-key) request to a
+    /// mutating admin route is NOT blocked by CSRF (no session cookie → no
+    /// session_id → csrf_middleware no-ops). Proves API-key clients are not
+    /// broken by adding the CSRF layer to the admin routes.
+    #[tokio::test]
+    async fn bearer_admin_mutation_not_blocked_by_csrf() {
+        let db = build_test_db().await;
+        let state = build_state_with_db(db).await;
+        let app = crate::api::handlers::create_router(state);
+
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/v1/cache")
+            // Master key → all scopes, no session cookie, no CSRF token.
+            .header("authorization", "Bearer master-key")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "Bearer/API-key admin mutation must NOT be blocked by CSRF"
+        );
+    }
+
+    /// Regression (c): a safe cookie GET (no CSRF token) still works — CSRF
+    /// middleware no-ops on safe methods (GET/HEAD/OPTIONS).
+    #[tokio::test]
+    async fn session_safe_get_without_csrf_succeeds() {
+        let db = build_test_db().await;
+        let (_user, sess) = seed_user_and_session(&db, Role::Owner).await;
+        let state = build_state_with_db(db).await;
+        let app = crate::api::handlers::create_router(state);
+
+        // GET /v1/keys is an Admin-scope read route; no CSRF token provided.
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/keys")
+            .header("cookie", format!("litegen_session={}", sess.id))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "Safe cookie GET without CSRF token must still succeed"
+        );
+    }
 }
