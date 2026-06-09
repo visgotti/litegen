@@ -7,7 +7,7 @@ use crate::capabilities::ModelSchema;
 use crate::proxy::materializer::{MaterializedRefForm, MaterializedRequest};
 use crate::providers::auth::{sigv4, AuthSpec, ProviderCredentials};
 use crate::providers::{
-    BaseGenerationRequest, HealthCheckResult, ProviderError, ProviderInstanceConfig, VideoExtras,
+    BaseGenerationRequest, CredentialPool, HealthCheckResult, ProviderError, ProviderInstanceConfig, VideoExtras,
     VideoGenerationHandle, VideoGenerationPollResult, VideoProvider, build_cost_estimate,
 };
 use crate::types::*;
@@ -28,6 +28,7 @@ use crate::types::*;
 ///   Verbatim: "For Amazon Nova Reel, this is \"amazon.nova-reel-v1:1\""
 pub struct BedrockVideoProvider {
     config: Option<ProviderInstanceConfig>,
+    cred_pool: Option<CredentialPool>,
     auth: AuthSpec,
     client: Client,
 }
@@ -36,6 +37,7 @@ impl BedrockVideoProvider {
     pub fn new() -> Self {
         Self {
             config: None,
+            cred_pool: None,
             auth: AuthSpec::AwsSigV4 { service: "bedrock".into(), default_region: "us-east-1".into() },
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
@@ -45,10 +47,15 @@ impl BedrockVideoProvider {
     }
 
     fn creds(&self) -> Result<ProviderCredentials, ProviderError> {
-        self.config
+        let base = self
+            .config
             .as_ref()
             .map(|c| c.credentials.clone())
-            .ok_or_else(|| ProviderError::NotConfigured("bedrock".into()))
+            .ok_or_else(|| ProviderError::NotConfigured("bedrock".into()))?;
+        if let Some(pool) = &self.cred_pool {
+            return Ok(base.with_signing(pool.next()));
+        }
+        Ok(base)
     }
 
     fn region(&self, creds: &ProviderCredentials) -> String {
@@ -94,11 +101,16 @@ impl VideoProvider for BedrockVideoProvider {
     }
 
     fn configure(&mut self, config: ProviderInstanceConfig) {
+        if !config.credentials.credential_sets.is_empty() {
+            self.cred_pool = Some(CredentialPool::shared(config.credentials.credential_sets.clone()));
+        }
         self.config = Some(config);
     }
 
     fn is_configured(&self) -> bool {
-        self.config.as_ref().is_some_and(|c| self.auth.is_satisfied_by(&c.credentials))
+        self.config
+            .as_ref()
+            .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.cred_pool.is_some())
     }
 
     async fn generate(

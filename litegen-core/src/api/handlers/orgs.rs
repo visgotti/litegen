@@ -896,13 +896,8 @@ pub async fn create_provider_credential(
         return err(StatusCode::BAD_REQUEST, "invalid_provider", "provider is required");
     }
 
-    // Derive a safe display hint (last 4 chars of api_key if present).
-    let display_hint = body
-        .credentials
-        .get("api_key")
-        .and_then(|v| v.as_str())
-        .filter(|s| s.len() >= 4)
-        .map(|s| format!("…{}", &s[s.len() - 4..]));
+    // Derive a safe, non-secret display hint that also reflects pool size.
+    let display_hint = derive_display_hint(&body.credentials);
 
     let plaintext = match serde_json::to_vec(&body.credentials) {
         Ok(v) => v,
@@ -927,6 +922,42 @@ pub async fn create_provider_credential(
         created_at: chrono::Utc::now(),
     };
     (StatusCode::OK, Json(info)).into_response()
+}
+
+/// Derive a safe, non-secret display hint from a credential blob. Shows the last
+/// four characters of the first key and, for pools, how many more there are —
+/// e.g. `…1234`, `…1234 (+2 more)`. Handles bearer (`api_key`/`api_keys`) and
+/// signing (`key_id`/`credential_sets`) shapes. Returns `None` when nothing
+/// suitable is present.
+fn derive_display_hint(creds: &serde_json::Value) -> Option<String> {
+    let last4 = |s: &str| (s.len() >= 4).then(|| format!("…{}", &s[s.len() - 4..]));
+    let with_count = |hint: String, n: usize| {
+        if n > 1 { format!("{hint} (+{} more)", n - 1) } else { hint }
+    };
+    let first_str = |arr: &[serde_json::Value], field: &str| -> Option<String> {
+        arr.iter()
+            .filter_map(|e| e.get(field).and_then(|v| v.as_str()))
+            .find(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+
+    // Weighted pools first (these are what the dashboard submits).
+    if let Some(arr) = creds.get("api_keys").and_then(|v| v.as_array()) {
+        if let Some(first) = first_str(arr, "key") {
+            return last4(&first).map(|h| with_count(h, arr.len()));
+        }
+    }
+    if let Some(arr) = creds.get("credential_sets").and_then(|v| v.as_array()) {
+        if let Some(first) = first_str(arr, "key_id") {
+            return last4(&first).map(|h| with_count(h, arr.len()));
+        }
+    }
+    // Single-credential fallbacks.
+    creds
+        .get("api_key")
+        .or_else(|| creds.get("key_id"))
+        .and_then(|v| v.as_str())
+        .and_then(last4)
 }
 
 // ─── DELETE /v1/apps/{app_id}/provider-credentials/{provider} ───────────────

@@ -95,10 +95,12 @@ impl AuthSpec {
     /// Whether the supplied credentials satisfy this scheme's requirements.
     pub fn is_satisfied_by(&self, c: &ProviderCredentials) -> bool {
         self.required_fields().iter().all(|f| match *f {
+            // A non-empty pool satisfies the scheme on its own: each pooled
+            // entry carries its own credential (and region, or a default).
             "api_key" => c.api_key.as_deref().is_some_and(|k| !k.is_empty()) || !c.api_keys.is_empty(),
-            "key_id" => c.key_id.as_deref().is_some_and(|k| !k.is_empty()),
-            "key_secret" => c.key_secret.as_deref().is_some_and(|k| !k.is_empty()),
-            "region" => c.region.as_deref().is_some_and(|k| !k.is_empty()),
+            "key_id" => c.key_id.as_deref().is_some_and(|k| !k.is_empty()) || !c.credential_sets.is_empty(),
+            "key_secret" => c.key_secret.as_deref().is_some_and(|k| !k.is_empty()) || !c.credential_sets.is_empty(),
+            "region" => c.region.as_deref().is_some_and(|k| !k.is_empty()) || !c.credential_sets.is_empty(),
             _ => false,
         })
     }
@@ -113,6 +115,8 @@ pub struct ProviderCredentials {
     pub api_key: Option<String>,
     /// Weighted multi-key pool entries (header schemes).
     pub api_keys: Vec<crate::types::ApiKeyEntry>,
+    /// Weighted multi-credential pool entries (signing schemes: SigV4/TC3/JWT).
+    pub credential_sets: Vec<crate::types::CredentialEntry>,
     /// Access key id (SigV4) / secret id (TC3) / access key (Kling).
     pub key_id: Option<String>,
     /// Secret access key (SigV4) / secret key (TC3, Kling).
@@ -128,6 +132,7 @@ impl ProviderCredentials {
     pub fn any_present(&self) -> bool {
         self.api_key.as_deref().is_some_and(|k| !k.is_empty())
             || !self.api_keys.is_empty()
+            || !self.credential_sets.is_empty()
             || self.key_id.as_deref().is_some_and(|k| !k.is_empty())
     }
 
@@ -139,17 +144,36 @@ impl ProviderCredentials {
         c
     }
 
+    /// Return a clone with the signing credential (`key_id`/`key_secret`, and
+    /// `region` when the entry carries one) overridden — used by signing
+    /// providers that pick a credential set per request from a [`CredentialPool`]
+    /// before signing. An entry without a region keeps the existing/default one.
+    pub fn with_signing(&self, entry: &crate::types::CredentialEntry) -> Self {
+        let mut c = self.clone();
+        c.key_id = Some(entry.key_id.clone());
+        c.key_secret = Some(entry.key_secret.clone());
+        if entry.region.is_some() {
+            c.region = entry.region.clone();
+        }
+        c
+    }
+
     /// Build from a decrypted stored credential JSON, e.g. `{"api_key":"sk-…"}`
     /// or `{"key_id":"…","key_secret":"…","region":"…"}`. Recognized keys map to
     /// their fields; any other string-valued key lands in `extra` (non-string
     /// values are ignored).
     ///
-    /// `api_keys` enables weighted multi-key BYO load balancing. It accepts
-    /// either a structured array (`[{"key":"sk-1","weight":3,"label":"x"}, …]`,
-    /// missing `weight` defaults to 1) or the env-style string form
-    /// (`"sk-1:3,sk-2"`). Entries with an empty key are dropped, since an empty
-    /// bearer token is never valid. A coexisting single `api_key` is preserved
-    /// as a fallback for providers that don't build a pool.
+    /// `api_keys` enables weighted multi-key BYO load balancing for bearer
+    /// schemes. It accepts either a structured array
+    /// (`[{"key":"sk-1","weight":3,"label":"x"}, …]`, missing `weight` defaults
+    /// to 1) or the env-style string form (`"sk-1:3,sk-2"`). Entries with an
+    /// empty key are dropped, since an empty bearer token is never valid. A
+    /// coexisting single `api_key` is preserved as a fallback.
+    ///
+    /// `credential_sets` is the signing-scheme analogue (SigV4/TC3/JWT): an
+    /// array of `{"key_id","key_secret","region"?,"weight"?,"label"?}` objects
+    /// (missing `weight` defaults to 1, `region` optional). Entries missing
+    /// `key_id` or `key_secret` are dropped.
     pub fn from_json(v: &serde_json::Value) -> Self {
         let obj = v.as_object();
         let s = |k: &str| {
@@ -170,10 +194,20 @@ impl ProviderCredentials {
         .into_iter()
         .filter(|e| !e.key.is_empty())
         .collect();
+        // Signing pool: array of {key_id, key_secret, region?, weight?, label?}.
+        // Entries missing either secret field are dropped (can't sign with them).
+        let credential_sets: Vec<crate::types::CredentialEntry> = obj
+            .and_then(|o| o.get("credential_sets"))
+            .filter(|v| v.is_array())
+            .and_then(|v| serde_json::from_value::<Vec<crate::types::CredentialEntry>>(v.clone()).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| !e.key_id.is_empty() && !e.key_secret.is_empty())
+            .collect();
         let mut extra = HashMap::new();
         if let Some(o) = obj {
             for (k, val) in o {
-                if !["api_key", "key_id", "key_secret", "region", "api_keys"]
+                if !["api_key", "key_id", "key_secret", "region", "api_keys", "credential_sets"]
                     .contains(&k.as_str())
                 {
                     if let Some(sv) = val.as_str() {
@@ -185,6 +219,7 @@ impl ProviderCredentials {
         ProviderCredentials {
             api_key: s("api_key"),
             api_keys,
+            credential_sets,
             key_id: s("key_id"),
             key_secret: s("key_secret"),
             region: s("region"),
@@ -411,5 +446,78 @@ mod tests {
         assert_eq!(c.api_keys[0].weight, 3);
         assert_eq!(c.api_keys[1].key, "sk-2");
         assert_eq!(c.api_keys[1].weight, 1);
+    }
+
+    #[test]
+    fn from_json_parses_credential_sets() {
+        use serde_json::json;
+
+        // Signing-scheme weighted pool: key_id/key_secret/region + weight/label.
+        let c = ProviderCredentials::from_json(&json!({
+            "credential_sets": [
+                {"key_id": "AKIA1", "key_secret": "s1", "region": "us-east-1", "weight": 3, "label": "prod"},
+                {"key_id": "AKIA2", "key_secret": "s2"}
+            ]
+        }));
+        assert_eq!(c.credential_sets.len(), 2);
+        assert_eq!(c.credential_sets[0].key_id, "AKIA1");
+        assert_eq!(c.credential_sets[0].key_secret, "s1");
+        assert_eq!(c.credential_sets[0].region.as_deref(), Some("us-east-1"));
+        assert_eq!(c.credential_sets[0].weight, 3);
+        assert_eq!(c.credential_sets[1].key_id, "AKIA2");
+        assert_eq!(c.credential_sets[1].weight, 1); // default
+        assert!(c.credential_sets[1].region.is_none()); // optional
+
+        // Entries missing key_id or key_secret are dropped (can't sign with them).
+        let c = ProviderCredentials::from_json(&json!({
+            "credential_sets": [
+                {"key_id": "", "key_secret": "s"},
+                {"key_id": "k", "key_secret": ""},
+                {"key_id": "good", "key_secret": "ok"}
+            ]
+        }));
+        assert_eq!(c.credential_sets.len(), 1);
+        assert_eq!(c.credential_sets[0].key_id, "good");
+
+        // A single signing credential still parses with no pool.
+        let c = ProviderCredentials::from_json(&json!({
+            "key_id": "AKIA", "key_secret": "shh", "region": "us"
+        }));
+        assert!(c.credential_sets.is_empty());
+        assert_eq!(c.key_id.as_deref(), Some("AKIA"));
+    }
+
+    #[test]
+    fn with_signing_overrides_credential_keeping_region_fallback() {
+        use crate::types::CredentialEntry;
+
+        let base = ProviderCredentials {
+            key_id: Some("OLD".into()),
+            key_secret: Some("old".into()),
+            region: Some("us-west-2".into()),
+            ..Default::default()
+        };
+
+        // Entry with its own region overrides everything.
+        let c = base.with_signing(&CredentialEntry {
+            key_id: "NEW".into(),
+            key_secret: "new".into(),
+            region: Some("eu-central-1".into()),
+            weight: 1,
+            label: None,
+        });
+        assert_eq!(c.key_id.as_deref(), Some("NEW"));
+        assert_eq!(c.key_secret.as_deref(), Some("new"));
+        assert_eq!(c.region.as_deref(), Some("eu-central-1"));
+
+        // Entry without a region keeps the base/default region.
+        let c = base.with_signing(&CredentialEntry {
+            key_id: "NEW".into(),
+            key_secret: "new".into(),
+            region: None,
+            weight: 1,
+            label: None,
+        });
+        assert_eq!(c.region.as_deref(), Some("us-west-2"), "region falls back when entry omits it");
     }
 }

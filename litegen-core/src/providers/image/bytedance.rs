@@ -82,7 +82,7 @@ impl ImageProvider for ByteDanceImageProvider {
 
     fn configure(&mut self, config: ProviderInstanceConfig) {
         if !config.api_keys.is_empty() {
-            self.key_pool = Some(ApiKeyPool::new(config.api_keys.clone()));
+            self.key_pool = Some(ApiKeyPool::shared(config.api_keys.clone()));
         }
         self.config = Some(config);
     }

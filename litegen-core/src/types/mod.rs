@@ -318,6 +318,61 @@ fn default_weight() -> u32 {
     1
 }
 
+/// A signing credential set (key_id + key_secret, plus optional region for
+/// SigV4/TC3) with a weight for round-robin distribution. The signing-scheme
+/// analogue of [`ApiKeyEntry`], used by providers like Bedrock, Hunyuan, and
+/// Kling that authenticate with a credential *pair* rather than a bearer key.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CredentialEntry {
+    /// Access key id (SigV4) / secret id (TC3) / access key (Kling).
+    pub key_id: String,
+    /// Secret access key (SigV4) / secret key (TC3, Kling). Stored encrypted.
+    pub key_secret: String,
+    /// Region (SigV4 / TC3). Omitted for Kling; when absent the provider falls
+    /// back to its configured/default region.
+    #[serde(default)]
+    pub region: Option<String>,
+    /// Weight for round-robin (higher = more traffic). Default: 1.
+    #[serde(default = "default_weight")]
+    pub weight: u32,
+    /// Optional label for the credential set.
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// One field the dashboard must collect for a provider credential, per pool
+/// entry. Returned as part of [`ProviderCatalogEntry`].
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CredentialFieldSpec {
+    /// JSON key within each pool entry (e.g. "key", "key_id", "key_secret", "region").
+    pub key: String,
+    /// Human-readable label for the input.
+    pub label: String,
+    /// Whether the value is secret and should be rendered masked.
+    pub secret: bool,
+    /// Whether the field may be left empty.
+    #[serde(default)]
+    pub optional: bool,
+}
+
+/// Describes a provider and how the dashboard should render its credential
+/// form. Returned by `GET /v1/providers` so the UI never hard-codes per-provider
+/// field knowledge.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProviderCatalogEntry {
+    /// Provider id (e.g. "openai", "bedrock").
+    pub name: String,
+    /// Which media this provider serves — any of "image", "video".
+    pub modalities: Vec<String>,
+    /// Coarse auth scheme: "api_key" | "aws_sigv4" | "tencent_tc3" | "kling_jwt".
+    pub auth_scheme: String,
+    /// Which credentials array to submit: "api_keys" (bearer) or
+    /// "credential_sets" (signing). Each array element is `{<fields…>, weight?, label?}`.
+    pub pool_field: String,
+    /// Fields to collect per pool entry, besides the universal `weight`/`label`.
+    pub fields: Vec<CredentialFieldSpec>,
+}
+
 /// Routing configuration for a model, with fallbacks and weights.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ModelRoute {

@@ -1202,6 +1202,133 @@ async fn byo_credential_reaches_upstream() {
     );
 }
 
+// ─── Test: provider catalog drives the dashboard credential form ───────────────
+#[tokio::test]
+async fn provider_catalog_lists_bearer_and_signing_field_shapes() {
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (_app_id, secret) = signup_app_and_key(&mut c, "catalog").await;
+
+    let mut api = Client::new(&app.base);
+    let bearer = format!("Bearer {secret}");
+    let r = api.get_with("/v1/providers", &[("authorization", &bearer)]).await;
+    assert_eq!(r.status, 200, "GET /v1/providers failed: {} {:?}", r.status, r.body);
+    let arr = r.body.as_array().expect("catalog array");
+    assert!(!arr.is_empty(), "catalog should not be empty");
+
+    let entry = |name: &str| arr.iter().find(|e| e["name"] == json!(name)).cloned();
+
+    // Bearer provider: single masked `key` field, submitted under `api_keys`.
+    let openai = entry("openai").expect("openai present in catalog");
+    assert_eq!(openai["pool_field"], json!("api_keys"));
+    assert_eq!(openai["auth_scheme"], json!("api_key"));
+    assert_eq!(openai["fields"][0]["key"], json!("key"));
+    assert_eq!(openai["fields"][0]["secret"], json!(true));
+
+    // Signing provider: key_id/key_secret/region, submitted under `credential_sets`.
+    let bedrock = entry("bedrock").expect("bedrock present in catalog");
+    assert_eq!(bedrock["pool_field"], json!("credential_sets"));
+    assert_eq!(bedrock["auth_scheme"], json!("aws_sigv4"));
+    let field_keys: Vec<String> = bedrock["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["key"].as_str().unwrap().to_string())
+        .collect();
+    assert!(field_keys.contains(&"key_id".to_string()));
+    assert!(field_keys.contains(&"key_secret".to_string()));
+    assert!(field_keys.contains(&"region".to_string()));
+}
+
+// ─── Test: BYO weighted multi-key rotates across requests to the upstream ──────
+//
+// The decisive end-to-end check for weighted multi-key BYO: store TWO keys, fire
+// TWO generations, and confirm the upstream saw a DIFFERENT key on each — proving
+// the rotation cursor persists across the per-request provider instances the
+// registry rebuilds (a per-instance cursor would send the first key both times).
+#[tokio::test]
+async fn byo_weighted_keys_rotate_across_requests() {
+    use base64::Engine as _;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let upstream = MockServer::start().await;
+    let fake_b64 = base64::engine::general_purpose::STANDARD.encode(b"fake-png-bytes");
+    Mock::given(method("POST"))
+        .and(path("/v1/images/generations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "created": 1234567890,
+            "data": [{ "b64_json": fake_b64 }]
+        })))
+        .expect(2)
+        .mount(&upstream)
+        .await;
+
+    let openai_cfg = json!({
+        "enabled": true,
+        "api_key": "PLATFORM_PLACEHOLDER",
+        "api_base": format!("{}/v1/images/generations", upstream.uri()),
+    });
+    let app = spawn_app_with_providers(&[("openai", openai_cfg)]).await;
+
+    let mut c = Client::new(&app.base);
+    let (app_id, secret) = signup_app_and_key(&mut c, "byo-rotate").await;
+
+    // Store a weighted two-key BYO pool (equal weights).
+    let csrf = c.csrf().await;
+    let stored = c
+        .post_with(
+            &format!("/v1/apps/{app_id}/provider-credentials"),
+            json!({
+                "provider": "openai",
+                "credentials": { "api_keys": [
+                    { "key": "ROTATEKEY1", "weight": 1 },
+                    { "key": "ROTATEKEY2", "weight": 1 }
+                ] }
+            }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(stored.status, 200, "store multi-key credential failed: {:?}", stored.body);
+    // The display hint reflects the pool size.
+    assert_eq!(
+        stored.body["display_hint"], json!("…KEY1 (+1 more)"),
+        "hint should summarise the pool, got {:?}", stored.body["display_hint"]
+    );
+
+    // Two generations with the Bearer key (b64_json avoids an upstream fetch).
+    let mut bearer = Client::new(&app.base);
+    let bearer_hdr = format!("Bearer {secret}");
+    for _ in 0..2 {
+        let r = bearer
+            .post_with(
+                "/v1/images/generations",
+                json!({ "model": "openai/dall-e-3", "prompt": "x", "response_format": "b64_json" }),
+                &[("authorization", &bearer_hdr)],
+            )
+            .await;
+        assert_eq!(r.status, 200, "BYO generation failed: {} {:?}", r.status, r.body);
+    }
+
+    let received = upstream.received_requests().await.expect("recorded requests");
+    assert_eq!(received.len(), 2, "expected exactly two upstream calls");
+    let auths: Vec<String> = received
+        .iter()
+        .map(|req| {
+            req.headers
+                .get("authorization")
+                .expect("authorization present")
+                .to_str()
+                .expect("utf-8")
+                .to_string()
+        })
+        .collect();
+    assert_ne!(auths[0], auths[1], "the two requests must use different pooled keys: {auths:?}");
+    let set: std::collections::BTreeSet<&str> = auths.iter().map(String::as_str).collect();
+    assert!(set.contains("Bearer ROTATEKEY1"), "ROTATEKEY1 used: {auths:?}");
+    assert!(set.contains("Bearer ROTATEKEY2"), "ROTATEKEY2 used: {auths:?}");
+}
+
 // ─── BYO app storage: API surface ────────────────────────────────────────────
 
 #[tokio::test]

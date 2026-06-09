@@ -7,7 +7,7 @@ use crate::capabilities::ModelSchema;
 use crate::proxy::materializer::{MaterializedRefForm, MaterializedRequest};
 use crate::providers::auth::{tc3, AuthSpec, ProviderCredentials};
 use crate::providers::{
-    BaseGenerationRequest, HealthCheckResult, ProviderError, ProviderInstanceConfig, VideoExtras,
+    BaseGenerationRequest, CredentialPool, HealthCheckResult, ProviderError, ProviderInstanceConfig, VideoExtras,
     VideoGenerationHandle, VideoGenerationPollResult, VideoProvider, build_cost_estimate,
 };
 use crate::types::*;
@@ -27,6 +27,7 @@ const VCLM_VERSION: &str = "2024-05-23";
 /// @see <https://www.tencentcloud.com/document/product/845/32207> — TC3-HMAC-SHA256
 pub struct HunyuanVideoProvider {
     config: Option<ProviderInstanceConfig>,
+    cred_pool: Option<CredentialPool>,
     auth: AuthSpec,
     client: Client,
 }
@@ -35,6 +36,7 @@ impl HunyuanVideoProvider {
     pub fn new() -> Self {
         Self {
             config: None,
+            cred_pool: None,
             auth: AuthSpec::TencentTc3 { service: "vclm".into(), default_region: "ap-guangzhou".into() },
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
@@ -52,10 +54,15 @@ impl HunyuanVideoProvider {
     }
 
     fn creds(&self) -> Result<ProviderCredentials, ProviderError> {
-        self.config
+        let base = self
+            .config
             .as_ref()
             .map(|c| c.credentials.clone())
-            .ok_or_else(|| ProviderError::NotConfigured("hunyuan".into()))
+            .ok_or_else(|| ProviderError::NotConfigured("hunyuan".into()))?;
+        if let Some(pool) = &self.cred_pool {
+            return Ok(base.with_signing(pool.next()));
+        }
+        Ok(base)
     }
 
     fn region(&self, creds: &ProviderCredentials) -> String {
@@ -119,11 +126,16 @@ impl VideoProvider for HunyuanVideoProvider {
     }
 
     fn configure(&mut self, config: ProviderInstanceConfig) {
+        if !config.credentials.credential_sets.is_empty() {
+            self.cred_pool = Some(CredentialPool::shared(config.credentials.credential_sets.clone()));
+        }
         self.config = Some(config);
     }
 
     fn is_configured(&self) -> bool {
-        self.config.as_ref().is_some_and(|c| self.auth.is_satisfied_by(&c.credentials))
+        self.config
+            .as_ref()
+            .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.cred_pool.is_some())
     }
 
     async fn generate(

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use litegen::providers::{parse_api_keys, ApiKeyPool, apply_markup, usd_to_tokens, build_cost_estimate};
+    use litegen::providers::{parse_api_keys, ApiKeyPool, CredentialPool, apply_markup, usd_to_tokens, build_cost_estimate};
     use litegen::types::*;
 
     // ─── API Key Pool Tests ─────────────────────────────────────────────
@@ -204,6 +204,91 @@ mod tests {
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].key, "sk-x:0");
         assert_eq!(keys[0].weight, 1);
+    }
+
+    #[test]
+    fn test_api_key_pool_shared_cursor_persists_across_instances() {
+        // Two pools built from the SAME entries via `shared` continue one
+        // rotation instead of each restarting at the first key. This is what
+        // makes weighted BYO actually distribute when the provider (and its
+        // pool) is rebuilt per request. With a per-instance cursor both calls
+        // would return the first key.
+        let entries = vec![
+            ApiKeyEntry { key: "shared-x".into(), weight: 1, label: None },
+            ApiKeyEntry { key: "shared-y".into(), weight: 1, label: None },
+        ];
+        let first = ApiKeyPool::shared(entries.clone()).next().to_string();
+        let second = ApiKeyPool::shared(entries.clone()).next().to_string();
+        assert_ne!(first, second, "rotation persists across rebuilt pools");
+    }
+
+    // ─── Credential Pool Tests (signing providers) ──────────────────────
+
+    fn cred(id: &str, weight: u32) -> CredentialEntry {
+        CredentialEntry {
+            key_id: id.to_string(),
+            key_secret: format!("{id}-secret"),
+            region: None,
+            weight,
+            label: None,
+        }
+    }
+
+    #[test]
+    fn test_credential_pool_round_robin() {
+        let pool = CredentialPool::new(vec![cred("a", 1), cred("b", 1)]);
+        let k1 = pool.next().key_id.clone();
+        let k2 = pool.next().key_id.clone();
+        let k3 = pool.next().key_id.clone();
+        assert_ne!(k1, k2, "consecutive sets differ");
+        assert_eq!(k1, k3, "round-robin wraps back");
+    }
+
+    #[test]
+    fn test_credential_pool_weighted_and_size() {
+        let pool = CredentialPool::new(vec![cred("a", 3), cred("b", 1)]);
+        assert_eq!(pool.size(), 2);
+        let (mut a, mut b) = (0, 0);
+        for _ in 0..8 {
+            match pool.next().key_id.as_str() {
+                "a" => a += 1,
+                "b" => b += 1,
+                other => panic!("unexpected key_id {other}"),
+            }
+        }
+        assert_eq!(a, 6); // weight 3 of 4
+        assert_eq!(b, 2); // weight 1 of 4
+    }
+
+    #[test]
+    fn test_credential_pool_carries_full_set() {
+        let pool = CredentialPool::new(vec![CredentialEntry {
+            key_id: "AKIA".into(),
+            key_secret: "shhh".into(),
+            region: Some("us-east-1".into()),
+            weight: 1,
+            label: Some("primary".into()),
+        }]);
+        let e = pool.next();
+        assert_eq!(e.key_id, "AKIA");
+        assert_eq!(e.key_secret, "shhh");
+        assert_eq!(e.region.as_deref(), Some("us-east-1"));
+    }
+
+    #[test]
+    #[should_panic(expected = "at least one credential")]
+    fn test_credential_pool_empty_panics() {
+        CredentialPool::new(vec![]);
+    }
+
+    #[test]
+    fn test_credential_pool_shared_cursor_persists_across_instances() {
+        // Signing analogue of the api-key shared-cursor test: rotation survives
+        // the per-request rebuild for BYO credential sets.
+        let entries = vec![cred("shared-cred-a", 1), cred("shared-cred-b", 1)];
+        let first = CredentialPool::shared(entries.clone()).next().key_id.clone();
+        let second = CredentialPool::shared(entries.clone()).next().key_id.clone();
+        assert_ne!(first, second, "credential rotation persists across rebuilt pools");
     }
 
     // ─── Cost Calculation Tests ─────────────────────────────────────────

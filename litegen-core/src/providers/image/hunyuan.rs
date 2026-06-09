@@ -7,7 +7,7 @@ use crate::capabilities::ModelSchema;
 use crate::proxy::materializer::{MaterializedRefForm, MaterializedRequest};
 use crate::providers::auth::{tc3, AuthSpec, ProviderCredentials};
 use crate::providers::{
-    BaseGenerationRequest, GenerationOutput, HealthCheckResult, ImageExtras, ImageProvider,
+    BaseGenerationRequest, CredentialPool, GenerationOutput, HealthCheckResult, ImageExtras, ImageProvider,
     ProviderError, ProviderInstanceConfig, build_cost_estimate,
 };
 use crate::types::*;
@@ -28,6 +28,7 @@ const IMAGE_VERSION: &str = "2023-09-01";
 /// @see <https://www.tencentcloud.com/document/product/845/32207> — TC3-HMAC-SHA256
 pub struct HunyuanImageProvider {
     config: Option<ProviderInstanceConfig>,
+    cred_pool: Option<CredentialPool>,
     auth: AuthSpec,
     client: Client,
 }
@@ -36,6 +37,7 @@ impl HunyuanImageProvider {
     pub fn new() -> Self {
         Self {
             config: None,
+            cred_pool: None,
             auth: AuthSpec::TencentTc3 { service: "hunyuan".into(), default_region: "ap-guangzhou".into() },
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(180))
@@ -53,10 +55,15 @@ impl HunyuanImageProvider {
     }
 
     fn creds(&self) -> Result<ProviderCredentials, ProviderError> {
-        self.config
+        let base = self
+            .config
             .as_ref()
             .map(|c| c.credentials.clone())
-            .ok_or_else(|| ProviderError::NotConfigured("hunyuan".into()))
+            .ok_or_else(|| ProviderError::NotConfigured("hunyuan".into()))?;
+        if let Some(pool) = &self.cred_pool {
+            return Ok(base.with_signing(pool.next()));
+        }
+        Ok(base)
     }
 
     fn region(&self, creds: &ProviderCredentials) -> String {
@@ -142,11 +149,16 @@ impl ImageProvider for HunyuanImageProvider {
     }
 
     fn configure(&mut self, config: ProviderInstanceConfig) {
+        if !config.credentials.credential_sets.is_empty() {
+            self.cred_pool = Some(CredentialPool::shared(config.credentials.credential_sets.clone()));
+        }
         self.config = Some(config);
     }
 
     fn is_configured(&self) -> bool {
-        self.config.as_ref().is_some_and(|c| self.auth.is_satisfied_by(&c.credentials))
+        self.config
+            .as_ref()
+            .is_some_and(|c| self.auth.is_satisfied_by(&c.credentials) || self.cred_pool.is_some())
     }
 
     async fn generate(
