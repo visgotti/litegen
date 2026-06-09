@@ -1,5 +1,5 @@
 import { useTranslations } from 'next-intl';
-import { ArrowRight, Github, Sparkles } from 'lucide-react';
+import { ArrowRight, Github, LayoutDashboard, Sparkles } from 'lucide-react';
 import { siteConfig } from '@/config/site';
 import styles from './Hero.module.css';
 
@@ -18,9 +18,13 @@ export function Hero() {
           <p className={styles.subtitle}>{t('subtitle')}</p>
 
           <div className={styles.ctas}>
-            <a className="btn btn-primary" href={siteConfig.docsUrl} target="_blank" rel="noreferrer">
-              {t('ctaPrimary')}
+            <a className="btn btn-primary" href={siteConfig.appUrl}>
+              <LayoutDashboard size={16} />
+              {t('ctaApp')}
               <ArrowRight size={16} />
+            </a>
+            <a className="btn btn-secondary" href={siteConfig.docsUrl} target="_blank" rel="noreferrer">
+              {t('ctaPrimary')}
             </a>
             <a className="btn btn-secondary" href={siteConfig.githubUrl} target="_blank" rel="noreferrer">
               <Github size={16} />

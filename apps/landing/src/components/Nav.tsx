@@ -1,5 +1,5 @@
 import { useTranslations } from 'next-intl';
-import { Github, Layers } from 'lucide-react';
+import { Github, Layers, LayoutDashboard } from 'lucide-react';
 import { siteConfig } from '@/config/site';
 import { Link } from '@/i18n/navigation';
 import { LangSwitcher } from './LangSwitcher';
@@ -28,6 +28,10 @@ export function Nav() {
 
         <div className={styles.actions}>
           <LangSwitcher />
+          <a className={`btn btn-primary ${styles.dashboard}`} href={siteConfig.appUrl}>
+            <LayoutDashboard size={16} />
+            {t('dashboard')}
+          </a>
           <a
             className={`btn btn-secondary ${styles.github}`}
             href={siteConfig.githubUrl}
