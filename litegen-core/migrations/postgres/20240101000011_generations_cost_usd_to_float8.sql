@@ -1,0 +1,11 @@
+-- generations.cost_usd was declared REAL (float4, 4-byte) in
+-- 20240101000003_generations.sql, but the Rust GenerationRow.cost_usd field is
+-- f64, which sqlx maps strictly to FLOAT8 (8-byte). sqlx refuses to decode a
+-- FLOAT4 column into f64 ("Rust type `f64` (as SQL type `FLOAT8`) is not
+-- compatible with SQL type `FLOAT4`"), so every generation decode path
+-- (get/list/cancel/tenant-list) 500s the moment a generation row exists.
+--
+-- request_logs.cost_usd is already DOUBLE PRECISION, which is why its f64 decode
+-- works. Widen generations.cost_usd to match. The cast is a lossless widening;
+-- the rewrite is cheap on a small generations table.
+ALTER TABLE generations ALTER COLUMN cost_usd TYPE DOUBLE PRECISION;

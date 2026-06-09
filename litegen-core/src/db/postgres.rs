@@ -544,7 +544,7 @@ impl DatabaseStore for PostgresDatabase {
                 COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) as success,
                 COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
                 COALESCE(SUM(cost_usd), 0.0) as total_cost,
-                COALESCE(AVG(latency_ms), 0.0) as avg_latency
+                COALESCE(AVG(latency_ms), 0.0)::double precision as avg_latency
             FROM request_logs
             "#,
         )
@@ -553,7 +553,7 @@ impl DatabaseStore for PostgresDatabase {
 
         let model_stats = sqlx::query_as::<_, ModelUsageRow>(
             r#"
-            SELECT model, COUNT(*) as requests, COALESCE(SUM(cost_usd), 0.0) as cost_usd, COALESCE(AVG(latency_ms), 0.0) as avg_latency_ms
+            SELECT model, COUNT(*) as requests, COALESCE(SUM(cost_usd), 0.0) as cost_usd, COALESCE(AVG(latency_ms), 0.0)::double precision as avg_latency_ms
             FROM request_logs
             GROUP BY model
             ORDER BY requests DESC
@@ -569,7 +569,7 @@ impl DatabaseStore for PostgresDatabase {
                    COUNT(*) as requests,
                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failures,
                    COALESCE(SUM(cost_usd), 0.0) as cost_usd,
-                   COALESCE(AVG(latency_ms), 0.0) as avg_latency_ms
+                   COALESCE(AVG(latency_ms), 0.0)::double precision as avg_latency_ms
             FROM request_logs
             GROUP BY provider
             ORDER BY requests DESC
@@ -614,7 +614,7 @@ impl DatabaseStore for PostgresDatabase {
              COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) as success, \
              COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed, \
              COALESCE(SUM(cost_usd), 0.0) as total_cost, \
-             COALESCE(AVG(latency_ms), 0.0) as avg_latency \
+             COALESCE(AVG(latency_ms), 0.0)::double precision as avg_latency \
              FROM request_logs WHERE {tenant_clause}"
         );
         let totals: (i64, i64, i64, f64, f64) =
@@ -624,7 +624,7 @@ impl DatabaseStore for PostgresDatabase {
 
         let model_sql = format!(
             "SELECT model, COUNT(*) as requests, COALESCE(SUM(cost_usd), 0.0) as cost_usd, \
-             COALESCE(AVG(latency_ms), 0.0) as avg_latency_ms \
+             COALESCE(AVG(latency_ms), 0.0)::double precision as avg_latency_ms \
              FROM request_logs WHERE {tenant_clause} \
              GROUP BY model ORDER BY requests DESC LIMIT 20"
         );
@@ -636,7 +636,7 @@ impl DatabaseStore for PostgresDatabase {
             "SELECT provider, COUNT(*) as requests, \
              SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failures, \
              COALESCE(SUM(cost_usd), 0.0) as cost_usd, \
-             COALESCE(AVG(latency_ms), 0.0) as avg_latency_ms \
+             COALESCE(AVG(latency_ms), 0.0)::double precision as avg_latency_ms \
              FROM request_logs WHERE {tenant_clause} \
              GROUP BY provider ORDER BY requests DESC"
         );
