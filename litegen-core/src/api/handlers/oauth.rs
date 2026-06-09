@@ -84,6 +84,27 @@ fn clear_oauth_next_cookie() -> axum::http::HeaderValue {
     )
 }
 
+/// Build a `Set-Cookie` header value storing the pending invitation token.
+/// The callback reads this cookie raw (no URL-decode), so we write it raw too;
+/// invite tokens are URL-safe hex (`generate_session_token`), so no encoding is needed.
+fn make_oauth_invite_cookie(token: &str) -> axum::http::HeaderValue {
+    let secure = std::env::var("LITEGEN__COOKIE_INSECURE_DEV").as_deref() != Ok("true");
+    let secure_str = if secure { "; Secure" } else { "" };
+    let val = format!(
+        "litegen_oauth_invite={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600{}",
+        token, secure_str
+    );
+    axum::http::HeaderValue::from_str(&val)
+        .unwrap_or_else(|_| axum::http::HeaderValue::from_static(""))
+}
+
+/// Build a `Set-Cookie` header value that clears the `litegen_oauth_invite` cookie.
+fn clear_oauth_invite_cookie() -> axum::http::HeaderValue {
+    axum::http::HeaderValue::from_static(
+        "litegen_oauth_invite=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+    )
+}
+
 /// Build a `Set-Cookie` header value recording which provider (`github`/`google`)
 /// initiated the flow, so the unified `/auth/redirect` callback can dispatch.
 fn make_oauth_provider_cookie(provider: &str) -> axum::http::HeaderValue {
@@ -185,10 +206,104 @@ async fn finish_oauth_login(state: &Arc<AppState>, user_id: &str, headers: &Head
             resp.headers_mut().append("set-cookie", clear_oauth_state_cookie());
             resp.headers_mut().append("set-cookie", clear_oauth_next_cookie());
             resp.headers_mut().append("set-cookie", clear_oauth_provider_cookie());
+            resp.headers_mut().append("set-cookie", clear_oauth_invite_cookie());
             resp
         }
         Err(e) => error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
     }
+}
+
+/// 302 back to the AcceptInvite SPA page with an error code, clearing all OAuth
+/// round-trip cookies (incl. the invite cookie).
+fn invite_error_redirect(token: &str, code: &str) -> Response {
+    let location = format!("/invite/{}?invite_error={}", urlencoding::encode(token), code);
+    let mut resp = StatusCode::FOUND.into_response();
+    resp.headers_mut().insert(
+        "location",
+        axum::http::HeaderValue::from_str(&location)
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("/")),
+    );
+    resp.headers_mut().append("set-cookie", clear_oauth_state_cookie());
+    resp.headers_mut().append("set-cookie", clear_oauth_provider_cookie());
+    resp.headers_mut().append("set-cookie", clear_oauth_next_cookie());
+    resp.headers_mut().append("set-cookie", clear_oauth_invite_cookie());
+    resp
+}
+
+/// Apply an invitation during an OAuth callback. On success the returned user is
+/// created/linked, added to the invited org, and the invite is consumed — caller
+/// then mints a session. On any invite failure returns a 302 redirect (Err).
+async fn apply_invitation_oauth(
+    state: &Arc<AppState>,
+    provider: &str,
+    oauth_id: &str,
+    email: &str,
+    invite_token: &str,
+) -> Result<String, Response> {
+    let inv = match state.db.get_invitation(invite_token).await {
+        Ok(Some(i)) => i,
+        Ok(None) => return Err(invite_error_redirect(invite_token, "invitation_invalid")),
+        Err(e) => return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string())),
+    };
+    if inv.used_at.is_some() || inv.expires_at < chrono::Utc::now() {
+        return Err(invite_error_redirect(invite_token, "invitation_invalid"));
+    }
+    // Strict verified-email match (both already lowercased by the caller / storage).
+    if inv.email.to_lowercase() != email {
+        return Err(invite_error_redirect(invite_token, "email_mismatch"));
+    }
+
+    // Resolve the user without auto-creating a fresh org.
+    let user = match state.db.get_user_by_oauth(provider, oauth_id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => match state.db.get_user_by_email(email).await {
+            Ok(Some(u)) => {
+                let _ = state.db.link_oauth(&u.id, provider, oauth_id).await;
+                u
+            }
+            Ok(None) => {
+                let now = chrono::Utc::now();
+                let u = User {
+                    id: format!("user-{}", uuid::Uuid::new_v4()),
+                    email: email.to_string(),
+                    password_hash: None,
+                    role: inv.role,
+                    oauth_github_id: if provider == "github" { Some(oauth_id.to_string()) } else { None },
+                    oauth_google_id: if provider == "google" { Some(oauth_id.to_string()) } else { None },
+                    created_at: now,
+                    updated_at: now,
+                    last_login_at: None,
+                    is_active: true,
+                };
+                if let Err(e) = state.db.create_user(&u).await {
+                    return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()));
+                }
+                u
+            }
+            Err(e) => return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string())),
+        },
+        Err(e) => return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string())),
+    };
+
+    if !user.is_active {
+        return Err(invite_error_redirect(invite_token, "account_inactive"));
+    }
+
+    // Add membership (idempotent).
+    if state.db.get_membership(&inv.org_id, &user.id).await.ok().flatten().is_none() {
+        if let Err(e) = state.db.add_org_member(&inv.org_id, &user.id, inv.role).await {
+            return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()));
+        }
+    }
+
+    // Atomically consume — if we lost a race, treat as already used.
+    match state.db.mark_invitation_used(invite_token).await {
+        Ok(true) => {}
+        Ok(false) => return Err(invite_error_redirect(invite_token, "invitation_invalid")),
+        Err(e) => return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string())),
+    }
+
+    Ok(user.id)
 }
 
 // ─── Query params ──────────────────────────────────────────────────────────────
@@ -197,6 +312,8 @@ async fn finish_oauth_login(state: &Arc<AppState>, user_id: &str, headers: &Head
 pub struct StartParams {
     #[serde(default)]
     pub next: Option<String>,
+    #[serde(default)]
+    pub invite: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,6 +378,10 @@ pub async fn github_start(
     {
         resp.headers_mut()
             .append("set-cookie", make_oauth_next_cookie(next));
+    }
+    if let Some(invite) = params.invite.as_deref().filter(|t| !t.is_empty()) {
+        resp.headers_mut()
+            .append("set-cookie", make_oauth_invite_cookie(invite));
     }
     resp
 }
@@ -427,6 +548,15 @@ pub async fn handle_github_callback(
         return error_resp_clear_state(StatusCode::BAD_REQUEST, "no_verified_email", "No verified primary email on GitHub");
     };
 
+    // Invitation-aware path: an invite cookie means "join the inviter's org",
+    // not the normal resolve/auto-create flow.
+    if let Some(invite_token) = cookie_value(headers, "litegen_oauth_invite") {
+        return match apply_invitation_oauth(state, "github", &gh_id, &email, &invite_token).await {
+            Ok(user_id) => finish_oauth_login(state, &user_id, headers).await,
+            Err(resp) => resp,
+        };
+    }
+
     // 5. Resolve the user: existing (by oauth id / linked email) or, in hosted
     //    mode, auto-create account + org + first app. single_tenant stays
     //    invite-only (403 account_not_invited).
@@ -509,6 +639,10 @@ pub async fn google_start(
     {
         resp.headers_mut()
             .append("set-cookie", make_oauth_next_cookie(next));
+    }
+    if let Some(invite) = params.invite.as_deref().filter(|t| !t.is_empty()) {
+        resp.headers_mut()
+            .append("set-cookie", make_oauth_invite_cookie(invite));
     }
     resp
 }
@@ -658,6 +792,15 @@ pub async fn handle_google_callback(
     let google_id = userinfo.sub.clone();
     let email = userinfo.email.to_lowercase();
 
+    // Invitation-aware path: an invite cookie means "join the inviter's org",
+    // not the normal resolve/auto-create flow.
+    if let Some(invite_token) = cookie_value(headers, "litegen_oauth_invite") {
+        return match apply_invitation_oauth(state, "google", &google_id, &email, &invite_token).await {
+            Ok(user_id) => finish_oauth_login(state, &user_id, headers).await,
+            Err(resp) => resp,
+        };
+    }
+
     // 4. Resolve the user: existing (by oauth id / linked email) or, in hosted
     //    mode, auto-create account + org + first app. single_tenant stays
     //    invite-only (403 account_not_invited).
@@ -752,7 +895,7 @@ mod tests {
     use crate::proxy::registry::ProviderRegistry;
     use crate::proxy::router::ProxyRouter;
     use crate::proxy::storage::LocalStore;
-    use crate::types::{Role, User};
+    use crate::types::{Invitation, Role, User};
     use bytes::Bytes;
 
     struct NoopStorage;
@@ -997,6 +1140,157 @@ mod tests {
             .route("/v1/auth/oauth/google/start", get(google_start))
             .route("/v1/auth/oauth/google/callback", get(google_callback))
             .with_state(state)
+    }
+
+    // ─── OAuth invitation-accept helpers ──────────────────────────────────────
+
+    /// Create an inviter + their org, then invite `invitee_email` into it.
+    /// Returns the org id the invitee should join.
+    async fn seed_org_and_invite(
+        state: &Arc<AppState>,
+        invitee_email: &str,
+        token: &str,
+        role: Role,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> String {
+        create_user(state, "inviter@x.com", None, Some("inviter-oauth")).await;
+        let inviter = state.db.get_user_by_email("inviter@x.com").await.unwrap().unwrap();
+        crate::api::handlers::auth_password::create_org_for_user(
+            &state.db, &inviter.id, "inviter@x.com", Some("Acme".to_string()),
+        ).await.unwrap();
+        let org_id = state.db.list_orgs_for_user(&inviter.id).await.unwrap()[0].0.id.clone();
+        let inv = Invitation {
+            id: format!("inv-{}", uuid::Uuid::new_v4()),
+            email: invitee_email.to_string(),
+            role,
+            token: token.to_string(),
+            invited_by: Some(inviter.id.clone()),
+            org_id: org_id.clone(),
+            expires_at,
+            used_at: None,
+            created_at: chrono::Utc::now(),
+        };
+        state.db.create_invitation(&inv).await.unwrap();
+        org_id
+    }
+
+    /// Mount Google token + userinfo wiremock returning `email` for `sub`.
+    async fn google_mock(server: &MockServer, sub: &str, email: &str, verified: bool) -> OAuthConfig {
+        Mock::given(method("POST")).and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "g", "id_token": "id", "expires_in": 3600, "token_type": "Bearer"})))
+            .mount(server).await;
+        Mock::given(method("GET")).and(path("/v1/userinfo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "sub": sub, "email": email, "email_verified": verified, "name": "N"})))
+            .mount(server).await;
+        let uri = server.uri();
+        OAuthConfig {
+            google: Some(ProviderConfig { client_id: "g-id".into(), client_secret: "g-secret".into() }),
+            google_token_base: Some(uri.clone()),
+            google_userinfo_base: Some(uri),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_accept_invite_matching_email_joins_invited_org() {
+        let server = MockServer::start().await;
+        let oauth = google_mock(&server, "alice-sub", "alice@x.com", true).await;
+        let state = build_state_with_oauth(oauth).await; // single_tenant: invite path still works
+        let org_id = seed_org_and_invite(
+            &state, "alice@x.com", "invtok", Role::Member,
+            chrono::Utc::now() + chrono::Duration::days(7),
+        ).await;
+        let app = build_google_router(state.clone());
+
+        let req = Request::builder().method("GET")
+            .uri("/v1/auth/oauth/google/callback?code=c&state=s")
+            .header("cookie", "litegen_oauth_state=s; litegen_oauth_invite=invtok")
+            .body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let cookies: Vec<_> = resp.headers().get_all("set-cookie").iter()
+            .map(|v| v.to_str().unwrap_or("").to_string()).collect();
+        assert!(cookies.iter().any(|c| c.contains("litegen_session=")), "session set; got {:?}", cookies);
+
+        let alice = state.db.get_user_by_email("alice@x.com").await.unwrap().expect("alice created");
+        assert_eq!(state.db.get_membership(&org_id, &alice.id).await.unwrap(), Some(Role::Member));
+        let alice_orgs = state.db.list_orgs_for_user(&alice.id).await.unwrap();
+        assert_eq!(alice_orgs.len(), 1, "alice is only in the invited org (no fresh org)");
+        assert_eq!(alice_orgs[0].0.id, org_id);
+        let inv = state.db.get_invitation("invtok").await.unwrap().unwrap();
+        assert!(inv.used_at.is_some(), "invitation consumed");
+    }
+
+    #[tokio::test]
+    async fn oauth_accept_invite_email_mismatch_is_rejected() {
+        let server = MockServer::start().await;
+        // Invitee signs in as eve@x.com but the invite is for alice@x.com.
+        let oauth = google_mock(&server, "eve-sub", "eve@x.com", true).await;
+        let state = build_state_with_oauth(oauth).await;
+        seed_org_and_invite(&state, "alice@x.com", "invtok", Role::Member,
+            chrono::Utc::now() + chrono::Duration::days(7)).await;
+        let app = build_google_router(state.clone());
+
+        let req = Request::builder().method("GET")
+            .uri("/v1/auth/oauth/google/callback?code=c&state=s")
+            .header("cookie", "litegen_oauth_state=s; litegen_oauth_invite=invtok")
+            .body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let loc = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(loc.contains("/invite/invtok") && loc.contains("invite_error=email_mismatch"), "got {}", loc);
+        let cookies: Vec<_> = resp.headers().get_all("set-cookie").iter()
+            .map(|v| v.to_str().unwrap_or("").to_string()).collect();
+        assert!(!cookies.iter().any(|c| c.contains("litegen_session=")), "no session on mismatch");
+        assert!(state.db.get_user_by_email("eve@x.com").await.unwrap().is_none(), "eve not created");
+        let inv = state.db.get_invitation("invtok").await.unwrap().unwrap();
+        assert!(inv.used_at.is_none(), "invite not consumed on mismatch");
+    }
+
+    #[tokio::test]
+    async fn oauth_accept_invite_expired_is_rejected() {
+        let server = MockServer::start().await;
+        let oauth = google_mock(&server, "alice-sub", "alice@x.com", true).await;
+        let state = build_state_with_oauth(oauth).await;
+        seed_org_and_invite(&state, "alice@x.com", "invtok", Role::Member,
+            chrono::Utc::now() - chrono::Duration::minutes(1)).await; // already expired
+        let app = build_google_router(state.clone());
+
+        let req = Request::builder().method("GET")
+            .uri("/v1/auth/oauth/google/callback?code=c&state=s")
+            .header("cookie", "litegen_oauth_state=s; litegen_oauth_invite=invtok")
+            .body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let loc = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(loc.contains("invite_error=invitation_invalid"), "got {}", loc);
+        assert!(state.db.get_invitation("invtok").await.unwrap().unwrap().used_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn oauth_accept_invite_existing_user_joins_no_duplicate() {
+        let server = MockServer::start().await;
+        let oauth = google_mock(&server, "alice-sub", "alice@x.com", true).await;
+        let state = build_state_with_oauth(oauth).await;
+        let org_id = seed_org_and_invite(&state, "alice@x.com", "invtok", Role::Admin,
+            chrono::Utc::now() + chrono::Duration::days(7)).await;
+        // Alice already exists with this google id.
+        create_user(&state, "alice@x.com", None, Some("alice-sub")).await;
+        let app = build_google_router(state.clone());
+
+        let req = Request::builder().method("GET")
+            .uri("/v1/auth/oauth/google/callback?code=c&state=s")
+            .header("cookie", "litegen_oauth_state=s; litegen_oauth_invite=invtok")
+            .body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let alice = state.db.get_user_by_oauth("google", "alice-sub").await.unwrap().unwrap();
+        assert_eq!(state.db.get_membership(&org_id, &alice.id).await.unwrap(), Some(Role::Admin));
+        assert_eq!(alice.email, "alice@x.com");
     }
 
     #[tokio::test]
@@ -1589,6 +1883,31 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["error"]["type"], "invalid_oauth_state");
         assert_eq!(body["error"]["code"], 400);
+    }
+
+    #[tokio::test]
+    async fn oauth_start_with_invite_sets_invite_cookie() {
+        let oauth = OAuthConfig {
+            google: Some(ProviderConfig { client_id: "g-id".into(), client_secret: "g-secret".into() }),
+            callback_base: Some("https://app.example.com".into()),
+            ..Default::default()
+        };
+        let state = build_state_with_oauth(oauth).await;
+        let app = build_google_router(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/auth/oauth/google/start?invite=invtok123&next=/")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let cookies: Vec<_> = resp.headers().get_all("set-cookie").iter()
+            .map(|v| v.to_str().unwrap_or("").to_string()).collect();
+        assert!(
+            cookies.iter().any(|c| c.starts_with("litegen_oauth_invite=invtok123")),
+            "start must set the invite cookie; got {:?}", cookies
+        );
     }
 
     #[tokio::test]

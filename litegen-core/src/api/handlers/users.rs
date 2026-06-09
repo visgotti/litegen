@@ -407,6 +407,12 @@ pub async fn accept_invitation(
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
     };
 
+    // Membership is added before the atomic invite-consume below. If we then lose
+    // the single-use race (Ok(false)), this membership row persists — that's
+    // intentional and benign: both racers held a valid token, so the membership is
+    // correct data; only the loser's response omits a session. We deliberately do
+    // NOT consume the invite before add_org_member, so a transient add_org_member
+    // failure (500) leaves the invite unconsumed and retryable rather than burned.
     // Join the invited org with the invited role. Ignore a duplicate-membership
     // error so re-accepting is idempotent.
     if state.db.get_membership(&inv.org_id, &user.id).await.ok().flatten().is_none() {
@@ -415,8 +421,19 @@ pub async fn accept_invitation(
         }
     }
 
-    // Mark invitation used
-    let _ = state.db.mark_invitation_used(&token).await;
+    // Atomically consume the invitation. If a concurrent request already used it,
+    // abort before minting a session (defense-in-depth on top of the used_at check).
+    match state.db.mark_invitation_used(&token).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invitation_already_used",
+                "This invitation has already been used",
+            )
+        }
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+    }
 
     // Create session
     let (_, _, session_cookie, csrf_cookie) =
