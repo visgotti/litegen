@@ -1,0 +1,9 @@
+# Cloudflare Pages response headers.
+#
+# The Next opengraph-image route (/<locale>/opengraph-image) is served without a
+# file extension, so Pages can't infer its MIME type and omits Content-Type.
+# Discord sniffs the PNG bytes, but stricter crawlers (X/Twitter, Slack, iMessage)
+# require a correct Content-Type to render the social card — set it explicitly.
+/:locale/opengraph-image
+  Content-Type: image/png
+  Cache-Control: public, max-age=86400
