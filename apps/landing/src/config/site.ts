@@ -80,7 +80,7 @@ export const SDK_TS_INSTALL = `npm install @litegen/sdk`;
 export const SDK_TS_CODE = `import { LiteGenClient } from '@litegen/sdk';
 
 const client = new LiteGenClient({
-  baseUrl: process.env.LITEGEN_BASE_URL ?? 'https://your-litegen-host',
+  baseUrl: process.env.LITEGEN_BASE_URL ?? 'http://localhost:4000',
   apiKey: process.env.LITEGEN_API_KEY,
 });
 
@@ -113,7 +113,7 @@ export const SDK_PY_INSTALL = `pip install litegen`;
 export const SDK_PY_CODE = `from litegen import LiteGenClient
 
 client = LiteGenClient(
-    base_url="https://your-litegen-host",
+    base_url="http://localhost:4000",
     api_key="lg-...",
 )
 
