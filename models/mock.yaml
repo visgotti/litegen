@@ -228,11 +228,15 @@ models:
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["1:1","16:9","9:16","4:3","3:4"]
+      fps: { kind: int, min: 1, max: 60 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+    extra_allowlist: []
     ref_inputs:
-      max_total: 2
+      max_total: 3
       default_role: first_frame
       provider_format: { form: base64 }
       roles:
+        init: { required: false, min_count: 0, max_count: 1 }
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame: { required: false, min_count: 0, max_count: 1 }
     tags: [mock, test, keyframes]
@@ -275,4 +279,9 @@ models:
     prompt: { required: true, max_length: 4000 }
     params:
       duration_seconds: { kind: float, min: 1.0, max: 10.0 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1","16:9","9:16","4:3","3:4"]
+      fps: { kind: int, min: 1, max: 60 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
     tags: [mock, test, expensive, quota-demo]
