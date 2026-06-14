@@ -44,3 +44,11 @@ pnpm-debug.log*
 !.env.example
 # Deploy: commit the placeholder template, never the real secrets file.
 !.env.deploy.template
+
+# Local runtime config + db (litegen.yaml is generated from aipix's .env by
+# aipix/scripts/litegen.mjs and contains real provider API keys — never commit).
+litegen.yaml
+litegen.db
+litegen-dev.db
+*.db-shm
+*.db-wal
