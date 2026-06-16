@@ -62,9 +62,15 @@ impl From<crate::types::User> for AccountUser {
     }
 }
 
-/// Public session info (no csrf_token exposed).
+/// Public session info. `id` is a NON-secret SHA-256 fingerprint of the session
+/// token — never the raw token. The session row's primary key IS the bearer
+/// credential (it's the `litegen_session` cookie value), so returning it
+/// verbatim would let any response-body capture (e.g. XSS — which HttpOnly is
+/// meant to stop) harvest usable session tokens for all the user's devices.
+/// Revocation resolves the fingerprint back to the row.
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct SessionInfo {
+    /// SHA-256 fingerprint of the session token (safe to expose; used for revoke).
     pub id: String,
     pub created_at: String,
     pub expires_at: String,
@@ -75,7 +81,7 @@ pub struct SessionInfo {
 impl From<Session> for SessionInfo {
     fn from(s: Session) -> Self {
         Self {
-            id: s.id,
+            id: crate::auth::secrets::sha256_hex(&s.id),
             created_at: s.created_at.to_rfc3339(),
             expires_at: s.expires_at.to_rfc3339(),
             ip: s.ip,
@@ -296,8 +302,9 @@ pub async fn list_sessions(
     params(("id" = String, Path, description = "Session ID to revoke")),
     responses(
         (status = 204, description = "Session revoked"),
-        (status = 403, description = "Cannot revoke another user's session", body = crate::types::ErrorResponse),
-        (status = 404, description = "Session not found", body = crate::types::ErrorResponse),
+        (status = 401, description = "Not authenticated", body = crate::types::ErrorResponse),
+        (status = 403, description = "Missing session:revoke:own permission", body = crate::types::ErrorResponse),
+        (status = 404, description = "Session not found (or not one of the caller's own sessions)", body = crate::types::ErrorResponse),
     ),
     tag = "Account"
 )]
@@ -315,29 +322,32 @@ pub async fn revoke_session(
         None => return err(StatusCode::UNAUTHORIZED, "not_authenticated", "Not authenticated"),
     };
 
-    let current_session_id = ctx.session_id.clone();
-
-    // Verify the session belongs to this user
-    let session = match state.db.get_session(&id).await {
-        Ok(Some(s)) => s,
-        Ok(None) => return err(StatusCode::NOT_FOUND, "session_not_found", "Session not found"),
+    // `id` is the SHA-256 fingerprint returned by list_sessions (NOT the raw
+    // token). Resolve it against the caller's own sessions — this both maps the
+    // fingerprint back to the real token and scopes revocation to the user.
+    let sessions = match state.db.list_user_sessions(&user_id).await {
+        Ok(s) => s,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
     };
+    let session = match sessions
+        .into_iter()
+        .find(|s| crate::auth::secrets::sha256_hex(&s.id) == id)
+    {
+        Some(s) => s,
+        None => return err(StatusCode::NOT_FOUND, "session_not_found", "Session not found"),
+    };
 
-    if session.user_id != user_id {
-        return err(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "You can only revoke your own sessions",
-        );
-    }
-
-    if let Err(e) = state.db.delete_session(&id).await {
+    if let Err(e) = state.db.delete_session(&session.id).await {
         return err(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
     }
 
-    // If revoking the current session, clear cookies
-    if current_session_id.as_deref() == Some(&id) {
+    // If revoking the current session, clear cookies (compare by fingerprint).
+    let is_current = ctx
+        .session_id
+        .as_deref()
+        .map(|cur| crate::auth::secrets::sha256_hex(cur) == id)
+        .unwrap_or(false);
+    if is_current {
         let (sc, cc) = make_clear_session_cookies();
         return (
             StatusCode::NO_CONTENT,
@@ -611,9 +621,11 @@ mod tests {
 
         let app = build_account_router(build_state(db.clone()).await);
 
+        // Sessions are addressed by their SHA-256 fingerprint (never the raw token).
+        let fp2 = crate::auth::secrets::sha256_hex(&sess2);
         let req = Request::builder()
             .method("DELETE")
-            .uri(format!("/v1/account/sessions/{}", sess2))
+            .uri(format!("/v1/account/sessions/{}", fp2))
             .header("cookie", format!("litegen_session={}", sess1))
             .header("x-csrf-token", csrf1)
             .body(Body::empty())
@@ -627,23 +639,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_account_session_for_other_user_returns_403() {
+    async fn delete_account_session_for_other_user_returns_404() {
         let db = build_db().await;
         let (_, sess1, csrf1) = seed_user_with_session(&db, Role::Member, "user1@test.com", None).await;
         let (_, sess2, _) = seed_user_with_session(&db, Role::Member, "user2@test.com", None).await;
 
         let app = build_account_router(build_state(db).await);
 
-        // user1 tries to delete user2's session
+        // user1 tries to delete user2's session by its fingerprint. Revocation
+        // only searches the caller's own sessions, so it resolves to 404 (and
+        // doesn't reveal that another user's session exists).
+        let fp2 = crate::auth::secrets::sha256_hex(&sess2);
         let req = Request::builder()
             .method("DELETE")
-            .uri(format!("/v1/account/sessions/{}", sess2))
+            .uri(format!("/v1/account/sessions/{}", fp2))
             .header("cookie", format!("litegen_session={}", sess1))
             .header("x-csrf-token", csrf1)
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     // ── P1: Password change revokes other sessions ─────────────────────────────

@@ -101,11 +101,14 @@ impl ProxyRouter {
         materialized: &MaterializedRequest,
         app_creds: Option<ProviderCredentials>,
         app_store: Option<Arc<dyn ImageStore>>,
+        // Tenant scope for the cache key (app id, falling back to org id). The
+        // cache is process-global, so this prevents cross-tenant cache hits.
+        tenant: Option<&str>,
     ) -> Result<ImageGenerationResponse, ProxyError> {
         let start = Instant::now();
 
         // 1. Check cache
-        if let Some(cached) = self.cache.get_image(&schema.id, base, extras).await {
+        if let Some(cached) = self.cache.get_image(tenant, &schema.id, base, extras).await {
             info!(model = %schema.id, "Cache hit for image generation");
             return Ok(cached);
         }
@@ -192,7 +195,7 @@ impl ProxyRouter {
 
         // 4. Store in cache
         self.cache
-            .put_image(&schema.id, base, extras, &response)
+            .put_image(tenant, &schema.id, base, extras, &response)
             .await;
 
         info!(

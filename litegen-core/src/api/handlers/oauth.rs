@@ -147,26 +147,52 @@ fn resolve_next_target(headers: &HeaderMap) -> String {
 ///       - hosted: AUTO-CREATE user (no password; role Owner) + org + app.
 ///       - single_tenant: invite-only → return `None` (caller emits 403).
 ///
+/// Outcome of resolving an OAuth identity to a local account.
+enum ResolveOutcome {
+    /// Resolved (existing, linked, or newly created) user — proceed to log in.
+    User(User),
+    /// single_tenant invite-only: no account exists and auto-create is disabled.
+    NotInvited,
+    /// A password (non-OAuth) account already owns this email. We refuse to
+    /// silently link the OAuth identity onto it — see the security note below.
+    EmailOwnedByPassword,
+}
+
 /// `email` MUST already be lowercased by the caller.
-/// Returns `Ok(Some(user))` on success, `Ok(None)` for the single-tenant
-/// invite-only rejection, and `Err` on a DB failure.
 async fn resolve_or_create_user(
     state: &Arc<AppState>,
     provider: &str,
     oauth_id: &str,
     email: &str,
-) -> Result<Option<User>, sqlx::Error> {
+) -> Result<ResolveOutcome, sqlx::Error> {
     if let Some(u) = state.db.get_user_by_oauth(provider, oauth_id).await? {
-        return Ok(Some(u));
+        return Ok(ResolveOutcome::User(u));
     }
     if let Some(u) = state.db.get_user_by_email(email).await? {
-        // Same email created via another provider (or password) → link this id.
-        state.db.link_oauth(&u.id, provider, oauth_id).await?;
-        return Ok(Some(u));
+        // Account-linking by email. The OAuth provider verifies the email it
+        // asserts (GitHub primary+verified / Google email_verified, checked by
+        // the caller), so linking a second OAuth provider onto an account that
+        // was ALSO created via a verified OAuth provider is safe — both sides'
+        // emails are provider-verified.
+        //
+        // A password-only account, however, has NO proof of email ownership
+        // (password signup performs no email verification). Silently linking
+        // the OAuth identity onto it would enable OAuth pre-account-hijacking:
+        // an attacker pre-registers `victim@example.com` via password signup,
+        // then the victim's later "Sign in with Google" gets bound to the
+        // attacker's account. So we refuse to auto-link onto a password-only
+        // account; the user must sign in with their password (and may link the
+        // provider explicitly from account settings).
+        let already_oauth = u.oauth_github_id.is_some() || u.oauth_google_id.is_some();
+        if already_oauth {
+            state.db.link_oauth(&u.id, provider, oauth_id).await?;
+            return Ok(ResolveOutcome::User(u));
+        }
+        return Ok(ResolveOutcome::EmailOwnedByPassword);
     }
     if state.mode != Mode::Hosted {
         // single_tenant is invite-only: an admin must create the account first.
-        return Ok(None);
+        return Ok(ResolveOutcome::NotInvited);
     }
 
     // Hosted auto-create: new owner user with the matching oauth id.
@@ -186,7 +212,7 @@ async fn resolve_or_create_user(
     state.db.create_user(&user).await?;
     // Provision org + owner membership + first app (shared with password signup).
     create_org_for_user(&state.db, &user.id, email, None).await?;
-    Ok(Some(user))
+    Ok(ResolveOutcome::User(user))
 }
 
 /// Create a session for `user_id`, set the session + csrf cookies, clear the
@@ -258,8 +284,17 @@ async fn apply_invitation_oauth(
         Ok(Some(u)) => u,
         Ok(None) => match state.db.get_user_by_email(email).await {
             Ok(Some(u)) => {
-                let _ = state.db.link_oauth(&u.id, provider, oauth_id).await;
-                u
+                // Same anti-pre-hijacking rule as resolve_or_create_user: only
+                // auto-link onto an account already backed by a verified OAuth
+                // provider. A password-only account's email is unverified here,
+                // so refuse to silently bind the OAuth identity onto it — the
+                // invitee can accept by signing in with their password instead.
+                if u.oauth_github_id.is_some() || u.oauth_google_id.is_some() {
+                    let _ = state.db.link_oauth(&u.id, provider, oauth_id).await;
+                    u
+                } else {
+                    return Err(invite_error_redirect(invite_token, "email_password_account"));
+                }
             }
             Ok(None) => {
                 let now = chrono::Utc::now();
@@ -289,18 +324,22 @@ async fn apply_invitation_oauth(
         return Err(invite_error_redirect(invite_token, "account_inactive"));
     }
 
+    // Atomically consume the invite BEFORE mutating org membership. If we added
+    // the member first and then lost the single-use race (Ok(false)) or hit a DB
+    // error, the user would already be in the org yet receive an
+    // "invitation_invalid" redirect — joined-but-told-it-failed. Consuming first
+    // means only the winner proceeds to add membership.
+    match state.db.mark_invitation_used(invite_token).await {
+        Ok(true) => {}
+        Ok(false) => return Err(invite_error_redirect(invite_token, "invitation_invalid")),
+        Err(e) => return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string())),
+    }
+
     // Add membership (idempotent).
     if state.db.get_membership(&inv.org_id, &user.id).await.ok().flatten().is_none() {
         if let Err(e) = state.db.add_org_member(&inv.org_id, &user.id, inv.role).await {
             return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()));
         }
-    }
-
-    // Atomically consume — if we lost a race, treat as already used.
-    match state.db.mark_invitation_used(invite_token).await {
-        Ok(true) => {}
-        Ok(false) => return Err(invite_error_redirect(invite_token, "invitation_invalid")),
-        Err(e) => return Err(error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string())),
     }
 
     Ok(user.id)
@@ -561,12 +600,19 @@ pub async fn handle_github_callback(
     //    mode, auto-create account + org + first app. single_tenant stays
     //    invite-only (403 account_not_invited).
     let user = match resolve_or_create_user(state, "github", &gh_id, &email).await {
-        Ok(Some(u)) => u,
-        Ok(None) => {
+        Ok(ResolveOutcome::User(u)) => u,
+        Ok(ResolveOutcome::NotInvited) => {
             return error_resp_clear_state(
                 StatusCode::FORBIDDEN,
                 "account_not_invited",
                 "No account exists for this email. Ask an admin to invite you.",
+            );
+        }
+        Ok(ResolveOutcome::EmailOwnedByPassword) => {
+            return error_resp_clear_state(
+                StatusCode::CONFLICT,
+                "email_password_account",
+                "An account with this email already exists. Sign in with your password, then link this provider from account settings.",
             );
         }
         Err(e) => return error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
@@ -805,12 +851,19 @@ pub async fn handle_google_callback(
     //    mode, auto-create account + org + first app. single_tenant stays
     //    invite-only (403 account_not_invited).
     let user = match resolve_or_create_user(state, "google", &google_id, &email).await {
-        Ok(Some(u)) => u,
-        Ok(None) => {
+        Ok(ResolveOutcome::User(u)) => u,
+        Ok(ResolveOutcome::NotInvited) => {
             return error_resp_clear_state(
                 StatusCode::FORBIDDEN,
                 "account_not_invited",
                 "No account exists for this email. Ask an admin to invite you.",
+            );
+        }
+        Ok(ResolveOutcome::EmailOwnedByPassword) => {
+            return error_resp_clear_state(
+                StatusCode::CONFLICT,
+                "email_password_account",
+                "An account with this email already exists. Sign in with your password, then link this provider from account settings.",
             );
         }
         Err(e) => return error_resp_clear_state(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
@@ -1736,8 +1789,10 @@ mod tests {
             ..Default::default()
         };
         let state = build_hosted_state_with_oauth(oauth).await;
-        // Pre-existing user with this email, no github id.
-        create_user(&state, "linker@example.com", None, None).await;
+        // Pre-existing user with this email, already backed by a VERIFIED OAuth
+        // provider (google). Linking a second verified provider (github) is safe
+        // because both emails are provider-verified.
+        create_user(&state, "linker@example.com", None, Some("google-linker")).await;
 
         let app = build_github_router(state.clone());
         let req = Request::builder()
@@ -1753,6 +1808,65 @@ mod tests {
         let linked = state.db.get_user_by_oauth("github", "4242").await.unwrap()
             .expect("github id should be linked to the existing user");
         assert_eq!(linked.email, "linker@example.com");
+    }
+
+    #[tokio::test]
+    async fn oauth_password_account_email_not_auto_linked() {
+        // Security regression (OAuth pre-account-hijacking): an account that is
+        // NOT backed by a verified OAuth provider (here: no password + no oauth,
+        // i.e. an unverified-email account) must NOT have an OAuth identity
+        // silently linked to it by email match. Expect 409, and the github id
+        // must remain unlinked.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/login/oauth/access_token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "gh-test-token", "token_type": "bearer", "scope": "user:email"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 9001, "login": "victim" })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user/emails"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"email": "victim@example.com", "primary": true, "verified": true}
+            ])))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let oauth = OAuthConfig {
+            github: Some(ProviderConfig {
+                client_id: "gh-id".to_string(),
+                client_secret: "gh-secret".to_string(),
+            }),
+            github_token_base: Some(server_uri.clone()),
+            github_api_base: Some(server_uri.clone()),
+            ..Default::default()
+        };
+        let state = build_hosted_state_with_oauth(oauth).await;
+        // Pre-seeded account with the victim's email but no verified OAuth id.
+        create_user(&state, "victim@example.com", None, None).await;
+
+        let app = build_github_router(state.clone());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/auth/oauth/github/callback?code=testcode&state=teststate")
+            .header("cookie", "litegen_oauth_state=teststate")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT, "must refuse to auto-link onto an unverified account");
+
+        // The github id must NOT have been linked to the pre-seeded account.
+        assert!(
+            state.db.get_user_by_oauth("github", "9001").await.unwrap().is_none(),
+            "github id must remain unlinked",
+        );
     }
 
     // ─── Unified /auth/redirect callback ────────────────────────────────────────

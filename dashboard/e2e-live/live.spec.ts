@@ -55,18 +55,31 @@ test('LIVE hosted multi-tenant: signup -> org -> app -> id/secret key -> BYO cre
   const publicId = (await page.locator('[data-testid="key-public-id"]').textContent())!.trim();
   expect(publicId.startsWith('pk_live_')).toBe(true);
 
-  // The minted secret authenticates over the real HTTP API (same origin via nginx).
-  const me = await page.request.get('/v1/auth/me');
-  // (session-cookie call; just confirms the proxied API is reachable)
-  expect([200, 401]).toContain(me.status());
+  // The proxied API is mounted under /api (Caddy strips the prefix before
+  // reverse-proxying to litegen-core); a bare `/v1/...` path would instead be
+  // served the SPA's index.html (200) and never reach the API. page.request
+  // shares the signup session cookie, so /api/v1/auth/me must return 200 and
+  // identify *this* owner.
+  const me = await page.request.get('/api/v1/auth/me');
+  expect(me.status()).toBe(200);
+  const meBody = await me.json();
+  expect(meBody.user.email).toBe(ownerAEmail);
 
   // ─── 4. Store a BYO provider credential; assert the secret never renders back ──
+  // The form is catalog-driven: pick a provider from the (async-loaded) select,
+  // fill its credential field(s), save, and confirm the row appears.
   const rawCredSecret = `sk-byo-${rand()}`;
   await page.goto('/organization');
-  await page.locator('[data-testid="provider-cred-provider"]').fill('mock');
-  await page.locator('[data-testid="provider-cred-secret"]').fill(rawCredSecret);
+  const providerSelect = page.locator('[data-testid="provider-cred-provider"]');
+  await expect(providerSelect).toBeEnabled({ timeout: 20_000 }); // waits for the catalog fetch
+  const provider = (await providerSelect.locator('option').first().getAttribute('value'))!;
+  await providerSelect.selectOption(provider);
+  const credFields = page.locator('[data-testid^="provider-cred-field-"][data-testid$="-0"]');
+  await expect(credFields.first()).toBeVisible({ timeout: 10_000 });
+  const fieldCount = await credFields.count();
+  for (let i = 0; i < fieldCount; i++) await credFields.nth(i).fill(rawCredSecret);
   await page.locator('[data-testid="provider-cred-add"]').click();
-  await expect(page.locator('[data-testid="provider-cred-row-mock"]')).toBeVisible({
+  await expect(page.locator(`[data-testid="provider-cred-row-${provider}"]`)).toBeVisible({
     timeout: 20_000,
   });
   await expect(page.locator('body')).not.toContainText(rawCredSecret);

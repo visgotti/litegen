@@ -311,7 +311,7 @@ mod tests {
         let materialized = empty_materialized();
 
         let result = router
-            .generate_image(&schema, &base, &extras, &materialized, None, None)
+            .generate_image(&schema, &base, &extras, &materialized, None, None, None)
             .await;
 
         assert!(
@@ -377,7 +377,7 @@ mod tests {
         let materialized = empty_materialized();
 
         let result = router
-            .generate_image(&schema, &base, &extras, &materialized, None, None)
+            .generate_image(&schema, &base, &extras, &materialized, None, None, None)
             .await;
 
         assert!(result.is_ok(), "Expected success, got: {:?}", result.err());
@@ -426,7 +426,7 @@ mod tests {
         let extras = make_image_extras();
         let materialized = empty_materialized();
 
-        let result = router.generate_image(&schema, &base, &extras, &materialized, None, None).await;
+        let result = router.generate_image(&schema, &base, &extras, &materialized, None, None, None).await;
         assert!(result.is_ok(), "Expected success after retries, got: {:?}", result.err());
 
         let attempts = counter.load(Ordering::SeqCst);
@@ -462,15 +462,43 @@ mod tests {
         let materialized = empty_materialized();
 
         // First call — provider is invoked
-        let r1 = router.generate_image(&schema, &base, &extras, &materialized, None, None).await;
+        let r1 = router.generate_image(&schema, &base, &extras, &materialized, None, None, None).await;
         assert!(r1.is_ok(), "First call failed: {:?}", r1.err());
 
         // Second call with same prompt — should hit cache
-        let r2 = router.generate_image(&schema, &base, &extras, &materialized, None, None).await;
+        let r2 = router.generate_image(&schema, &base, &extras, &materialized, None, None, None).await;
         assert!(r2.is_ok(), "Second call failed: {:?}", r2.err());
 
         let count = call_counter.load(Ordering::SeqCst);
         assert_eq!(count, 1, "Provider should have been called once (cache hit on 2nd call), got {}", count);
+    }
+
+    // ─── Cache is isolated per tenant (no cross-tenant cache hits) ─────────────
+
+    #[tokio::test]
+    async fn cache_isolates_by_tenant() {
+        let (counting_provider, call_counter) = CountingProvider::new("mock");
+        let config = Arc::new(AppConfig::default());
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_mock_image(Arc::new(counting_provider)).await;
+        let cache_config = CacheGlobalConfig { enabled: true, default_ttl_seconds: 3600, max_items: 100 };
+        let cache = Arc::new(GenerationCache::new(&cache_config));
+        let router = ProxyRouter::new(registry, cache, config, Arc::new(LocalStore));
+
+        let schema = shipped_schema("mock/image-gen");
+        let base = make_base("same prompt across tenants", "mock/image-gen");
+        let extras = make_image_extras();
+        let materialized = empty_materialized();
+
+        // Tenant A: provider invoked, result cached under app-a's key.
+        assert!(router.generate_image(&schema, &base, &extras, &materialized, None, None, Some("app-a")).await.is_ok());
+        // Tenant B, identical request: MUST NOT receive A's cached result.
+        assert!(router.generate_image(&schema, &base, &extras, &materialized, None, None, Some("app-b")).await.is_ok());
+        // Tenant A again: hits A's own cache entry (no new provider call).
+        assert!(router.generate_image(&schema, &base, &extras, &materialized, None, None, Some("app-a")).await.is_ok());
+
+        let count = call_counter.load(Ordering::SeqCst);
+        assert_eq!(count, 2, "one provider call per distinct tenant (A,B); A's 2nd is a cache hit; got {}", count);
     }
 
     // ─── G2.3: Storage write of generated output bytes ────────────────────────
@@ -497,7 +525,7 @@ mod tests {
         let extras = make_image_extras();
         let materialized = empty_materialized();
 
-        let result = router.generate_image(&schema, &base, &extras, &materialized, None, None).await;
+        let result = router.generate_image(&schema, &base, &extras, &materialized, None, None, None).await;
         assert!(result.is_ok(), "Expected success, got: {:?}", result.err());
 
         let writes = write_counter.load(Ordering::SeqCst);
@@ -527,8 +555,8 @@ mod tests {
         extras_b.size = Some("1024x1024".into());
         let materialized = empty_materialized();
 
-        let _ = router.generate_image(&schema, &base, &extras_a, &materialized, None, None).await.unwrap();
-        let _ = router.generate_image(&schema, &base, &extras_b, &materialized, None, None).await.unwrap();
+        let _ = router.generate_image(&schema, &base, &extras_a, &materialized, None, None, None).await.unwrap();
+        let _ = router.generate_image(&schema, &base, &extras_b, &materialized, None, None, None).await.unwrap();
         // Different size → cache miss → provider called twice.
         assert_eq!(call_counter.load(Ordering::SeqCst), 2,
             "Different size must NOT share a cache entry");
@@ -609,7 +637,7 @@ mod tests {
         // First two calls: "always-failing" is tried (and fails), "mock" picks up.
         // Each call records one failure on "always-failing".
         for i in 0..2 {
-            let r = router.generate_image(&schema, &base, &extras, &materialized, None, None).await;
+            let r = router.generate_image(&schema, &base, &extras, &materialized, None, None, None).await;
             assert!(r.is_ok(), "Call {} should succeed via fallback to mock: {:?}", i, r.err());
         }
 
@@ -620,7 +648,7 @@ mod tests {
         );
 
         // Third call: breaker is open, "always-failing" is skipped, "mock" serves directly.
-        let r = router.generate_image(&schema, &base, &extras, &materialized, None, None).await;
+        let r = router.generate_image(&schema, &base, &extras, &materialized, None, None, None).await;
         assert!(r.is_ok(), "Third call should succeed immediately via fallback (breaker open): {:?}", r.err());
         let resp = r.unwrap();
         assert_eq!(resp.provider, "mock", "Should route to mock (always-failing breaker is open)");

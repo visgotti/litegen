@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::api::middleware::{AppState, KeyContext};
 use crate::auth::permissions::Permission;
 use crate::auth::tokens::generate_session_token;
+use crate::config::Mode;
 use crate::types::{Invitation, Role, User};
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -36,6 +37,53 @@ fn forbidden_perm(perm: &str) -> Response {
         "forbidden_permission",
         &format!("Permission '{}' required", perm),
     )
+}
+
+/// The platform admin (master key) is the only principal bound to no tenant:
+/// no session user, no DB API key, and no session id. A tenant session always
+/// carries `user`/`session_id`; a DB-backed API key always carries `key_id`.
+/// In hosted mode there is no dev/no-auth bypass, so this uniquely identifies
+/// the master key.
+fn is_platform_admin(ctx: &KeyContext) -> bool {
+    ctx.user.is_none() && ctx.key_id.is_none() && ctx.session_id.is_none()
+}
+
+/// Authorize the global, NON-org-scoped user-management endpoints
+/// (`GET /v1/users`, `PATCH`/`DELETE /v1/users/{id}`,
+/// `POST /v1/users/transfer-owner`). These operate on the platform-wide
+/// `users` table.
+///
+/// In hosted (multi-tenant) mode every tenant is the Owner of its own org and
+/// therefore carries `User*Any`/`SystemTransferOwner` permissions. If these
+/// endpoints only checked `ctx.permissions` (as they previously did), any
+/// signed-up tenant could read, modify, deactivate, or transfer ownership of
+/// users belonging to *other* tenants. So in hosted mode they are restricted
+/// to the platform admin (master key); tenants manage their own members via
+/// `/v1/orgs/{id}/members`.
+///
+/// In single-tenant mode the behavior is unchanged: the owner session manages
+/// users directly, gated by the role-derived permission.
+fn authorize_global_user_admin(
+    state: &AppState,
+    ctx: &KeyContext,
+    perm: Permission,
+) -> Result<(), Response> {
+    match state.mode {
+        Mode::Hosted => {
+            if is_platform_admin(ctx) {
+                Ok(())
+            } else {
+                Err(forbidden_perm("platform_admin"))
+            }
+        }
+        Mode::SingleTenant => {
+            if ctx.permissions.contains(&perm) {
+                Ok(())
+            } else {
+                Err(forbidden_perm(perm.as_str()))
+            }
+        }
+    }
 }
 
 /// Public user view returned from user management endpoints.
@@ -115,8 +163,8 @@ pub async fn list_users(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<KeyContext>,
 ) -> Response {
-    if !ctx.permissions.contains(&Permission::UserReadAny) {
-        return forbidden_perm("user:read:any");
+    if let Err(resp) = authorize_global_user_admin(&state, &ctx, Permission::UserReadAny) {
+        return resp;
     }
     match state.db.list_users().await {
         Ok(users) => {
@@ -477,8 +525,8 @@ pub async fn patch_user(
     Path(id): Path<String>,
     Json(body): Json<PatchUserRequest>,
 ) -> Response {
-    if !ctx.permissions.contains(&Permission::UserWriteAny) {
-        return forbidden_perm("user:write:any");
+    if let Err(resp) = authorize_global_user_admin(&state, &ctx, Permission::UserWriteAny) {
+        return resp;
     }
 
     // Load target user
@@ -543,8 +591,8 @@ pub async fn delete_user(
     Extension(ctx): Extension<KeyContext>,
     Path(id): Path<String>,
 ) -> Response {
-    if !ctx.permissions.contains(&Permission::UserDeleteAny) {
-        return forbidden_perm("user:delete:any");
+    if let Err(resp) = authorize_global_user_admin(&state, &ctx, Permission::UserDeleteAny) {
+        return resp;
     }
 
     // Load target user
@@ -602,8 +650,8 @@ pub async fn transfer_owner(
     Extension(ctx): Extension<KeyContext>,
     Json(body): Json<TransferOwnerRequest>,
 ) -> Response {
-    if !ctx.permissions.contains(&Permission::SystemTransferOwner) {
-        return forbidden_perm("system:transfer_owner");
+    if let Err(resp) = authorize_global_user_admin(&state, &ctx, Permission::SystemTransferOwner) {
+        return resp;
     }
 
     // Verify target exists and is active
@@ -812,6 +860,69 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.is_array());
         assert_eq!(json.as_array().unwrap().len(), 1);
+    }
+
+    // ── Hosted mode: global user endpoints are platform-admin (master key) only ──
+
+    async fn build_state_hosted(db: Arc<SqliteDatabase>) -> Arc<AppState> {
+        let mut state = build_state(db).await;
+        Arc::get_mut(&mut state).expect("unique Arc").mode = crate::config::Mode::Hosted;
+        state
+    }
+
+    #[tokio::test]
+    async fn hosted_tenant_owner_cannot_list_global_users() {
+        // Regression for the cross-tenant BOLA: in hosted mode every signup is a
+        // global Role::Owner, so a permission-only check let any tenant dump the
+        // platform-wide users table. A tenant session must now be rejected.
+        let db = build_db().await;
+        let (_, owner_sess, _) = seed_user_with_session(&db, Role::Owner).await;
+        let app = build_users_router(build_state_hosted(db).await);
+
+        let req = Request::builder()
+            .uri("/v1/users")
+            .header("cookie", format!("litegen_session={}", owner_sess))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn hosted_tenant_owner_cannot_transfer_global_owner() {
+        let db = build_db().await;
+        let (_, owner_sess, csrf) = seed_user_with_session(&db, Role::Owner).await;
+        let (victim, _, _) = seed_user_with_session(&db, Role::Admin).await;
+        let app = build_users_router(build_state_hosted(db).await);
+
+        let body = serde_json::to_vec(&json!({ "new_owner_id": victim.id })).unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/users/transfer-owner")
+            .header("cookie", format!("litegen_session={}", owner_sess))
+            .header("x-csrf-token", csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn hosted_master_key_can_list_users() {
+        // The platform admin (master key) is still allowed to manage the global
+        // users table in hosted mode.
+        let db = build_db().await;
+        let _ = seed_user_with_session(&db, Role::Owner).await;
+        let app = build_users_router(build_state_hosted(db).await);
+
+        let req = Request::builder()
+            .uri("/v1/users")
+            .header("authorization", "Bearer master")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     // ── POST /v1/users (invite) ───────────────────────────────────────────────

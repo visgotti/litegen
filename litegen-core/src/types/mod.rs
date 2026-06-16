@@ -746,6 +746,25 @@ pub struct UpdateApiKeyRequest {
     pub is_active: Option<bool>,
 }
 
+/// Response for `POST /v1/keys/{id}/rotate`. Carries the freshly-minted secret,
+/// which is returned exactly once (it is never persisted or shown again).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RotatedKeyResponse {
+    pub id: Uuid,
+    /// Public key id, e.g. "pk_live_…".
+    pub public_id: String,
+    /// The new secret, e.g. "sk_live_…". Shown only at rotation time.
+    pub key: String,
+    pub prefix: String,
+    pub name: String,
+    /// CSV of scopes carried over from the rotated key.
+    pub scopes: String,
+    pub token_quota: Option<f64>,
+    pub rpm_limit: Option<u32>,
+    pub webhook_url: Option<String>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 // ─── Typed API Response Wrappers ────────────────────────────────────────────
 
 /// Response for `GET /health/live`.

@@ -174,7 +174,13 @@ pub async fn generate_image(
     // Resolve the calling app's BYO image store (None → global store fallback).
     let app_store = resolve_app_image_store(&state, &key_ctx).await;
 
-    match state.router.generate_image(&validated.schema, &validated.request.base, &extras, &materialized, app_creds, app_store).await {
+    // Tenant scope for the (process-global) cache. Composed so distinct
+    // principals can NEVER share a bucket: org+app keeps an app-scoped request
+    // separate from a sibling app and from the org scope, and when no tenant is
+    // resolved we fall back to the calling principal (key/user/master) instead
+    // of a shared global bucket. See `cache_scope`.
+    let cache_scope = key_ctx.as_ref().map(cache_scope);
+    match state.router.generate_image(&validated.schema, &validated.request.base, &extras, &materialized, app_creds, app_store, cache_scope.as_deref()).await {
         Ok(response) => {
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
@@ -495,6 +501,7 @@ pub async fn generate_video(
     params(("id" = String, Path, description = "Video generation ID")),
     responses(
         (status = 200, description = "Current status", body = VideoGenerationResponse),
+        (status = 403, description = "Forbidden (no active org, or read:own boundary)", body = ErrorResponse),
         (status = 404, description = "Not found", body = ErrorResponse),
     ),
     tag = "Videos"
@@ -515,6 +522,15 @@ pub async fn get_video_status(
         if gen.org_id.as_deref() != Some(ctx_org) {
             return (StatusCode::NOT_FOUND, Json(error_response("Not found", 404))).into_response();
         }
+        // Read:own boundary (same as get_generation) when the row is persisted.
+        if let Err(resp) = authorize_generation_for_session(
+            &state, key_ctx.as_ref(), &gen,
+            crate::auth::permissions::Permission::GenerationReadAny,
+            crate::auth::permissions::Permission::GenerationReadOwn,
+            "generation:read:own",
+        ).await {
+            return resp;
+        }
     }
     match state.router.get_video_status(&id).await {
         Ok(resp) => (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response(),
@@ -526,6 +542,7 @@ pub async fn get_video_status(
 }
 
 /// GET /v1/generations/{id} — Poll DB-backed generation status.
+/// Live: `curl https://app.litegen.ai/api/v1/generations/litegen-vid-... -H "Authorization: Bearer sk_live_..."`
 #[utoipa::path(
     get,
     path = "/v1/generations/{id}",
@@ -535,7 +552,7 @@ pub async fn get_video_status(
         (status = 403, description = "Forbidden", body = ErrorResponse),
         (status = 404, description = "Not found", body = ErrorResponse),
     ),
-    tag = "Videos"
+    tag = "Generations"
 )]
 pub async fn get_generation(
     State(state): State<Arc<AppState>>,
@@ -549,6 +566,16 @@ pub async fn get_generation(
     };
     match state.db.get_generation(&id).await {
         Ok(Some(gen)) if gen.org_id.as_deref() == Some(ctx_org) => {
+            // Enforce the same read:own boundary as list_generations so a member
+            // can't fetch another member's generation (result_url/metadata) by id.
+            if let Err(resp) = authorize_generation_for_session(
+                &state, key_ctx.as_ref(), &gen,
+                crate::auth::permissions::Permission::GenerationReadAny,
+                crate::auth::permissions::Permission::GenerationReadOwn,
+                "generation:read:own",
+            ).await {
+                return resp;
+            }
             (StatusCode::OK, Json(serde_json::to_value(&gen).unwrap())).into_response()
         }
         Ok(_) => (StatusCode::NOT_FOUND, Json(error_response("Generation not found", 404))).into_response(),
@@ -679,6 +706,7 @@ fn extract_sizes(s: &crate::capabilities::ModelSchema) -> Vec<String> {
 
 /// GET /v1/providers — Catalog of supported providers and the credential fields
 /// each one needs. Drives the dashboard's dynamic credential form.
+/// Live: `curl https://app.litegen.ai/api/v1/providers -H "Authorization: Bearer sk_live_..."`
 #[utoipa::path(
     get,
     path = "/v1/providers",
@@ -739,6 +767,7 @@ pub async fn liveness() -> impl IntoResponse {
 /// GET /health/ready — Readiness probe.
 /// Returns 200 only if DB is reachable and at least one provider is healthy.
 /// Returns 503 otherwise. No auth required.
+/// Live: `curl https://app.litegen.ai/api/health/ready`
 #[utoipa::path(
     get,
     path = "/health/ready",
@@ -840,6 +869,32 @@ pub struct CreateApiKeyRequest {
 
 fn default_key_scopes() -> String { "generate,read".to_string() }
 
+/// SSRF guard for tenant-supplied webhook URLs. In hosted (multi-tenant) mode
+/// the URL is attacker-controlled and the server POSTs to it (poller +
+/// test-webhook), so it must not target a private/loopback/link-local address
+/// (e.g. the cloud metadata endpoint). In single-tenant mode the operator is
+/// trusted and may legitimately target internal hosts, so any URL is allowed.
+/// Returns an error `Response` to send to the client when the URL is rejected.
+async fn validate_tenant_webhook_url(state: &AppState, url: &str) -> Result<(), axum::response::Response> {
+    if state.mode != crate::config::Mode::Hosted || url.is_empty() {
+        return Ok(());
+    }
+    if let Err(reason) = crate::util::ssrf::validate_public_url(url).await {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": {
+                    "code": "invalid_webhook_url",
+                    "message": format!("webhook_url is not allowed: {reason}"),
+                    "type": "invalid_request_error"
+                }
+            })),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
 /// POST /v1/keys — Create a new API key.
 #[utoipa::path(
     post,
@@ -880,6 +935,14 @@ pub async fn create_api_key(
         Some(a) => a,
         None => return forbidden_no_org(),
     };
+
+    // SSRF guard: reject a tenant-supplied webhook URL that targets an internal
+    // address (hosted mode only).
+    if let Some(wh) = request.webhook_url.as_deref() {
+        if let Err(resp) = validate_tenant_webhook_url(&state, wh).await {
+            return resp;
+        }
+    }
 
     // Mint a pk_live_/sk_live_ id+secret pair. The secret_hash is what auth looks up.
     let kp = crate::auth::secrets::generate_key_pair();
@@ -1072,6 +1135,7 @@ pub async fn revoke_api_key(
 }
 
 /// GET /v1/keys/:id — Get a single API key by ID.
+/// Live: `curl https://app.litegen.ai/api/v1/keys/{id} -H "Authorization: Bearer sk_live_..."`
 #[utoipa::path(
     get,
     path = "/v1/keys/{id}",
@@ -1131,6 +1195,7 @@ pub async fn get_api_key_handler(
 }
 
 /// PATCH /v1/keys/:id — Update an API key's quota/rpm/scopes/etc.
+/// Live: `curl -X PATCH https://app.litegen.ai/api/v1/keys/{id} -H "Authorization: Bearer sk_live_..." -d '{"rpm_limit":120}'`
 #[utoipa::path(
     patch,
     path = "/v1/keys/{id}",
@@ -1178,6 +1243,13 @@ pub async fn patch_api_key_handler(
             }
         }
     }
+    // SSRF guard: reject a tenant-supplied webhook URL that targets an internal
+    // address (hosted mode only).
+    if let Some(wh) = req.webhook_url.as_deref() {
+        if let Err(resp) = validate_tenant_webhook_url(&state, wh).await {
+            return resp;
+        }
+    }
     match state.db.update_api_key(&id, &req).await {
         Ok(Some(key)) => {
             let detail = ApiKeyDetail {
@@ -1212,6 +1284,20 @@ pub async fn patch_api_key_handler(
 // ─── Generation List & Cancel ───────────────────────────────────────────────
 
 /// GET /v1/generations — Paginated list of generations.
+/// Live: `curl https://app.litegen.ai/api/v1/generations?page=1&per_page=50 -H "Authorization: Bearer sk_live_..."`
+#[utoipa::path(
+    get,
+    path = "/v1/generations",
+    params(
+        ("page" = Option<u32>, Query, description = "Page number (default 1)"),
+        ("per_page" = Option<u32>, Query, description = "Items per page (default 50)"),
+    ),
+    responses(
+        (status = 200, description = "Paginated generations", body = PaginatedResponse<crate::types::Generation>),
+        (status = 403, description = "Forbidden", body = ErrorResponse),
+    ),
+    tag = "Generations"
+)]
 pub async fn list_generations(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<KeyContext>,
@@ -1290,12 +1376,27 @@ pub async fn list_generations(
     (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CancelGenerationBody {
+    /// Target status; only `"cancelled"` is honored.
     pub status: String,
 }
 
 /// PATCH /v1/generations/{id} — Soft-cancel a generation.
+/// Live: `curl -X PATCH https://app.litegen.ai/api/v1/generations/{id} -H "Authorization: Bearer sk_live_..." -d '{"status":"cancelled"}'`
+#[utoipa::path(
+    patch,
+    path = "/v1/generations/{id}",
+    params(("id" = String, Path, description = "Generation ID (litegen-vid-...)")),
+    request_body = CancelGenerationBody,
+    responses(
+        (status = 200, description = "Cancelled generation", body = crate::types::Generation),
+        (status = 403, description = "Forbidden", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 409, description = "Not in a cancellable state", body = ErrorResponse),
+    ),
+    tag = "Generations"
+)]
 pub async fn cancel_generation(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<KeyContext>,
@@ -1308,14 +1409,25 @@ pub async fn cancel_generation(
         None => return forbidden_no_org(),
     };
     // First fetch the generation to verify it belongs to the caller's org.
-    match state.db.get_generation(&id).await {
-        Ok(Some(g)) if g.org_id.as_deref() == Some(ctx_org) => {}
+    let gen = match state.db.get_generation(&id).await {
+        Ok(Some(g)) if g.org_id.as_deref() == Some(ctx_org) => g,
         Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Generation not found", 404))).into_response(),
         Err(e) => {
             error!(error = %e, "Failed to get generation for cancel");
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
         }
     };
+
+    // Cancelling is a state change on another principal's job: gate session users
+    // on generation:cancel:any, or cancel:own for a generation they own.
+    if let Err(resp) = authorize_generation_for_session(
+        &state, Some(&ctx), &gen,
+        crate::auth::permissions::Permission::GenerationCancelAny,
+        crate::auth::permissions::Permission::GenerationCancelOwn,
+        "generation:cancel:own",
+    ).await {
+        return resp;
+    }
 
     // Attempt the cancel — returns None if status wasn't pending/processing.
     match state.db.cancel_generation(&id).await {
@@ -1345,6 +1457,17 @@ pub async fn cancel_generation(
 
 /// POST /v1/keys/{id}/rotate — Issue a new secret for an existing key in place.
 /// Keeps the same row id and all settings; the new `sk_live_` secret is returned once.
+/// Live: `curl -X POST https://app.litegen.ai/api/v1/keys/{id}/rotate -H "Authorization: Bearer sk_live_..."`
+#[utoipa::path(
+    post,
+    path = "/v1/keys/{id}/rotate",
+    params(("id" = Uuid, Path, description = "API key ID")),
+    responses(
+        (status = 200, description = "Rotated key with the new one-time secret", body = crate::types::RotatedKeyResponse),
+        (status = 404, description = "Key not found", body = ErrorResponse),
+    ),
+    tag = "Admin"
+)]
 pub async fn rotate_api_key(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
@@ -1357,14 +1480,26 @@ pub async fn rotate_api_key(
     };
 
     // 1. Fetch the existing key and verify it belongs to the caller's org.
-    let _existing = match state.db.get_api_key(&id).await {
+    let existing = match state.db.get_api_key(&id).await {
         Ok(Some(k)) if k.org_id.as_deref() == Some(ctx_org) => k,
         Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
         Err(e) => {
             error!(error = %e, "Failed to fetch key for rotate");
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
         }
-    }; // fetched only to verify org ownership
+    };
+
+    // Rotation mints a new working secret — gate it like patch/revoke: session
+    // users need key:write:any, or key:write:own on a key they own. (Without
+    // this, any session — including a read-only Viewer — could rotate any key
+    // in the org, since all sessions carry the Admin scope.)
+    use crate::auth::permissions::Permission;
+    if let Err(resp) = authorize_key_for_session(
+        key_ctx.as_ref(), &existing,
+        Permission::KeyWriteAny, Permission::KeyWriteOwn, "key:write:own",
+    ) {
+        return resp;
+    }
 
     // 2. Mint a fresh id/secret pair and update the same row in place.
     let kp = crate::auth::secrets::generate_key_pair();
@@ -1388,23 +1523,24 @@ pub async fn rotate_api_key(
     );
 
     // 3. Return the new secret (only time it's visible).
-    (StatusCode::OK, Json(serde_json::json!({
-        "id": rotated.id,
-        "public_id": kp.public_id,
-        "key": kp.secret,
-        "prefix": rotated.key_prefix,
-        "name": rotated.name,
-        "scopes": rotated.scopes,
-        "token_quota": rotated.token_quota,
-        "rpm_limit": rotated.rpm_limit,
-        "webhook_url": rotated.webhook_url,
-        "expires_at": rotated.expires_at,
-    }))).into_response()
+    let body = crate::types::RotatedKeyResponse {
+        id: rotated.id,
+        public_id: kp.public_id,
+        key: kp.secret,
+        prefix: rotated.key_prefix,
+        name: rotated.name,
+        scopes: rotated.scopes,
+        token_quota: rotated.token_quota,
+        rpm_limit: rotated.rpm_limit,
+        webhook_url: rotated.webhook_url,
+        expires_at: rotated.expires_at,
+    };
+    (StatusCode::OK, Json(serde_json::to_value(body).unwrap())).into_response()
 }
 
 // ─── Key Test-Webhook ────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct WebhookTestResult {
     pub delivered: bool,
     pub status_code: Option<u16>,
@@ -1412,6 +1548,18 @@ pub struct WebhookTestResult {
 }
 
 /// POST /v1/keys/{id}/test-webhook — Fire one synthetic webhook and return the result.
+/// Live: `curl -X POST https://app.litegen.ai/api/v1/keys/{id}/test-webhook -H "Authorization: Bearer sk_live_..."`
+#[utoipa::path(
+    post,
+    path = "/v1/keys/{id}/test-webhook",
+    params(("id" = Uuid, Path, description = "API key ID")),
+    responses(
+        (status = 200, description = "Delivery result (delivered=false if the endpoint rejected it)", body = WebhookTestResult),
+        (status = 400, description = "No webhook_url configured on the key", body = ErrorResponse),
+        (status = 404, description = "Key not found", body = ErrorResponse),
+    ),
+    tag = "Admin"
+)]
 pub async fn test_webhook(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
@@ -1433,6 +1581,16 @@ pub async fn test_webhook(
         }
     };
 
+    // Firing a webhook is a write-ish action on the key: gate session users.
+    if let Err(resp) = authorize_key_for_session(
+        key_ctx.as_ref(), &key,
+        crate::auth::permissions::Permission::KeyTestWebhookAny,
+        crate::auth::permissions::Permission::KeyTestWebhookOwn,
+        "key:test_webhook:own",
+    ) {
+        return resp;
+    }
+
     let webhook_url = match key.webhook_url.as_deref().filter(|u| !u.is_empty()) {
         Some(u) => u.to_string(),
         None => {
@@ -1445,6 +1603,13 @@ pub async fn test_webhook(
             }))).into_response();
         }
     };
+
+    // SSRF guard: re-validate at dispatch time (hosted mode) so a key whose
+    // webhook_url predates this check — or a host that now resolves to an
+    // internal address — can't turn this endpoint into an SSRF oracle.
+    if let Err(resp) = validate_tenant_webhook_url(&state, &webhook_url).await {
+        return resp;
+    }
 
     let now = chrono::Utc::now();
     let synthetic = crate::types::Generation {
@@ -1466,7 +1631,9 @@ pub async fn test_webhook(
         app_id: key.app_id.clone(),
     };
 
-    let client = reqwest::Client::new();
+    // Don't follow redirects: a public webhook host must not be able to 3xx the
+    // request into an internal target.
+    let client = crate::util::ssrf::no_redirect_client();
     let result = crate::proxy::webhook::dispatch_webhook_once(&client, &webhook_url, None, &synthetic).await;
     log_audit(state.db.clone(), key_ctx.as_ref(), "key.test_webhook", "api_key", &id.to_string(), None, None);
     match result {
@@ -1594,6 +1761,21 @@ pub async fn get_logs_filtered(
 // ─── Webhook Delivery Log ────────────────────────────────────────────────────
 
 /// GET /v1/keys/{id}/webhook-deliveries — List webhook deliveries for a key (admin scope).
+/// Live: `curl https://app.litegen.ai/api/v1/keys/{id}/webhook-deliveries -H "Authorization: Bearer sk_live_..."`
+#[utoipa::path(
+    get,
+    path = "/v1/keys/{id}/webhook-deliveries",
+    params(
+        ("id" = Uuid, Path, description = "API key ID"),
+        ("page" = Option<u32>, Query, description = "Page number (default 1)"),
+        ("per_page" = Option<u32>, Query, description = "Items per page (default 50)"),
+    ),
+    responses(
+        (status = 200, description = "Paginated webhook deliveries", body = PaginatedResponse<crate::types::WebhookDelivery>),
+        (status = 404, description = "Key not found", body = ErrorResponse),
+    ),
+    tag = "Admin"
+)]
 pub async fn list_webhook_deliveries(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
@@ -1605,10 +1787,19 @@ pub async fn list_webhook_deliveries(
         Some(o) => o,
         None => return forbidden_no_org(),
     };
-    match state.db.get_api_key(&id).await {
-        Ok(Some(k)) if k.org_id.as_deref() == Some(ctx_org) => {}
+    let key = match state.db.get_api_key(&id).await {
+        Ok(Some(k)) if k.org_id.as_deref() == Some(ctx_org) => k,
         Ok(_) => return (StatusCode::NOT_FOUND, Json(error_response("Key not found", 404))).into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response(),
+    };
+    // Delivery history includes payloads/responses — gate reads like get_api_key.
+    if let Err(resp) = authorize_key_for_session(
+        key_ctx.as_ref(), &key,
+        crate::auth::permissions::Permission::KeyReadAny,
+        crate::auth::permissions::Permission::KeyReadOwn,
+        "key:read:own",
+    ) {
+        return resp;
     }
     let key_id_str = id.to_string();
     match state.db.list_webhook_deliveries(&key_id_str, params.page, params.per_page).await {
@@ -1644,6 +1835,25 @@ pub struct AuditQuery {
 }
 
 /// GET /v1/audit — List audit log entries (admin scope required). Supports `?format=csv`.
+/// Live: `curl https://app.litegen.ai/api/v1/audit -H "Authorization: Bearer sk_live_..."`
+#[utoipa::path(
+    get,
+    path = "/v1/audit",
+    params(
+        ("actor_key_id" = Option<String>, Query, description = "Filter by actor API key ID"),
+        ("action" = Option<String>, Query, description = "Filter by action, e.g. key.create"),
+        ("from" = Option<String>, Query, description = "ISO 8601 lower bound (inclusive)"),
+        ("to" = Option<String>, Query, description = "ISO 8601 upper bound (inclusive)"),
+        ("page" = Option<u32>, Query, description = "Page number (default 1)"),
+        ("per_page" = Option<u32>, Query, description = "Items per page (default 50)"),
+        ("format" = Option<String>, Query, description = "Set to `csv` for a CSV export"),
+    ),
+    responses(
+        (status = 200, description = "Paginated audit log entries (or a CSV attachment when format=csv)", body = PaginatedResponse<crate::types::AuditLogEntry>),
+        (status = 403, description = "Forbidden (audit:read required)", body = ErrorResponse),
+    ),
+    tag = "Admin"
+)]
 pub async fn list_audit(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
@@ -1710,14 +1920,39 @@ pub async fn list_audit(
     path = "/v1/cache",
     responses(
         (status = 200, description = "Cache cleared", body = CacheClearedResponse),
+        (status = 403, description = "Forbidden (tenant principals cannot flush the global cache)", body = ErrorResponse),
     ),
     tag = "Admin"
 )]
 pub async fn clear_cache(
     State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
 ) -> impl IntoResponse {
+    // The cache is a single PROCESS-GLOBAL instance shared across all tenants, so
+    // a full flush evicts every tenant's entries. In hosted mode that makes it a
+    // platform-admin operation: a tenant principal (session user OR bearer key)
+    // must not be able to wipe other tenants' cached generations. In single-tenant
+    // mode there is only one tenant, so the per-role cache:clear gate suffices.
+    // (A scoped per-tenant clear is a follow-up; keys are hashed so a prefix sweep
+    // isn't available today.)
+    if let Some(ctx) = key_ctx.as_ref() {
+        match state.mode {
+            crate::config::Mode::Hosted => {
+                if ctx.user.is_some() || ctx.key_id.is_some() {
+                    return forbidden_perm_resp("cache:clear");
+                }
+            }
+            crate::config::Mode::SingleTenant => {
+                if ctx.user.is_some()
+                    && !ctx.permissions.contains(&crate::auth::permissions::Permission::CacheClear)
+                {
+                    return forbidden_perm_resp("cache:clear");
+                }
+            }
+        }
+    }
     state.router.cache.clear().await;
-    Json(CacheClearedResponse { cleared: true })
+    Json(CacheClearedResponse { cleared: true }).into_response()
 }
 
 // ─── OpenAPI Specification ──────────────────────────────────────────────────
@@ -1806,7 +2041,11 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/auth/logout", post(logout))
         .route("/v1/auth/me", get(me))
         .route("/v1/auth/csrf", get(csrf_token))
-        // Users management (requires session + permissions checked per handler)
+        // User management. The GLOBAL (non-org-scoped) endpoints — list_users,
+        // patch_user, delete_user, transfer_owner — are restricted to the
+        // platform admin (master key) in hosted mode (see
+        // authorize_global_user_admin); tenants manage members via
+        // /v1/orgs/{id}/members. invite_user is org-scoped (uses ctx.org_id).
         .route("/v1/users", get(list_users).post(invite_user))
         .route("/v1/users/transfer-owner", post(transfer_owner))
         .route("/v1/users/{id}", patch(patch_user).delete(delete_user))
@@ -1895,6 +2134,17 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
 // ─── Artifact endpoint ──────────────────────────────────────────────────────
 
 /// GET /v1/logs/{id}/artifact — Retrieve the stored artifact for a request log.
+/// Live: `curl https://app.litegen.ai/api/v1/logs/{id}/artifact -H "Authorization: Bearer sk_live_..."`
+#[utoipa::path(
+    get,
+    path = "/v1/logs/{id}/artifact",
+    params(("id" = String, Path, description = "Request log / generation ID")),
+    responses(
+        (status = 200, description = "Stored request/response artifact", body = crate::types::RequestArtifact),
+        (status = 404, description = "Artifact not found", body = ErrorResponse),
+    ),
+    tag = "Dashboard"
+)]
 pub async fn get_log_artifact(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
@@ -1907,9 +2157,11 @@ pub async fn get_log_artifact(
     };
     match state.db.get_request_artifact(&id).await {
         Ok(Some(artifact)) => {
-            // Cross-tenant isolation: if the artifact carries an org_id and it does not
-            // match the caller's org, return 404 (same as not-found — do not reveal existence).
-            if artifact.org_id.as_deref().map(|o| o != ctx_org).unwrap_or(false) {
+            // Cross-tenant isolation, fail-closed: the artifact must explicitly
+            // belong to the caller's org. A missing org_id is NOT treated as
+            // "visible to everyone" (which would leak any un-scoped artifact);
+            // return 404 (same as not-found — don't reveal existence).
+            if artifact.org_id.as_deref() != Some(ctx_org) {
                 return (StatusCode::NOT_FOUND, Json(error_response("Artifact not found", 404))).into_response();
             }
             (StatusCode::OK, Json(serde_json::to_value(artifact).unwrap())).into_response()
@@ -2028,6 +2280,158 @@ fn forbidden_no_org() -> axum::response::Response {
         StatusCode::FORBIDDEN,
         Json(error_response("no active organization", 403)),
     ).into_response()
+}
+
+fn forbidden_perm_resp(perm: &str) -> axum::response::Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(error_response(&format!("Permission '{perm}' required"), 403)),
+    ).into_response()
+}
+
+/// Enforce a key-scoped permission boundary for SESSION (cookie) users on a
+/// single key. Bearer/master principals (`ctx.user` is None) are not
+/// permission-gated here — they are scope+org gated upstream — matching the
+/// pattern in `patch_api_key_handler`/`revoke_api_key`. `any_label` is the
+/// permission string used in the 403 message.
+fn authorize_key_for_session(
+    key_ctx: Option<&KeyContext>,
+    key: &crate::types::ApiKey,
+    any_perm: crate::auth::permissions::Permission,
+    own_perm: crate::auth::permissions::Permission,
+    any_label: &str,
+) -> Result<(), axum::response::Response> {
+    let Some(ctx) = key_ctx else { return Ok(()) };
+    let Some(user) = ctx.user.as_ref() else { return Ok(()) };
+    if ctx.permissions.contains(&any_perm) {
+        return Ok(());
+    }
+    if ctx.permissions.contains(&own_perm)
+        && key.owner_user_id.as_deref() == Some(user.user_id.as_str())
+    {
+        return Ok(());
+    }
+    Err(forbidden_perm_resp(any_label))
+}
+
+/// Enforce a generation-scoped permission boundary for SESSION users on a single
+/// generation. `read:own`/`cancel:own` is satisfied only when the generation's
+/// key is owned by the caller (mirrors `list_generations`). Bearer/master
+/// principals are not gated here.
+async fn authorize_generation_for_session(
+    state: &AppState,
+    key_ctx: Option<&KeyContext>,
+    gen: &crate::types::Generation,
+    any_perm: crate::auth::permissions::Permission,
+    own_perm: crate::auth::permissions::Permission,
+    any_label: &str,
+) -> Result<(), axum::response::Response> {
+    let Some(ctx) = key_ctx else { return Ok(()) };
+    let Some(user) = ctx.user.as_ref() else { return Ok(()) };
+    if ctx.permissions.contains(&any_perm) {
+        return Ok(());
+    }
+    if ctx.permissions.contains(&own_perm) {
+        // Ownership model: API keys have owners, dashboard sessions don't. A
+        // generation with no owning key (`key_id == None`) was created via a
+        // session and belongs to the org as a whole — the org-scope check the
+        // caller already passed is its boundary, so any session member with
+        // `:own` may access it. A key-created generation must be owned by one of
+        // the caller's keys.
+        let owns = match gen.key_id {
+            None => true,
+            Some(kid) => match state.db.list_api_keys_for_owner(&user.user_id).await {
+                Ok(owned) => owned.iter().any(|k| k.id == kid),
+                // Don't fail-open, but don't masquerade a DB outage as a
+                // permission denial either — surface a 500 so it's retryable and
+                // diagnosable rather than a misleading 403 on an owned resource.
+                Err(e) => {
+                    error!(error = %e, "ownership check failed: list_api_keys_for_owner");
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(error_response(&e.to_string(), 500)),
+                    )
+                        .into_response());
+                }
+            },
+        };
+        if owns {
+            return Ok(());
+        }
+    }
+    Err(forbidden_perm_resp(any_label))
+}
+
+/// Cache scope for the process-global generation cache. Distinct principals must
+/// never collide: prefer org+app, fall back to org, and when no tenant context
+/// is resolved (e.g. the hosted master key or a session with no active org) scope
+/// to the principal itself rather than a shared global bucket — otherwise one
+/// caller could receive another's cached image for an identical request.
+fn cache_scope(ctx: &KeyContext) -> String {
+    match (ctx.org_id.as_deref(), ctx.app_id.as_deref()) {
+        (Some(org), Some(app)) => format!("o:{org}/a:{app}"),
+        (Some(org), None) => format!("o:{org}"),
+        (None, _) => {
+            if let Some(kid) = ctx.key_id {
+                format!("k:{kid}")
+            } else if let Some(u) = ctx.user.as_ref() {
+                format!("u:{}", u.user_id)
+            } else {
+                "master".to_string()
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod cache_scope_tests {
+    use super::*;
+    use crate::api::middleware::UserContext;
+    use crate::types::Role;
+
+    fn ctx(key_id: Option<uuid::Uuid>, user: Option<&str>, org: Option<&str>, app: Option<&str>) -> KeyContext {
+        KeyContext {
+            key_id,
+            scopes: vec![],
+            rpm_limit: None,
+            quota_remaining: None,
+            webhook_url: None,
+            user: user.map(|u| UserContext { user_id: u.to_string(), email: "e@example.com".into(), role: Role::Member }),
+            permissions: vec![],
+            session_id: None,
+            org_id: org.map(String::from),
+            app_id: app.map(String::from),
+        }
+    }
+
+    #[test]
+    fn distinct_principals_never_share_a_bucket() {
+        let kid = uuid::Uuid::new_v4();
+        let scopes = [
+            cache_scope(&ctx(None, Some("u1"), Some("orgA"), Some("app1"))),
+            cache_scope(&ctx(None, Some("u1"), Some("orgA"), None)),       // org-scoped ≠ app-scoped
+            cache_scope(&ctx(None, Some("u2"), Some("orgB"), Some("app1"))), // different org
+            cache_scope(&ctx(Some(kid), None, None, None)),                // bearer key, no tenant
+            cache_scope(&ctx(None, Some("u3"), None, None)),               // session, no org
+            cache_scope(&ctx(None, None, None, None)),                     // master key
+        ];
+        let unique: std::collections::HashSet<_> = scopes.iter().collect();
+        assert_eq!(unique.len(), scopes.len(), "cache scopes collided: {scopes:?}");
+    }
+
+    #[test]
+    fn same_tenant_is_stable_and_distinct_from_global() {
+        // Two members of the same org+app share a bucket (cache hits per tenant)...
+        assert_eq!(
+            cache_scope(&ctx(None, Some("u1"), Some("orgA"), Some("app1"))),
+            cache_scope(&ctx(None, Some("u2"), Some("orgA"), Some("app1"))),
+        );
+        // ...but a real tenant never collides with the master/global bucket.
+        assert_ne!(
+            cache_scope(&ctx(None, Some("u1"), Some("orgA"), None)),
+            cache_scope(&ctx(None, None, None, None)),
+        );
+    }
 }
 
 fn error_response(message: &str, code: u16) -> serde_json::Value {
@@ -3275,5 +3679,58 @@ mod tenant_scoping_tests {
         assert_eq!(listed["total"], 1, "app-A key should see exactly one row");
         assert_eq!(listed["data"][0]["id"], "gen-org-a");
         assert!(listed["data"].as_array().unwrap().iter().all(|g| g["id"] != "gen-org-b"), "must not see app-B's row");
+    }
+
+    // SSRF: in hosted mode a tenant must not be able to register a webhook URL
+    // that targets an internal address. Uses literal IPs so the test needs no DNS.
+    #[tokio::test]
+    async fn hosted_rejects_private_webhook_url_on_key_create() {
+        let db = build_db().await;
+        db.create_organization(&make_org("org-a", "org-a")).await.unwrap();
+        db.create_application(&make_app("app-a", "org-a", "app-a")).await.unwrap();
+        let kp = crate::auth::secrets::generate_key_pair();
+        db.create_api_key_scoped("org-a", "app-a", &kp.public_id, "ka", &kp.secret_hash, &kp.prefix, None, None, "generate,read", None).await.unwrap();
+
+        let state = build_state(db, Mode::Hosted, Some("master".to_string())).await;
+        let app = build_router(state);
+
+        // Cloud metadata endpoint → rejected.
+        let body = serde_json::to_vec(&serde_json::json!({
+            "name": "evil", "webhook_url": "http://169.254.169.254/latest/meta-data/"
+        })).unwrap();
+        let req = Request::builder().method("POST").uri("/v1/keys")
+            .header("authorization", format!("Bearer {}", kp.secret))
+            .header("content-type", "application/json")
+            .body(Body::from(body)).unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "private webhook_url must be rejected in hosted mode");
+
+        // A public literal IP is accepted (no DNS needed).
+        let body = serde_json::to_vec(&serde_json::json!({
+            "name": "ok", "webhook_url": "https://93.184.216.34/hook"
+        })).unwrap();
+        let req = Request::builder().method("POST").uri("/v1/keys")
+            .header("authorization", format!("Bearer {}", kp.secret))
+            .header("content-type", "application/json")
+            .body(Body::from(body)).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED, "public webhook_url should be accepted");
+    }
+
+    // In single-tenant mode the operator is trusted; internal webhook URLs are allowed.
+    #[tokio::test]
+    async fn single_tenant_allows_private_webhook_url() {
+        let db = build_db().await;
+        let state = build_state(db, Mode::SingleTenant, None).await;
+        let app = build_router(state);
+
+        let body = serde_json::to_vec(&serde_json::json!({
+            "name": "local", "webhook_url": "http://127.0.0.1:9000/hook"
+        })).unwrap();
+        let req = Request::builder().method("POST").uri("/v1/keys")
+            .header("content-type", "application/json")
+            .body(Body::from(body)).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED, "single-tenant operator may use internal webhook URLs");
     }
 }

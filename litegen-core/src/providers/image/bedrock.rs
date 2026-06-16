@@ -58,14 +58,13 @@ impl BedrockImageProvider {
     }
 
     fn region(&self, creds: &ProviderCredentials) -> String {
-        creds
-            .region
-            .clone()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| match &self.auth {
-                AuthSpec::AwsSigV4 { default_region, .. } => default_region.clone(),
-                _ => "us-east-1".to_string(),
-            })
+        let default = match &self.auth {
+            AuthSpec::AwsSigV4 { default_region, .. } => default_region.clone(),
+            _ => "us-east-1".to_string(),
+        };
+        // SSRF guard: `region` is interpolated into the upstream host and a BYO
+        // credential is tenant-controlled. See `normalize_aws_region`.
+        crate::providers::auth::normalize_aws_region(creds.region.as_deref(), &default)
     }
 
     /// Endpoint host. api_base overrides; otherwise the regional Bedrock host.

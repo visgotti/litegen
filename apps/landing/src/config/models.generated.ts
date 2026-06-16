@@ -1178,7 +1178,7 @@ export const MODELS: ModelEntry[] = [
     "id": "google/imagen-3",
     "provider": "google",
     "displayName": "Imagen 3",
-    "description": "Google Imagen 3 via Gemini API.",
+    "description": "Google Imagen 3 (imagen-3.0-generate-002) via the Imagen :predict API.",
     "mediaType": "image",
     "output": "image",
     "capabilities": {
@@ -3424,7 +3424,21 @@ export const MODELS: ModelEntry[] = [
       "textToVideo": false,
       "imageToVideo": false
     },
-    "sizes": [],
+    "sizes": [
+      "1024x1024",
+      "1365x1024",
+      "1024x1365",
+      "1536x1024",
+      "1024x1536",
+      "1024x1280",
+      "1280x1024",
+      "1024x1707",
+      "1707x1024",
+      "1434x1024",
+      "1024x1434",
+      "1024x2048",
+      "2048x1024"
+    ],
     "aspectRatios": [],
     "maxRefImages": 0,
     "refRoles": [],
@@ -3468,7 +3482,21 @@ export const MODELS: ModelEntry[] = [
       "textToVideo": false,
       "imageToVideo": false
     },
-    "sizes": [],
+    "sizes": [
+      "1024x1024",
+      "1365x1024",
+      "1024x1365",
+      "1536x1024",
+      "1024x1536",
+      "1024x1280",
+      "1280x1024",
+      "1024x1707",
+      "1707x1024",
+      "1434x1024",
+      "1024x1434",
+      "1024x2048",
+      "2048x1024"
+    ],
     "aspectRatios": [],
     "maxRefImages": 0,
     "refRoles": [],
@@ -3516,7 +3544,21 @@ export const MODELS: ModelEntry[] = [
       "textToVideo": false,
       "imageToVideo": false
     },
-    "sizes": [],
+    "sizes": [
+      "1024x1024",
+      "1365x1024",
+      "1024x1365",
+      "1536x1024",
+      "1024x1536",
+      "1024x1280",
+      "1280x1024",
+      "1024x1707",
+      "1707x1024",
+      "1434x1024",
+      "1024x1434",
+      "1024x2048",
+      "2048x1024"
+    ],
     "aspectRatios": [],
     "maxRefImages": 0,
     "refRoles": [],
@@ -3562,7 +3604,21 @@ export const MODELS: ModelEntry[] = [
       "textToVideo": false,
       "imageToVideo": false
     },
-    "sizes": [],
+    "sizes": [
+      "1024x1024",
+      "1365x1024",
+      "1024x1365",
+      "1536x1024",
+      "1024x1536",
+      "1024x1280",
+      "1280x1024",
+      "1024x1707",
+      "1707x1024",
+      "1434x1024",
+      "1024x1434",
+      "1024x2048",
+      "2048x1024"
+    ],
     "aspectRatios": [],
     "maxRefImages": 0,
     "refRoles": [],
@@ -3610,7 +3666,21 @@ export const MODELS: ModelEntry[] = [
       "textToVideo": false,
       "imageToVideo": false
     },
-    "sizes": [],
+    "sizes": [
+      "1024x1024",
+      "1365x1024",
+      "1024x1365",
+      "1536x1024",
+      "1024x1536",
+      "1024x1280",
+      "1280x1024",
+      "1024x1707",
+      "1707x1024",
+      "1434x1024",
+      "1024x1434",
+      "1024x2048",
+      "2048x1024"
+    ],
     "aspectRatios": [],
     "maxRefImages": 0,
     "refRoles": [],
@@ -4000,6 +4070,10 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "negative_prompt",
+        "kind": "string"
+      },
+      {
         "name": "duration_seconds",
         "kind": "float",
         "min": 2,
@@ -4036,7 +4110,10 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true
     },
     "sizes": [],
-    "aspectRatios": [],
+    "aspectRatios": [
+      "1280:768",
+      "768:1280"
+    ],
     "maxRefImages": 1,
     "refRoles": [
       {
@@ -4089,7 +4166,10 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": true
     },
     "sizes": [],
-    "aspectRatios": [],
+    "aspectRatios": [
+      "1280:768",
+      "768:1280"
+    ],
     "maxRefImages": 1,
     "refRoles": [
       {

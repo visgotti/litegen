@@ -1182,12 +1182,16 @@ impl DatabaseStore for SqliteDatabase {
         Ok(row.map(password_reset_from_row))
     }
 
-    async fn mark_password_reset_used(&self, token: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE password_resets SET used_at = datetime('now') WHERE token = ?")
-            .bind(token)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
+    async fn mark_password_reset_used(&self, token: &str) -> Result<bool, sqlx::Error> {
+        // CAS: only the first caller transitions used_at; concurrent confirms
+        // with the same token can't both win (single-use guarantee).
+        let res = sqlx::query(
+            "UPDATE password_resets SET used_at = datetime('now') WHERE token = ? AND used_at IS NULL",
+        )
+        .bind(token)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     // ─── Login Attempts ─────────────────────────────────────────────────

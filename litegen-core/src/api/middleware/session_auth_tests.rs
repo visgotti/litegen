@@ -558,4 +558,264 @@ mod tests {
             "Safe cookie GET without CSRF token must still succeed"
         );
     }
+
+    // ─── Hosted mode: the single-tenant dev bypass must be disabled ─────────────
+    //
+    // The dev bypass (accept any/no credential as full-admin) is gated on
+    // `master_key.is_none() && mode == SingleTenant`. In hosted mode it must
+    // never fire — a master-key-less hosted deploy fails CLOSED (401).
+
+    async fn build_state_hosted_no_master(db: Arc<SqliteDatabase>) -> Arc<AppState> {
+        let registry = Arc::new(ProviderRegistry::new());
+        let config = Arc::new(AppConfig::default());
+        let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig::default()));
+        let image_store = Arc::new(LocalStore);
+        let router = Arc::new(ProxyRouter::new(registry, cache, config, image_store));
+        let materializer = Arc::new(Materializer::new(Arc::new(NoopStorage), reqwest::Client::new()));
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.pop();
+        p.push("models");
+        let cap_registry = Arc::new(CapabilityRegistry::from_dir(&p).expect("load shipped models"));
+        Arc::new(AppState {
+            router,
+            db,
+            master_key: None,
+            registry: cap_registry,
+            materializer,
+            rate_limiter: Arc::new(crate::api::middleware::rate_limit::RateLimiter::new()),
+            in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(64)),
+            oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::Hosted,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
+            allow_password: true,
+        })
+    }
+
+    /// Seed an active API key with the given scopes/quota and return its raw bearer token + id.
+    async fn seed_api_key(
+        db: &Arc<SqliteDatabase>,
+        scopes: &str,
+        token_quota: Option<f64>,
+    ) -> (String, uuid::Uuid) {
+        let token = format!("sk-test-{}", generate_session_token());
+        let hash = crate::auth::secrets::sha256_hex(&token);
+        let key = db
+            .create_api_key("test-key", &hash, "sk-test", token_quota, None, scopes, None)
+            .await
+            .expect("create api key");
+        (token, key.id)
+    }
+
+    #[tokio::test]
+    async fn hosted_mode_rejects_bearer_without_real_key() {
+        let db = build_test_db().await;
+        let state = build_state_hosted_no_master(db).await;
+        let app = build_auth_router(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/test")
+            .header("authorization", "Bearer anything-goes")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "hosted mode must not honor the dev bypass for an arbitrary Bearer token"
+        );
+    }
+
+    #[tokio::test]
+    async fn hosted_mode_rejects_unauthenticated() {
+        let db = build_test_db().await;
+        let state = build_state_hosted_no_master(db).await;
+        let app = build_auth_router(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "hosted mode must reject unauthenticated requests (no dev bypass)"
+        );
+    }
+
+    // ─── API key lifecycle ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn revoked_api_key_is_rejected() {
+        let db = build_test_db().await;
+        let (token, id) = seed_api_key(&db, "generate,read", None).await;
+        // Revoke (sets is_active = false). lookup_api_key_by_hash filters on
+        // is_active, so the key must no longer authenticate.
+        assert!(db.revoke_api_key(&id).await.unwrap(), "revoke should report success");
+        let state = build_state_with_db(db).await;
+        let app = build_auth_router(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/test")
+            .header("authorization", format!("Bearer {}", token))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "a revoked (is_active=false) API key must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_exhausted_api_key_is_rejected_402() {
+        let db = build_test_db().await;
+        let (token, id) = seed_api_key(&db, "generate,read", Some(1.0)).await;
+        // Consume the entire quota → tokens_used (1.0) >= token_quota (1.0).
+        db.atomic_charge_tokens(&id, 1.0).await.unwrap();
+        let state = build_state_with_db(db).await;
+        let app = build_auth_router(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/test")
+            .header("authorization", format!("Bearer {}", token))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::PAYMENT_REQUIRED,
+            "an over-quota API key must be rejected with 402"
+        );
+    }
+
+    // ─── Scope enforcement (Bearer keys) ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn read_scope_key_cannot_reach_admin_or_generate_routes() {
+        let db = build_test_db().await;
+        let (token, _id) = seed_api_key(&db, "read", None).await;
+        let state = build_state_with_db(db).await;
+        let app = crate::api::handlers::create_router(state);
+
+        // Admin-scope route.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/keys")
+            .header("authorization", format!("Bearer {}", token))
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(req).await.unwrap().status(),
+            StatusCode::FORBIDDEN,
+            "a read-scope key must be denied on an Admin-scope route"
+        );
+
+        // Generate-scope route.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/images/generations")
+            .header("authorization", format!("Bearer {}", token))
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(req).await.unwrap().status(),
+            StatusCode::FORBIDDEN,
+            "a read-scope key must be denied on a Generate-scope route"
+        );
+    }
+
+    // ─── Cross-org header: a session cannot act on an org it doesn't belong to ────
+
+    #[tokio::test]
+    async fn session_with_foreign_org_header_is_rejected() {
+        let db = build_test_db().await;
+        let (_user, sess) = seed_user_and_session(&db, Role::Owner).await;
+        let state = build_state_with_db(db).await;
+        let app = build_auth_router(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/test")
+            .header("cookie", format!("litegen_session={}", sess.id))
+            // An org the session user is not a member of.
+            .header("x-litegen-org-id", "00000000-0000-0000-0000-0000000000ff")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "supplying an org id the session user is not a member of must be 403"
+        );
+    }
+
+    /// A still-valid session for a user whose account has been deactivated
+    /// (is_active=false) must be rejected (401), so deactivation takes effect
+    /// immediately without waiting for the session to expire.
+    #[tokio::test]
+    async fn inactive_user_session_returns_401() {
+        let db = build_test_db().await;
+        let user = User {
+            id: format!("user-{}", uuid::Uuid::new_v4()),
+            email: "inactive@example.com".to_string(),
+            password_hash: None,
+            role: Role::Owner,
+            oauth_github_id: None,
+            oauth_google_id: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            last_login_at: None,
+            is_active: false,
+        };
+        db.create_user(&user).await.expect("create user");
+        let sess = Session {
+            id: generate_session_token(),
+            user_id: user.id.clone(),
+            created_at: chrono::Utc::now(),
+            expires_at: chrono::Utc::now() + chrono::Duration::days(7),
+            ip: None,
+            user_agent: None,
+            csrf_token: generate_csrf_token(),
+        };
+        db.create_session(&sess).await.expect("create session");
+        let state = build_state_with_db(db).await;
+        let app = build_auth_router(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/test")
+            .header("cookie", format!("litegen_session={}", sess.id))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "a deactivated user's session must be rejected with 401"
+        );
+    }
+
+    /// The unauthenticated config route is reachable without any credential
+    /// (it is intentionally outside the auth layer).
+    #[tokio::test]
+    async fn unauth_config_route_requires_no_auth() {
+        let db = build_test_db().await;
+        let state = build_state_with_db(db).await;
+        let app = crate::api::handlers::create_router(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/auth/config")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "/v1/auth/config must be reachable with no auth"
+        );
+    }
 }

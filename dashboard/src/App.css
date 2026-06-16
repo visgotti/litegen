@@ -525,14 +525,22 @@ tr:hover {
 .pg-mode-toggle { display: flex; gap: 4px; margin-bottom: 16px; }
 .pg-picker { border: 1px solid #30363d; border-radius: 6px; padding: 8px; margin-bottom: 16px; }
 .pg-picker-count { font-size: 12px; color: #8b949e; margin: 6px 0; }
-.pg-picker-list { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
-.pg-picker-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; font-size: 13px; cursor: pointer; }
+.pg-picker-list { max-height: 280px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.pg-provider-group { display: flex; flex-direction: column; gap: 1px; }
+.pg-provider-header { display: flex; align-items: center; gap: 8px; width: 100%; padding: 2px 4px 4px; margin: 0; background: none;
+  border: none; border-bottom: 1px solid #21262d; cursor: pointer; text-align: left; }
+.pg-provider-header:hover { background: #161b22; }
+.pg-provider-badge { font-size: 11px; font-weight: 600; letter-spacing: 0.02em; padding: 1px 8px; border-radius: 10px;
+  border: 1px solid; text-transform: lowercase; white-space: nowrap; }
+.pg-all-badge { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 10px;
+  color: #3fb950; border: 1px solid #238636; background: #2386361f; }
+.pg-picker-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 10px; border-radius: 4px; font-size: 13px; cursor: pointer; }
 .pg-picker-row:hover { background: #161b22; }
 .pg-picker-id { flex: 1; font-family: monospace; }
-.pg-badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; white-space: nowrap; }
-.pg-badge-live { color: #3fb950; border: 1px solid #238636; }
-.pg-badge-mock { color: #58a6ff; border: 1px solid #1f6feb; }
-.pg-badge-setup { color: #8b949e; border: 1px solid #30363d; }
+.pg-avail-dot { font-size: 10px; line-height: 1; width: 12px; text-align: center; flex: none; }
+.pg-avail-live { color: #3fb950; }
+.pg-avail-mock { color: #58a6ff; }
+.pg-avail-setup { color: #8b949e; }
 .pg-params { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
 .pg-param-row { display: flex; flex-direction: column; gap: 4px; }
 .pg-param-label { display: flex; justify-content: space-between; align-items: center; font-size: 13px; text-transform: none; }

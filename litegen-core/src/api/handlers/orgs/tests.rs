@@ -687,3 +687,471 @@ fn derive_display_hint_covers_pools_and_singles() {
     assert_eq!(derive_display_hint(&json!({ "note": "n/a" })), None);
     assert_eq!(derive_display_hint(&json!({ "api_keys": [] })), None);
 }
+
+// ─── Cross-tenant isolation (BOLA) ─────────────────────────────────────────────
+//
+// Every org/app/member/credential handler authorizes against the PATH org via
+// `require_member_perm`, which checks the caller's membership in that specific
+// org (not the active-org header). These tests prove that an authenticated user
+// who is NOT a member of the target org is denied (403) on read AND write, and
+// that the target survives. Each attacker request carries the attacker's OWN
+// valid CSRF token, so a 403 reflects the authorization boundary — not a CSRF
+// rejection (which would also be 403, for the wrong reason).
+
+/// Create an org via HTTP (the caller becomes Owner+member) and return
+/// `(org_id, default_app_id)`.
+async fn create_org_returning_app(
+    app: &axum::Router,
+    sess: &str,
+    csrf: &str,
+    name: &str,
+) -> (String, String) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/orgs")
+        .header("cookie", cookie(sess))
+        .header("x-csrf-token", csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "name": name })).unwrap()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "setup: create org");
+    let org_id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    let req = Request::builder()
+        .uri(format!("/v1/orgs/{}/apps", org_id))
+        .header("cookie", cookie(sess))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "setup: list apps");
+    let apps = body_json(resp).await;
+    let app_id = apps.as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
+    (org_id, app_id)
+}
+
+#[tokio::test]
+async fn cross_tenant_cannot_read_or_modify_org() {
+    let db = build_db().await;
+    let (_owner_a, sess_a, csrf_a) = seed_user(&db, "owner_a@xt-org.com").await;
+    let (_attacker_b, sess_b, csrf_b) = seed_user(&db, "attacker_b@xt-org.com").await;
+    let app = create_router(build_state(db.clone(), None).await);
+    let (org_a, _app_a) = create_org_returning_app(&app, &sess_a, &csrf_a, "OrgA").await;
+
+    // READ
+    let req = Request::builder()
+        .uri(format!("/v1/orgs/{}", org_a))
+        .header("cookie", cookie(&sess_b))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant GET org must be 403"
+    );
+
+    // RENAME (valid CSRF for B → denial is authorization, not CSRF)
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/v1/orgs/{}", org_a))
+        .header("cookie", cookie(&sess_b))
+        .header("x-csrf-token", &csrf_b)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "name": "Pwned" })).unwrap()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant PATCH org must be 403"
+    );
+
+    // DELETE
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/orgs/{}", org_a))
+        .header("cookie", cookie(&sess_b))
+        .header("x-csrf-token", &csrf_b)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant DELETE org must be 403"
+    );
+
+    // OrgA survives unchanged.
+    let still = db.get_organization(&org_a).await.unwrap();
+    assert!(still.is_some(), "OrgA must survive cross-tenant attempts");
+    assert_eq!(still.unwrap().name, "OrgA", "OrgA name must be unchanged");
+}
+
+#[tokio::test]
+async fn cross_tenant_cannot_touch_apps() {
+    let db = build_db().await;
+    let (_owner_a, sess_a, csrf_a) = seed_user(&db, "owner_a@xt-app.com").await;
+    let (_attacker_b, sess_b, csrf_b) = seed_user(&db, "attacker_b@xt-app.com").await;
+    let app = create_router(build_state(db.clone(), None).await);
+    let (_org_a, app_a) = create_org_returning_app(&app, &sess_a, &csrf_a, "OrgA").await;
+
+    let req = Request::builder()
+        .uri(format!("/v1/apps/{}", app_a))
+        .header("cookie", cookie(&sess_b))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant GET app must be 403"
+    );
+
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/v1/apps/{}", app_a))
+        .header("cookie", cookie(&sess_b))
+        .header("x-csrf-token", &csrf_b)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "name": "Pwned" })).unwrap()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant PATCH app must be 403"
+    );
+
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/apps/{}", app_a))
+        .header("cookie", cookie(&sess_b))
+        .header("x-csrf-token", &csrf_b)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant DELETE app must be 403"
+    );
+
+    assert!(
+        db.get_application(&app_a).await.unwrap().is_some(),
+        "app A must survive cross-tenant attempts"
+    );
+}
+
+#[tokio::test]
+async fn cross_tenant_cannot_touch_provider_credentials() {
+    let db = build_db().await;
+    let (_owner_a, sess_a, csrf_a) = seed_user(&db, "owner_a@xt-cred.com").await;
+    let (_attacker_b, sess_b, csrf_b) = seed_user(&db, "attacker_b@xt-cred.com").await;
+    // secrets_key present so the credential subsystem is fully wired.
+    let app = create_router(build_state(db.clone(), Some([7u8; 32])).await);
+    let (_org_a, app_a) = create_org_returning_app(&app, &sess_a, &csrf_a, "OrgA").await;
+
+    // LIST another tenant's credentials.
+    let req = Request::builder()
+        .uri(format!("/v1/apps/{}/provider-credentials", app_a))
+        .header("cookie", cookie(&sess_b))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant list provider-credentials must be 403"
+    );
+
+    // CREATE a credential on another tenant's app (membership check precedes
+    // provider validation, so this is denied regardless of provider).
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/apps/{}/provider-credentials", app_a))
+        .header("cookie", cookie(&sess_b))
+        .header("x-csrf-token", &csrf_b)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({ "provider": "openai", "credentials": { "api_key": "hijack" } }))
+                .unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant create provider-credential must be 403"
+    );
+
+    // DELETE a credential on another tenant's app.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/apps/{}/provider-credentials/openai", app_a))
+        .header("cookie", cookie(&sess_b))
+        .header("x-csrf-token", &csrf_b)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant delete provider-credential must be 403"
+    );
+}
+
+#[tokio::test]
+async fn cross_tenant_cannot_manage_members() {
+    let db = build_db().await;
+    let (owner_a, sess_a, csrf_a) = seed_user(&db, "owner_a@xt-mem.com").await;
+    let (_attacker_b, sess_b, csrf_b) = seed_user(&db, "attacker_b@xt-mem.com").await;
+    let app = create_router(build_state(db.clone(), None).await);
+    let (org_a, _app_a) = create_org_returning_app(&app, &sess_a, &csrf_a, "OrgA").await;
+
+    // INVITE a member into OrgA.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/orgs/{}/members", org_a))
+        .header("cookie", cookie(&sess_b))
+        .header("x-csrf-token", &csrf_b)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({ "email": "mole@evil.com", "role": "admin" })).unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant invite member must be 403"
+    );
+
+    // CHANGE owner A's role.
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/v1/orgs/{}/members/{}", org_a, owner_a.id))
+        .header("cookie", cookie(&sess_b))
+        .header("x-csrf-token", &csrf_b)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "role": "viewer" })).unwrap()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant patch member must be 403"
+    );
+
+    // REMOVE owner A.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/orgs/{}/members/{}", org_a, owner_a.id))
+        .header("cookie", cookie(&sess_b))
+        .header("x-csrf-token", &csrf_b)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant remove member must be 403"
+    );
+
+    // TRANSFER ownership of OrgA.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/orgs/{}/transfer-owner", org_a))
+        .header("cookie", cookie(&sess_b))
+        .header("x-csrf-token", &csrf_b)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({ "new_owner_user_id": owner_a.id })).unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant transfer-owner must be 403"
+    );
+
+    // Owner A remains the Owner of OrgA.
+    assert_eq!(
+        db.get_membership(&org_a, &owner_a.id).await.unwrap(),
+        Some(Role::Owner),
+        "owner A must remain Owner after cross-tenant attempts"
+    );
+}
+
+#[tokio::test]
+async fn cross_tenant_cannot_touch_app_storage() {
+    let db = build_db().await;
+    let (_owner_a, sess_a, csrf_a) = seed_user(&db, "owner_a@xt-store.com").await;
+    let (_attacker_b, sess_b, csrf_b) = seed_user(&db, "attacker_b@xt-store.com").await;
+    let app = create_router(build_state(db.clone(), Some([9u8; 32])).await);
+    let (_org_a, app_a) = create_org_returning_app(&app, &sess_a, &csrf_a, "OrgA").await;
+
+    // READ another tenant's storage config.
+    let req = Request::builder()
+        .uri(format!("/v1/apps/{}/storage", app_a))
+        .header("cookie", cookie(&sess_b))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant GET app storage must be 403"
+    );
+
+    // DELETE another tenant's storage config.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/apps/{}/storage", app_a))
+        .header("cookie", cookie(&sess_b))
+        .header("x-csrf-token", &csrf_b)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant DELETE app storage must be 403"
+    );
+}
+
+/// CSRF is enforced on mutating cookie-session requests. Each mutation below is
+/// sent WITHOUT an `x-csrf-token` and must be rejected (403) by `csrf_middleware`
+/// before the handler runs; a final request WITH the valid token succeeds.
+#[tokio::test]
+async fn session_mutations_require_csrf_token() {
+    let db = build_db().await;
+    let (_owner, sess, csrf) = seed_user(&db, "owner@csrf.com").await;
+    let app = create_router(build_state(db.clone(), Some([3u8; 32])).await);
+    let (org_id, app_id) = create_org_returning_app(&app, &sess, &csrf, "OrgC").await;
+
+    let cases: Vec<(&str, String)> = vec![
+        ("POST", format!("/v1/orgs/{}/members", org_id)),
+        ("POST", format!("/v1/orgs/{}/apps", org_id)),
+        ("PUT", format!("/v1/apps/{}/storage", app_id)),
+        ("PATCH", "/v1/account".to_string()),
+    ];
+    for (method, uri) in cases {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri.as_str())
+            .header("cookie", cookie(&sess))
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "{} {} without CSRF token must be 403",
+            method,
+            uri
+        );
+    }
+
+    // Sanity: the SAME mutation WITH a valid CSRF token is not blocked by CSRF.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/orgs/{}/apps", org_id))
+        .header("cookie", cookie(&sess))
+        .header("x-csrf-token", &csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "name": "WithCsrf" })).unwrap()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::OK,
+        "a valid CSRF token must allow the mutation"
+    );
+}
+
+#[tokio::test]
+async fn viewer_denied_app_writes() {
+    let db = build_db().await;
+    let (_owner, sess_o, csrf_o) = seed_user(&db, "owner@vw.com").await;
+    let (viewer, sess_v, csrf_v) = seed_user(&db, "viewer@vw.com").await;
+    let app = create_router(build_state(db.clone(), None).await);
+    let (org_id, app_id) = create_org_returning_app(&app, &sess_o, &csrf_o, "OrgV").await;
+    db.add_org_member(&org_id, &viewer.id, Role::Viewer).await.unwrap();
+
+    // CREATE app.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/orgs/{}/apps", org_id))
+        .header("cookie", cookie(&sess_v))
+        .header("x-csrf-token", &csrf_v)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "name": "Nope" })).unwrap()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "viewer must not create apps"
+    );
+
+    // PATCH app.
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/v1/apps/{}", app_id))
+        .header("cookie", cookie(&sess_v))
+        .header("x-csrf-token", &csrf_v)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "name": "Nope" })).unwrap()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "viewer must not modify apps"
+    );
+
+    // DELETE app.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/apps/{}", app_id))
+        .header("cookie", cookie(&sess_v))
+        .header("x-csrf-token", &csrf_v)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "viewer must not delete apps"
+    );
+}
+
+#[tokio::test]
+async fn member_denied_member_management() {
+    let db = build_db().await;
+    let (owner, sess_o, csrf_o) = seed_user(&db, "owner@mm.com").await;
+    let (member, sess_m, csrf_m) = seed_user(&db, "member@mm.com").await;
+    let app = create_router(build_state(db.clone(), None).await);
+    let (org_id, _app_id) = create_org_returning_app(&app, &sess_o, &csrf_o, "OrgM").await;
+    db.add_org_member(&org_id, &member.id, Role::Member).await.unwrap();
+
+    // A plain Member cannot change another member's role.
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/v1/orgs/{}/members/{}", org_id, owner.id))
+        .header("cookie", cookie(&sess_m))
+        .header("x-csrf-token", &csrf_m)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "role": "viewer" })).unwrap()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "member must not change member roles"
+    );
+
+    // A plain Member cannot remove a member.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/orgs/{}/members/{}", org_id, owner.id))
+        .header("cookie", cookie(&sess_m))
+        .header("x-csrf-token", &csrf_m)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "member must not remove members"
+    );
+
+    // Owner is untouched.
+    assert_eq!(
+        db.get_membership(&org_id, &owner.id).await.unwrap(),
+        Some(Role::Owner),
+        "owner membership must be unchanged"
+    );
+}

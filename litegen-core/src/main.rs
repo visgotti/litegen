@@ -91,9 +91,13 @@ async fn main() -> anyhow::Result<()> {
     let storage_adapter = Arc::new(StorageAdapter::new(
         Arc::new(litegen::proxy::storage::LocalStorage)
     ));
+    // SSRF hardening: reference-image URLs are user-supplied and fetched
+    // server-side. Disable redirect following so a public host cannot 3xx into
+    // an internal target (the per-URL check in Materializer::fetch_url validates
+    // the host resolves to a public address). See util::ssrf.
     let materializer = Arc::new(Materializer::new(
         storage_adapter,
-        reqwest::Client::new(),
+        litegen::util::ssrf::no_redirect_client(),
     ));
 
     // Load capability registry
@@ -156,8 +160,8 @@ async fn main() -> anyhow::Result<()> {
     let poller_handle = spawn_poller(
         db.clone(),
         registry.clone(),
-        reqwest::Client::new(),
         secrets_key,
+        config.mode,
         poller_shutdown,
     );
 
