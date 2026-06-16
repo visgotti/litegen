@@ -127,6 +127,35 @@ pub struct ProviderCredentials {
     pub extra: HashMap<String, String>,
 }
 
+/// Resolve the effective AWS region for a SigV4 signing provider.
+///
+/// `region` is interpolated into the upstream host
+/// (`bedrock-runtime.{region}.amazonaws.com`), and a BYO credential is
+/// tenant-controlled, so the value is hardened against host injection. AWS
+/// regions are lowercase `[a-z0-9-]`, so we normalize casing first (a benign
+/// `US-EAST-1` becomes `us-east-1` instead of being silently redirected to the
+/// operator default), then reject anything still outside that charset and fall
+/// back to `default`. A rejected non-empty value is logged so a misconfiguration
+/// isn't masked. Shared by the image and video Bedrock providers.
+pub fn normalize_aws_region(region: Option<&str>, default: &str) -> String {
+    let candidate = region
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+    match candidate {
+        None => default.to_string(),
+        Some(s)
+            if s.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') =>
+        {
+            s
+        }
+        Some(bad) => {
+            tracing::warn!(region = %bad, default = %default, "ignoring invalid BYO AWS region; using default");
+            default.to_string()
+        }
+    }
+}
+
 impl ProviderCredentials {
     /// Whether *any* credential is present (cheap pre-check for the skip-guard).
     pub fn any_present(&self) -> bool {

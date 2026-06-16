@@ -36,6 +36,15 @@ export default function CompareMode() {
   const toggle = (id: string) =>
     setSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
+  // Header click: select every model in the group, or deselect all if already full.
+  const toggleGroup = (ids: string[]) =>
+    setSelected(prev => {
+      if (ids.every(id => prev.includes(id))) return prev.filter(id => !ids.includes(id));
+      const set = new Set(prev);
+      ids.forEach(id => set.add(id));
+      return [...set];
+    });
+
   const requests = buildRequests(selected);
   const sig = JSON.stringify(requests);
 
@@ -93,7 +102,7 @@ export default function CompareMode() {
         {/* Left column — controls */}
         <div className="playground-panel">
           {error && <div className="alert alert-error">{error}</div>}
-          <ModelPicker models={models} selected={selected} onToggle={toggle} />
+          <ModelPicker models={models} selected={selected} onToggle={toggle} onToggleGroup={toggleGroup} />
 
           <div className="playground-form-group">
             <label>Prompt</label>

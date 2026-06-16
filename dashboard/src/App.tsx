@@ -39,8 +39,19 @@ const BASE_NAV_ITEMS = [
 
 function useMe() {
   const [role, setRole] = useState<string | null>(null);
+  // hosted (multi-tenant) mode. The global Users admin page is single-tenant
+  // only; in hosted mode members are managed per-org via the Members page.
+  // `null` = not yet resolved: we only expose the Users route/link once we have
+  // POSITIVELY confirmed single-tenant (hosted === false), so it never flashes
+  // in hosted mode before config() resolves and stays hidden if config() fails.
+  const [hosted, setHosted] = useState<boolean | null>(null);
 
   useEffect(() => {
+    // signup_open is true only in hosted mode.
+    client.auth.config()
+      .then(cfg => setHosted(!!(cfg as { signup_open?: boolean }).signup_open))
+      .catch(() => setHosted(null));
+
     // Don't call me() if using the API key flow — it would return 401 and clear the key.
     if (getApiKey()) return;
     client.auth.me()
@@ -51,15 +62,17 @@ function useMe() {
       .catch(() => setRole(null));
   }, []);
 
-  return role;
+  return { role, hosted };
 }
 
 /** The authenticated application shell: sidebar + header + the app routes. */
 function AppShell() {
-  const role = useMe();
+  const { role, hosted } = useMe();
 
-  // Admin-or-higher roles can see the Users nav item
-  const canSeeUsers = role === 'owner' || role === 'admin';
+  // The global Users page operates on the platform-wide users table and is
+  // restricted to single-tenant deployments (the backend rejects tenant
+  // principals in hosted mode). Hosted tenants use the per-org Members page.
+  const canSeeUsers = (role === 'owner' || role === 'admin') && hosted === false;
 
   const navItems = [
     ...BASE_NAV_ITEMS,
@@ -103,11 +116,17 @@ function AppShell() {
           <Route path="/account" element={<Account />} />
           <Route path="/organization" element={<Organization />} />
           <Route path="/members" element={<Members />} />
-          <Route path="/users" element={
-            <RequirePermission perm="user:read:any">
-              <Users />
-            </RequirePermission>
-          } />
+          {/* The global Users page exists only in single-tenant mode. The nav
+              link is further gated to owner/admin (canSeeUsers); a non-admin who
+              navigates here directly still gets RequirePermission's 403. In
+              hosted mode the route is absent entirely (members are managed per-org). */}
+          {hosted === false && (
+            <Route path="/users" element={
+              <RequirePermission perm="user:read:any">
+                <Users />
+              </RequirePermission>
+            } />
+          )}
         </Routes>
       </main>
     </div>

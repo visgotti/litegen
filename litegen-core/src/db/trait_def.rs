@@ -369,8 +369,11 @@ pub trait DatabaseStore: Send + Sync {
         Ok(None)
     }
 
-    async fn mark_password_reset_used(&self, _token: &str) -> Result<(), sqlx::Error> {
-        Ok(())
+    /// Atomically mark a reset token used. Returns `true` if this call won the
+    /// transition (token was unused), `false` if it was already used — callers
+    /// must only apply the password change when this returns `true`.
+    async fn mark_password_reset_used(&self, _token: &str) -> Result<bool, sqlx::Error> {
+        Ok(true)
     }
 
     // ─── Login Attempts ─────────────────────────────────────────────────

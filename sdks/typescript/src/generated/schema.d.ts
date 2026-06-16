@@ -62,6 +62,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/health/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /health/ready — Readiness probe.
+         *     Returns 200 only if DB is reachable and at least one provider is healthy.
+         *     Returns 503 otherwise. No auth required.
+         *     Live: `curl https://app.litegen.ai/api/health/ready`
+         */
+        get: operations["readiness"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/account": {
         parameters: {
             query?: never;
@@ -188,6 +210,26 @@ export interface paths {
         post?: never;
         /** DELETE /v1/apps/{app_id}/storage — remove BYO storage config (storage_cred:delete). */
         delete: operations["delete_app_storage"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /v1/audit — List audit log entries (admin scope required). Supports `?format=csv`.
+         *     Live: `curl https://app.litegen.ai/api/v1/audit -H "Authorization: Bearer sk_live_..."`
+         */
+        get: operations["list_audit"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -448,6 +490,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/generations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /v1/generations — Paginated list of generations.
+         *     Live: `curl https://app.litegen.ai/api/v1/generations?page=1&per_page=50 -H "Authorization: Bearer sk_live_..."`
+         */
+        get: operations["list_generations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/generations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /v1/generations/{id} — Poll DB-backed generation status.
+         *     Live: `curl https://app.litegen.ai/api/v1/generations/litegen-vid-... -H "Authorization: Bearer sk_live_..."`
+         */
+        get: operations["get_generation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * PATCH /v1/generations/{id} — Soft-cancel a generation.
+         *     Live: `curl -X PATCH https://app.litegen.ai/api/v1/generations/{id} -H "Authorization: Bearer sk_live_..." -d '{"status":"cancelled"}'`
+         */
+        patch: operations["cancel_generation"];
+        trace?: never;
+    };
     "/v1/images/cost": {
         parameters: {
             query?: never;
@@ -507,11 +593,80 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * GET /v1/keys/:id — Get a single API key by ID.
+         *     Live: `curl https://app.litegen.ai/api/v1/keys/{id} -H "Authorization: Bearer sk_live_..."`
+         */
+        get: operations["get_api_key_handler"];
         put?: never;
         post?: never;
         /** DELETE /v1/keys/:id — Revoke an API key. */
         delete: operations["revoke_api_key"];
+        options?: never;
+        head?: never;
+        /**
+         * PATCH /v1/keys/:id — Update an API key's quota/rpm/scopes/etc.
+         *     Live: `curl -X PATCH https://app.litegen.ai/api/v1/keys/{id} -H "Authorization: Bearer sk_live_..." -d '{"rpm_limit":120}'`
+         */
+        patch: operations["patch_api_key_handler"];
+        trace?: never;
+    };
+    "/v1/keys/{id}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /v1/keys/{id}/rotate — Issue a new secret for an existing key in place.
+         *     Keeps the same row id and all settings; the new `sk_live_` secret is returned once.
+         *     Live: `curl -X POST https://app.litegen.ai/api/v1/keys/{id}/rotate -H "Authorization: Bearer sk_live_..."`
+         */
+        post: operations["rotate_api_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/keys/{id}/test-webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /v1/keys/{id}/test-webhook — Fire one synthetic webhook and return the result.
+         *     Live: `curl -X POST https://app.litegen.ai/api/v1/keys/{id}/test-webhook -H "Authorization: Bearer sk_live_..."`
+         */
+        post: operations["test_webhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/keys/{id}/webhook-deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /v1/keys/{id}/webhook-deliveries — List webhook deliveries for a key (admin scope).
+         *     Live: `curl https://app.litegen.ai/api/v1/keys/{id}/webhook-deliveries -H "Authorization: Bearer sk_live_..."`
+         */
+        get: operations["list_webhook_deliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -526,6 +681,26 @@ export interface paths {
         };
         /** GET /v1/logs — Paginated + filtered request logs. Supports `?format=csv`. */
         get: operations["get_logs_filtered"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/logs/{id}/artifact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /v1/logs/{id}/artifact — Retrieve the stored artifact for a request log.
+         *     Live: `curl https://app.litegen.ai/api/v1/logs/{id}/artifact -H "Authorization: Bearer sk_live_..."`
+         */
+        get: operations["get_log_artifact"];
         put?: never;
         post?: never;
         delete?: never;
@@ -670,6 +845,27 @@ export interface paths {
         put?: never;
         /** POST /v1/orgs/{id}/transfer-owner — Transfer ownership (requires org:transfer_owner). */
         post: operations["transfer_owner"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /v1/providers — Catalog of supported providers and the credential fields
+         *     each one needs. Drives the dashboard's dynamic credential form.
+         *     Live: `curl https://app.litegen.ai/api/v1/providers -H "Authorization: Bearer sk_live_..."`
+         */
+        get: operations["list_providers"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -871,6 +1067,26 @@ export interface components {
             /** Format: double */
             token_quota?: number | null;
         };
+        /** @description Full key detail for GET /v1/keys/{id} and PATCH /v1/keys/{id} responses. */
+        ApiKeyDetail: {
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            expires_at?: string | null;
+            /** Format: uuid */
+            id: string;
+            is_active: boolean;
+            key_prefix: string;
+            name: string;
+            /** Format: int32 */
+            rpm_limit?: number | null;
+            scopes: string;
+            /** Format: double */
+            token_quota?: number | null;
+            /** Format: double */
+            tokens_used: number;
+            webhook_url?: string | null;
+        };
         /** @description An API key with weight for round-robin distribution. */
         ApiKeyEntry: {
             /** @description The API key value. Stored encrypted at rest. */
@@ -933,6 +1149,31 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description One audit log entry recording an admin action. */
+        AuditLogEntry: {
+            /** @description Action identifier, e.g. `"key.create"`, `"generation.cancel"`. */
+            action: string;
+            /** @description The API key ID of the actor. None when the master key was used. */
+            actor_key_id?: string | null;
+            /** @description Human-readable actor label: `"master-key"` or the key's name. */
+            actor_label: string;
+            /** @description JSON snapshot of the entity state *after* the action (None on delete/revoke). */
+            after_json?: string | null;
+            /** @description JSON snapshot of the entity state *before* the action (None on create). */
+            before_json?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            id: string;
+            /**
+             * @description Tenant (organization) this audit entry belongs to. None falls back to the
+             *     default org at the DB layer (single-tenant); set from the caller's active org.
+             */
+            org_id?: string | null;
+            /** @description Target entity ID. */
+            target_id: string;
+            /** @description Target entity type: `"api_key"` or `"generation"`. */
+            target_type: string;
+        };
         AuthConfigResponse: {
             /** @description Whether email/password signup + login is enabled. */
             password_enabled: boolean;
@@ -983,6 +1224,10 @@ export interface components {
             enabled: boolean;
             /** Format: int64 */
             entries: number;
+        };
+        CancelGenerationBody: {
+            /** @description Target status; only `"cancelled"` is honored. */
+            status: string;
         };
         /** @enum {string} */
         CapabilityMediaType: "image" | "video";
@@ -1048,6 +1293,44 @@ export interface components {
             credentials: unknown;
             provider: string;
         };
+        /**
+         * @description A signing credential set (key_id + key_secret, plus optional region for
+         *     SigV4/TC3) with a weight for round-robin distribution. The signing-scheme
+         *     analogue of [`ApiKeyEntry`], used by providers like Bedrock, Hunyuan, and
+         *     Kling that authenticate with a credential *pair* rather than a bearer key.
+         */
+        CredentialEntry: {
+            /** @description Access key id (SigV4) / secret id (TC3) / access key (Kling). */
+            key_id: string;
+            /** @description Secret access key (SigV4) / secret key (TC3, Kling). Stored encrypted. */
+            key_secret: string;
+            /** @description Optional label for the credential set. */
+            label?: string | null;
+            /**
+             * @description Region (SigV4 / TC3). Omitted for Kling; when absent the provider falls
+             *     back to its configured/default region.
+             */
+            region?: string | null;
+            /**
+             * Format: int32
+             * @description Weight for round-robin (higher = more traffic). Default: 1.
+             */
+            weight?: number;
+        };
+        /**
+         * @description One field the dashboard must collect for a provider credential, per pool
+         *     entry. Returned as part of [`ProviderCatalogEntry`].
+         */
+        CredentialFieldSpec: {
+            /** @description JSON key within each pool entry (e.g. "key", "key_id", "key_secret", "region"). */
+            key: string;
+            /** @description Human-readable label for the input. */
+            label: string;
+            /** @description Whether the field may be left empty. */
+            optional?: boolean;
+            /** @description Whether the value is secret and should be rendered masked. */
+            secret: boolean;
+        };
         CsrfResponse: {
             csrf_token: string;
         };
@@ -1086,6 +1369,39 @@ export interface components {
         };
         ErrorResponse: {
             error: components["schemas"]["ErrorDetail"];
+        };
+        /** @description A DB-backed generation row (video or image, currently used for video). */
+        Generation: {
+            /** @description Owning application. None for pre-tenancy / untenanted rows. */
+            app_id?: string | null;
+            /** Format: date-time */
+            completed_at?: string | null;
+            /** Format: double */
+            cost_usd: number;
+            /** Format: date-time */
+            created_at: string;
+            error_message?: string | null;
+            /** @description Locally-minted ID (e.g. "litegen-vid-<uuid>"). */
+            id: string;
+            /**
+             * Format: uuid
+             * @description API key that submitted this generation; None when master key was used.
+             */
+            key_id?: string | null;
+            media_type: string;
+            /** @description Arbitrary JSON metadata. */
+            metadata?: unknown;
+            model: string;
+            /** @description Owning tenant (organization). None for pre-tenancy / untenanted rows. */
+            org_id?: string | null;
+            /** Format: int32 */
+            progress: number;
+            provider: string;
+            /** @description Provider-assigned job ID used for polling. */
+            provider_job_id?: string | null;
+            /** @description Final result URL when completed. */
+            result_url?: string | null;
+            status: components["schemas"]["GenerationStatus"];
         };
         /** @enum {string} */
         GenerationStatus: "pending" | "processing" | "completed" | "failed" | "cancelled";
@@ -1337,6 +1653,82 @@ export interface components {
             role: components["schemas"]["Role"];
             user_id: string;
         };
+        PaginatedResponse_AuditLogEntry: {
+            data: {
+                /** @description Action identifier, e.g. `"key.create"`, `"generation.cancel"`. */
+                action: string;
+                /** @description The API key ID of the actor. None when the master key was used. */
+                actor_key_id?: string | null;
+                /** @description Human-readable actor label: `"master-key"` or the key's name. */
+                actor_label: string;
+                /** @description JSON snapshot of the entity state *after* the action (None on delete/revoke). */
+                after_json?: string | null;
+                /** @description JSON snapshot of the entity state *before* the action (None on create). */
+                before_json?: string | null;
+                /** Format: date-time */
+                created_at: string;
+                id: string;
+                /**
+                 * @description Tenant (organization) this audit entry belongs to. None falls back to the
+                 *     default org at the DB layer (single-tenant); set from the caller's active org.
+                 */
+                org_id?: string | null;
+                /** @description Target entity ID. */
+                target_id: string;
+                /** @description Target entity type: `"api_key"` or `"generation"`. */
+                target_type: string;
+            }[];
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            per_page: number;
+            /** Format: int64 */
+            total: number;
+            /** Format: int32 */
+            total_pages: number;
+        };
+        PaginatedResponse_Generation: {
+            data: {
+                /** @description Owning application. None for pre-tenancy / untenanted rows. */
+                app_id?: string | null;
+                /** Format: date-time */
+                completed_at?: string | null;
+                /** Format: double */
+                cost_usd: number;
+                /** Format: date-time */
+                created_at: string;
+                error_message?: string | null;
+                /** @description Locally-minted ID (e.g. "litegen-vid-<uuid>"). */
+                id: string;
+                /**
+                 * Format: uuid
+                 * @description API key that submitted this generation; None when master key was used.
+                 */
+                key_id?: string | null;
+                media_type: string;
+                /** @description Arbitrary JSON metadata. */
+                metadata?: unknown;
+                model: string;
+                /** @description Owning tenant (organization). None for pre-tenancy / untenanted rows. */
+                org_id?: string | null;
+                /** Format: int32 */
+                progress: number;
+                provider: string;
+                /** @description Provider-assigned job ID used for polling. */
+                provider_job_id?: string | null;
+                /** @description Final result URL when completed. */
+                result_url?: string | null;
+                status: components["schemas"]["GenerationStatus"];
+            }[];
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            per_page: number;
+            /** Format: int64 */
+            total: number;
+            /** Format: int32 */
+            total_pages: number;
+        };
         PaginatedResponse_RequestLog: {
             data: {
                 /** Format: double */
@@ -1352,6 +1744,33 @@ export interface components {
                 model: string;
                 provider: string;
                 status: components["schemas"]["GenerationStatus"];
+            }[];
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            per_page: number;
+            /** Format: int64 */
+            total: number;
+            /** Format: int32 */
+            total_pages: number;
+        };
+        PaginatedResponse_WebhookDelivery: {
+            data: {
+                /** Format: int32 */
+                attempt_number: number;
+                /** Format: date-time */
+                created_at: string;
+                error_message?: string | null;
+                generation_id: string;
+                id: string;
+                key_id: string;
+                payload_json: string;
+                response_body?: string | null;
+                /** Format: int32 */
+                status_code?: number | null;
+                /** @description Whether this attempt was successful (HTTP 2xx). */
+                success: boolean;
+                url: string;
             }[];
             /** Format: int32 */
             page: number;
@@ -1449,6 +1868,26 @@ export interface components {
             min_length?: number | null;
             required?: boolean;
         };
+        /**
+         * @description Describes a provider and how the dashboard should render its credential
+         *     form. Returned by `GET /v1/providers` so the UI never hard-codes per-provider
+         *     field knowledge.
+         */
+        ProviderCatalogEntry: {
+            /** @description Coarse auth scheme: "api_key" | "aws_sigv4" | "tencent_tc3" | "kling_jwt". */
+            auth_scheme: string;
+            /** @description Fields to collect per pool entry, besides the universal `weight`/`label`. */
+            fields: components["schemas"]["CredentialFieldSpec"][];
+            /** @description Which media this provider serves — any of "image", "video". */
+            modalities: string[];
+            /** @description Provider id (e.g. "openai", "bedrock"). */
+            name: string;
+            /**
+             * @description Which credentials array to submit: "api_keys" (bearer) or
+             *     "credential_sets" (signing). Each array element is `{<fields…>, weight?, label?}`.
+             */
+            pool_field: string;
+        };
         /** @description Configuration for a provider deployment. */
         ProviderConfig: {
             /** @description Base URL override. */
@@ -1536,6 +1975,16 @@ export interface components {
             /** @description Write-only. */
             secret_access_key?: string | null;
         };
+        ReadinessChecks: {
+            db: boolean;
+            providers: string[];
+        };
+        /** @description Response for `GET /health/ready`. */
+        ReadinessResponse: {
+            checks: components["schemas"]["ReadinessChecks"];
+            /** @description "ready" or "not_ready" */
+            status: string;
+        };
         /** @enum {string} */
         RefImageKind: "base64" | "url" | "blob";
         RefInputSpec: {
@@ -1574,6 +2023,25 @@ export interface components {
             type: components["schemas"]["RefImageKind"];
             value: string;
         };
+        /** @description Stores the input/output snapshot of a generation request for drill-down. */
+        RequestArtifact: {
+            app_id?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            error_message?: string | null;
+            media_type: string;
+            negative_prompt?: string | null;
+            org_id?: string | null;
+            /** @description "b64" | "url" | "error" */
+            output_kind: string;
+            output_mime?: string | null;
+            output_truncated: boolean;
+            output_value?: string | null;
+            params_json?: unknown;
+            prompt?: string | null;
+            refs_meta_json?: unknown;
+            request_id: string;
+        };
         RequestLog: {
             /** Format: double */
             cost_usd: number;
@@ -1595,6 +2063,29 @@ export interface components {
         };
         /** @enum {string} */
         Role: "owner" | "admin" | "member" | "viewer";
+        /**
+         * @description Response for `POST /v1/keys/{id}/rotate`. Carries the freshly-minted secret,
+         *     which is returned exactly once (it is never persisted or shown again).
+         */
+        RotatedKeyResponse: {
+            /** Format: date-time */
+            expires_at?: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @description The new secret, e.g. "sk_live_…". Shown only at rotation time. */
+            key: string;
+            name: string;
+            prefix: string;
+            /** @description Public key id, e.g. "pk_live_…". */
+            public_id: string;
+            /** Format: int32 */
+            rpm_limit?: number | null;
+            /** @description CSV of scopes carried over from the rotated key. */
+            scopes: string;
+            /** Format: double */
+            token_quota?: number | null;
+            webhook_url?: string | null;
+        };
         /** @enum {string} */
         RoutingStrategy: "fallback" | "weighted_round_robin" | "lowest_cost" | "lowest_latency";
         Session: {
@@ -1608,10 +2099,18 @@ export interface components {
             user_agent?: string | null;
             user_id: string;
         };
-        /** @description Public session info (no csrf_token exposed). */
+        /**
+         * @description Public session info. `id` is a NON-secret SHA-256 fingerprint of the session
+         *     token — never the raw token. The session row's primary key IS the bearer
+         *     credential (it's the `litegen_session` cookie value), so returning it
+         *     verbatim would let any response-body capture (e.g. XSS — which HttpOnly is
+         *     meant to stop) harvest usable session tokens for all the user's devices.
+         *     Revocation resolves the fingerprint back to the row.
+         */
         SessionInfo: {
             created_at: string;
             expires_at: string;
+            /** @description SHA-256 fingerprint of the session token (safe to expose; used for revoke). */
             id: string;
             ip?: string | null;
             user_agent?: string | null;
@@ -1646,6 +2145,19 @@ export interface components {
         };
         TransferOwnerRequest: {
             new_owner_id: string;
+        };
+        /** @description Request body for PATCH /v1/keys/{id}. */
+        UpdateApiKeyRequest: {
+            /** Format: date-time */
+            expires_at?: string | null;
+            is_active?: boolean | null;
+            name?: string | null;
+            /** Format: int32 */
+            rpm_limit?: number | null;
+            scopes?: string | null;
+            /** Format: double */
+            token_quota?: number | null;
+            webhook_url?: string | null;
         };
         UpdateAppRequest: {
             name: string;
@@ -1718,6 +2230,30 @@ export interface components {
             usage?: null | components["schemas"]["UsageInfo"];
             /** @description Video URL when completed. */
             video_url?: string | null;
+        };
+        /** @description One row in the `webhook_deliveries` table. */
+        WebhookDelivery: {
+            /** Format: int32 */
+            attempt_number: number;
+            /** Format: date-time */
+            created_at: string;
+            error_message?: string | null;
+            generation_id: string;
+            id: string;
+            key_id: string;
+            payload_json: string;
+            response_body?: string | null;
+            /** Format: int32 */
+            status_code?: number | null;
+            /** @description Whether this attempt was successful (HTTP 2xx). */
+            success: boolean;
+            url: string;
+        };
+        WebhookTestResult: {
+            delivered: boolean;
+            error?: string | null;
+            /** Format: int32 */
+            status_code?: number | null;
         };
     };
     responses: never;
@@ -1805,6 +2341,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LivenessResponse"];
+                };
+            };
+        };
+    };
+    readiness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Service is ready */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadinessResponse"];
+                };
+            };
+            /** @description Service is not ready */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadinessResponse"];
                 };
             };
         };
@@ -2307,6 +2872,50 @@ export interface operations {
             };
         };
     };
+    list_audit: {
+        parameters: {
+            query?: {
+                /** @description Filter by actor API key ID */
+                actor_key_id?: string;
+                /** @description Filter by action, e.g. key.create */
+                action?: string;
+                /** @description ISO 8601 lower bound (inclusive) */
+                from?: string;
+                /** @description ISO 8601 upper bound (inclusive) */
+                to?: string;
+                /** @description Page number (default 1) */
+                page?: number;
+                /** @description Items per page (default 50) */
+                per_page?: number;
+                /** @description Set to `csv` for a CSV export */
+                format?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paginated audit log entries (or a CSV attachment when format=csv) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedResponse_AuditLogEntry"];
+                };
+            };
+            /** @description Forbidden (audit:read required) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     auth_config: {
         parameters: {
             query?: never;
@@ -2796,6 +3405,135 @@ export interface operations {
             };
         };
     };
+    list_generations: {
+        parameters: {
+            query?: {
+                /** @description Page number (default 1) */
+                page?: number;
+                /** @description Items per page (default 50) */
+                per_page?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paginated generations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedResponse_Generation"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_generation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Generation ID (litegen-vid-...) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Generation detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Generation"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    cancel_generation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Generation ID (litegen-vid-...) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelGenerationBody"];
+            };
+        };
+        responses: {
+            /** @description Cancelled generation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Generation"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not in a cancellable state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     estimate_image_cost: {
         parameters: {
             query?: never;
@@ -2915,6 +3653,38 @@ export interface operations {
             };
         };
     };
+    get_api_key_handler: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description API key ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description API key detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyDetail"];
+                };
+            };
+            /** @description Key not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     revoke_api_key: {
         parameters: {
             query?: never;
@@ -2934,6 +3704,152 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RevokeKeyResponse"];
+                };
+            };
+            /** @description Key not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    patch_api_key_handler: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description API key ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateApiKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated API key */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyDetail"];
+                };
+            };
+            /** @description Key not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    rotate_api_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description API key ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rotated key with the new one-time secret */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RotatedKeyResponse"];
+                };
+            };
+            /** @description Key not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    test_webhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description API key ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Delivery result (delivered=false if the endpoint rejected it) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookTestResult"];
+                };
+            };
+            /** @description No webhook_url configured on the key */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Key not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_webhook_deliveries: {
+        parameters: {
+            query?: {
+                /** @description Page number (default 1) */
+                page?: number;
+                /** @description Items per page (default 50) */
+                per_page?: number;
+            };
+            header?: never;
+            path: {
+                /** @description API key ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paginated webhook deliveries */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedResponse_WebhookDelivery"];
                 };
             };
             /** @description Key not found */
@@ -2968,6 +3884,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PaginatedResponse_RequestLog"];
+                };
+            };
+        };
+    };
+    get_log_artifact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Request log / generation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stored request/response artifact */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestArtifact"];
+                };
+            };
+            /** @description Artifact not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -3506,6 +4454,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_providers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Provider catalog */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderCatalogEntry"][];
                 };
             };
         };

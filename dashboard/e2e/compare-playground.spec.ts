@@ -32,8 +32,12 @@ test('compare mode: unified params from diverse schemas + multi-model generation
   // size is shared by both → "all"; style only dall-e-3.
   await expect(page.getByTestId('pg-param-size-applies')).toContainText('all');
   await expect(page.getByTestId('pg-param-style-applies')).toContainText('dall-e-3');
-  // seed has a dedicated control, not a merged row.
+  // seed has a dedicated control, not a merged row: flux-pro declares `seed`, but
+  // it must NOT surface as a merged param row (no `pg-param-seed` input nor
+  // `pg-param-seed-applies` row) — instead the dedicated `pg-seed` control renders.
   await expect(page.getByTestId('pg-param-seed')).toHaveCount(0);
+  await expect(page.getByTestId('pg-param-seed-applies')).toHaveCount(0);
+  await expect(page.getByTestId('pg-seed')).toBeVisible();
 
   // Per-model Request JSON proves buildRequest drops params a model doesn't declare.
   await page.getByTestId('pg-prompt').fill('a red fox');

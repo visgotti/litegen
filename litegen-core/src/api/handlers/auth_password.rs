@@ -608,8 +608,23 @@ pub async fn password_reset_confirm(
         }
     };
 
-    let _ = state.db.update_user(&reset.user_id, None, None, Some(&hash)).await;
-    let _ = state.db.mark_password_reset_used(&body.token).await;
+    // Apply the password change FIRST and propagate its error. If we consumed the
+    // token first and the update then failed, the single-use token would be burned
+    // while the password stayed unchanged — locking the user out behind a 204
+    // "success". Concurrent-confirm safety is preserved by the atomic
+    // mark_password_reset_used CAS below: only one confirm wins it, and a duplicate
+    // re-running this idempotent update is harmless.
+    if let Err(e) = state.db.update_user(&reset.user_id, None, None, Some(&hash)).await {
+        return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+    }
+
+    // Atomically consume the token so it can't be replayed. The CAS is the
+    // single-use guarantee; we already verified used_at/expiry above.
+    match state.db.mark_password_reset_used(&body.token).await {
+        Ok(true) => {}
+        Ok(false) => return error_resp(StatusCode::BAD_REQUEST, "token_expired", "Token already used or expired"),
+        Err(e) => return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+    }
     let _ = state.db.delete_user_sessions(&reset.user_id, None).await;
 
     StatusCode::NO_CONTENT.into_response()

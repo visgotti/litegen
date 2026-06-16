@@ -16,8 +16,8 @@ use crate::types::GenerationStatus;
 pub(crate) async fn poll_once(
     db: &Arc<dyn DatabaseStore>,
     registry: &Arc<ProviderRegistry>,
-    http: &reqwest::Client,
     secrets_key: Option<[u8; 32]>,
+    mode: crate::config::Mode,
 ) {
     let rows = match db.list_active_generations(100).await {
         Ok(r) => r,
@@ -26,6 +26,11 @@ pub(crate) async fn poll_once(
             return;
         }
     };
+
+    // One hardened (no-redirect) webhook client per tick, cloned into each
+    // dispatch task — `reqwest::Client` clones share a connection pool, so this
+    // avoids building (and discarding) a fresh pool per terminal generation.
+    let wh_client = crate::util::ssrf::no_redirect_client();
 
     for gen in rows {
         // Resolve this generation's per-app BYO credential, if the app stored one.
@@ -109,7 +114,7 @@ pub(crate) async fn poll_once(
         if is_terminal {
             if let Some(key_id) = gen.key_id {
                 let db2 = db.clone();
-                let http2 = http.clone();
+                let wh_client = wh_client.clone();
                 let gen_id = gen.id.clone();
                 // Build the updated generation for the webhook payload
                 let updated_gen = crate::types::Generation {
@@ -125,10 +130,25 @@ pub(crate) async fn poll_once(
                     match db2.get_api_key(&key_id).await {
                         Ok(Some(key)) if key.webhook_url.is_some() => {
                             let url = key.webhook_url.unwrap();
+                            // SSRF re-validation (hosted only): re-check the URL at
+                            // dispatch time so a key whose webhook_url predates the
+                            // create/patch validation — or a host that now resolves
+                            // to an internal address — can't be used as an SSRF
+                            // vector. Single-tenant operators may target internal
+                            // hosts, so they're not re-validated.
+                            if mode == crate::config::Mode::Hosted {
+                                if let Err(reason) = crate::util::ssrf::validate_public_url(&url).await {
+                                    warn!(generation_id = %gen_id, reason = %reason, "skipping webhook dispatch: disallowed url");
+                                    return;
+                                }
+                            }
                             let secret = key.key_hash.clone();
                             let key_id_str = key_id.to_string();
+                            // SSRF hardening: dispatch with the no-redirect client
+                            // (built once per tick above) so a public webhook host
+                            // can't 3xx-redirect the POST into an internal target.
                             if let Err(e) = dispatch_webhook_logged(
-                                &http2,
+                                &wh_client,
                                 &url,
                                 Some(&secret),
                                 &updated_gen,
@@ -208,8 +228,8 @@ async fn resolve_gen_credential(
 pub fn spawn_poller(
     db: Arc<dyn DatabaseStore>,
     registry: Arc<ProviderRegistry>,
-    http: reqwest::Client,
     secrets_key: Option<[u8; 32]>,
+    mode: crate::config::Mode,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -218,7 +238,7 @@ pub fn spawn_poller(
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    poll_once(&db, &registry, &http, secrets_key).await;
+                    poll_once(&db, &registry, secrets_key, mode).await;
                 }
                 _ = &mut shutdown => {
                     tracing::info!("poller received shutdown signal, exiting loop");
@@ -265,7 +285,6 @@ mod poller_tests {
     async fn poll_once_flips_pending_to_completed() {
         let db: Arc<dyn DatabaseStore> = in_memory_db().await;
         let registry = make_registry().await;
-        let client = reqwest::Client::new();
 
         // Insert a pending generation
         db.insert_generation(
@@ -285,7 +304,7 @@ mod poller_tests {
         assert_eq!(before.status, crate::types::GenerationStatus::Pending);
 
         // Run one poller iteration
-        poll_once(&db, &registry, &client, None).await;
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant).await;
 
         // Should now be completed
         let after = db.get_generation("litegen-vid-poll-test-1").await.unwrap().unwrap();
@@ -298,7 +317,6 @@ mod poller_tests {
     async fn poll_once_skips_unknown_provider() {
         let db: Arc<dyn DatabaseStore> = in_memory_db().await;
         let registry = Arc::new(ProviderRegistry::new()); // no providers registered
-        let client = reqwest::Client::new();
 
         db.insert_generation(
             "litegen-vid-poll-skip-1",
@@ -312,7 +330,7 @@ mod poller_tests {
             None,
         ).await.unwrap();
 
-        poll_once(&db, &registry, &client, None).await;
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant).await;
 
         // Status should remain pending (provider not found, skipped)
         let row = db.get_generation("litegen-vid-poll-skip-1").await.unwrap().unwrap();
@@ -345,7 +363,6 @@ mod poller_tests {
         ).await.unwrap();
 
         let registry = make_registry().await;
-        let client = reqwest::Client::new();
 
         db.insert_generation(
             "litegen-vid-wh-poll-1",
@@ -359,7 +376,7 @@ mod poller_tests {
             None,
         ).await.unwrap();
 
-        poll_once(&db, &registry, &client, None).await;
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant).await;
 
         // Give the spawned webhook task a moment
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;

@@ -181,6 +181,13 @@ impl Materializer {
     }
 
     async fn fetch_url(&self, url: &str) -> Result<Vec<u8>, MaterializeError> {
+        // SSRF guard: the URL comes straight from the request body
+        // (reference_images[].value). Reject non-public targets before issuing
+        // the request. The production client also disables redirect following
+        // (see main.rs) so a public host can't 3xx-redirect into a private one.
+        crate::util::ssrf::validate_public_url(url)
+            .await
+            .map_err(MaterializeError::Fetch)?;
         let resp = self.http.get(url).send().await.map_err(|e| MaterializeError::Fetch(e.to_string()))?;
         if !resp.status().is_success() {
             return Err(MaterializeError::Fetch(format!("status {}", resp.status())));

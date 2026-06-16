@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { client, API_BASE } from '../sdk-client';
 import { LiteGenAPIError, type AuthConfigResponse } from '@litegen/sdk';
+import { useTenant } from '../context/tenant';
 
 /** Read the post-login target from the `?next=` query param (default `/`). */
 function resolveNext(): string {
@@ -64,6 +65,7 @@ function GoogleButton({ testId, label }: { testId: string; label: string }) {
 
 export default function Login() {
   const navigate = useNavigate();
+  const { refresh } = useTenant();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -89,6 +91,10 @@ export default function Login() {
     setLoading(true);
     try {
       await client.auth.login({ email, password });
+      // Re-resolve tenant/auth state before navigating: the session cookie is
+      // now set, but RequireAuth reads TenantContext (last resolved while logged
+      // out). Without this, a client-side navigate lands back on /login.
+      await refresh();
       navigate(resolveNext());
     } catch (err) {
       if (err instanceof LiteGenAPIError) {

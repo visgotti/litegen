@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { client, API_BASE } from '../sdk-client';
 import { LiteGenAPIError, type AuthConfigResponse } from '@litegen/sdk';
+import { useTenant } from '../context/tenant';
 
 /** Read the post-login target from the `?next=` query param (default `/`). */
 function resolveNext(): string {
@@ -61,6 +62,7 @@ function GoogleButton() {
 
 export default function Signup() {
   const navigate = useNavigate();
+  const { refresh } = useTenant();
   const [email, setEmail] = useState('');
   const [orgName, setOrgName] = useState('');
   const [password, setPassword] = useState('');
@@ -97,6 +99,9 @@ export default function Signup() {
     try {
       const trimmedOrg = orgName.trim();
       await client.auth.signup({ email, password, ...(trimmedOrg ? { org_name: trimmedOrg } : {}) });
+      // Re-resolve tenant/auth state before navigating (cookie is now set, but
+      // RequireAuth still has the logged-out TenantContext) — else we bounce to /login.
+      await refresh();
       navigate(resolveNext());
     } catch (err) {
       if (err instanceof LiteGenAPIError) {

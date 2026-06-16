@@ -46,12 +46,13 @@ impl GenerationCache {
     /// fingerprinted so requests differing in size/seed/etc don't collide.
     pub async fn get_image(
         &self,
+        tenant: Option<&str>,
         model: &str,
         base: &BaseGenerationRequest,
         extras: &ImageExtras,
     ) -> Option<ImageGenerationResponse> {
         let cache = self.image_cache.as_ref()?;
-        let key = image_cache_key(model, base, extras);
+        let key = image_cache_key(tenant, model, base, extras);
         let result = cache.get(&key).await;
         if result.is_some() {
             debug!(model = model, "Cache hit");
@@ -62,13 +63,14 @@ impl GenerationCache {
     /// Store an image generation response in cache.
     pub async fn put_image(
         &self,
+        tenant: Option<&str>,
         model: &str,
         base: &BaseGenerationRequest,
         extras: &ImageExtras,
         response: &ImageGenerationResponse,
     ) {
         if let Some(cache) = &self.image_cache {
-            let key = image_cache_key(model, base, extras);
+            let key = image_cache_key(tenant, model, base, extras);
             cache.insert(key, response.clone()).await;
             debug!(model = model, "Cached generation");
         }
@@ -77,12 +79,13 @@ impl GenerationCache {
     /// Invalidate a specific cache entry.
     pub async fn invalidate(
         &self,
+        tenant: Option<&str>,
         model: &str,
         base: &BaseGenerationRequest,
         extras: &ImageExtras,
     ) {
         if let Some(cache) = &self.image_cache {
-            cache.invalidate(&image_cache_key(model, base, extras)).await;
+            cache.invalidate(&image_cache_key(tenant, model, base, extras)).await;
         }
     }
 
@@ -103,6 +106,7 @@ impl GenerationCache {
 }
 
 fn image_cache_key(
+    tenant: Option<&str>,
     model: &str,
     base: &BaseGenerationRequest,
     extras: &ImageExtras,
@@ -112,6 +116,10 @@ fn image_cache_key(
         hasher.update(s.as_bytes());
         hasher.update(b"\x00");
     };
+    // Tenant scope FIRST: the cache is a single process-global instance, so the
+    // key must include the caller's tenant (app/org) or one tenant could receive
+    // another tenant's cached image for an identical model+prompt+params request.
+    feed(tenant.unwrap_or("__global__"));
     feed(model);
     feed(&base.prompt);
     feed(base.negative_prompt.as_deref().unwrap_or(""));

@@ -19,6 +19,13 @@ export default defineConfig({
     // so that session cookies are same-origin and SameSite=Lax works correctly.
     proxy: process.env.VITE_PROXY_TARGET
       ? {
+          // Mirror the production Caddy route: strip the /api prefix before
+          // proxying so a dev/test stack matches `https://app.litegen.ai/api/*`.
+          '/api': {
+            target: process.env.VITE_PROXY_TARGET,
+            changeOrigin: true,
+            rewrite: (p) => p.replace(/^\/api/, ''),
+          },
           '/v1': { target: process.env.VITE_PROXY_TARGET, changeOrigin: true },
           '/health': { target: process.env.VITE_PROXY_TARGET, changeOrigin: true },
           '/metrics': { target: process.env.VITE_PROXY_TARGET, changeOrigin: true },

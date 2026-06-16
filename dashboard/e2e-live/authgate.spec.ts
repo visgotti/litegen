@@ -10,8 +10,10 @@ test('unauthenticated visitor is redirected to a clean /login (no sidebar/app sh
 
   // The clean auth page is shown…
   await expect(page.locator('[data-testid="auth-page"]')).toBeVisible({ timeout: 10_000 });
-  // …and a Google sign-in option is present
-  await expect(page.locator('[data-testid="oauth-google"]')).toBeVisible({ timeout: 10_000 });
+  // …and at least one OAuth sign-in option is present. Assert on the provider-
+  // agnostic prefix rather than a specific provider so this doesn't break when the
+  // deployment enables a different set in /v1/auth/config (github vs google).
+  await expect(page.locator('[data-testid^="oauth-"]').first()).toBeVisible({ timeout: 10_000 });
 
   // The app shell / sidebar must NOT be present for an unauthenticated user
   await expect(page.locator('nav.sidebar')).toHaveCount(0);

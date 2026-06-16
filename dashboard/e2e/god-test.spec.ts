@@ -2,6 +2,9 @@ import { test, expect } from '@playwright/test';
 import { createServer, Server } from 'http';
 
 const MASTER_KEY = process.env.PLAYWRIGHT_MASTER_KEY ?? 'test-master-key-please-rotate';
+// Direct-to-backend base for raw API calls (bypasses the dashboard proxy). Matches
+// the webServer port in playwright.config.ts; override with LITEGEN_API_BASE.
+const API_BASE = process.env.LITEGEN_API_BASE ?? 'http://127.0.0.1:5099';
 
 function startWebhookReceiver(port: number): Promise<{ server: Server; received: any[] }> {
   return new Promise((resolve) => {
@@ -107,16 +110,17 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await page.waitForURL('**/login');
 
   // ─── Existing master-key path begins ─────────────────────────────────────────
-  // Navigate to / — no session exists, so AuthBar auto-shows (no localStorage pref).
+  // After signout, unauthenticated visitors are redirected to /login, so the
+  // master-key AuthBar no longer auto-shows on a bare '/'. Seed the key into
+  // localStorage (exactly what the AuthBar's "Save key" persists) so the app runs
+  // in API-key mode; RequireAuth then treats us as authenticated and the AuthBar
+  // renders its authenticated state. This matches how the other e2e specs auth.
 
   // ─── Step 1: Auth setup ──────────────────────────────────────────────────────
+  // Seed once (not via addInitScript) so the later AuthBar sign-out can actually
+  // clear it — we're on /login here, so localStorage is writable for this origin.
+  await page.evaluate((key) => localStorage.setItem('litegen_api_key', key), MASTER_KEY);
   await page.goto('/');
-
-  // Fill the AuthBar's key input and save
-  const keyInput = page.getByTestId('api-key-input');
-  await expect(keyInput).toBeVisible({ timeout: 10_000 });
-  await keyInput.fill(MASTER_KEY);
-  await page.getByTestId('save-key-btn').click();
 
   // Assert authenticated state appears
   await expect(page.getByTestId('auth-status')).toBeVisible({ timeout: 5_000 });
@@ -409,7 +413,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   // ─── NEW: Generations ─────────────────────────────────────────────────────────
   // First trigger a video generation via API directly
   const masterKey = process.env.PLAYWRIGHT_MASTER_KEY ?? 'test-master-key-please-rotate';
-  const videoResp = await page.request.post('http://127.0.0.1:5099/v1/videos/generations', {
+  const videoResp = await page.request.post(`${API_BASE}/v1/videos/generations`, {
     headers: {
       Authorization: `Bearer ${masterKey}`,
       'Content-Type': 'application/json',
@@ -440,6 +444,10 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
     await page.locator(`[data-testid="gen-cancel-${videoId}"]`).click();
     // After cancel, status should change to 'cancelled'
     await expect(page.locator(`[data-testid="gen-status-${videoId}"]`)).toContainText('cancelled', { timeout: 5_000 });
+  } else {
+    // The mock provider can complete before we reach the cancel button; don't
+    // silently skip — assert the generation reached a real terminal state instead.
+    await expect(page.locator(`[data-testid="gen-status-${videoId}"]`)).toContainText(/completed|cancelled|failed/i, { timeout: 5_000 });
   }
 
   // Pagination buttons — verify they render and are in correct enabled/disabled state
@@ -461,10 +469,17 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
 
   // ─── NEW: Overview auto-refresh / cost chart / quota table ──────────────────
   await page.click('a[href="/"]');
-  await page.waitForURL('http://127.0.0.1:5174/');
+  // Home route — match by pathname so this isn't tied to the dev-server host/port.
+  await page.waitForURL((url) => url.pathname === '/');
 
   // Toggle auto-refresh on (testid is on the <label>, so locate the inner checkbox)
   const refreshToggle = page.locator('[data-testid="overview-autorefresh"] input[type="checkbox"]');
+  // Auto-refresh polls stats on a 5s setInterval — wait for that fetch to actually
+  // fire rather than sleeping a fixed interval. Arm the listener before enabling.
+  const autoRefreshFired = page.waitForResponse(
+    (r) => r.url().includes('/v1/stats') && r.request().method() === 'GET',
+    { timeout: 15_000 },
+  );
   await refreshToggle.check();
 
   // Cost chart and quota table containers are present
@@ -478,8 +493,8 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   // Quota rows may or may not exist — container visibility is the real check.
   // (The key created in step 6 was revoked, so count=0 is expected here.)
 
-  // Wait 6 seconds for auto-refresh to fire at least once
-  await page.waitForTimeout(6000);
+  // Wait for auto-refresh to fire at least once (resolves as soon as it does).
+  await autoRefreshFired;
 
   // Toggle off
   await refreshToggle.uncheck();
@@ -634,10 +649,13 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   // Filter to mock provider
   await page.locator('[data-testid="models-filter-provider"]').selectOption({ label: 'mock' });
 
-  // Assert at least 14 mock model rows (4 original + 12 new config-demo models)
-  await page.waitForTimeout(500); // let filter apply
-  const mockRowCount = await page.locator('[data-testid^="model-row-"]').count();
-  expect(mockRowCount >= 14).toBe(true);
+  // Assert at least 14 mock model rows (4 original + 12 new config-demo models).
+  // The provider filter is client-side, so poll the row count (auto-retries until
+  // the re-render settles) instead of sleeping a fixed interval.
+  await expect.poll(
+    () => page.locator('[data-testid^="model-row-"]').count(),
+    { timeout: 5_000 },
+  ).toBeGreaterThanOrEqual(14);
 
   // Exercise media-type radio buttons
   const mediaTypeAll = page.locator('[data-testid="models-filter-media-type"] input[value=""]');
@@ -702,7 +720,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   expect(rpmKeyValue!.startsWith('sk_live_')).toBeTruthy();
 
   // Fire a request with the rate-limited key
-  const rpmResp = await page.request.post('http://127.0.0.1:5099/v1/images/generations', {
+  const rpmResp = await page.request.post(`${API_BASE}/v1/images/generations`, {
     headers: {
       Authorization: `Bearer ${rpmKeyValue}`,
       'Content-Type': 'application/json',
@@ -791,7 +809,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
 
   // ─── Cluster 3e: Backpressure sanity ping ────────────────────────────────────
   // Lib tests cover backpressure logic; just verify the route is still healthy.
-  const sanityResp = await page.request.post('http://127.0.0.1:5099/v1/images/generations', {
+  const sanityResp = await page.request.post(`${API_BASE}/v1/images/generations`, {
     headers: {
       Authorization: `Bearer ${MASTER_KEY}`,
       'Content-Type': 'application/json',
@@ -801,15 +819,18 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   expect(sanityResp.status()).toBeLessThan(500);
 
   // ─── Step 7: Sign out / re-auth round trip ───────────────────────────────────
+  // AuthBar sign-out clears the key and reloads; with no key and no session the app
+  // redirects to the clean /login page (the app shell / AuthBar is gone).
   await page.getByRole('button', { name: 'Sign out' }).click();
+  // RequireAuth redirects to /login?next=… — match with a regex, not a glob.
+  await page.waitForURL(/\/login/);
+  await expect(page.getByTestId('auth-page')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByTestId('auth-status')).toHaveCount(0);
 
-  // Input field reappears
-  await expect(page.getByTestId('api-key-input')).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByTestId('auth-status')).not.toBeVisible();
-
-  // Re-authenticate
-  await page.getByTestId('api-key-input').fill(MASTER_KEY);
-  await page.getByTestId('save-key-btn').click();
+  // Re-authenticate by re-seeding the key (the "Save key" equivalent) and returning
+  // to the app; the authenticated AuthBar state reappears.
+  await page.evaluate((key) => localStorage.setItem('litegen_api_key', key), MASTER_KEY);
+  await page.goto('/');
   await expect(page.getByTestId('auth-status')).toBeVisible({ timeout: 5_000 });
   await expect(page.getByTestId('auth-status')).toContainText('Authenticated ✓');
 });

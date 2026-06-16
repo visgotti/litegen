@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { client, API_BASE } from '../sdk-client';
 import { LiteGenAPIError, type AuthConfigResponse } from '@litegen/sdk';
+import { useTenant } from '../context/tenant';
 
 function oauthAccept(provider: 'github' | 'google', token: string) {
   window.location.href =
@@ -23,6 +24,7 @@ interface InvitationView {
 export default function AcceptInvite() {
   const { token } = useParams<{ token: string }>();
   const navigate = useNavigate();
+  const { refresh } = useTenant();
 
   const [invitation, setInvitation] = useState<InvitationView | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -82,6 +84,9 @@ export default function AcceptInvite() {
     setLoading(true);
     try {
       await client.auth.acceptInvitation(token!, { password });
+      // Re-resolve tenant/auth state before navigating (cookie now set) so
+      // RequireAuth recognizes the session instead of bouncing to /login.
+      await refresh();
       navigate('/');
     } catch (err) {
       if (err instanceof LiteGenAPIError) {
