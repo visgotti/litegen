@@ -1,0 +1,20 @@
+# Single-domain Caddyfile for the private litegen.visgotti.com instance.
+# Selected via LITEGEN_CADDYFILE=Caddyfile.visgotti in .env.deploy.visgotti.
+# Caddy terminates TLS (automatic Let's Encrypt) and serves one host:
+#   litegen.visgotti.com → dashboard SPA (/srv/app) + API reverse-proxied under /api
+# (No landing site — this is a personal single-tenant instance.)
+{
+    email jvisgotti@gmail.com
+}
+
+litegen.visgotti.com {
+    handle_path /api/* {
+        reverse_proxy litegen:4000
+    }
+    handle {
+        root * /srv/app
+        try_files {path} /index.html
+        file_server
+        encode gzip
+    }
+}

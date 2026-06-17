@@ -22,7 +22,10 @@ const fs = require('fs');
 const net = require('net');
 
 const ROOT = __dirname;
-const ENV_FILE = path.resolve(ROOT, '.env.deploy');
+// Which deploy-config file to load. Defaults to .env.deploy (the litegen.ai
+// instance). Set LITEGEN_DEPLOY_ENV=.env.deploy.<name> to drive a SEPARATE,
+// isolated instance (own droplet, domain, secrets) without touching the default.
+const ENV_FILE = path.resolve(ROOT, process.env.LITEGEN_DEPLOY_ENV || '.env.deploy');
 const DRY_RUN = process.argv.includes('--dry-run');
 
 // This machine trusts a system/corporate CA that Node's bundled store lacks,
@@ -247,7 +250,9 @@ async function waitForSsh(host, tries = 40) {
 }
 
 // ── Target: provision ──────────────────────────────────────────────────────
-const DROPLET_NAME = 'litegen-proxy';
+// Droplet name is env-driven so a second instance (e.g. DROPLET_NAME=litegen-visgotti)
+// provisions its OWN droplet instead of reusing the default litegen.ai box.
+const DROPLET_NAME = env('DROPLET_NAME') || 'litegen-proxy';
 const DROPLET_TAG = 'litegen';
 
 async function provision() {
@@ -604,7 +609,9 @@ async function deployWeb() {
     console.log(`  [scp] ${landingTgz} -> ${remoteLandingTgz}`);
     if (!DRY_RUN) { await ssh.putFile(landingTgz, remoteLandingTgz); }
 
-    const caddyfile = path.join(ROOT, 'deploy', 'Caddyfile');
+    // Caddyfile is selectable so a second instance can serve its own domain
+    // (e.g. LITEGEN_CADDYFILE=Caddyfile.visgotti for litegen.visgotti.com).
+    const caddyfile = path.join(ROOT, 'deploy', env('LITEGEN_CADDYFILE') || 'Caddyfile');
     console.log(`  [scp] ${caddyfile} -> /opt/litegen/Caddyfile`);
     if (!DRY_RUN) { await ssh.putFile(caddyfile, '/opt/litegen/Caddyfile'); }
 
