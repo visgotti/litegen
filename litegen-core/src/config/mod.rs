@@ -126,6 +126,51 @@ impl Default for AppConfig {
     }
 }
 
+/// Result of the pre-bind security self-check ([`AppConfig::startup_security_check`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartupSecurityCheck {
+    /// Safe to start.
+    Ok,
+    /// Single-tenant + no `master_key` + a non-loopback bind: the
+    /// `auth_middleware` no-credential dev-bypass (which grants full admin scope
+    /// to anonymous requests) would be reachable from the network, exposing the
+    /// entire admin API. `host` is the offending bind address.
+    UnauthenticatedExposure { host: String },
+}
+
+/// True when `host` binds only the loopback interface (not reachable off-box).
+fn host_is_loopback(host: &str) -> bool {
+    if host.trim().eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // Tolerate bracketed IPv6 literals like "[::1]".
+    let h = host.trim().trim_start_matches('[').trim_end_matches(']');
+    matches!(h.parse::<std::net::IpAddr>(), Ok(ip) if ip.is_loopback())
+}
+
+impl AppConfig {
+    /// Pre-bind security self-check.
+    ///
+    /// The `auth_middleware` no-credential dev-bypass is only active in
+    /// `SingleTenant` mode with no `master_key`; in that combo an anonymous
+    /// request is granted full admin scope. If the server is also bound to a
+    /// non-loopback address, that admin API is exposed to the network. Flag
+    /// exactly that combination so `main` can refuse to start (or require an
+    /// explicit opt-in).
+    pub fn startup_security_check(&self) -> StartupSecurityCheck {
+        if self.mode == Mode::SingleTenant
+            && self.master_key.is_none()
+            && !host_is_loopback(&self.server.host)
+        {
+            StartupSecurityCheck::UnauthenticatedExposure {
+                host: self.server.host.clone(),
+            }
+        } else {
+            StartupSecurityCheck::Ok
+        }
+    }
+}
+
 fn default_database_url() -> String {
     "sqlite://litegen.db".to_string()
 }
@@ -562,5 +607,50 @@ mod tests {
         let cfg = AppConfig::default();
         assert!(cfg.auth.allow_password, "password auth must default to enabled");
         assert!(AuthConfig::default().allow_password);
+    }
+
+    #[test]
+    fn default_config_is_flagged_as_unauthenticated_network_exposure() {
+        // Default = SingleTenant + no master_key + 0.0.0.0 bind. In that combo
+        // the auth_middleware no-credential dev-bypass grants full admin scope
+        // to anonymous requests, and 0.0.0.0 exposes it to the network.
+        let cfg = AppConfig::default();
+        assert!(
+            matches!(
+                cfg.startup_security_check(),
+                StartupSecurityCheck::UnauthenticatedExposure { .. }
+            ),
+            "default config must be flagged as an unauthenticated network exposure"
+        );
+    }
+
+    #[test]
+    fn setting_master_key_makes_startup_safe() {
+        let mut cfg = AppConfig::default();
+        cfg.master_key = Some("a-long-random-master-secret".to_string());
+        assert!(matches!(cfg.startup_security_check(), StartupSecurityCheck::Ok));
+    }
+
+    #[test]
+    fn loopback_bind_without_master_key_is_safe() {
+        // Bound to loopback only -> not reachable from the network, so the
+        // no-auth bypass is acceptable (local dev).
+        for host in ["127.0.0.1", "localhost", "::1", "[::1]"] {
+            let mut cfg = AppConfig::default();
+            cfg.server.host = host.to_string();
+            assert!(
+                matches!(cfg.startup_security_check(), StartupSecurityCheck::Ok),
+                "loopback host {host:?} must be safe to start without a master key"
+            );
+        }
+    }
+
+    #[test]
+    fn hosted_mode_without_master_key_is_safe_to_start() {
+        // In Hosted mode the no-auth dev-bypass is disabled (anonymous requests
+        // get 401), so a missing master key is not a network exposure of admin.
+        let mut cfg = AppConfig::default();
+        cfg.mode = Mode::Hosted;
+        assert!(matches!(cfg.startup_security_check(), StartupSecurityCheck::Ok));
     }
 }
