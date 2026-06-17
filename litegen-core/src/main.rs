@@ -54,6 +54,36 @@ async fn main() -> anyhow::Result<()> {
         "Starting LiteGen proxy"
     );
 
+    // Pre-bind security self-check. In single-tenant mode with no master key,
+    // auth_middleware grants anonymous requests full admin scope; bound to a
+    // non-loopback address that exposes the whole admin API to the network.
+    // Refuse to start in that case unless the operator explicitly opts in.
+    if let config::StartupSecurityCheck::UnauthenticatedExposure { host } =
+        config.startup_security_check()
+    {
+        let allow_no_auth = std::env::var("LITEGEN__ALLOW_NO_AUTH")
+            .map(|v| v.trim().eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if allow_no_auth {
+            tracing::warn!(
+                "SECURITY: starting with NO authentication — single-tenant mode has no \
+                 LITEGEN__MASTER_KEY set and is bound to non-loopback {host}. The full admin \
+                 API is reachable by anyone who can reach this port (allowed via \
+                 LITEGEN__ALLOW_NO_AUTH=true)."
+            );
+        } else {
+            eprintln!(
+                "FATAL: refusing to start. Single-tenant mode has no LITEGEN__MASTER_KEY set \
+                 and is bound to non-loopback address {host}, which would expose the full admin \
+                 API UNAUTHENTICATED to the network. Set LITEGEN__MASTER_KEY to a strong secret \
+                 (recommended), or bind to loopback (LITEGEN__SERVER__HOST=127.0.0.1) behind a \
+                 trusted reverse proxy. To intentionally run with no auth, set \
+                 LITEGEN__ALLOW_NO_AUTH=true."
+            );
+            std::process::exit(1);
+        }
+    }
+
     // Connect to database
     let db: Arc<dyn litegen::db::DatabaseStore> =
         Arc::from(litegen::db::connect(&config.database_url).await?);
