@@ -168,9 +168,19 @@ impl ProxyRouter {
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
-        // 3. Build cost from schema pricing
-        let n = base.n.max(1) as f64;
-        let base_cost = schema.pricing.base_cost_usd * n;
+        // 3. Build the image results, then bill for the number actually
+        //    produced. The proxy currently returns a single image per
+        //    generation (GenerationOutput carries one image), so billing must
+        //    reflect delivered images — NOT the requested `n`, or an n>1
+        //    request would be over-charged for images it never receives.
+        let data = build_image_results(
+            &output,
+            extras,
+            app_store.as_ref().unwrap_or(&self.image_store),
+        )
+        .await;
+        let produced = data.len().max(1) as f64;
+        let base_cost = schema.pricing.base_cost_usd * produced;
         let (markup, total) = apply_markup(base_cost, self.config.cost_markup_percent);
         let _ = markup;
         let usage = Some(UsageInfo {
@@ -181,12 +191,7 @@ impl ProxyRouter {
 
         let response = ImageGenerationResponse {
             created: chrono::Utc::now().timestamp(),
-            data: build_image_results(
-                &output,
-                extras,
-                app_store.as_ref().unwrap_or(&self.image_store),
-            )
-            .await,
+            data,
             model: schema.id.clone(),
             provider: provider_name.clone(),
             usage,

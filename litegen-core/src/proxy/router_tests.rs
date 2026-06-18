@@ -326,6 +326,52 @@ mod tests {
         assert!(!response.data.is_empty(), "Expected non-empty image data");
     }
 
+    // ─── Billing: charge for images delivered, not requested n ────────────────
+
+    #[tokio::test]
+    async fn image_billing_charges_for_images_returned_not_requested_n() {
+        // The proxy returns a single image per generation (GenerationOutput
+        // carries one image), so billing must reflect the images actually
+        // delivered — NOT the requested `n`, or an n>1 request is over-charged
+        // for images it never receives.
+        let registry = Arc::new(ProviderRegistry::new());
+        {
+            use crate::providers::image::mock::MockProvider;
+            let mut mp = MockProvider::new();
+            mp.configure(default_instance_config());
+            registry.register_mock_image(Arc::new(mp)).await;
+        }
+        let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig::default()));
+        let image_store = Arc::new(LocalStore);
+        // Default config => no routes (direct dispatch) and 0% markup.
+        let config = Arc::new(AppConfig::default());
+        let router = ProxyRouter::new(registry, cache, config, image_store);
+
+        let mut schema = shipped_schema("mock/image-gen");
+        schema.pricing.base_cost_usd = 0.10; // non-zero so delivered vs n differ
+
+        let mut base = make_base("billing test", "mock/image-gen");
+        base.n = 2; // request 2 — but the proxy only returns 1
+
+        let extras = make_image_extras();
+        let materialized = empty_materialized();
+
+        let response = router
+            .generate_image(&schema, &base, &extras, &materialized, None, None, None)
+            .await
+            .expect("generate_image should succeed");
+
+        let returned = response.data.len();
+        assert_eq!(returned, 1, "proxy returns a single image per generation");
+
+        let cost = response.usage.as_ref().expect("usage present").cost_usd;
+        let expected = 0.10 * returned as f64; // bill for delivered (1), not n (2)
+        assert!(
+            (cost - expected).abs() < 1e-9,
+            "billed cost {cost} must equal per-image 0.10 × {returned} delivered, not × n=2"
+        );
+    }
+
     // ─── G1: lowest_latency routes to provider with lower average latency ─────
 
     #[tokio::test]
