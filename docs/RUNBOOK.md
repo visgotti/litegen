@@ -166,6 +166,21 @@ OAuth sign-in only succeeds for emails already present in the `users` table. OAu
 
 ---
 
+## Proxy refuses to start: "refusing to start … non-loopback"
+
+**Signals:** On boot the process prints `FATAL: refusing to start. Single-tenant mode has no LITEGEN__MASTER_KEY set and is bound to non-loopback address <host> …` and exits with code 1.
+
+**Cause:** In single-tenant mode the no-credential dev bypass grants anonymous requests full admin scope. The startup self-check (`AppConfig::startup_security_check`) refuses to boot that combination on a network-reachable bind so the admin API is never silently exposed. A blank or whitespace-only `LITEGEN__MASTER_KEY` is treated as "no key".
+
+**Fix (pick one):**
+1. Set a real master key — `LITEGEN__MASTER_KEY=<a-long-random-secret>` — and restart (recommended).
+2. Bind loopback-only — `LITEGEN__SERVER__HOST=127.0.0.1` — behind a reverse proxy.
+3. Intentionally run with no auth (trusted network / fronting auth proxy) — `LITEGEN__ALLOW_NO_AUTH=true`; the process starts but logs a loud `SECURITY` warning.
+
+Hosted mode (`LITEGEN__MODE=hosted`) is never blocked by this check — the bypass is disabled there, so unauthenticated requests get `401`.
+
+---
+
 ## Owner accidentally locked out
 
 **Signals:** The Owner cannot log in and there is no other Owner (only one Owner exists at a time); `system:transfer_owner` capability is inaccessible.

@@ -15,7 +15,12 @@ database_url: "sqlite://litegen.db"
 # extra-passthrough allowlist, etc.). Override with LITEGEN_MODELS_DIR.
 models_dir: "./models"
 
-# Master API key (optional — if set, all requests require auth)
+# Master API key. Optional for LOCAL dev (loopback bind), but REQUIRED when
+# bound to a non-loopback address (e.g. host: "0.0.0.0" above) in single-tenant
+# mode: otherwise the no-credential dev bypass would expose the full admin API,
+# so the proxy refuses to start. A blank/whitespace value does NOT count as a
+# real key. Set a strong random secret, bind loopback, or set
+# LITEGEN__ALLOW_NO_AUTH=true to intentionally run with no auth.
 # master_key: "your-secret-master-key"
 
 # NOTE: Per-key webhook URLs are stored in the database, not in this config file.
