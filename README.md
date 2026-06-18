@@ -316,14 +316,27 @@ To allow browser clients through CORS:
 LITEGEN_MASTER_KEY=your-secret-key LITEGEN_CORS_ORIGINS=https://your-domain docker compose up -d
 ```
 
+### Security: authentication on public binds
+
+In **single-tenant** mode (the default), a request with no credentials is granted full admin scope (the local-dev convenience bypass). To prevent an unauthenticated admin API from being silently exposed, LiteGen runs a startup self-check: if it is bound to a **non-loopback** address (e.g. the default `0.0.0.0`) in single-tenant mode with **no real `LITEGEN__MASTER_KEY`** (unset, empty, or whitespace-only), it **refuses to start** with a fatal error.
+
+Resolve it by either:
+
+- setting `LITEGEN__MASTER_KEY` to a strong random secret (recommended), **or**
+- binding loopback-only (`LITEGEN__SERVER__HOST=127.0.0.1`) behind a reverse proxy, **or**
+- explicitly opting into no-auth with `LITEGEN__ALLOW_NO_AUTH=true` (logs a loud warning; only for trusted networks / fronting auth proxies).
+
+Hosted (multi-tenant) mode is unaffected — the no-credential bypass is disabled there, so unauthenticated requests get `401`.
+
 ### Environment variable reference
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `LITEGEN__MASTER_KEY` | Yes | — | Bearer token that grants full admin access. All API requests must include `Authorization: Bearer <value>`. |
+| `LITEGEN__MASTER_KEY` | Yes\* | — | Bearer token that grants full admin access. All API requests must include `Authorization: Bearer <value>`. \*In single-tenant mode the proxy **refuses to start** if this is unset (or blank/whitespace) while bound to a non-loopback address — see the security note below. |
 | `LITEGEN__DATABASE_URL` | No | `sqlite://litegen.db` | SQLite (`sqlite://path/to/file.db`) or Postgres (`postgres://user:pass@host/db`) connection URL. |
-| `LITEGEN__SERVER__HOST` | No | `127.0.0.1` | Bind address. Set to `0.0.0.0` in containers. |
+| `LITEGEN__SERVER__HOST` | No | `0.0.0.0` | Bind address. Defaults to all interfaces; set to `127.0.0.1` to bind loopback-only behind a reverse proxy. |
 | `LITEGEN__SERVER__PORT` | No | `4000` | TCP port the HTTP server listens on. |
+| `LITEGEN__ALLOW_NO_AUTH` | No | `false` | Escape hatch for the startup security check. Set to `true` to run single-tenant with **no authentication** on a non-loopback bind (e.g. behind a trusted auth proxy); the server logs a loud warning instead of refusing to start. Leave unset in normal deployments. |
 | `LITEGEN_MODELS_DIR` | No | `./models` | Directory containing provider YAML model capability definitions. |
 | `LITEGEN_CORS_ORIGINS` | No | _(deny all)_ | Comma-separated list of allowed CORS origins, e.g. `https://app.example.com`. Leave empty to deny browser cross-origin requests. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | — | gRPC endpoint for OpenTelemetry trace export, e.g. `http://collector:4317`. |

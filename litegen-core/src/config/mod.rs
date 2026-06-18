@@ -158,8 +158,17 @@ impl AppConfig {
     /// exactly that combination so `main` can refuse to start (or require an
     /// explicit opt-in).
     pub fn startup_security_check(&self) -> StartupSecurityCheck {
+        // A present-but-blank master_key (empty or whitespace-only, e.g.
+        // `LITEGEN__MASTER_KEY=` or a placeholder) is NOT a real secret: the
+        // auth middleware compares it with constant_time_eq without trimming,
+        // so a `Bearer <whitespace>` request would match and gain full admin.
+        // Treat such a key as "no master key" for the exposure check.
+        let has_master_key = self
+            .master_key
+            .as_deref()
+            .map_or(false, |k| !k.trim().is_empty());
         if self.mode == Mode::SingleTenant
-            && self.master_key.is_none()
+            && !has_master_key
             && !host_is_loopback(&self.server.host)
         {
             StartupSecurityCheck::UnauthenticatedExposure {
@@ -651,6 +660,33 @@ mod tests {
         // get 401), so a missing master key is not a network exposure of admin.
         let mut cfg = AppConfig::default();
         cfg.mode = Mode::Hosted;
+        assert!(matches!(cfg.startup_security_check(), StartupSecurityCheck::Ok));
+    }
+
+    #[test]
+    fn blank_or_whitespace_master_key_is_treated_as_no_auth() {
+        // A present-but-blank master key (LITEGEN__MASTER_KEY= or a whitespace
+        // placeholder) is NOT a real secret: the middleware accepts the blank
+        // token as full admin (constant_time_eq does not trim). The guard must
+        // treat it as "no master key" and flag the exposure, not return Ok.
+        for blank in ["", "   ", "\t", "\n "] {
+            let mut cfg = AppConfig::default(); // SingleTenant + 0.0.0.0
+            cfg.master_key = Some(blank.to_string());
+            assert!(
+                matches!(
+                    cfg.startup_security_check(),
+                    StartupSecurityCheck::UnauthenticatedExposure { .. }
+                ),
+                "blank master_key {blank:?} must be flagged as exposure, not treated as auth"
+            );
+        }
+    }
+
+    #[test]
+    fn nonblank_master_key_with_surrounding_space_is_still_a_real_key() {
+        // A key with real content (even if padded) is a genuine secret -> safe.
+        let mut cfg = AppConfig::default();
+        cfg.master_key = Some("  s3cret-key  ".to_string());
         assert!(matches!(cfg.startup_security_check(), StartupSecurityCheck::Ok));
     }
 }
