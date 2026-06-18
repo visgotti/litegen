@@ -166,3 +166,57 @@ models:
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [personGeneration, negativePrompt]
     tags: [text-to-video, image-to-video, preview]
+
+  - id: google/veo-3.1-fast-generate-preview
+    provider: google
+    media_type: video
+    display_name: Veo 3.1 Fast (preview)
+    description: Faster, cheaper Veo 3.1 preview variant (with audio).
+    pricing: { base_cost_usd: 0.80 }   # ~$0.10/s x 8s (720p); 1080p ~$0.12/s, 4k ~$0.30/s
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      duration_seconds: { kind: float, min: 4.0, max: 8.0, default: 8.0 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16"]
+        default: "16:9"
+      resolution:
+        kind: string
+        enum_values: [720p, 1080p, 4k]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [personGeneration, negativePrompt]
+    tags: [text-to-video, image-to-video, preview, fast]
+
+  - id: google/veo-3.1-lite-generate-preview
+    provider: google
+    media_type: video
+    display_name: Veo 3.1 Lite (preview)
+    description: Cheapest Veo 3.1 preview tier (with audio).
+    pricing: { base_cost_usd: 0.40 }   # ~$0.05/s x 8s (720p); 1080p ~$0.08/s
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      duration_seconds: { kind: float, min: 4.0, max: 8.0, default: 8.0 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16"]
+        default: "16:9"
+      resolution:
+        kind: string
+        enum_values: [720p, 1080p]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [personGeneration, negativePrompt]
+    tags: [text-to-video, image-to-video, preview, budget]
