@@ -19,6 +19,10 @@ export {
   type AuthConfigResponse,
   type CredentialFieldSpec,
   type ProviderCatalogEntry,
+  type OrgAllowedModels,
+  type AppModelAccess,
+  type SetOrgAllowedModelsRequest,
+  type SetAppModelAccessRequest,
 } from "./client";
 export {
   LiteGenError,
