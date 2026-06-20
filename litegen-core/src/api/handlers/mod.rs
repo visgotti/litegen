@@ -2077,6 +2077,14 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
                 .put(orgs::put_app_storage)
                 .delete(orgs::delete_app_storage),
         )
+        .route(
+            "/v1/orgs/{id}/allowed-models",
+            get(orgs::get_org_allowed_models).put(orgs::put_org_allowed_models),
+        )
+        .route(
+            "/v1/apps/{app_id}/allowed-models",
+            get(orgs::get_app_allowed_models).put(orgs::put_app_allowed_models),
+        )
         .layer(middleware::from_fn_with_state(
             csrf_state.clone(),
             csrf_middleware,

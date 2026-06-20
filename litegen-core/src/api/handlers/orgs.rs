@@ -19,7 +19,9 @@ use crate::auth::permissions::{role_has, Permission};
 use crate::auth::tokens::generate_session_token;
 use crate::db::DatabaseStore;
 use crate::types::{
-    Application, Invitation, Organization, OrganizationMember, ProviderCredentialInfo, Role,
+    Application, AppModelAccess, Invitation, Organization, OrganizationMember,
+    OrgAllowedModels, ProviderCredentialInfo, Role, SetAppModelAccessRequest,
+    SetOrgAllowedModelsRequest,
 };
 use crate::util::slug::{slugify, unique_org_slug};
 
@@ -1230,6 +1232,103 @@ pub async fn delete_app_storage(
     match state.db.delete_app_storage(&app_id).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => err(StatusCode::NOT_FOUND, "storage_not_found", "Storage config not found"),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+// ─── GET /v1/orgs/{id}/allowed-models ──────────────────────────────────────
+
+pub async fn get_org_allowed_models(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+    Path(org_id): Path<String>,
+) -> Response {
+    if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::OrgRead).await {
+        return resp;
+    }
+    match state.db.get_org_allowed_models(&org_id).await {
+        Ok(models) => (StatusCode::OK, Json(OrgAllowedModels { models })).into_response(),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+// ─── PUT /v1/orgs/{id}/allowed-models ──────────────────────────────────────
+
+pub async fn put_org_allowed_models(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+    Path(org_id): Path<String>,
+    Json(body): Json<SetOrgAllowedModelsRequest>,
+) -> Response {
+    if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::OrgWrite).await {
+        return resp;
+    }
+    match state.db.set_org_allowed_models(&org_id, &body.models).await {
+        Ok(()) => (StatusCode::OK, Json(OrgAllowedModels { models: body.models })).into_response(),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+// ─── GET /v1/apps/{app_id}/allowed-models ──────────────────────────────────
+
+pub async fn get_app_allowed_models(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+    Path(app_id): Path<String>,
+) -> Response {
+    let (_, org_id) = match org_for_app(&state, &app_id).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::AppRead).await {
+        return resp;
+    }
+    match state.db.get_app_model_access(&app_id).await {
+        Ok((mode, models)) => (StatusCode::OK, Json(AppModelAccess { mode, models })).into_response(),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+// ─── PUT /v1/apps/{app_id}/allowed-models ──────────────────────────────────
+
+pub async fn put_app_allowed_models(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+    Path(app_id): Path<String>,
+    Json(body): Json<SetAppModelAccessRequest>,
+) -> Response {
+    let (app, org_id) = match org_for_app(&state, &app_id).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::AppWrite).await {
+        return resp;
+    }
+    if body.mode != "all" && body.mode != "select" {
+        return err(StatusCode::BAD_REQUEST, "invalid_mode", "mode must be 'all' or 'select'");
+    }
+    // When mode = "select", validate every requested model is in the org pool.
+    if body.mode == "select" && !body.models.is_empty() {
+        let org_pool = match state.db.get_org_allowed_models(&app.org_id).await {
+            Ok(m) => m,
+            Err(e) => return internal_error(&e.to_string()),
+        };
+        let org_set: std::collections::HashSet<&str> =
+            org_pool.iter().map(|s| s.as_str()).collect();
+        for model_id in &body.models {
+            if !org_set.contains(model_id.as_str()) {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "model_not_in_org_pool",
+                    &format!("model '{model_id}' is not in the org's allowed pool"),
+                );
+            }
+        }
+    }
+    let models_to_store = if body.mode == "all" { vec![] } else { body.models.clone() };
+    match state.db.set_app_model_access(&app_id, &body.mode, &models_to_store).await {
+        Ok(()) => (StatusCode::OK, Json(AppModelAccess { mode: body.mode, models: body.models }))
+            .into_response(),
         Err(e) => internal_error(&e.to_string()),
     }
 }
