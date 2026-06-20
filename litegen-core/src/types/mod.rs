@@ -686,6 +686,33 @@ pub struct AppStorageInfo {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+// ─── Model Allowlists ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OrgAllowedModels {
+    pub models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AppModelAccess {
+    /// "all" = inherit everything in the org pool. "select" = only `models`.
+    pub mode: String,
+    pub models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SetOrgAllowedModelsRequest {
+    pub models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SetAppModelAccessRequest {
+    /// Must be "all" or "select".
+    pub mode: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+}
+
 // ─── API Key Auth ───────────────────────────────────────────────────────────
 
 /// API key for authenticating with the LiteGen proxy.

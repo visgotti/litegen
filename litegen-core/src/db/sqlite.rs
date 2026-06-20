@@ -1600,6 +1600,84 @@ impl DatabaseStore for SqliteDatabase {
         Ok(result.rows_affected() > 0)
     }
 
+    // ─── Model Allowlists ───────────────────────────────────────────────────────
+
+    async fn get_org_allowed_models(&self, org_id: &str) -> Result<Vec<String>, sqlx::Error> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT model_id FROM org_allowed_models WHERE org_id = ? ORDER BY model_id")
+                .bind(org_id)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|(m,)| m).collect())
+    }
+
+    async fn set_org_allowed_models(
+        &self,
+        org_id: &str,
+        models: &[String],
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM org_allowed_models WHERE org_id = ?")
+            .bind(org_id)
+            .execute(&mut *tx)
+            .await?;
+        for model_id in models {
+            sqlx::query("INSERT INTO org_allowed_models (org_id, model_id) VALUES (?, ?)")
+                .bind(org_id)
+                .bind(model_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await
+    }
+
+    async fn get_app_model_access(
+        &self,
+        app_id: &str,
+    ) -> Result<(String, Vec<String>), sqlx::Error> {
+        let mode_row: Option<(String,)> =
+            sqlx::query_as("SELECT mode FROM app_model_access WHERE app_id = ?")
+                .bind(app_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        let mode = mode_row.map(|(m,)| m).unwrap_or_else(|| "all".to_string());
+        let ids: Vec<(String,)> =
+            sqlx::query_as("SELECT model_id FROM app_model_access_ids WHERE app_id = ? ORDER BY model_id")
+                .bind(app_id)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok((mode, ids.into_iter().map(|(m,)| m).collect()))
+    }
+
+    async fn set_app_model_access(
+        &self,
+        app_id: &str,
+        mode: &str,
+        models: &[String],
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO app_model_access (app_id, mode) VALUES (?, ?) \
+             ON CONFLICT (app_id) DO UPDATE SET mode = excluded.mode",
+        )
+        .bind(app_id)
+        .bind(mode)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM app_model_access_ids WHERE app_id = ?")
+            .bind(app_id)
+            .execute(&mut *tx)
+            .await?;
+        for model_id in models {
+            sqlx::query("INSERT INTO app_model_access_ids (app_id, model_id) VALUES (?, ?)")
+                .bind(app_id)
+                .bind(model_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await
+    }
+
     // ─── API Keys (tenant-scoped) ───────────────────────────────────────
 
     async fn create_api_key_scoped(
