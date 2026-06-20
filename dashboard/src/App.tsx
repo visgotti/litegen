@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
-import { BarChart3, Activity, Layers, Database, Key, Sparkles, Film, ShieldAlert, Users as UsersIcon, Building2 } from 'lucide-react';
+import { BarChart3, Activity, Layers, Database, Key, Plug, Sparkles, Film, ShieldAlert, Users as UsersIcon, Building2 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import Overview from './pages/Overview';
 import Logs from './pages/Logs';
@@ -15,6 +15,7 @@ import AcceptInvite from './pages/AcceptInvite';
 import Account from './pages/Account';
 import Users from './pages/Users';
 import Organization from './pages/Organization';
+import Providers from './pages/Providers';
 import Members from './pages/Members';
 import UserMenu from './components/UserMenu';
 import RequirePermission from './components/RequirePermission';
@@ -29,6 +30,7 @@ const BASE_NAV_ITEMS = [
   { to: '/logs', icon: Activity, label: 'Logs', testid: undefined },
   { to: '/models', icon: Layers, label: 'Models', testid: undefined },
   { to: '/health', icon: Database, label: 'Health', testid: undefined },
+  { to: '/providers', icon: Plug, label: 'Providers', testid: 'nav-providers' },
   { to: '/keys', icon: Key, label: 'API Keys', testid: undefined },
   { to: '/playground', icon: Sparkles, label: 'Playground', testid: undefined },
   { to: '/generations', icon: Film, label: 'Generations', testid: undefined },
@@ -114,6 +116,7 @@ function AppShell() {
           <Route path="/generations" element={<Generations />} />
           <Route path="/audit" element={<Audit />} />
           <Route path="/account" element={<Account />} />
+          <Route path="/providers" element={<Providers />} />
           <Route path="/organization" element={<Organization />} />
           <Route path="/members" element={<Members />} />
           {/* The global Users page exists only in single-tenant mode. The nav

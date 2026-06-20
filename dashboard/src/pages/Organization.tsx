@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { client } from '../sdk-client';
 import { LiteGenAPIError } from '@litegen/sdk';
-import type { ProviderCredentialInfo, AppStorageInfo, PutAppStorageRequest, ProviderCatalogEntry } from '@litegen/sdk';
+import type { AppStorageInfo, PutAppStorageRequest } from '@litegen/sdk';
 import { showToast } from '../components/toast-store';
 import { useTenant } from '../context/tenant';
 
@@ -24,14 +24,6 @@ export default function Organization() {
 
   // Create app
   const [newAppName, setNewAppName] = useState('');
-  // Provider credentials
-  const [creds, setCreds] = useState<ProviderCredentialInfo[]>([]);
-  const [catalog, setCatalog] = useState<ProviderCatalogEntry[]>([]);
-  const [credProvider, setCredProvider] = useState('');
-  // One row per key/credential set: field values keyed by field name, plus weight.
-  type CredRow = { values: Record<string, string>; weight: string };
-  const emptyRow = (): CredRow => ({ values: {}, weight: '1' });
-  const [credRows, setCredRows] = useState<CredRow[]>([emptyRow()]);
 
   // App storage (BYO S3)
   const [storage, setStorage] = useState<AppStorageInfo | null>(null);
@@ -105,35 +97,6 @@ export default function Organization() {
     }
   };
 
-  const loadCreds = useCallback(async () => {
-    if (!activeApp) return [] as ProviderCredentialInfo[];
-    try {
-      return await client.apps.providerCredentials.list(activeApp);
-    } catch {
-      return [] as ProviderCredentialInfo[];
-    }
-  }, [activeApp]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void loadCreds().then(list => { if (!cancelled) setCreds(list); });
-    return () => { cancelled = true; };
-  }, [loadCreds]);
-
-  // The provider catalog drives the dynamic credential form (fields + how to
-  // submit them), so the UI never hard-codes per-provider knowledge.
-  useEffect(() => {
-    let cancelled = false;
-    void client.providers.list()
-      .then(list => {
-        if (cancelled) return;
-        setCatalog(list);
-        setCredProvider(prev => prev || list[0]?.name || '');
-      })
-      .catch(() => { /* leave catalog empty; form stays disabled */ });
-    return () => { cancelled = true; };
-  }, []);
-
   const saveOrgName = async () => {
     if (!activeOrg || !orgName.trim()) return;
     try {
@@ -165,64 +128,6 @@ export default function Organization() {
       showToast('Application deleted', 'info');
     } catch (err) {
       if (err instanceof LiteGenAPIError) showToast(err.message ?? 'Delete failed', 'error');
-    }
-  };
-
-  const selectedProvider = catalog.find(p => p.name === credProvider) ?? null;
-
-  const changeProvider = (name: string) => {
-    setCredProvider(name);
-    setCredRows([emptyRow()]); // fields differ per provider
-  };
-  const setRowValue = (i: number, key: string, value: string) =>
-    setCredRows(rows => rows.map((r, idx) => (idx === i ? { ...r, values: { ...r.values, [key]: value } } : r)));
-  const setRowWeight = (i: number, value: string) =>
-    setCredRows(rows => rows.map((r, idx) => (idx === i ? { ...r, weight: value } : r)));
-  const addRow = () => setCredRows(rows => [...rows, emptyRow()]);
-  const removeRow = (i: number) =>
-    setCredRows(rows => (rows.length > 1 ? rows.filter((_, idx) => idx !== i) : rows));
-
-  const addCred = async () => {
-    if (!activeApp || !selectedProvider) return;
-    const provider = selectedProvider;
-    // Build pool entries; keep only rows whose required (non-optional) fields are filled.
-    const entries = credRows
-      .map(row => {
-        const obj: Record<string, unknown> = {};
-        for (const f of provider.fields) {
-          const v = (row.values[f.key] ?? '').trim();
-          if (v) obj[f.key] = v;
-        }
-        obj.weight = Math.max(1, parseInt(row.weight, 10) || 1);
-        return obj;
-      })
-      .filter(obj => provider.fields.every(f => f.optional || typeof obj[f.key] === 'string'));
-    if (entries.length === 0) {
-      showToast('Fill in at least one credential', 'error');
-      return;
-    }
-    try {
-      await client.apps.providerCredentials.create(activeApp, {
-        provider: provider.name,
-        credentials: { [provider.pool_field]: entries },
-      });
-      setCredRows([emptyRow()]);
-      setCreds(await loadCreds());
-      const noun = entries.length === 1 ? 'credential' : `credentials (${entries.length})`;
-      showToast(`Provider ${noun} saved`, 'info');
-    } catch (err) {
-      if (err instanceof LiteGenAPIError) showToast(err.message ?? 'Save failed', 'error');
-    }
-  };
-
-  const deleteCred = async (provider: string) => {
-    if (!activeApp) return;
-    try {
-      await client.apps.providerCredentials.delete(activeApp, provider);
-      setCreds(await loadCreds());
-      showToast('Provider credential removed', 'info');
-    } catch (err) {
-      if (err instanceof LiteGenAPIError) showToast(err.message ?? 'Remove failed', 'error');
     }
   };
 
@@ -306,139 +211,6 @@ export default function Organization() {
           <button className="btn btn-primary" data-testid="app-create-submit" onClick={createApp}>
             Create app
           </button>
-        </div>
-      </div>
-
-      {/* Provider credentials */}
-      <div style={cardStyle}>
-        <h3 style={sectionTitle}>Provider credentials</h3>
-        <p style={{ color: '#8b949e', fontSize: 13, margin: '0 0 16px' }}>
-          Scoped to the active application{activeApp ? '' : ' — select an app to manage credentials'}.
-        </p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
-          {creds.length === 0 && (
-            <div style={{ color: '#8b949e', fontSize: 14 }}>No provider credentials configured.</div>
-          )}
-          {creds.map(c => (
-            <div
-              key={c.provider}
-              data-testid={`provider-cred-row-${c.provider}`}
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '10px 14px', background: '#0d1117', border: '1px solid #30363d', borderRadius: 8,
-              }}
-            >
-              <span style={{ color: '#e6edf3', fontSize: 14 }}>
-                <strong>{c.provider}</strong>
-                {c.display_hint && (
-                  <span style={{ color: '#8b949e', marginLeft: 8, fontFamily: 'monospace', fontSize: 13 }}>
-                    {c.display_hint}
-                  </span>
-                )}
-              </span>
-              <button
-                className="btn btn-danger"
-                data-testid={`provider-cred-delete-${c.provider}`}
-                onClick={() => deleteCred(c.provider)}
-                style={{ fontSize: 12, padding: '4px 10px' }}
-              >
-                Delete
-              </button>
-            </div>
-          ))}
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <label style={{ color: '#8b949e', fontSize: 13 }}>Provider</label>
-            <select
-              className="input"
-              data-testid="provider-cred-provider"
-              value={credProvider}
-              onChange={e => changeProvider(e.target.value)}
-              disabled={!activeApp || catalog.length === 0}
-              style={{ maxWidth: 220 }}
-            >
-              {catalog.map(p => (
-                <option key={p.name} value={p.name}>{p.name}</option>
-              ))}
-            </select>
-            {selectedProvider && selectedProvider.modalities.length > 0 && (
-              <span style={{ color: '#6e7681', fontSize: 12 }}>
-                {selectedProvider.modalities.join(' + ')}
-              </span>
-            )}
-          </div>
-
-          {selectedProvider && (
-            <>
-              {credRows.map((row, i) => (
-                <div
-                  key={i}
-                  data-testid={`provider-cred-input-row-${i}`}
-                  style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}
-                >
-                  {selectedProvider.fields.map(f => (
-                    <input
-                      key={f.key}
-                      className="input"
-                      data-testid={`provider-cred-field-${f.key}-${i}`}
-                      type={f.secret ? 'password' : 'text'}
-                      value={row.values[f.key] ?? ''}
-                      onChange={e => setRowValue(i, f.key, e.target.value)}
-                      placeholder={f.optional ? `${f.label} (optional)` : f.label}
-                      style={{ maxWidth: 220 }}
-                      disabled={!activeApp}
-                    />
-                  ))}
-                  <input
-                    className="input"
-                    data-testid={`provider-cred-weight-${i}`}
-                    type="number"
-                    min={1}
-                    value={row.weight}
-                    onChange={e => setRowWeight(i, e.target.value)}
-                    title="Weight (higher = more traffic)"
-                    style={{ width: 84 }}
-                    disabled={!activeApp}
-                  />
-                  <button
-                    className="btn btn-danger"
-                    data-testid={`provider-cred-remove-row-${i}`}
-                    onClick={() => removeRow(i)}
-                    disabled={!activeApp || credRows.length <= 1}
-                    style={{ fontSize: 12, padding: '4px 10px' }}
-                    title="Remove this key"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <button
-                  className="btn"
-                  data-testid="provider-cred-add-row"
-                  onClick={addRow}
-                  disabled={!activeApp}
-                  style={{ fontSize: 13 }}
-                >
-                  + Add another {selectedProvider.pool_field === 'credential_sets' ? 'credential' : 'key'}
-                </button>
-                <button
-                  className="btn btn-primary"
-                  data-testid="provider-cred-add"
-                  onClick={addCred}
-                  disabled={!activeApp}
-                >
-                  Save credential
-                </button>
-              </div>
-              <p style={{ color: '#6e7681', fontSize: 12, margin: 0 }}>
-                {credRows.length > 1
-                  ? 'Requests are load-balanced across these by weight (higher = more traffic).'
-                  : 'Add more than one to load-balance requests across them by weight.'}
-              </p>
-            </>
-          )}
         </div>
       </div>
 
