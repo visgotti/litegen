@@ -548,6 +548,37 @@ pub trait DatabaseStore: Send + Sync {
         Ok(false)
     }
 
+    // ─── Model Allowlists ───────────────────────────────────────────────────────
+
+    async fn get_org_allowed_models(&self, _org_id: &str) -> Result<Vec<String>, sqlx::Error> {
+        Ok(vec![])
+    }
+
+    async fn set_org_allowed_models(
+        &self,
+        _org_id: &str,
+        _models: &[String],
+    ) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+
+    /// Returns `(mode, model_ids)`. `mode` defaults to `"all"` if no row exists.
+    async fn get_app_model_access(
+        &self,
+        _app_id: &str,
+    ) -> Result<(String, Vec<String>), sqlx::Error> {
+        Ok(("all".to_string(), vec![]))
+    }
+
+    async fn set_app_model_access(
+        &self,
+        _app_id: &str,
+        _mode: &str,
+        _models: &[String],
+    ) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+
     // ─── API Keys (tenant-scoped create / list) ─────────────────────────
 
     async fn create_api_key_scoped(
