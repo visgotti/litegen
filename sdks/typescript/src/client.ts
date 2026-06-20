@@ -56,6 +56,24 @@ type UpdateMemberRequest = Schemas["UpdateMemberRequest"];
 type OrgTransferOwnerRequest = Schemas["OrgTransferOwnerRequest"];
 type CreateProviderCredentialRequest = Schemas["CreateProviderCredentialRequest"];
 
+export interface OrgAllowedModels {
+  models: string[];
+}
+
+export interface AppModelAccess {
+  mode: 'all' | 'select';
+  models: string[];
+}
+
+export interface SetOrgAllowedModelsRequest {
+  models: string[];
+}
+
+export interface SetAppModelAccessRequest {
+  mode: 'all' | 'select';
+  models?: string[];
+}
+
 interface PaginatedLogs {
   data: RequestLog[];
   total: number;
@@ -947,6 +965,28 @@ class OrgMembersNamespace {
   }
 }
 
+class OrgAllowedModelsNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+
+  get(orgId: string, signal?: AbortSignal): Promise<OrgAllowedModels> {
+    return this.client.request(
+      'GET',
+      `/v1/orgs/${encodeURIComponent(orgId)}/allowed-models`,
+      undefined,
+      signal,
+    );
+  }
+
+  set(orgId: string, req: SetOrgAllowedModelsRequest, signal?: AbortSignal): Promise<OrgAllowedModels> {
+    return this.client.request(
+      'PUT',
+      `/v1/orgs/${encodeURIComponent(orgId)}/allowed-models`,
+      req,
+      signal,
+    );
+  }
+}
+
 class OrgAppsNamespace {
   constructor(private readonly client: LiteGenClient) {}
 
@@ -971,10 +1011,12 @@ class OrgAppsNamespace {
 class OrgsNamespace {
   readonly members: OrgMembersNamespace;
   readonly apps: OrgAppsNamespace;
+  readonly allowedModels: OrgAllowedModelsNamespace;
 
   constructor(private readonly client: LiteGenClient) {
     this.members = new OrgMembersNamespace(client);
     this.apps = new OrgAppsNamespace(client);
+    this.allowedModels = new OrgAllowedModelsNamespace(client);
   }
 
   list(signal?: AbortSignal): Promise<OrgSummary[]> {
@@ -1072,13 +1114,37 @@ class AppStorageNamespace {
   }
 }
 
+class AppModelAccessNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+
+  get(appId: string, signal?: AbortSignal): Promise<AppModelAccess> {
+    return this.client.request(
+      'GET',
+      `/v1/apps/${encodeURIComponent(appId)}/allowed-models`,
+      undefined,
+      signal,
+    );
+  }
+
+  set(appId: string, req: SetAppModelAccessRequest, signal?: AbortSignal): Promise<AppModelAccess> {
+    return this.client.request(
+      'PUT',
+      `/v1/apps/${encodeURIComponent(appId)}/allowed-models`,
+      req,
+      signal,
+    );
+  }
+}
+
 class AppsNamespace {
   readonly providerCredentials: AppProviderCredentialsNamespace;
   readonly storage: AppStorageNamespace;
+  readonly allowedModels: AppModelAccessNamespace;
 
   constructor(private readonly client: LiteGenClient) {
     this.providerCredentials = new AppProviderCredentialsNamespace(client);
     this.storage = new AppStorageNamespace(client);
+    this.allowedModels = new AppModelAccessNamespace(client);
   }
 
   get(appId: string, signal?: AbortSignal): Promise<Application> {
