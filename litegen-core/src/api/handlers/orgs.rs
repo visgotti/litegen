@@ -1327,7 +1327,7 @@ pub async fn put_app_allowed_models(
     }
     let models_to_store = if body.mode == "all" { vec![] } else { body.models.clone() };
     match state.db.set_app_model_access(&app_id, &body.mode, &models_to_store).await {
-        Ok(()) => (StatusCode::OK, Json(AppModelAccess { mode: body.mode, models: body.models }))
+        Ok(()) => (StatusCode::OK, Json(AppModelAccess { mode: body.mode, models: models_to_store }))
             .into_response(),
         Err(e) => internal_error(&e.to_string()),
     }
