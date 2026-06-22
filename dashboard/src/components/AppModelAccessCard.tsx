@@ -77,7 +77,7 @@ export default function AppModelAccessCard({ activeApp, orgPool }: Props) {
       </div>
       {appModelMode === 'select' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 16 }}>
-          {[...orgPool].length === 0 ? (
+          {orgPool.size === 0 ? (
             <div style={{ color: '#8b949e', fontSize: 14 }}>
               No models in org pool yet — add them above first.
             </div>

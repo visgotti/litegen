@@ -1111,4 +1111,63 @@ mod tests {
         assert!(after.used_at.is_some(), "used_at should be set after first mark_invitation_used");
         assert!(!db.mark_invitation_used(&token).await.unwrap(), "second consume must lose (already used)");
     }
+
+    // ─── Credential resolution round-trip ────────────────────────────────────
+
+    /// Encrypts a sample credential, stores it via `upsert_org_provider_credential`,
+    /// retrieves it with `get_org_provider_credential`, decrypts, parses with
+    /// `ProviderCredentials::from_json`, and asserts the round-trip is lossless.
+    #[tokio::test]
+    async fn org_provider_credential_encrypt_store_decrypt_roundtrip() {
+        let db = in_memory_db().await;
+        let secrets_key: [u8; 32] = [7u8; 32];
+
+        // Create an org so the FK constraint is satisfied.
+        let org = make_org(&uuid::Uuid::new_v4().to_string(), "rt-org");
+        db.create_organization(&org).await.expect("create org for FK");
+        let org_id = org.id.clone();
+
+        // Build a sample credentials JSON value (bearer key shape).
+        let creds_value = serde_json::json!({ "api_key": "sk-roundtrip-secret-9876" });
+        let plaintext = serde_json::to_vec(&creds_value).expect("serialize creds");
+
+        // Encrypt.
+        let (ciphertext, nonce) = crate::auth::secrets::encrypt(&secrets_key, &plaintext)
+            .expect("encrypt must succeed");
+
+        // Store via DB.
+        db.upsert_org_provider_credential(&org_id, "openai", &ciphertext, &nonce, Some("…9876"))
+            .await
+            .expect("upsert must succeed");
+
+        // Retrieve.
+        let row = db
+            .get_org_provider_credential(&org_id, "openai")
+            .await
+            .expect("get must succeed")
+            .expect("row must exist");
+
+        // Decrypt and parse.
+        let decrypted = crate::auth::secrets::decrypt(&secrets_key, &row.0, &row.1)
+            .expect("decrypt must succeed");
+        let val: serde_json::Value =
+            serde_json::from_slice(&decrypted).expect("decrypted bytes must be valid JSON");
+        let parsed = crate::providers::ProviderCredentials::from_json(&val);
+
+        // Assert: the api_key survives the round-trip.
+        assert_eq!(
+            parsed.api_key.as_deref(),
+            Some("sk-roundtrip-secret-9876"),
+            "api_key must survive encrypt→store→retrieve→decrypt→parse"
+        );
+
+        // Assert: no other provider's cred leaks into this one.
+        assert!(
+            db.get_org_provider_credential(&org_id, "stability")
+                .await
+                .unwrap()
+                .is_none(),
+            "a different provider must not return the stored credential"
+        );
+    }
 }

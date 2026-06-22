@@ -65,7 +65,7 @@ export default function ProviderSection(props: Props) {
           <div style={{ background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, padding: 12, marginBottom: 14 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
               <span style={{ color: '#8b949e', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>API key (org-wide)</span>
-              {configured && (
+              {configured && displayHint && (
                 <span style={{ color: '#8b949e', fontFamily: 'monospace', fontSize: 13 }}>
                   {displayHint}
                   <button className="btn btn-danger" data-testid={`provider-key-delete-${provider.name}`} onClick={onDeleteKey} style={{ marginLeft: 10, fontSize: 12, padding: '2px 8px' }}>Delete</button>

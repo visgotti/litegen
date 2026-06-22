@@ -160,7 +160,7 @@ pub async fn generate_image(
 
     // Resolve the calling app's BYO credential for this model's provider. A
     // server-side failure (bad secrets key / corrupt cred) early-returns a 500.
-    let app_creds = match resolve_app_credential(&state, &key_ctx, &validated.schema.provider).await {
+    let app_creds = match resolve_org_provider_credential(&state, &key_ctx, &validated.schema.provider).await {
         Ok(c) => c,
         Err(resp) => return resp,
     };
@@ -324,7 +324,7 @@ pub async fn estimate_image_cost(
     OptionalKeyContext(key_ctx): OptionalKeyContext,
     validated: ValidatedImage,
 ) -> impl IntoResponse {
-    let app_creds = match resolve_app_credential(&state, &key_ctx, &validated.schema.provider).await {
+    let app_creds = match resolve_org_provider_credential(&state, &key_ctx, &validated.schema.provider).await {
         Ok(c) => c,
         Err(resp) => return resp,
     };
@@ -389,7 +389,7 @@ pub async fn generate_video(
 
     // Resolve the calling app's BYO credential for this model's provider (see
     // `generate_image`). Server-side failures early-return a 500.
-    let app_creds = match resolve_app_credential(&state, &key_ctx, &validated.schema.provider).await {
+    let app_creds = match resolve_org_provider_credential(&state, &key_ctx, &validated.schema.provider).await {
         Ok(c) => c,
         Err(resp) => return resp,
     };
@@ -602,7 +602,7 @@ pub async fn estimate_video_cost(
     OptionalKeyContext(key_ctx): OptionalKeyContext,
     validated: ValidatedVideo,
 ) -> impl IntoResponse {
-    let app_creds = match resolve_app_credential(&state, &key_ctx, &validated.schema.provider).await {
+    let app_creds = match resolve_org_provider_credential(&state, &key_ctx, &validated.schema.provider).await {
         Ok(c) => c,
         Err(resp) => return resp,
     };
@@ -2488,7 +2488,7 @@ fn provider_not_configured_response(provider: &str) -> axum::response::Response 
 /// - `Err(response)` — a server-side error (no/invalid secrets key, corrupt or
 ///   un-decryptable stored credential, DB failure). These are 500s, never 400s:
 ///   the request was well-formed; the server is misconfigured.
-async fn resolve_app_credential(
+async fn resolve_org_provider_credential(
     state: &AppState,
     key_ctx: &Option<KeyContext>,
     provider: &str,

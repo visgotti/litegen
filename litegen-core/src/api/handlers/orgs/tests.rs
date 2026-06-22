@@ -1010,6 +1010,118 @@ async fn member_denied_member_management() {
 
 // ─── Org provider credentials: store, list, delete ───────────────────────────
 
+/// An outsider (a user NOT a member of org A) must receive 403 on GET, POST,
+/// and DELETE against `/v1/orgs/{org_a}/provider-credentials`.
+#[tokio::test]
+async fn org_provider_credential_cross_tenant_403() {
+    let db = build_db().await;
+    let (_owner, sess_a, csrf_a) = seed_user(&db, "owner@cred-bola.com").await;
+    let (_outsider, sess_b, csrf_b) = seed_user(&db, "outsider@cred-bola.com").await;
+    let app = create_router(build_state(db.clone(), Some([7u8; 32])).await);
+
+    // Owner creates the org (becomes member).
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/orgs")
+        .header("cookie", cookie(&sess_a))
+        .header("x-csrf-token", &csrf_a)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "name": "OrgA" })).unwrap()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "setup: create org");
+    let org_a = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    // Outsider: GET → 403.
+    let req = Request::builder()
+        .uri(format!("/v1/orgs/{}/provider-credentials", org_a))
+        .header("cookie", cookie(&sess_b))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant GET provider-credentials must be 403"
+    );
+
+    // Outsider: POST → 403.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/orgs/{}/provider-credentials", org_a))
+        .header("cookie", cookie(&sess_b))
+        .header("x-csrf-token", &csrf_b)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "provider": "openai",
+            "credentials": { "api_key": "sk-hax0r" }
+        })).unwrap()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant POST provider-credentials must be 403"
+    );
+
+    // Outsider: DELETE → 403.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/orgs/{}/provider-credentials/openai", org_a))
+        .header("cookie", cookie(&sess_b))
+        .header("x-csrf-token", &csrf_b)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "cross-tenant DELETE provider-credentials must be 403"
+    );
+}
+
+/// Without a secrets key (`build_state(db, None)`), POST to
+/// `/v1/orgs/{org_id}/provider-credentials` returns 400 with
+/// `code = secrets_not_configured`.
+#[tokio::test]
+async fn org_provider_credential_post_400_without_secrets_key() {
+    let db = build_db().await;
+    let (_owner, sess, csrf) = seed_user(&db, "owner@cred-nokey.com").await;
+    // No secrets key → state.secrets_key = None.
+    let app = create_router(build_state(db.clone(), None).await);
+
+    // Create org.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/orgs")
+        .header("cookie", cookie(&sess))
+        .header("x-csrf-token", &csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "name": "NoKeyOrg" })).unwrap()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "setup: create org");
+    let org_id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    // POST credential → 400 secrets_not_configured.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/orgs/{}/provider-credentials", org_id))
+        .header("cookie", cookie(&sess))
+        .header("x-csrf-token", &csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "provider": "openai",
+            "credentials": { "api_key": "sk-test" }
+        })).unwrap()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "must be 400 when secrets key absent");
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["error"]["code"].as_str().unwrap_or(""),
+        "secrets_not_configured",
+        "error code must be secrets_not_configured"
+    );
+}
+
 #[tokio::test]
 async fn org_provider_credential_store_list_delete() {
     let db = build_db().await;
