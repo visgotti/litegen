@@ -1471,8 +1471,6 @@ impl DatabaseStore for SqliteDatabase {
         Ok(result.rows_affected() > 0)
     }
 
-    // ─── Provider Credentials ───────────────────────────────────────────
-
     // ─── Provider Credentials (org-scoped) ─────────────────────────────
 
     async fn upsert_org_provider_credential(
