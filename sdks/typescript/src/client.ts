@@ -965,6 +965,20 @@ class OrgMembersNamespace {
   }
 }
 
+class OrgProviderCredentialsNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+
+  list(orgId: string, signal?: AbortSignal): Promise<ProviderCredentialInfo[]> {
+    return this.client.request("GET", `/v1/orgs/${encodeURIComponent(orgId)}/provider-credentials`, undefined, signal);
+  }
+  create(orgId: string, req: CreateProviderCredentialRequest, signal?: AbortSignal): Promise<ProviderCredentialInfo> {
+    return this.client.request("POST", `/v1/orgs/${encodeURIComponent(orgId)}/provider-credentials`, req, signal);
+  }
+  delete(orgId: string, provider: string, signal?: AbortSignal): Promise<void> {
+    return this.client.request("DELETE", `/v1/orgs/${encodeURIComponent(orgId)}/provider-credentials/${encodeURIComponent(provider)}`, undefined, signal);
+  }
+}
+
 class OrgAllowedModelsNamespace {
   constructor(private readonly client: LiteGenClient) {}
 
@@ -1012,11 +1026,13 @@ class OrgsNamespace {
   readonly members: OrgMembersNamespace;
   readonly apps: OrgAppsNamespace;
   readonly allowedModels: OrgAllowedModelsNamespace;
+  readonly providerCredentials: OrgProviderCredentialsNamespace;
 
   constructor(private readonly client: LiteGenClient) {
     this.members = new OrgMembersNamespace(client);
     this.apps = new OrgAppsNamespace(client);
     this.allowedModels = new OrgAllowedModelsNamespace(client);
+    this.providerCredentials = new OrgProviderCredentialsNamespace(client);
   }
 
   list(signal?: AbortSignal): Promise<OrgSummary[]> {
@@ -1043,39 +1059,6 @@ class OrgsNamespace {
       "POST",
       `/v1/orgs/${encodeURIComponent(orgId)}/transfer-owner`,
       req,
-      signal,
-    );
-  }
-}
-
-class AppProviderCredentialsNamespace {
-  constructor(private readonly client: LiteGenClient) {}
-
-  list(appId: string, signal?: AbortSignal): Promise<ProviderCredentialInfo[]> {
-    return this.client.request(
-      "GET",
-      `/v1/apps/${encodeURIComponent(appId)}/provider-credentials`,
-      undefined,
-      signal,
-    );
-  }
-  create(
-    appId: string,
-    req: CreateProviderCredentialRequest,
-    signal?: AbortSignal,
-  ): Promise<ProviderCredentialInfo> {
-    return this.client.request(
-      "POST",
-      `/v1/apps/${encodeURIComponent(appId)}/provider-credentials`,
-      req,
-      signal,
-    );
-  }
-  delete(appId: string, provider: string, signal?: AbortSignal): Promise<void> {
-    return this.client.request(
-      "DELETE",
-      `/v1/apps/${encodeURIComponent(appId)}/provider-credentials/${encodeURIComponent(provider)}`,
-      undefined,
       signal,
     );
   }
@@ -1137,12 +1120,10 @@ class AppModelAccessNamespace {
 }
 
 class AppsNamespace {
-  readonly providerCredentials: AppProviderCredentialsNamespace;
   readonly storage: AppStorageNamespace;
   readonly allowedModels: AppModelAccessNamespace;
 
   constructor(private readonly client: LiteGenClient) {
-    this.providerCredentials = new AppProviderCredentialsNamespace(client);
     this.storage = new AppStorageNamespace(client);
     this.allowedModels = new AppModelAccessNamespace(client);
   }
