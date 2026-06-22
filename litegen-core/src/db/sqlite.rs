@@ -2405,3 +2405,23 @@ pub(crate) fn provider_credential_from_row(r: ProviderCredentialRow) -> Provider
         created_at: r.created_at,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn migration_creates_org_cred_table_and_drops_app_table() {
+        // Fresh in-memory DB with all migrations (incl. 013) applied.
+        let db = SqliteDatabase::connect("sqlite::memory:").await.unwrap();
+        let pool = db.pool();
+
+        // New org-scoped table exists and starts empty.
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM org_provider_credentials").fetch_one(pool).await.unwrap();
+        assert_eq!(n, 0, "fresh org cred table starts empty");
+
+        // Old per-app table is gone.
+        let dropped = sqlx::query("SELECT 1 FROM provider_credentials LIMIT 1").fetch_optional(pool).await;
+        assert!(dropped.is_err(), "provider_credentials table should be dropped by migration 013");
+    }
+}
