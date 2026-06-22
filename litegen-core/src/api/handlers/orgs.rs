@@ -817,115 +817,6 @@ pub async fn delete_app(
     }
 }
 
-// ─── GET /v1/apps/{app_id}/provider-credentials ─────────────────────────────
-
-/// GET /v1/apps/{app_id}/provider-credentials — List BYO credentials (provider_cred:read).
-/// Never returns plaintext — only `ProviderCredentialInfo`.
-#[utoipa::path(
-    get,
-    path = "/v1/apps/{app_id}/provider-credentials",
-    params(("app_id" = String, Path, description = "Application ID")),
-    responses(
-        (status = 200, description = "Stored credentials (no plaintext)", body = Vec<crate::types::ProviderCredentialInfo>),
-        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
-    ),
-    tag = "Applications"
-)]
-pub async fn list_provider_credentials(
-    State(state): State<Arc<AppState>>,
-    Extension(ctx): Extension<KeyContext>,
-    Path(app_id): Path<String>,
-) -> Response {
-    let (_, org_id) = match org_for_app(&state, &app_id).await {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::ProviderCredRead).await
-    {
-        return resp;
-    }
-    match state.db.list_provider_credentials(&app_id).await {
-        Ok(creds) => (StatusCode::OK, Json(creds)).into_response(),
-        Err(e) => internal_error(&e.to_string()),
-    }
-}
-
-// ─── POST /v1/apps/{app_id}/provider-credentials ────────────────────────────
-
-/// POST /v1/apps/{app_id}/provider-credentials — Store a BYO credential (provider_cred:write).
-/// Encrypts the credential JSON; returns `ProviderCredentialInfo` (no plaintext).
-#[utoipa::path(
-    post,
-    path = "/v1/apps/{app_id}/provider-credentials",
-    params(("app_id" = String, Path, description = "Application ID")),
-    request_body = CreateProviderCredentialRequest,
-    responses(
-        (status = 200, description = "Credential stored (no plaintext)", body = crate::types::ProviderCredentialInfo),
-        (status = 400, description = "Secrets key not configured", body = crate::types::ErrorResponse),
-        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
-    ),
-    tag = "Applications"
-)]
-pub async fn create_provider_credential(
-    State(state): State<Arc<AppState>>,
-    Extension(ctx): Extension<KeyContext>,
-    Path(app_id): Path<String>,
-    Json(body): Json<CreateProviderCredentialRequest>,
-) -> Response {
-    let (_, org_id) = match org_for_app(&state, &app_id).await {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    if let Err(resp) =
-        require_member_perm(&state, &ctx, &org_id, Permission::ProviderCredWrite).await
-    {
-        return resp;
-    }
-
-    let secrets_key = match state.secrets_key {
-        Some(k) => k,
-        None => {
-            return err(
-                StatusCode::BAD_REQUEST,
-                "secrets_not_configured",
-                "Provider credentials require a configured secrets key",
-            );
-        }
-    };
-
-    let provider = body.provider.trim().to_string();
-    if provider.is_empty() {
-        return err(StatusCode::BAD_REQUEST, "invalid_provider", "provider is required");
-    }
-
-    // Derive a safe, non-secret display hint that also reflects pool size.
-    let display_hint = derive_display_hint(&body.credentials);
-
-    let plaintext = match serde_json::to_vec(&body.credentials) {
-        Ok(v) => v,
-        Err(e) => return err(StatusCode::BAD_REQUEST, "invalid_credentials", &e.to_string()),
-    };
-    let (ciphertext, nonce) = match crate::auth::secrets::encrypt(&secrets_key, &plaintext) {
-        Ok(v) => v,
-        Err(e) => return internal_error(&e),
-    };
-
-    if let Err(e) = state
-        .db
-        .upsert_provider_credential(&app_id, &provider, &ciphertext, &nonce, display_hint.as_deref())
-        .await
-    {
-        return internal_error(&e.to_string());
-    }
-
-    let info = ProviderCredentialInfo {
-        provider,
-        display_hint,
-        created_at: chrono::Utc::now(),
-    };
-    (StatusCode::OK, Json(info)).into_response()
-}
-
 /// Derive a safe, non-secret display hint from a credential blob. Shows the last
 /// four characters of the first key and, for pools, how many more there are —
 /// e.g. `…1234`, `…1234 (+2 more)`. Handles bearer (`api_key`/`api_keys`) and
@@ -962,14 +853,95 @@ fn derive_display_hint(creds: &serde_json::Value) -> Option<String> {
         .and_then(last4)
 }
 
-// ─── DELETE /v1/apps/{app_id}/provider-credentials/{provider} ───────────────
+// ─── GET /v1/orgs/{org_id}/provider-credentials ──────────────────────────────
 
-/// DELETE /v1/apps/{app_id}/provider-credentials/{provider} — Delete a credential (provider_cred:delete).
+/// GET /v1/orgs/{org_id}/provider-credentials — List BYO credentials for an org (provider_cred:read).
+/// Never returns plaintext — only `ProviderCredentialInfo`.
+#[utoipa::path(
+    get,
+    path = "/v1/orgs/{org_id}/provider-credentials",
+    params(("org_id" = String, Path, description = "Organization ID")),
+    responses(
+        (status = 200, description = "Stored credentials (no plaintext)", body = Vec<crate::types::ProviderCredentialInfo>),
+        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+    ),
+    tag = "Organizations"
+)]
+pub async fn list_org_provider_credentials(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+    Path(org_id): Path<String>,
+) -> Response {
+    if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::ProviderCredRead).await {
+        return resp;
+    }
+    match state.db.list_org_provider_credentials(&org_id).await {
+        Ok(creds) => (StatusCode::OK, Json(creds)).into_response(),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+// ─── POST /v1/orgs/{org_id}/provider-credentials ────────────────────────────
+
+/// POST /v1/orgs/{org_id}/provider-credentials — Store a BYO credential for an org (provider_cred:write).
+/// Encrypts the credential JSON; returns `ProviderCredentialInfo` (no plaintext).
+#[utoipa::path(
+    post,
+    path = "/v1/orgs/{org_id}/provider-credentials",
+    params(("org_id" = String, Path, description = "Organization ID")),
+    request_body = CreateProviderCredentialRequest,
+    responses(
+        (status = 200, description = "Credential stored (no plaintext)", body = crate::types::ProviderCredentialInfo),
+        (status = 400, description = "Secrets key not configured", body = crate::types::ErrorResponse),
+        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+    ),
+    tag = "Organizations"
+)]
+pub async fn create_org_provider_credential(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<KeyContext>,
+    Path(org_id): Path<String>,
+    Json(body): Json<CreateProviderCredentialRequest>,
+) -> Response {
+    if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::ProviderCredWrite).await {
+        return resp;
+    }
+    let secrets_key = match state.secrets_key {
+        Some(k) => k,
+        None => return err(StatusCode::BAD_REQUEST, "secrets_not_configured",
+            "Provider credentials require a configured secrets key"),
+    };
+    let provider = body.provider.trim().to_string();
+    if provider.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "invalid_provider", "provider is required");
+    }
+    let display_hint = derive_display_hint(&body.credentials);
+    let plaintext = match serde_json::to_vec(&body.credentials) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::BAD_REQUEST, "invalid_credentials", &e.to_string()),
+    };
+    let (ciphertext, nonce) = match crate::auth::secrets::encrypt(&secrets_key, &plaintext) {
+        Ok(v) => v,
+        Err(e) => return internal_error(&e),
+    };
+    if let Err(e) = state.db
+        .upsert_org_provider_credential(&org_id, &provider, &ciphertext, &nonce, display_hint.as_deref())
+        .await
+    {
+        return internal_error(&e.to_string());
+    }
+    let info = ProviderCredentialInfo { provider, display_hint, created_at: chrono::Utc::now() };
+    (StatusCode::OK, Json(info)).into_response()
+}
+
+// ─── DELETE /v1/orgs/{org_id}/provider-credentials/{provider} ───────────────
+
+/// DELETE /v1/orgs/{org_id}/provider-credentials/{provider} — Delete a credential for an org (provider_cred:delete).
 #[utoipa::path(
     delete,
-    path = "/v1/apps/{app_id}/provider-credentials/{provider}",
+    path = "/v1/orgs/{org_id}/provider-credentials/{provider}",
     params(
-        ("app_id" = String, Path, description = "Application ID"),
+        ("org_id" = String, Path, description = "Organization ID"),
         ("provider" = String, Path, description = "Provider name"),
     ),
     responses(
@@ -977,23 +949,17 @@ fn derive_display_hint(creds: &serde_json::Value) -> Option<String> {
         (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
         (status = 404, description = "Not found", body = crate::types::ErrorResponse),
     ),
-    tag = "Applications"
+    tag = "Organizations"
 )]
-pub async fn delete_provider_credential(
+pub async fn delete_org_provider_credential(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<KeyContext>,
-    Path((app_id, provider)): Path<(String, String)>,
+    Path((org_id, provider)): Path<(String, String)>,
 ) -> Response {
-    let (_, org_id) = match org_for_app(&state, &app_id).await {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    if let Err(resp) =
-        require_member_perm(&state, &ctx, &org_id, Permission::ProviderCredDelete).await
-    {
+    if let Err(resp) = require_member_perm(&state, &ctx, &org_id, Permission::ProviderCredDelete).await {
         return resp;
     }
-    match state.db.delete_provider_credential(&app_id, &provider).await {
+    match state.db.delete_org_provider_credential(&org_id, &provider).await {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => err(StatusCode::NOT_FOUND, "credential_not_found", "Credential not found"),
         Err(e) => internal_error(&e.to_string()),
