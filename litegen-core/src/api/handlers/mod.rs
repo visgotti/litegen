@@ -2064,12 +2064,12 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/orgs/{id}/apps", get(orgs::list_apps).post(orgs::create_app))
         .route("/v1/apps/{app_id}", get(orgs::get_app).patch(orgs::patch_app).delete(orgs::delete_app))
         .route(
-            "/v1/apps/{app_id}/provider-credentials",
-            get(orgs::list_provider_credentials).post(orgs::create_provider_credential),
+            "/v1/orgs/{org_id}/provider-credentials",
+            get(orgs::list_org_provider_credentials).post(orgs::create_org_provider_credential),
         )
         .route(
-            "/v1/apps/{app_id}/provider-credentials/{provider}",
-            delete(orgs::delete_provider_credential),
+            "/v1/orgs/{org_id}/provider-credentials/{provider}",
+            delete(orgs::delete_org_provider_credential),
         )
         .route(
             "/v1/apps/{app_id}/storage",

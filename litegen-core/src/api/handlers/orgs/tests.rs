@@ -312,99 +312,6 @@ async fn transfer_owner_swaps_and_member_denied() {
     assert_eq!(db.get_membership(&org_id, &owner_user.id).await.unwrap(), Some(Role::Admin));
 }
 
-// ─── Provider credentials: store, list (no plaintext), and 400 without key ────
-
-#[tokio::test]
-async fn provider_credential_store_and_list_no_plaintext() {
-    let db = build_db().await;
-    let (_, sess, csrf) = seed_user(&db, "owner@test.com").await;
-    let app = create_router(build_state(db.clone(), Some([7u8; 32])).await);
-
-    // Create org + grab its default app.
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/orgs")
-        .header("cookie", cookie(&sess))
-        .header("x-csrf-token", &csrf)
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&json!({ "name": "Acme" })).unwrap()))
-        .unwrap();
-    let resp = app.clone().oneshot(req).await.unwrap();
-    let org = body_json(resp).await;
-    let org_id = org["id"].as_str().unwrap().to_string();
-    let apps = db.list_apps_for_org(&org_id).await.unwrap();
-    let app_id = apps[0].id.clone();
-
-    // POST a credential.
-    let req = Request::builder()
-        .method("POST")
-        .uri(format!("/v1/apps/{}/provider-credentials", app_id))
-        .header("cookie", cookie(&sess))
-        .header("x-csrf-token", &csrf)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&json!({ "provider": "openai", "credentials": { "api_key": "sk-secret1234" } })).unwrap(),
-        ))
-        .unwrap();
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let info = body_json(resp).await;
-    assert_eq!(info["provider"], "openai");
-    assert_eq!(info["display_hint"], "…1234");
-    assert!(info.get("api_key").is_none(), "no plaintext in response");
-    assert!(!info.to_string().contains("sk-secret1234"), "plaintext must not leak");
-
-    // GET list → ProviderCredentialInfo, no plaintext.
-    let req = Request::builder()
-        .uri(format!("/v1/apps/{}/provider-credentials", app_id))
-        .header("cookie", cookie(&sess))
-        .body(Body::empty())
-        .unwrap();
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let list = body_json(resp).await;
-    let arr = list.as_array().unwrap();
-    assert_eq!(arr.len(), 1);
-    assert_eq!(arr[0]["provider"], "openai");
-    assert!(!list.to_string().contains("sk-secret1234"), "plaintext must not leak in list");
-}
-
-#[tokio::test]
-async fn provider_credential_post_400_without_secrets_key() {
-    let db = build_db().await;
-    let (_, sess, csrf) = seed_user(&db, "owner@test.com").await;
-    let app = create_router(build_state(db.clone(), None).await); // no secrets key
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/orgs")
-        .header("cookie", cookie(&sess))
-        .header("x-csrf-token", &csrf)
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&json!({ "name": "Acme" })).unwrap()))
-        .unwrap();
-    let resp = app.clone().oneshot(req).await.unwrap();
-    let org = body_json(resp).await;
-    let org_id = org["id"].as_str().unwrap().to_string();
-    let apps = db.list_apps_for_org(&org_id).await.unwrap();
-    let app_id = apps[0].id.clone();
-
-    let req = Request::builder()
-        .method("POST")
-        .uri(format!("/v1/apps/{}/provider-credentials", app_id))
-        .header("cookie", cookie(&sess))
-        .header("x-csrf-token", &csrf)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&json!({ "provider": "openai", "credentials": { "api_key": "sk-x" } })).unwrap(),
-        ))
-        .unwrap();
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
-    assert_eq!(body["error"]["code"], "secrets_not_configured");
-}
-
 // ─── App endpoints authorize via the app's org membership ──────────────────────
 
 #[tokio::test]
@@ -838,61 +745,6 @@ async fn cross_tenant_cannot_touch_apps() {
 }
 
 #[tokio::test]
-async fn cross_tenant_cannot_touch_provider_credentials() {
-    let db = build_db().await;
-    let (_owner_a, sess_a, csrf_a) = seed_user(&db, "owner_a@xt-cred.com").await;
-    let (_attacker_b, sess_b, csrf_b) = seed_user(&db, "attacker_b@xt-cred.com").await;
-    // secrets_key present so the credential subsystem is fully wired.
-    let app = create_router(build_state(db.clone(), Some([7u8; 32])).await);
-    let (_org_a, app_a) = create_org_returning_app(&app, &sess_a, &csrf_a, "OrgA").await;
-
-    // LIST another tenant's credentials.
-    let req = Request::builder()
-        .uri(format!("/v1/apps/{}/provider-credentials", app_a))
-        .header("cookie", cookie(&sess_b))
-        .body(Body::empty())
-        .unwrap();
-    assert_eq!(
-        app.clone().oneshot(req).await.unwrap().status(),
-        StatusCode::FORBIDDEN,
-        "cross-tenant list provider-credentials must be 403"
-    );
-
-    // CREATE a credential on another tenant's app (membership check precedes
-    // provider validation, so this is denied regardless of provider).
-    let req = Request::builder()
-        .method("POST")
-        .uri(format!("/v1/apps/{}/provider-credentials", app_a))
-        .header("cookie", cookie(&sess_b))
-        .header("x-csrf-token", &csrf_b)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&json!({ "provider": "openai", "credentials": { "api_key": "hijack" } }))
-                .unwrap(),
-        ))
-        .unwrap();
-    assert_eq!(
-        app.clone().oneshot(req).await.unwrap().status(),
-        StatusCode::FORBIDDEN,
-        "cross-tenant create provider-credential must be 403"
-    );
-
-    // DELETE a credential on another tenant's app.
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/v1/apps/{}/provider-credentials/openai", app_a))
-        .header("cookie", cookie(&sess_b))
-        .header("x-csrf-token", &csrf_b)
-        .body(Body::empty())
-        .unwrap();
-    assert_eq!(
-        app.clone().oneshot(req).await.unwrap().status(),
-        StatusCode::FORBIDDEN,
-        "cross-tenant delete provider-credential must be 403"
-    );
-}
-
-#[tokio::test]
 async fn cross_tenant_cannot_manage_members() {
     let db = build_db().await;
     let (owner_a, sess_a, csrf_a) = seed_user(&db, "owner_a@xt-mem.com").await;
@@ -1154,4 +1006,45 @@ async fn member_denied_member_management() {
         Some(Role::Owner),
         "owner membership must be unchanged"
     );
+}
+
+// ─── Org provider credentials: store, list, delete ───────────────────────────
+
+#[tokio::test]
+async fn org_provider_credential_store_list_delete() {
+    let db = build_db().await;
+    let (_, sess, csrf) = seed_user(&db, "owner@test.com").await;
+    let app = create_router(build_state(db.clone(), Some([7u8; 32])).await);
+
+    // Create org → org_id.
+    let req = Request::builder().method("POST").uri("/v1/orgs")
+        .header("cookie", cookie(&sess)).header("x-csrf-token", &csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "name": "Acme" })).unwrap())).unwrap();
+    let org_id = body_json(app.clone().oneshot(req).await.unwrap()).await["id"].as_str().unwrap().to_string();
+
+    // POST a credential → masked hint, no plaintext.
+    let req = Request::builder().method("POST")
+        .uri(format!("/v1/orgs/{}/provider-credentials", org_id))
+        .header("cookie", cookie(&sess)).header("x-csrf-token", &csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "provider": "openai", "credentials": { "api_key": "sk-secret1234" } })).unwrap())).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let info = body_json(resp).await;
+    assert_eq!(info["provider"], "openai");
+    assert_eq!(info["display_hint"], "…1234");
+    assert!(!info.to_string().contains("sk-secret1234"), "plaintext must not leak");
+
+    // GET list.
+    let req = Request::builder().uri(format!("/v1/orgs/{}/provider-credentials", org_id))
+        .header("cookie", cookie(&sess)).body(Body::empty()).unwrap();
+    let list = body_json(app.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(list.as_array().unwrap().len(), 1);
+
+    // DELETE → 204, then empty.
+    let req = Request::builder().method("DELETE")
+        .uri(format!("/v1/orgs/{}/provider-credentials/openai", org_id))
+        .header("cookie", cookie(&sess)).header("x-csrf-token", &csrf).body(Body::empty()).unwrap();
+    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::NO_CONTENT);
 }

@@ -85,9 +85,9 @@ use utoipa::OpenApi;
         crate::api::handlers::orgs::patch_app,
         crate::api::handlers::orgs::delete_app,
         // BYO provider credentials
-        crate::api::handlers::orgs::list_provider_credentials,
-        crate::api::handlers::orgs::create_provider_credential,
-        crate::api::handlers::orgs::delete_provider_credential,
+        crate::api::handlers::orgs::list_org_provider_credentials,
+        crate::api::handlers::orgs::create_org_provider_credential,
+        crate::api::handlers::orgs::delete_org_provider_credential,
         // BYO app storage
         crate::api::handlers::orgs::get_app_storage,
         crate::api::handlers::orgs::put_app_storage,
