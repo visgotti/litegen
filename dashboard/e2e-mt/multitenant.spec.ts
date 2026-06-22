@@ -70,6 +70,7 @@ test('hosted multi-tenant: signup, apps, keys, BYO creds, invites, isolation, re
   const rawCredSecret = 'sk-mock-abcd1234';
   await page.goto('/providers');
   await page.locator('[data-testid="provider-toggle-mock"]').click();
+  await expect(page.locator('[data-testid="provider-key-field-mock-key-0"]')).toBeVisible();
   await page.locator('[data-testid="provider-key-field-mock-key-0"]').fill(rawCredSecret);
   await page.locator('[data-testid="provider-key-save-mock"]').click();
   await expect(page.locator('[data-testid="provider-section-mock"]')).toContainText('configured', {
@@ -163,6 +164,37 @@ test('hosted multi-tenant: signup, apps, keys, BYO creds, invites, isolation, re
     data: { model: 'mock/image-gen', prompt: 'a cat' },
   });
   expect(r.status()).toBe(200);
+
+  // ─── 9. Mint a key under the "staging" app; assert second-app generation ─────
+  // Switch the active app to "staging" via the header app-switcher, then mint a
+  // key scoped to that app. The generation proves a non-first app in the org can
+  // authenticate and generate; the mock provider is credential-free so this is
+  // second-app auth coverage, not org-credential resolution proof.
+  await page.goto('/');
+  const appSwitcher = page.locator('[data-testid="app-switcher"]');
+  await expect(appSwitcher).toBeVisible({ timeout: 15_000 });
+  await appSwitcher.selectOption({ label: 'staging' });
+  // Confirm selection reflects the staging app.
+  await expect(appSwitcher.locator('option:checked')).toHaveText('staging');
+
+  await page.goto('/keys');
+  await expect(page.locator('table')).toBeVisible({ timeout: 15_000 });
+  await page.locator('[data-testid="new-key-name"]').fill('staging-key');
+  await page.locator('[data-testid="new-key-scopes"]').fill('generate,read');
+  await page.locator('[data-testid="create-key-btn"]').click();
+
+  const stagingSecretLocator = page.locator('[data-testid="key-secret"]');
+  await expect(stagingSecretLocator).toBeVisible({ timeout: 15_000 });
+  const stagingSecret = (await stagingSecretLocator.textContent())!.trim();
+  expect(stagingSecret.startsWith('sk_live_')).toBe(true);
+
+  // Second-app generation: staging app key authenticating against the org-level
+  // mock provider config (credential-free). Proves non-first app can generate.
+  const r2 = await page.request.post(`${BACKEND}/v1/images/generations`, {
+    headers: { Authorization: `Bearer ${stagingSecret}` },
+    data: { model: 'mock/image-gen', prompt: 'a dog' },
+  });
+  expect(r2.status()).toBe(200);
 });
 
 test('hosted multi-tenant: BYO S3 storage configure, persist-without-secret, remove', async ({ page }) => {

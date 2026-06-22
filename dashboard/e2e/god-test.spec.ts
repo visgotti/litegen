@@ -684,6 +684,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
 
   // Close the model detail panel
   await page.getByTestId('model-detail-close').click();
+  await expect(page.getByTestId('model-detail-panel')).not.toBeVisible({ timeout: 3_000 });
 
   // ─── Cluster 3a: Health probes ───────────────────────────────────────────────
   await page.getByRole('link', { name: 'Health' }).click();
