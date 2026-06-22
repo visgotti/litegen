@@ -1,30 +1,12 @@
 import { useEffect, useState } from 'react';
 import { client } from '../sdk-client';
 import type { ModelInfo } from '@litegen/sdk';
-import { showToast } from '../components/toast-store';
-
-function buildCurl(model: ModelInfo): string {
-  const isVideo = model.media_type === 'video';
-  const endpoint = isVideo ? '/v1/videos/generations' : '/v1/images/generations';
-  const bodyObj = isVideo
-    ? { model: model.id, prompt: 'a photo of a cat' }
-    : { model: model.id, prompt: 'a photo of a cat', n: 1 };
-  const bodyJson = JSON.stringify(bodyObj);
-  return [
-    `curl -X POST $LITEGEN_BASE${endpoint} \\`,
-    `  -H "Authorization: Bearer $LITEGEN_KEY" \\`,
-    `  -H "Content-Type: application/json" \\`,
-    `  -d '${bodyJson}'`,
-  ].join('\n');
-}
+import ModelDetail from '../components/ModelDetail';
 
 export default function Models() {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [error, setError] = useState('');
-  const [selectedModel, setSelectedModel] = useState<string | null>(null);
-  const [schema, setSchema] = useState<Record<string, unknown> | null>(null);
-  const [schemaLoading, setSchemaLoading] = useState(false);
-  const [schemaError, setSchemaError] = useState('');
+  const [selected, setSelected] = useState<ModelInfo | null>(null);
 
   // Filter state
   const [filterProvider, setFilterProvider] = useState('');
@@ -36,27 +18,6 @@ export default function Models() {
       .then(models => setModels(models))
       .catch(e => setError(e.message));
   }, []);
-
-  const openDetail = async (id: string) => {
-    setSelectedModel(id);
-    setSchema(null);
-    setSchemaError('');
-    setSchemaLoading(true);
-    try {
-      const s = await client.models.getSchema(id);
-      setSchema(s as Record<string, unknown>);
-    } catch (e: unknown) {
-      setSchemaError((e as Error).message);
-    } finally {
-      setSchemaLoading(false);
-    }
-  };
-
-  const closeDetail = () => {
-    setSelectedModel(null);
-    setSchema(null);
-    setSchemaError('');
-  };
 
   // Derived values for filters
   const providers = Array.from(new Set(models.map(m => m.provider))).filter(Boolean);
@@ -81,18 +42,6 @@ export default function Models() {
     }
     return true;
   });
-
-  const selectedModelInfo = selectedModel ? models.find(m => m.id === selectedModel) ?? null : null;
-
-  const copyCurl = async (model: ModelInfo) => {
-    const curl = buildCurl(model);
-    try {
-      await navigator.clipboard.writeText(curl);
-      showToast('curl command copied');
-    } catch {
-      showToast('Failed to copy', 'error');
-    }
-  };
 
   if (error) return <div className="alert alert-error">{error}</div>;
   if (!models.length) return <div className="loading">Loading models...</div>;
@@ -193,7 +142,7 @@ export default function Models() {
               <tr
                 key={m.id}
                 data-testid={`model-row-${m.id}`}
-                onClick={() => openDetail(m.id)}
+                onClick={() => setSelected(m)}
                 style={{ cursor: 'pointer' }}
                 title="Click to view schema"
               >
@@ -219,71 +168,7 @@ export default function Models() {
         </table>
       </div>
 
-      {/* Side panel / modal */}
-      {selectedModel && (
-        <div
-          data-testid="model-detail-panel"
-          style={{
-            position: 'fixed',
-            top: 0,
-            right: 0,
-            width: 480,
-            height: '100vh',
-            background: '#161b22',
-            borderLeft: '1px solid #30363d',
-            zIndex: 999,
-            overflowY: 'auto',
-            padding: 24,
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <h3 style={{ margin: 0 }}>Model Schema</h3>
-            <button
-              className="btn btn-secondary"
-              data-testid="close-model-panel"
-              onClick={closeDetail}
-            >
-              Close
-            </button>
-          </div>
-          <p style={{ color: '#8b949e', fontFamily: 'monospace', marginBottom: 16 }}>{selectedModel}</p>
-
-          {/* Copy as curl button */}
-          {selectedModelInfo && (
-            <div style={{ marginBottom: 16 }}>
-              <button
-                className="btn btn-secondary"
-                data-testid={`models-copy-curl-${selectedModel}`}
-                onClick={() => copyCurl(selectedModelInfo)}
-                style={{ fontSize: 13 }}
-              >
-                Copy as curl
-              </button>
-            </div>
-          )}
-
-          {schemaLoading && <div className="loading">Loading schema...</div>}
-          {schemaError && <div className="alert alert-error">{schemaError}</div>}
-          {schema && (
-            <pre
-              data-testid="model-schema-json"
-              style={{
-                background: '#0d1117',
-                border: '1px solid #30363d',
-                borderRadius: 6,
-                padding: 16,
-                overflowX: 'auto',
-                fontSize: 12,
-                color: '#e1e4e8',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-all',
-              }}
-            >
-              <code>{JSON.stringify(schema, null, 2)}</code>
-            </pre>
-          )}
-        </div>
-      )}
+      {selected && <ModelDetail model={selected} onClose={() => setSelected(null)} />}
     </div>
   );
 }
