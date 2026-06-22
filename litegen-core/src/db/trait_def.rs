@@ -497,43 +497,6 @@ pub trait DatabaseStore: Send + Sync {
         Ok(false)
     }
 
-    // ─── Provider Credentials (store opaque ciphertext only) ────────────
-
-    async fn upsert_provider_credential(
-        &self,
-        _app_id: &str,
-        _provider: &str,
-        _ciphertext: &str,
-        _nonce: &str,
-        _display_hint: Option<&str>,
-    ) -> Result<(), sqlx::Error> {
-        Ok(())
-    }
-
-    /// Returns `(ciphertext, nonce)` for the stored credential, if any.
-    async fn get_provider_credential(
-        &self,
-        _app_id: &str,
-        _provider: &str,
-    ) -> Result<Option<(String, String)>, sqlx::Error> {
-        Ok(None)
-    }
-
-    async fn list_provider_credentials(
-        &self,
-        _app_id: &str,
-    ) -> Result<Vec<ProviderCredentialInfo>, sqlx::Error> {
-        Ok(vec![])
-    }
-
-    async fn delete_provider_credential(
-        &self,
-        _app_id: &str,
-        _provider: &str,
-    ) -> Result<bool, sqlx::Error> {
-        Ok(false)
-    }
-
     // ─── Provider Credentials (org-scoped; store opaque ciphertext only) ────
 
     async fn upsert_org_provider_credential(

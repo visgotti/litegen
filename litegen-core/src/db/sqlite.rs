@@ -1473,79 +1473,6 @@ impl DatabaseStore for SqliteDatabase {
 
     // ─── Provider Credentials ───────────────────────────────────────────
 
-    async fn upsert_provider_credential(
-        &self,
-        app_id: &str,
-        provider: &str,
-        ciphertext: &str,
-        nonce: &str,
-        display_hint: Option<&str>,
-    ) -> Result<(), sqlx::Error> {
-        let id = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO provider_credentials \
-                (id, app_id, provider, ciphertext, nonce, display_hint, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')) \
-             ON CONFLICT (app_id, provider) DO UPDATE SET \
-                ciphertext = excluded.ciphertext, \
-                nonce = excluded.nonce, \
-                display_hint = excluded.display_hint, \
-                updated_at = datetime('now')",
-        )
-        .bind(id.to_string())
-        .bind(app_id)
-        .bind(provider)
-        .bind(ciphertext)
-        .bind(nonce)
-        .bind(display_hint)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    async fn get_provider_credential(
-        &self,
-        app_id: &str,
-        provider: &str,
-    ) -> Result<Option<(String, String)>, sqlx::Error> {
-        let row: Option<(String, String)> = sqlx::query_as(
-            "SELECT ciphertext, nonce FROM provider_credentials WHERE app_id = ? AND provider = ?",
-        )
-        .bind(app_id)
-        .bind(provider)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row)
-    }
-
-    async fn list_provider_credentials(
-        &self,
-        app_id: &str,
-    ) -> Result<Vec<ProviderCredentialInfo>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, ProviderCredentialRow>(
-            "SELECT provider, display_hint, created_at FROM provider_credentials \
-             WHERE app_id = ? ORDER BY provider ASC",
-        )
-        .bind(app_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(provider_credential_from_row).collect())
-    }
-
-    async fn delete_provider_credential(
-        &self,
-        app_id: &str,
-        provider: &str,
-    ) -> Result<bool, sqlx::Error> {
-        let result =
-            sqlx::query("DELETE FROM provider_credentials WHERE app_id = ? AND provider = ?")
-                .bind(app_id)
-                .bind(provider)
-                .execute(&self.pool)
-                .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
     // ─── Provider Credentials (org-scoped) ─────────────────────────────
 
     async fn upsert_org_provider_credential(
@@ -2505,6 +2432,17 @@ mod tests {
         assert!(db.delete_org_provider_credential("o1", "openai").await.unwrap());
         assert_eq!(db.get_org_provider_credential("o1", "openai").await.unwrap(), None);
         assert!(!db.delete_org_provider_credential("o1", "openai").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn resolves_org_credential_for_request() {
+        let db = SqliteDatabase::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("INSERT INTO organizations (id, name, slug, created_at) VALUES ('o1','O','o1',datetime('now'))")
+            .execute(db.pool()).await.unwrap();
+        db.upsert_org_provider_credential("o1", "mock", "CT", "N", Some("…1")).await.unwrap();
+        // get_org_provider_credential is what the resolver now calls:
+        assert!(db.get_org_provider_credential("o1", "mock").await.unwrap().is_some());
+        assert!(db.get_org_provider_credential("o2", "mock").await.unwrap().is_none());
     }
 
     #[tokio::test]
