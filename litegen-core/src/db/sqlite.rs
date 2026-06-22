@@ -1546,6 +1546,79 @@ impl DatabaseStore for SqliteDatabase {
         Ok(result.rows_affected() > 0)
     }
 
+    // ─── Provider Credentials (org-scoped) ─────────────────────────────
+
+    async fn upsert_org_provider_credential(
+        &self,
+        org_id: &str,
+        provider: &str,
+        ciphertext: &str,
+        nonce: &str,
+        display_hint: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO org_provider_credentials \
+                (id, org_id, provider, ciphertext, nonce, display_hint, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')) \
+             ON CONFLICT (org_id, provider) DO UPDATE SET \
+                ciphertext = excluded.ciphertext, nonce = excluded.nonce, \
+                display_hint = excluded.display_hint, updated_at = datetime('now')",
+        )
+        .bind(id.to_string())
+        .bind(org_id)
+        .bind(provider)
+        .bind(ciphertext)
+        .bind(nonce)
+        .bind(display_hint)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_org_provider_credential(
+        &self,
+        org_id: &str,
+        provider: &str,
+    ) -> Result<Option<(String, String)>, sqlx::Error> {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT ciphertext, nonce FROM org_provider_credentials WHERE org_id = ? AND provider = ?",
+        )
+        .bind(org_id)
+        .bind(provider)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    async fn list_org_provider_credentials(
+        &self,
+        org_id: &str,
+    ) -> Result<Vec<ProviderCredentialInfo>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, ProviderCredentialRow>(
+            "SELECT provider, display_hint, created_at FROM org_provider_credentials \
+             WHERE org_id = ? ORDER BY provider ASC",
+        )
+        .bind(org_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(provider_credential_from_row).collect())
+    }
+
+    async fn delete_org_provider_credential(
+        &self,
+        org_id: &str,
+        provider: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let result =
+            sqlx::query("DELETE FROM org_provider_credentials WHERE org_id = ? AND provider = ?")
+                .bind(org_id)
+                .bind(provider)
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn upsert_app_storage(&self, input: &AppStorageUpsert) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO app_storage_credentials \
@@ -2409,6 +2482,30 @@ pub(crate) fn provider_credential_from_row(r: ProviderCredentialRow) -> Provider
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn org_provider_credential_roundtrip() {
+        let db = SqliteDatabase::connect("sqlite::memory:").await.unwrap();
+        // org FK target
+        sqlx::query("INSERT INTO organizations (id, name, slug, created_at) VALUES ('o1','Org1','org1',datetime('now'))")
+            .execute(db.pool()).await.unwrap();
+
+        db.upsert_org_provider_credential("o1", "openai", "CT", "NONCE", Some("…1234")).await.unwrap();
+        assert_eq!(db.get_org_provider_credential("o1", "openai").await.unwrap(), Some(("CT".into(), "NONCE".into())));
+
+        let list = db.list_org_provider_credentials("o1").await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].provider, "openai");
+        assert_eq!(list[0].display_hint.as_deref(), Some("…1234"));
+
+        // upsert overwrites
+        db.upsert_org_provider_credential("o1", "openai", "CT2", "N2", Some("…9999")).await.unwrap();
+        assert_eq!(db.get_org_provider_credential("o1", "openai").await.unwrap(), Some(("CT2".into(), "N2".into())));
+
+        assert!(db.delete_org_provider_credential("o1", "openai").await.unwrap());
+        assert_eq!(db.get_org_provider_credential("o1", "openai").await.unwrap(), None);
+        assert!(!db.delete_org_provider_credential("o1", "openai").await.unwrap());
+    }
 
     #[tokio::test]
     async fn migration_creates_org_cred_table_and_drops_app_table() {

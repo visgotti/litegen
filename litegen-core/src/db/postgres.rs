@@ -1564,6 +1564,83 @@ impl DatabaseStore for PostgresDatabase {
         Ok(result.rows_affected() > 0)
     }
 
+    // ─── Provider Credentials (org-scoped) ─────────────────────────────
+
+    async fn upsert_org_provider_credential(
+        &self,
+        org_id: &str,
+        provider: &str,
+        ciphertext: &str,
+        nonce: &str,
+        display_hint: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO org_provider_credentials \
+                (id, org_id, provider, ciphertext, nonce, display_hint, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW()) \
+             ON CONFLICT (org_id, provider) DO UPDATE SET \
+                ciphertext = EXCLUDED.ciphertext, \
+                nonce = EXCLUDED.nonce, \
+                display_hint = EXCLUDED.display_hint, \
+                updated_at = NOW()",
+        )
+        .bind(id.to_string())
+        .bind(org_id)
+        .bind(provider)
+        .bind(ciphertext)
+        .bind(nonce)
+        .bind(display_hint)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_org_provider_credential(
+        &self,
+        org_id: &str,
+        provider: &str,
+    ) -> Result<Option<(String, String)>, sqlx::Error> {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT ciphertext, nonce FROM org_provider_credentials WHERE org_id = $1 AND provider = $2",
+        )
+        .bind(org_id)
+        .bind(provider)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    async fn list_org_provider_credentials(
+        &self,
+        org_id: &str,
+    ) -> Result<Vec<ProviderCredentialInfo>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, ProviderCredentialRow>(
+            "SELECT provider, display_hint, created_at FROM org_provider_credentials \
+             WHERE org_id = $1 ORDER BY provider ASC",
+        )
+        .bind(org_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(provider_credential_from_row).collect())
+    }
+
+    async fn delete_org_provider_credential(
+        &self,
+        org_id: &str,
+        provider: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let result =
+            sqlx::query(
+                "DELETE FROM org_provider_credentials WHERE org_id = $1 AND provider = $2",
+            )
+            .bind(org_id)
+            .bind(provider)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn upsert_app_storage(&self, input: &AppStorageUpsert) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO app_storage_credentials \
