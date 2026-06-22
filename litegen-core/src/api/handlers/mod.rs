@@ -2480,10 +2480,10 @@ fn provider_not_configured_response(provider: &str) -> axum::response::Response 
     (StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
 
-/// Resolve the calling app's stored credential for `provider`, decrypted.
+/// Resolve the calling org's stored credential for `provider`, decrypted.
 ///
-/// - `Ok(Some(creds))` — the app has a stored BYO credential (use it per-request).
-/// - `Ok(None)` — the app has none (the caller should fall back to the platform
+/// - `Ok(Some(creds))` — the org has a stored BYO credential (use it per-request).
+/// - `Ok(None)` — the org has none (the caller should fall back to the platform
 ///   default, or surface `provider_not_configured` if there is none).
 /// - `Err(response)` — a server-side error (no/invalid secrets key, corrupt or
 ///   un-decryptable stored credential, DB failure). These are 500s, never 400s:
@@ -2493,15 +2493,15 @@ async fn resolve_app_credential(
     key_ctx: &Option<KeyContext>,
     provider: &str,
 ) -> Result<Option<crate::providers::ProviderCredentials>, axum::response::Response> {
-    let app_id = match key_ctx.as_ref().and_then(|c| c.app_id.as_deref()) {
-        Some(a) => a,
+    let org_id = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
         None => return Ok(None),
     };
     let secrets_key = match state.secrets_key {
         Some(k) => k,
         None => return Ok(None),
     };
-    match state.db.get_provider_credential(app_id, provider).await {
+    match state.db.get_org_provider_credential(org_id, provider).await {
         Ok(Some((ct, nonce))) => {
             let plaintext = crate::auth::secrets::decrypt(&secrets_key, &ct, &nonce).map_err(|_| {
                 (

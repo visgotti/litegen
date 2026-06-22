@@ -172,10 +172,10 @@ pub(crate) async fn poll_once(
     }
 }
 
-/// Resolve a single generation's stored per-app BYO credential, decrypted.
+/// Resolve a single generation's stored per-org BYO credential, decrypted.
 ///
-/// Returns `None` (→ platform default) when the generation has no app, no secrets
-/// key is configured, the app stored no credential, or anything fails to look up /
+/// Returns `None` (→ platform default) when the generation has no org, no secrets
+/// key is configured, the org stored no credential, or anything fails to look up /
 /// decrypt / parse. Errors are logged but never propagated — the poller must keep
 /// running across a bad credential on one row.
 async fn resolve_gen_credential(
@@ -183,9 +183,9 @@ async fn resolve_gen_credential(
     secrets_key: Option<[u8; 32]>,
     gen: &crate::types::Generation,
 ) -> Option<crate::providers::ProviderCredentials> {
-    let app_id = gen.app_id.as_deref()?;
+    let org_id = gen.org_id.as_deref()?;
     let key = secrets_key?;
-    match db.get_provider_credential(app_id, &gen.provider).await {
+    match db.get_org_provider_credential(org_id, &gen.provider).await {
         Ok(Some((ct, nonce))) => match crate::auth::secrets::decrypt(&key, &ct, &nonce) {
             Ok(plaintext) => match serde_json::from_slice::<serde_json::Value>(&plaintext) {
                 Ok(val) => Some(crate::providers::ProviderCredentials::from_json(&val)),
