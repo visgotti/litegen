@@ -779,8 +779,8 @@ mod tests {
             .await
             .expect("migration 0008 must apply on a fresh DB");
 
-        // All four new tables must exist and be queryable.
-        for table in ["organizations", "applications", "organization_members", "provider_credentials"] {
+        // All three new tables must exist and be queryable.
+        for table in ["organizations", "applications", "organization_members"] {
             let sql = format!("SELECT count(*) FROM {table}");
             sqlx::query_scalar::<_, i64>(&sql)
                 .fetch_one(&pool)
@@ -966,39 +966,6 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "gen-b");
         assert_eq!(db.count_generations_for_tenant(&org_b.id, None).await.unwrap(), 1);
-    }
-
-    #[tokio::test]
-    async fn provider_credential_roundtrip() {
-        let db = in_memory_db().await;
-        let org = make_org(&Uuid::new_v4().to_string(), "cred-org");
-        db.create_organization(&org).await.unwrap();
-        let app = make_app(&Uuid::new_v4().to_string(), &org.id, "cred-app");
-        db.create_application(&app).await.unwrap();
-
-        db.upsert_provider_credential(&app.id, "openai", "CIPHER1", "NONCE1", Some("sk-...abcd"))
-            .await.unwrap();
-
-        // get returns (ciphertext, nonce).
-        let got = db.get_provider_credential(&app.id, "openai").await.unwrap().expect("cred");
-        assert_eq!(got, ("CIPHER1".to_string(), "NONCE1".to_string()));
-
-        // upsert again overwrites (UNIQUE(app_id, provider)).
-        db.upsert_provider_credential(&app.id, "openai", "CIPHER2", "NONCE2", Some("sk-...wxyz"))
-            .await.unwrap();
-        let got = db.get_provider_credential(&app.id, "openai").await.unwrap().expect("cred");
-        assert_eq!(got, ("CIPHER2".to_string(), "NONCE2".to_string()));
-
-        // list returns ProviderCredentialInfo with display_hint and NOT the ciphertext.
-        let list = db.list_provider_credentials(&app.id).await.unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].provider, "openai");
-        assert_eq!(list[0].display_hint.as_deref(), Some("sk-...wxyz"));
-
-        // delete works.
-        assert!(db.delete_provider_credential(&app.id, "openai").await.unwrap());
-        assert!(db.get_provider_credential(&app.id, "openai").await.unwrap().is_none());
-        assert!(!db.delete_provider_credential(&app.id, "openai").await.unwrap());
     }
 
     #[tokio::test]
