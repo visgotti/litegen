@@ -66,17 +66,26 @@ test('hosted multi-tenant: signup, apps, keys, BYO creds, invites, isolation, re
   const publicId = (await publicIdLocator.textContent())!.trim();
   expect(publicId.startsWith('pk_live_')).toBe(true);
 
-  // ─── 4. Add a provider credential (BYO) ──────────────────────────────────────
+  // ─── 4. Configure org-level provider key on /providers ──────────────────────
   const rawCredSecret = 'sk-mock-abcd1234';
-  await page.goto('/organization');
-  await page.locator('[data-testid="provider-cred-provider"]').fill('mock');
-  await page.locator('[data-testid="provider-cred-secret"]').fill(rawCredSecret);
-  await page.locator('[data-testid="provider-cred-add"]').click();
-  await expect(page.locator('[data-testid="provider-cred-row-mock"]')).toBeVisible({
+  await page.goto('/providers');
+  await page.locator('[data-testid="provider-toggle-mock"]').click();
+  await page.locator('[data-testid="provider-key-field-mock-key-0"]').fill(rawCredSecret);
+  await page.locator('[data-testid="provider-key-save-mock"]').click();
+  await expect(page.locator('[data-testid="provider-section-mock"]')).toContainText('configured', {
     timeout: 15_000,
   });
   // The raw secret must never be rendered back to the page.
   await expect(page.locator('body')).not.toContainText(rawCredSecret);
+
+  // Enabling a model auto-saves to the org pool (no save button).
+  await page.locator('[data-testid="provider-model-enable-mock/image-gen"]').check();
+  await expect(page.locator('[data-testid="provider-model-enable-mock/image-gen"]')).toBeChecked();
+
+  // Model detail drawer shows pricing info.
+  await page.locator('[data-testid="provider-model-open-mock/image-gen"]').click();
+  await expect(page.locator('[data-testid="model-detail-panel"]')).toBeVisible();
+  await expect(page.locator('[data-testid="model-detail-panel"]')).toContainText('Pricing');
 
   // ─── 5. Invite a member ──────────────────────────────────────────────────────
   await page.goto('/members');

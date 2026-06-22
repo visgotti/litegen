@@ -182,14 +182,11 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   const detailPanel = page.getByTestId('model-detail-panel');
   await expect(detailPanel).toBeVisible({ timeout: 5_000 });
 
-  // Assert the panel includes schema content (params with "seed" or "size")
-  const schemaJson = page.getByTestId('model-schema-json');
-  await expect(schemaJson).toBeVisible({ timeout: 10_000 });
-  const schemaText = await schemaJson.textContent();
-  expect(schemaText).toMatch(/seed|size|params/i);
+  // Assert the panel includes pricing content.
+  await expect(page.getByTestId('model-detail-panel')).toContainText('Pricing', { timeout: 10_000 });
 
   // Close the panel
-  await page.getByTestId('close-model-panel').click();
+  await page.getByTestId('model-detail-close').click();
   await expect(detailPanel).not.toBeVisible({ timeout: 3_000 });
 
   // ─── Step 5: Health page ─────────────────────────────────────────────────────
@@ -678,7 +675,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   await page.locator('[data-testid="model-row-mock/image-gen"]').click();
 
   // Click Copy as curl (clipboard permissions already granted)
-  await page.locator('[data-testid="models-copy-curl-mock/image-gen"]').click();
+  await page.locator('[data-testid="model-detail-copy-curl"]').click();
 
   // Read the clipboard
   const clipboard = await page.evaluate(() => navigator.clipboard.readText());
@@ -686,7 +683,7 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   expect(clipboard).toContain('curl -X POST');
 
   // Close the model detail panel
-  await page.getByTestId('close-model-panel').click();
+  await page.getByTestId('model-detail-close').click();
 
   // ─── Cluster 3a: Health probes ───────────────────────────────────────────────
   await page.getByRole('link', { name: 'Health' }).click();
