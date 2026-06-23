@@ -93,6 +93,16 @@ pub struct KeyContext {
     pub app_id: Option<String>,
 }
 
+/// The platform admin (master key) is the only principal bound to no tenant:
+/// no session user, no DB API key, and no session id. A tenant session always
+/// carries `user`/`session_id`; a DB-backed API key always carries `key_id`.
+/// In hosted mode there is no dev/no-auth bypass, so this uniquely identifies
+/// the master key. (In single-tenant dev mode the no-auth context also matches,
+/// which is harmless — that context already carries all permissions.)
+pub(crate) fn is_platform_admin(ctx: &KeyContext) -> bool {
+    ctx.user.is_none() && ctx.key_id.is_none() && ctx.session_id.is_none()
+}
+
 // ─── AppState ────────────────────────────────────────────────────────────────
 
 /// Shared application state passed to all handlers.

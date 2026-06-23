@@ -9,7 +9,7 @@ use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::api::middleware::{AppState, KeyContext};
+use crate::api::middleware::{is_platform_admin, AppState, KeyContext};
 use crate::auth::permissions::Permission;
 use crate::auth::tokens::generate_session_token;
 use crate::config::Mode;
@@ -37,15 +37,6 @@ fn forbidden_perm(perm: &str) -> Response {
         "forbidden_permission",
         &format!("Permission '{}' required", perm),
     )
-}
-
-/// The platform admin (master key) is the only principal bound to no tenant:
-/// no session user, no DB API key, and no session id. A tenant session always
-/// carries `user`/`session_id`; a DB-backed API key always carries `key_id`.
-/// In hosted mode there is no dev/no-auth bypass, so this uniquely identifies
-/// the master key.
-fn is_platform_admin(ctx: &KeyContext) -> bool {
-    ctx.user.is_none() && ctx.key_id.is_none() && ctx.session_id.is_none()
 }
 
 /// Authorize the global, NON-org-scoped user-management endpoints
