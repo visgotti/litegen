@@ -143,3 +143,44 @@ async fn generations_decode_cost_usd_against_postgres() {
         .expect("list_generations must decode generations.cost_usd");
     assert!(listed.iter().any(|g| g.id == id), "inserted generation should be listed");
 }
+
+/// `org_provider_credentials.created_at`/`updated_at` were created by
+/// `20240101000013` as `timestamp without time zone`, but `ProviderCredentialRow`
+/// decodes `DateTime<Utc>` (sqlx → strict `timestamptz`). `list_org_provider_credentials`
+/// 500s ("TIMESTAMPTZ … not compatible with SQL type TIMESTAMP") on the unmigrated
+/// column — breaking the Providers dashboard tab. `20240101000014` re-sweeps the
+/// remaining timestamp columns to timestamptz.
+///
+/// This test fails (TIMESTAMP↛DateTime<Utc> decode error) on the unmigrated column
+/// and passes once the sweep is applied — including against an already-migrated
+/// database, the production scenario the ALTER must handle idempotently.
+#[tokio::test]
+async fn org_provider_credentials_list_decodes_created_at_against_postgres() {
+    let Ok(url) = std::env::var("LITEGEN_PG_TEST_URL") else {
+        eprintln!(
+            "skipping org_provider_credentials_list_decodes_created_at_against_postgres: \
+             set LITEGEN_PG_TEST_URL to a throwaway Postgres database to run"
+        );
+        return;
+    };
+
+    let db = PostgresDatabase::connect(&url)
+        .await
+        .expect("connect + migrate against the test Postgres");
+
+    // Store a credential under the seeded Default org (created on connect).
+    let org_id = crate::api::middleware::DEFAULT_ORG_ID;
+    db.upsert_org_provider_credential(org_id, "fal", "ciphertext", "nonce", Some("…1234"))
+        .await
+        .expect("upsert_org_provider_credential");
+
+    // The exact FromRow decode path the Providers dashboard tab / API hits.
+    let listed = db
+        .list_org_provider_credentials(org_id)
+        .await
+        .expect("list_org_provider_credentials must decode created_at (timestamptz) into DateTime<Utc>");
+    assert!(
+        listed.iter().any(|c| c.provider == "fal"),
+        "the stored fal credential should be listed"
+    );
+}
