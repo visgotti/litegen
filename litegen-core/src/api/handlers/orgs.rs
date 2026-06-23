@@ -93,6 +93,13 @@ async fn require_member_perm(
     org_id: &str,
     perm: Permission,
 ) -> Result<String, Response> {
+    // Platform admin (master key) is bound to no tenant and may act on any org.
+    // Mirrors authorize_global_user_admin, which gates the global user routes to
+    // the master key. This is the BYO-key admin path: hosted ops can set/list/
+    // delete any org's provider credentials without a browser session.
+    if crate::api::middleware::is_platform_admin(ctx) {
+        return Ok(String::new());
+    }
     let user = ctx
         .user
         .as_ref()

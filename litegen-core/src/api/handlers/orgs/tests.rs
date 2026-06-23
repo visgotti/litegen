@@ -48,6 +48,16 @@ async fn build_db() -> Arc<SqliteDatabase> {
 /// Hosted-mode state with an optional secrets key. master_key=None so auth is
 /// session/cookie based and the dev-bypass path is disabled (hosted).
 async fn build_state(db: Arc<SqliteDatabase>, secrets_key: Option<[u8; 32]>) -> Arc<AppState> {
+    build_state_full(db, secrets_key, None).await
+}
+
+/// Like `build_state` but with an explicit master key, so tests can exercise the
+/// platform-admin (master key) auth path in hosted mode.
+async fn build_state_full(
+    db: Arc<SqliteDatabase>,
+    secrets_key: Option<[u8; 32]>,
+    master_key: Option<String>,
+) -> Arc<AppState> {
     let registry = Arc::new(ProviderRegistry::new());
     let config = Arc::new(AppConfig::default());
     let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig::default()));
@@ -61,7 +71,7 @@ async fn build_state(db: Arc<SqliteDatabase>, secrets_key: Option<[u8; 32]>) -> 
     Arc::new(AppState {
         router,
         db,
-        master_key: None,
+        master_key,
         registry: cap_registry,
         materializer,
         rate_limiter: Arc::new(crate::api::middleware::rate_limit::RateLimiter::new()),
@@ -1159,4 +1169,71 @@ async fn org_provider_credential_store_list_delete() {
         .uri(format!("/v1/orgs/{}/provider-credentials/openai", org_id))
         .header("cookie", cookie(&sess)).header("x-csrf-token", &csrf).body(Body::empty()).unwrap();
     assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::NO_CONTENT);
+}
+
+/// The platform admin (master key) is bound to no tenant (no session user, no DB
+/// key, no session id), so it is not a "member" of any org. It must still be able
+/// to manage ANY org's provider credentials — this is the BYO-key admin path used
+/// by hosted ops to set keys without an env file or a browser session. A logged-in
+/// NON-member session must remain 403, proving the bypass is platform-admin only.
+#[tokio::test]
+async fn platform_admin_master_key_manages_any_org_provider_credentials() {
+    let db = build_db().await;
+    let (_, owner_sess, owner_csrf) = seed_user(&db, "owner@admincred.com").await;
+    let (_, outsider_sess, outsider_csrf) = seed_user(&db, "outsider@admincred.com").await;
+    // master_key set + secrets key configured.
+    let app = create_router(build_state_full(db.clone(), Some([7u8; 32]), Some("master".to_string())).await);
+
+    // A tenant creates an org. The master key is NOT a member of it.
+    let req = Request::builder().method("POST").uri("/v1/orgs")
+        .header("cookie", cookie(&owner_sess)).header("x-csrf-token", &owner_csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "name": "TenantOrg" })).unwrap())).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "setup: create org");
+    let org_id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    // Master key (Bearer, no session cookie) stores a fal credential → 200.
+    let req = Request::builder().method("POST")
+        .uri(format!("/v1/orgs/{}/provider-credentials", org_id))
+        .header("authorization", "Bearer master")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "provider": "fal", "credentials": { "api_key": "fal-secret-9999" }
+        })).unwrap())).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "platform admin must store ANY org's credential");
+    let info = body_json(resp).await;
+    assert_eq!(info["provider"], "fal");
+    assert!(!info.to_string().contains("fal-secret-9999"), "plaintext must not leak");
+
+    // Master key lists → sees exactly the stored credential.
+    let req = Request::builder().uri(format!("/v1/orgs/{}/provider-credentials", org_id))
+        .header("authorization", "Bearer master").body(Body::empty()).unwrap();
+    let list = body_json(app.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(list.as_array().unwrap().len(), 1, "platform admin must list ANY org's credentials");
+
+    // Boundary: a logged-in NON-member session is still 403 (bypass is admin-only).
+    let req = Request::builder().method("POST")
+        .uri(format!("/v1/orgs/{}/provider-credentials", org_id))
+        .header("cookie", cookie(&outsider_sess)).header("x-csrf-token", &outsider_csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "provider": "fal", "credentials": { "api_key": "x" }
+        })).unwrap())).unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "non-member session must remain 403 — bypass must not apply to ordinary sessions"
+    );
+
+    // Master key deletes → 204.
+    let req = Request::builder().method("DELETE")
+        .uri(format!("/v1/orgs/{}/provider-credentials/fal", org_id))
+        .header("authorization", "Bearer master").body(Body::empty()).unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::NO_CONTENT,
+        "platform admin must delete ANY org's credential"
+    );
 }
