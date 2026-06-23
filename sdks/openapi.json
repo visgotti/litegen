@@ -274,8 +274,18 @@
                     "204": {
                         "description": "Session revoked"
                     },
+                    "401": {
+                        "description": "Not authenticated",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
                     "403": {
-                        "description": "Cannot revoke another user's session",
+                        "description": "Missing session:revoke:own permission",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -285,7 +295,7 @@
                         }
                     },
                     "404": {
-                        "description": "Session not found",
+                        "description": "Session not found (or not one of the caller's own sessions)",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -428,165 +438,6 @@
                                 }
                             }
                         }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/ErrorResponse"
-                                }
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Not found",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/ErrorResponse"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/v1/apps/{app_id}/provider-credentials": {
-            "get": {
-                "tags": [
-                    "Applications"
-                ],
-                "summary": "GET /v1/apps/{app_id}/provider-credentials \u2014 List BYO credentials (provider_cred:read).\nNever returns plaintext \u2014 only `ProviderCredentialInfo`.",
-                "operationId": "list_provider_credentials",
-                "parameters": [
-                    {
-                        "name": "app_id",
-                        "in": "path",
-                        "description": "Application ID",
-                        "required": true,
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Stored credentials (no plaintext)",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "type": "array",
-                                    "items": {
-                                        "$ref": "#/components/schemas/ProviderCredentialInfo"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/ErrorResponse"
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "post": {
-                "tags": [
-                    "Applications"
-                ],
-                "summary": "POST /v1/apps/{app_id}/provider-credentials \u2014 Store a BYO credential (provider_cred:write).\nEncrypts the credential JSON; returns `ProviderCredentialInfo` (no plaintext).",
-                "operationId": "create_provider_credential",
-                "parameters": [
-                    {
-                        "name": "app_id",
-                        "in": "path",
-                        "description": "Application ID",
-                        "required": true,
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                ],
-                "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/CreateProviderCredentialRequest"
-                            }
-                        }
-                    },
-                    "required": true
-                },
-                "responses": {
-                    "200": {
-                        "description": "Credential stored (no plaintext)",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/ProviderCredentialInfo"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "Secrets key not configured",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/ErrorResponse"
-                                }
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/ErrorResponse"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/v1/apps/{app_id}/provider-credentials/{provider}": {
-            "delete": {
-                "tags": [
-                    "Applications"
-                ],
-                "summary": "DELETE /v1/apps/{app_id}/provider-credentials/{provider} \u2014 Delete a credential (provider_cred:delete).",
-                "operationId": "delete_provider_credential",
-                "parameters": [
-                    {
-                        "name": "app_id",
-                        "in": "path",
-                        "description": "Application ID",
-                        "required": true,
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    {
-                        "name": "provider",
-                        "in": "path",
-                        "description": "Provider name",
-                        "required": true,
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                ],
-                "responses": {
-                    "204": {
-                        "description": "Deleted"
                     },
                     "403": {
                         "description": "Forbidden",
@@ -1403,6 +1254,16 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/CacheClearedResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden (tenant principals cannot flush the global cache)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
                                 }
                             }
                         }
@@ -2797,6 +2658,165 @@
                 }
             }
         },
+        "/v1/orgs/{org_id}/provider-credentials": {
+            "get": {
+                "tags": [
+                    "Organizations"
+                ],
+                "summary": "GET /v1/orgs/{org_id}/provider-credentials \u2014 List BYO credentials for an org (provider_cred:read).\nNever returns plaintext \u2014 only `ProviderCredentialInfo`.",
+                "operationId": "list_org_provider_credentials",
+                "parameters": [
+                    {
+                        "name": "org_id",
+                        "in": "path",
+                        "description": "Organization ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Stored credentials (no plaintext)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/ProviderCredentialInfo"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "Organizations"
+                ],
+                "summary": "POST /v1/orgs/{org_id}/provider-credentials \u2014 Store a BYO credential for an org (provider_cred:write).\nEncrypts the credential JSON; returns `ProviderCredentialInfo` (no plaintext).",
+                "operationId": "create_org_provider_credential",
+                "parameters": [
+                    {
+                        "name": "org_id",
+                        "in": "path",
+                        "description": "Organization ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CreateProviderCredentialRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Credential stored (no plaintext)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProviderCredentialInfo"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Secrets key not configured",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/orgs/{org_id}/provider-credentials/{provider}": {
+            "delete": {
+                "tags": [
+                    "Organizations"
+                ],
+                "summary": "DELETE /v1/orgs/{org_id}/provider-credentials/{provider} \u2014 Delete a credential for an org (provider_cred:delete).",
+                "operationId": "delete_org_provider_credential",
+                "parameters": [
+                    {
+                        "name": "org_id",
+                        "in": "path",
+                        "description": "Organization ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "provider",
+                        "in": "path",
+                        "description": "Provider name",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Deleted"
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v1/providers": {
             "get": {
                 "tags": [
@@ -3201,6 +3221,16 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/VideoGenerationResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden (no active org, or read:own boundary)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
                                 }
                             }
                         }
