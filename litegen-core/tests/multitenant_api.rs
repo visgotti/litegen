@@ -1162,13 +1162,14 @@ async fn byo_credential_reaches_upstream() {
     let app = spawn_app_with_providers(&[("openai", openai_cfg)]).await;
 
     let mut c = Client::new(&app.base);
-    let (app_id, secret) = signup_app_and_key(&mut c, "byo-upstream").await;
+    let (_app_id, secret) = signup_app_and_key(&mut c, "byo-upstream").await;
+    let org_id = first_org_id(&mut c).await;
 
-    // Store the app's BYO credential (api_key=APPKEY) via the owner session.
+    // Store the org's BYO credential (api_key=APPKEY) via the owner session.
     let csrf = c.csrf().await;
     let stored = c
         .post_with(
-            &format!("/v1/apps/{app_id}/provider-credentials"),
+            &format!("/v1/orgs/{org_id}/provider-credentials"),
             json!({ "provider": "openai", "credentials": { "api_key": "APPKEY" } }),
             &[("x-csrf-token", &csrf)],
         )
@@ -1187,7 +1188,7 @@ async fn byo_credential_reaches_upstream() {
         .await;
     assert_eq!(r.status, 200, "BYO generation should succeed, got {} {:?}", r.status, r.body);
 
-    // The upstream must have seen the per-app key, not the platform placeholder.
+    // The upstream must have seen the org BYO key, not the platform placeholder.
     let received = upstream.received_requests().await.expect("recorded requests");
     assert_eq!(received.len(), 1, "expected exactly one upstream call");
     let auth = received[0]
@@ -1198,7 +1199,7 @@ async fn byo_credential_reaches_upstream() {
         .expect("authorization header utf-8");
     assert_eq!(
         auth, "Bearer APPKEY",
-        "upstream should receive the per-app BYO key, got {auth:?}"
+        "upstream should receive the org BYO key, got {auth:?}"
     );
 }
 
@@ -1272,13 +1273,14 @@ async fn byo_weighted_keys_rotate_across_requests() {
     let app = spawn_app_with_providers(&[("openai", openai_cfg)]).await;
 
     let mut c = Client::new(&app.base);
-    let (app_id, secret) = signup_app_and_key(&mut c, "byo-rotate").await;
+    let (_app_id, secret) = signup_app_and_key(&mut c, "byo-rotate").await;
+    let org_id = first_org_id(&mut c).await;
 
     // Store a weighted two-key BYO pool (equal weights).
     let csrf = c.csrf().await;
     let stored = c
         .post_with(
-            &format!("/v1/apps/{app_id}/provider-credentials"),
+            &format!("/v1/orgs/{org_id}/provider-credentials"),
             json!({
                 "provider": "openai",
                 "credentials": { "api_keys": [
