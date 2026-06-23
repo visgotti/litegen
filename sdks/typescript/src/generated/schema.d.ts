@@ -155,47 +155,6 @@ export interface paths {
         patch: operations["patch_app"];
         trace?: never;
     };
-    "/v1/apps/{app_id}/provider-credentials": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * GET /v1/apps/{app_id}/provider-credentials — List BYO credentials (provider_cred:read).
-         *     Never returns plaintext — only `ProviderCredentialInfo`.
-         */
-        get: operations["list_provider_credentials"];
-        put?: never;
-        /**
-         * POST /v1/apps/{app_id}/provider-credentials — Store a BYO credential (provider_cred:write).
-         *     Encrypts the credential JSON; returns `ProviderCredentialInfo` (no plaintext).
-         */
-        post: operations["create_provider_credential"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/apps/{app_id}/provider-credentials/{provider}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** DELETE /v1/apps/{app_id}/provider-credentials/{provider} — Delete a credential (provider_cred:delete). */
-        delete: operations["delete_provider_credential"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/apps/{app_id}/storage": {
         parameters: {
             query?: never;
@@ -846,6 +805,47 @@ export interface paths {
         /** POST /v1/orgs/{id}/transfer-owner — Transfer ownership (requires org:transfer_owner). */
         post: operations["transfer_owner"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/orgs/{org_id}/provider-credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /v1/orgs/{org_id}/provider-credentials — List BYO credentials for an org (provider_cred:read).
+         *     Never returns plaintext — only `ProviderCredentialInfo`.
+         */
+        get: operations["list_org_provider_credentials"];
+        put?: never;
+        /**
+         * POST /v1/orgs/{org_id}/provider-credentials — Store a BYO credential for an org (provider_cred:write).
+         *     Encrypts the credential JSON; returns `ProviderCredentialInfo` (no plaintext).
+         */
+        post: operations["create_org_provider_credential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/orgs/{org_id}/provider-credentials/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /v1/orgs/{org_id}/provider-credentials/{provider} — Delete a credential for an org (provider_cred:delete). */
+        delete: operations["delete_org_provider_credential"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2493,7 +2493,16 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Cannot revoke another user's session */
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Missing session:revoke:own permission */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -2502,7 +2511,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Session not found */
+            /** @description Session not found (or not one of the caller's own sessions) */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2617,124 +2626,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Application"];
                 };
-            };
-            /** @description Forbidden */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    list_provider_credentials: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Application ID */
-                app_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Stored credentials (no plaintext) */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ProviderCredentialInfo"][];
-                };
-            };
-            /** @description Forbidden */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    create_provider_credential: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Application ID */
-                app_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateProviderCredentialRequest"];
-            };
-        };
-        responses: {
-            /** @description Credential stored (no plaintext) */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ProviderCredentialInfo"];
-                };
-            };
-            /** @description Secrets key not configured */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Forbidden */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    delete_provider_credential: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Application ID */
-                app_id: string;
-                /** @description Provider name */
-                provider: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Deleted */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
             /** @description Forbidden */
             403: {
@@ -3401,6 +3292,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CacheClearedResponse"];
+                };
+            };
+            /** @description Forbidden (tenant principals cannot flush the global cache) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -4458,6 +4358,124 @@ export interface operations {
             };
         };
     };
+    list_org_provider_credentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stored credentials (no plaintext) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderCredentialInfo"][];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_org_provider_credential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateProviderCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description Credential stored (no plaintext) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderCredentialInfo"];
+                };
+            };
+            /** @description Secrets key not configured */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_org_provider_credential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+                /** @description Provider name */
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_providers: {
         parameters: {
             query?: never;
@@ -4796,6 +4814,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VideoGenerationResponse"];
+                };
+            };
+            /** @description Forbidden (no active org, or read:own boundary) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             /** @description Not found */
