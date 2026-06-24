@@ -112,7 +112,7 @@
                 "tags": [
                     "System"
                 ],
-                "summary": "GET /health/ready \u2014 Readiness probe.\nReturns 200 only if DB is reachable and at least one provider is healthy.\nReturns 503 otherwise. No auth required.\nLive: `curl https://app.litegen.ai/api/health/ready`",
+                "summary": "GET /health/ready \u2014 Readiness probe.\nReturns 200 when the DB is reachable (the instance can accept requests).\nProvider availability is resolved per-request \u2014 globally configured creds OR\norg-scoped BYO credentials \u2014 so it does NOT gate readiness; the healthy\nprovider list is reported in the body purely as an informational signal.\nReturns 503 only when the DB is unreachable. No auth required.\nLive: `curl https://app.litegen.ai/api/health/ready`",
                 "operationId": "readiness",
                 "responses": {
                     "200": {
@@ -451,6 +451,128 @@
                     },
                     "404": {
                         "description": "Not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/apps/{app_id}/allowed-models": {
+            "get": {
+                "tags": [
+                    "Applications"
+                ],
+                "summary": "GET /v1/apps/{app_id}/allowed-models \u2014 Which org models this app's keys may call (app read).",
+                "operationId": "get_app_allowed_models",
+                "parameters": [
+                    {
+                        "name": "app_id",
+                        "in": "path",
+                        "description": "Application ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "App model access",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AppModelAccess"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "App not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "tags": [
+                    "Applications"
+                ],
+                "summary": "PUT /v1/apps/{app_id}/allowed-models \u2014 Set this app's model access (app write).",
+                "operationId": "put_app_allowed_models",
+                "parameters": [
+                    {
+                        "name": "app_id",
+                        "in": "path",
+                        "description": "Application ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/SetAppModelAccessRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Updated app model access",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AppModelAccess"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid mode or model not in org pool",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "App not found",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -2274,6 +2396,98 @@
                 }
             }
         },
+        "/v1/orgs/{id}/allowed-models": {
+            "get": {
+                "tags": [
+                    "Organizations"
+                ],
+                "summary": "GET /v1/orgs/{id}/allowed-models \u2014 The org's model pool (org read).",
+                "operationId": "get_org_allowed_models",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Organization ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Org allowed-models pool",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OrgAllowedModels"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "tags": [
+                    "Organizations"
+                ],
+                "summary": "PUT /v1/orgs/{id}/allowed-models \u2014 Replace the org's model pool (org write).",
+                "operationId": "put_org_allowed_models",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Organization ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/SetOrgAllowedModelsRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Updated org allowed-models pool",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OrgAllowedModels"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v1/orgs/{id}/apps": {
             "get": {
                 "tags": [
@@ -3653,6 +3867,25 @@
                     }
                 }
             },
+            "AppModelAccess": {
+                "type": "object",
+                "required": [
+                    "mode",
+                    "models"
+                ],
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "description": "\"all\" = inherit everything in the org pool. \"select\" = only `models`."
+                    },
+                    "models": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
             "AppStorageInfo": {
                 "type": "object",
                 "description": "Public view of per-app BYO storage config \u2014 NEVER includes the secret.",
@@ -5025,6 +5258,20 @@
                         "type": "integer",
                         "format": "int64",
                         "minimum": 0
+                    }
+                }
+            },
+            "OrgAllowedModels": {
+                "type": "object",
+                "required": [
+                    "models"
+                ],
+                "properties": {
+                    "models": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
                     }
                 }
             },
@@ -6777,6 +7024,38 @@
                             "string",
                             "null"
                         ]
+                    }
+                }
+            },
+            "SetAppModelAccessRequest": {
+                "type": "object",
+                "required": [
+                    "mode"
+                ],
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "description": "Must be \"all\" or \"select\"."
+                    },
+                    "models": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "SetOrgAllowedModelsRequest": {
+                "type": "object",
+                "required": [
+                    "models"
+                ],
+                "properties": {
+                    "models": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
                     }
                 }
             },

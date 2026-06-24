@@ -1,44 +1,58 @@
 from http import HTTPStatus
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.app_model_access import AppModelAccess
 from ...models.error_response import ErrorResponse
-from ...models.provider_credential_info import ProviderCredentialInfo
+from ...models.set_app_model_access_request import SetAppModelAccessRequest
 from ...types import Response
 
 
 def _get_kwargs(
     app_id: str,
+    *,
+    body: SetAppModelAccessRequest,
 ) -> Dict[str, Any]:
+    headers: Dict[str, Any] = {}
+
     _kwargs: Dict[str, Any] = {
-        "method": "get",
-        "url": "/v1/apps/{app_id}/provider-credentials".format(
+        "method": "put",
+        "url": "/v1/apps/{app_id}/allowed-models".format(
             app_id=app_id,
         ),
     }
 
+    _body = body.to_dict()
+
+    _kwargs["json"] = _body
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ErrorResponse, List["ProviderCredentialInfo"]]]:
+) -> Optional[Union[AppModelAccess, ErrorResponse]]:
     if response.status_code == 200:
-        response_200 = []
-        _response_200 = response.json()
-        for response_200_item_data in _response_200:
-            response_200_item = ProviderCredentialInfo.from_dict(response_200_item_data)
-
-            response_200.append(response_200_item)
+        response_200 = AppModelAccess.from_dict(response.json())
 
         return response_200
+    if response.status_code == 400:
+        response_400 = ErrorResponse.from_dict(response.json())
+
+        return response_400
     if response.status_code == 403:
         response_403 = ErrorResponse.from_dict(response.json())
 
         return response_403
+    if response.status_code == 404:
+        response_404 = ErrorResponse.from_dict(response.json())
+
+        return response_404
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -47,7 +61,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ErrorResponse, List["ProviderCredentialInfo"]]]:
+) -> Response[Union[AppModelAccess, ErrorResponse]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -60,23 +74,25 @@ def sync_detailed(
     app_id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, List["ProviderCredentialInfo"]]]:
-    """GET /v1/apps/{app_id}/provider-credentials — List BYO credentials (provider_cred:read).
-    Never returns plaintext — only `ProviderCredentialInfo`.
+    body: SetAppModelAccessRequest,
+) -> Response[Union[AppModelAccess, ErrorResponse]]:
+    """PUT /v1/apps/{app_id}/allowed-models — Set this app's model access (app write).
 
     Args:
         app_id (str):
+        body (SetAppModelAccessRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, List['ProviderCredentialInfo']]]
+        Response[Union[AppModelAccess, ErrorResponse]]
     """
 
     kwargs = _get_kwargs(
         app_id=app_id,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -90,24 +106,26 @@ def sync(
     app_id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, List["ProviderCredentialInfo"]]]:
-    """GET /v1/apps/{app_id}/provider-credentials — List BYO credentials (provider_cred:read).
-    Never returns plaintext — only `ProviderCredentialInfo`.
+    body: SetAppModelAccessRequest,
+) -> Optional[Union[AppModelAccess, ErrorResponse]]:
+    """PUT /v1/apps/{app_id}/allowed-models — Set this app's model access (app write).
 
     Args:
         app_id (str):
+        body (SetAppModelAccessRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, List['ProviderCredentialInfo']]
+        Union[AppModelAccess, ErrorResponse]
     """
 
     return sync_detailed(
         app_id=app_id,
         client=client,
+        body=body,
     ).parsed
 
 
@@ -115,23 +133,25 @@ async def asyncio_detailed(
     app_id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, List["ProviderCredentialInfo"]]]:
-    """GET /v1/apps/{app_id}/provider-credentials — List BYO credentials (provider_cred:read).
-    Never returns plaintext — only `ProviderCredentialInfo`.
+    body: SetAppModelAccessRequest,
+) -> Response[Union[AppModelAccess, ErrorResponse]]:
+    """PUT /v1/apps/{app_id}/allowed-models — Set this app's model access (app write).
 
     Args:
         app_id (str):
+        body (SetAppModelAccessRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, List['ProviderCredentialInfo']]]
+        Response[Union[AppModelAccess, ErrorResponse]]
     """
 
     kwargs = _get_kwargs(
         app_id=app_id,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -143,24 +163,26 @@ async def asyncio(
     app_id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, List["ProviderCredentialInfo"]]]:
-    """GET /v1/apps/{app_id}/provider-credentials — List BYO credentials (provider_cred:read).
-    Never returns plaintext — only `ProviderCredentialInfo`.
+    body: SetAppModelAccessRequest,
+) -> Optional[Union[AppModelAccess, ErrorResponse]]:
+    """PUT /v1/apps/{app_id}/allowed-models — Set this app's model access (app write).
 
     Args:
         app_id (str):
+        body (SetAppModelAccessRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, List['ProviderCredentialInfo']]
+        Union[AppModelAccess, ErrorResponse]
     """
 
     return (
         await asyncio_detailed(
             app_id=app_id,
             client=client,
+            body=body,
         )
     ).parsed
