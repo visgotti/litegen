@@ -2,8 +2,6 @@ import { useEffect, useState } from 'react';
 import { client } from '../sdk-client';
 import type { HealthResponse } from '@litegen/sdk';
 
-const BASE = __LITEGEN_API_BASE__;
-
 type ProbeStatus = 'unknown' | 'alive' | 'ready' | 'not_ready' | 'error';
 
 export default function Health() {
@@ -13,30 +11,18 @@ export default function Health() {
   const [readiness, setReadiness] = useState<ProbeStatus>('unknown');
 
   const refreshProbes = async () => {
-    // Liveness
+    // Liveness + readiness entirely through the SDK (the SDK throws on non-2xx).
     try {
       await client.health.live();
       setLiveness('alive');
     } catch {
-      // Fall back to raw fetch for non-JSON or network error
-      try {
-        const r = await fetch(`${BASE}/health/live`, { credentials: 'include' });
-        setLiveness(r.ok ? 'alive' : 'error');
-      } catch {
-        setLiveness('error');
-      }
+      setLiveness('error');
     }
-    // Readiness
     try {
       await client.health.ready();
       setReadiness('ready');
     } catch {
-      try {
-        const r = await fetch(`${BASE}/health/ready`, { credentials: 'include' });
-        setReadiness(r.ok ? 'ready' : 'not_ready');
-      } catch {
-        setReadiness('not_ready');
-      }
+      setReadiness('not_ready');
     }
   };
 
