@@ -765,8 +765,11 @@ pub async fn liveness() -> impl IntoResponse {
 }
 
 /// GET /health/ready — Readiness probe.
-/// Returns 200 only if DB is reachable and at least one provider is healthy.
-/// Returns 503 otherwise. No auth required.
+/// Returns 200 when the DB is reachable (the instance can accept requests).
+/// Provider availability is resolved per-request — globally configured creds OR
+/// org-scoped BYO credentials — so it does NOT gate readiness; the healthy
+/// provider list is reported in the body purely as an informational signal.
+/// Returns 503 only when the DB is unreachable. No auth required.
 /// Live: `curl https://app.litegen.ai/api/health/ready`
 #[utoipa::path(
     get,
@@ -789,17 +792,19 @@ pub async fn readiness(
         .map(|h| h.provider.clone())
         .collect();
 
-    let providers_ok = !healthy_providers.is_empty();
-
+    // Readiness gates on the DB only: provider availability is resolved
+    // per-request (global config OR org-scoped BYO credentials), so an empty
+    // global-provider list must not mark a BYO deployment "not_ready" — it serves
+    // fine. `healthy_providers` stays in the body as an informational signal.
     let body = ReadinessResponse {
-        status: if db_ok && providers_ok { "ready".to_string() } else { "not_ready".to_string() },
+        status: if db_ok { "ready".to_string() } else { "not_ready".to_string() },
         checks: ReadinessChecks {
             db: db_ok,
             providers: healthy_providers,
         },
     };
 
-    let status_code = if db_ok && providers_ok {
+    let status_code = if db_ok {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
@@ -3379,8 +3384,10 @@ mod health_tests {
     }
 
     #[tokio::test]
-    async fn ready_returns_503_when_no_providers_registered() {
-        // With no providers registered, providers list is empty → not_ready
+    async fn ready_returns_200_when_db_ok_even_with_no_global_providers() {
+        // BYO model: providers are resolved per-request (global OR org-scoped), so
+        // an empty global-provider list must NOT make the instance "not_ready" as
+        // long as the DB is reachable.
         let state = build_state_with_real_db().await;
         let app = build_health_router(state);
 
@@ -3391,15 +3398,16 @@ mod health_tests {
             .unwrap();
 
         let resp = app.oneshot(req).await.unwrap();
-        // No providers → 503 even if DB is ok
         assert_eq!(
             resp.status(),
-            StatusCode::SERVICE_UNAVAILABLE,
-            "/health/ready should return 503 when no providers healthy"
+            StatusCode::OK,
+            "/health/ready should be 200 when DB is up, even with no global providers"
         );
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["status"], "ready");
         assert_eq!(body["checks"]["db"], true, "db should be true when sqlite is up");
+        assert_eq!(body["checks"]["providers"], serde_json::json!([]), "no global providers configured");
     }
 
     #[tokio::test]
