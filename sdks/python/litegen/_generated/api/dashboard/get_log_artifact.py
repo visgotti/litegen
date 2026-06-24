@@ -6,7 +6,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
-from ...models.video_generation_response import VideoGenerationResponse
+from ...models.request_artifact import RequestArtifact
 from ...types import Response
 
 
@@ -15,7 +15,7 @@ def _get_kwargs(
 ) -> Dict[str, Any]:
     _kwargs: Dict[str, Any] = {
         "method": "get",
-        "url": "/v1/videos/{id}".format(
+        "url": "/v1/logs/{id}/artifact".format(
             id=id,
         ),
     }
@@ -25,15 +25,11 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Optional[Union[ErrorResponse, RequestArtifact]]:
     if response.status_code == 200:
-        response_200 = VideoGenerationResponse.from_dict(response.json())
+        response_200 = RequestArtifact.from_dict(response.json())
 
         return response_200
-    if response.status_code == 403:
-        response_403 = ErrorResponse.from_dict(response.json())
-
-        return response_403
     if response.status_code == 404:
         response_404 = ErrorResponse.from_dict(response.json())
 
@@ -46,7 +42,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Response[Union[ErrorResponse, RequestArtifact]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -59,8 +55,10 @@ def sync_detailed(
     id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Response[Union[ErrorResponse, RequestArtifact]]:
+    r"""GET /v1/logs/{id}/artifact — Retrieve the stored artifact for a request log.
+    Live: `curl https://app.litegen.ai/api/v1/logs/{id}/artifact -H \"Authorization: Bearer
+    sk_live_...\"`
 
     Args:
         id (str):
@@ -70,7 +68,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[Union[ErrorResponse, RequestArtifact]]
     """
 
     kwargs = _get_kwargs(
@@ -88,8 +86,10 @@ def sync(
     id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Optional[Union[ErrorResponse, RequestArtifact]]:
+    r"""GET /v1/logs/{id}/artifact — Retrieve the stored artifact for a request log.
+    Live: `curl https://app.litegen.ai/api/v1/logs/{id}/artifact -H \"Authorization: Bearer
+    sk_live_...\"`
 
     Args:
         id (str):
@@ -99,7 +99,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        Union[ErrorResponse, RequestArtifact]
     """
 
     return sync_detailed(
@@ -112,8 +112,10 @@ async def asyncio_detailed(
     id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Response[Union[ErrorResponse, RequestArtifact]]:
+    r"""GET /v1/logs/{id}/artifact — Retrieve the stored artifact for a request log.
+    Live: `curl https://app.litegen.ai/api/v1/logs/{id}/artifact -H \"Authorization: Bearer
+    sk_live_...\"`
 
     Args:
         id (str):
@@ -123,7 +125,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[Union[ErrorResponse, RequestArtifact]]
     """
 
     kwargs = _get_kwargs(
@@ -139,8 +141,10 @@ async def asyncio(
     id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Optional[Union[ErrorResponse, RequestArtifact]]:
+    r"""GET /v1/logs/{id}/artifact — Retrieve the stored artifact for a request log.
+    Live: `curl https://app.litegen.ai/api/v1/logs/{id}/artifact -H \"Authorization: Bearer
+    sk_live_...\"`
 
     Args:
         id (str):
@@ -150,7 +154,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        Union[ErrorResponse, RequestArtifact]
     """
 
     return (

@@ -10,14 +10,19 @@ T = TypeVar("T", bound="SessionInfo")
 
 @_attrs_define
 class SessionInfo:
-    """Public session info (no csrf_token exposed).
+    """Public session info. `id` is a NON-secret SHA-256 fingerprint of the session
+    token — never the raw token. The session row's primary key IS the bearer
+    credential (it's the `litegen_session` cookie value), so returning it
+    verbatim would let any response-body capture (e.g. XSS — which HttpOnly is
+    meant to stop) harvest usable session tokens for all the user's devices.
+    Revocation resolves the fingerprint back to the row.
 
-    Attributes:
-        created_at (str):
-        expires_at (str):
-        id (str):
-        ip (Union[None, Unset, str]):
-        user_agent (Union[None, Unset, str]):
+        Attributes:
+            created_at (str):
+            expires_at (str):
+            id (str): SHA-256 fingerprint of the session token (safe to expose; used for revoke).
+            ip (Union[None, Unset, str]):
+            user_agent (Union[None, Unset, str]):
     """
 
     created_at: str

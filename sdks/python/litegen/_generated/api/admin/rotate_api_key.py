@@ -1,21 +1,22 @@
 from http import HTTPStatus
 from typing import Any, Dict, Optional, Union
+from uuid import UUID
 
 import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
-from ...models.video_generation_response import VideoGenerationResponse
+from ...models.rotated_key_response import RotatedKeyResponse
 from ...types import Response
 
 
 def _get_kwargs(
-    id: str,
+    id: UUID,
 ) -> Dict[str, Any]:
     _kwargs: Dict[str, Any] = {
-        "method": "get",
-        "url": "/v1/videos/{id}".format(
+        "method": "post",
+        "url": "/v1/keys/{id}/rotate".format(
             id=id,
         ),
     }
@@ -25,15 +26,11 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Optional[Union[ErrorResponse, RotatedKeyResponse]]:
     if response.status_code == 200:
-        response_200 = VideoGenerationResponse.from_dict(response.json())
+        response_200 = RotatedKeyResponse.from_dict(response.json())
 
         return response_200
-    if response.status_code == 403:
-        response_403 = ErrorResponse.from_dict(response.json())
-
-        return response_403
     if response.status_code == 404:
         response_404 = ErrorResponse.from_dict(response.json())
 
@@ -46,7 +43,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Response[Union[ErrorResponse, RotatedKeyResponse]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -56,21 +53,24 @@ def _build_response(
 
 
 def sync_detailed(
-    id: str,
+    id: UUID,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Response[Union[ErrorResponse, RotatedKeyResponse]]:
+    r"""POST /v1/keys/{id}/rotate — Issue a new secret for an existing key in place.
+    Keeps the same row id and all settings; the new `sk_live_` secret is returned once.
+    Live: `curl -X POST https://app.litegen.ai/api/v1/keys/{id}/rotate -H \"Authorization: Bearer
+    sk_live_...\"`
 
     Args:
-        id (str):
+        id (UUID):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[Union[ErrorResponse, RotatedKeyResponse]]
     """
 
     kwargs = _get_kwargs(
@@ -85,21 +85,24 @@ def sync_detailed(
 
 
 def sync(
-    id: str,
+    id: UUID,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Optional[Union[ErrorResponse, RotatedKeyResponse]]:
+    r"""POST /v1/keys/{id}/rotate — Issue a new secret for an existing key in place.
+    Keeps the same row id and all settings; the new `sk_live_` secret is returned once.
+    Live: `curl -X POST https://app.litegen.ai/api/v1/keys/{id}/rotate -H \"Authorization: Bearer
+    sk_live_...\"`
 
     Args:
-        id (str):
+        id (UUID):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        Union[ErrorResponse, RotatedKeyResponse]
     """
 
     return sync_detailed(
@@ -109,21 +112,24 @@ def sync(
 
 
 async def asyncio_detailed(
-    id: str,
+    id: UUID,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Response[Union[ErrorResponse, RotatedKeyResponse]]:
+    r"""POST /v1/keys/{id}/rotate — Issue a new secret for an existing key in place.
+    Keeps the same row id and all settings; the new `sk_live_` secret is returned once.
+    Live: `curl -X POST https://app.litegen.ai/api/v1/keys/{id}/rotate -H \"Authorization: Bearer
+    sk_live_...\"`
 
     Args:
-        id (str):
+        id (UUID):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[Union[ErrorResponse, RotatedKeyResponse]]
     """
 
     kwargs = _get_kwargs(
@@ -136,21 +142,24 @@ async def asyncio_detailed(
 
 
 async def asyncio(
-    id: str,
+    id: UUID,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Optional[Union[ErrorResponse, RotatedKeyResponse]]:
+    r"""POST /v1/keys/{id}/rotate — Issue a new secret for an existing key in place.
+    Keeps the same row id and all settings; the new `sk_live_` secret is returned once.
+    Live: `curl -X POST https://app.litegen.ai/api/v1/keys/{id}/rotate -H \"Authorization: Bearer
+    sk_live_...\"`
 
     Args:
-        id (str):
+        id (UUID):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        Union[ErrorResponse, RotatedKeyResponse]
     """
 
     return (

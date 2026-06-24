@@ -71,8 +71,11 @@ export interface paths {
         };
         /**
          * GET /health/ready — Readiness probe.
-         *     Returns 200 only if DB is reachable and at least one provider is healthy.
-         *     Returns 503 otherwise. No auth required.
+         *     Returns 200 when the DB is reachable (the instance can accept requests).
+         *     Provider availability is resolved per-request — globally configured creds OR
+         *     org-scoped BYO credentials — so it does NOT gate readiness; the healthy
+         *     provider list is reported in the body purely as an informational signal.
+         *     Returns 503 only when the DB is unreachable. No auth required.
          *     Live: `curl https://app.litegen.ai/api/health/ready`
          */
         get: operations["readiness"];
@@ -153,6 +156,24 @@ export interface paths {
         head?: never;
         /** PATCH /v1/apps/{app_id} — Rename an application (app:write via its org). */
         patch: operations["patch_app"];
+        trace?: never;
+    };
+    "/v1/apps/{app_id}/allowed-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/apps/{app_id}/allowed-models — Which org models this app's keys may call (app read). */
+        get: operations["get_app_allowed_models"];
+        /** PUT /v1/apps/{app_id}/allowed-models — Set this app's model access (app write). */
+        put: operations["put_app_allowed_models"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/v1/apps/{app_id}/storage": {
@@ -739,6 +760,24 @@ export interface paths {
         patch: operations["patch_org"];
         trace?: never;
     };
+    "/v1/orgs/{id}/allowed-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/orgs/{id}/allowed-models — The org's model pool (org read). */
+        get: operations["get_org_allowed_models"];
+        /** PUT /v1/orgs/{id}/allowed-models — Replace the org's model pool (org write). */
+        put: operations["put_org_allowed_models"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/orgs/{id}/apps": {
         parameters: {
             query?: never;
@@ -1124,6 +1163,11 @@ export interface components {
         /** @description Response for `GET /v1/keys`. */
         ApiKeyListResponse: {
             data: components["schemas"]["ApiKeyInfo"][];
+        };
+        AppModelAccess: {
+            /** @description "all" = inherit everything in the org pool. "select" = only `models`. */
+            mode: string;
+            models: string[];
         };
         /** @description Public view of per-app BYO storage config — NEVER includes the secret. */
         AppStorageInfo: {
@@ -1613,6 +1657,9 @@ export interface components {
             model: string;
             /** Format: int64 */
             requests: number;
+        };
+        OrgAllowedModels: {
+            models: string[];
         };
         OrgSummary: {
             id: string;
@@ -2114,6 +2161,14 @@ export interface components {
             id: string;
             ip?: string | null;
             user_agent?: string | null;
+        };
+        SetAppModelAccessRequest: {
+            /** @description Must be "all" or "select". */
+            mode: string;
+            models?: string[];
+        };
+        SetOrgAllowedModelsRequest: {
+            models: string[];
         };
         SignupRequest: {
             email: string;
@@ -2637,6 +2692,101 @@ export interface operations {
                 };
             };
             /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_app_allowed_models: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application ID */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description App model access */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppModelAccess"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description App not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    put_app_allowed_models: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application ID */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetAppModelAccessRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated app model access */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppModelAccess"];
+                };
+            };
+            /** @description Invalid mode or model not in org pool */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description App not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -4059,6 +4209,74 @@ export interface operations {
             };
             /** @description Not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_org_allowed_models: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Org allowed-models pool */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgAllowedModels"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    put_org_allowed_models: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetOrgAllowedModelsRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated org allowed-models pool */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgAllowedModels"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

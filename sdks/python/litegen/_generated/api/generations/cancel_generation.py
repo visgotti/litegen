@@ -5,29 +5,40 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.cancel_generation_body import CancelGenerationBody
 from ...models.error_response import ErrorResponse
-from ...models.video_generation_response import VideoGenerationResponse
+from ...models.generation import Generation
 from ...types import Response
 
 
 def _get_kwargs(
     id: str,
+    *,
+    body: CancelGenerationBody,
 ) -> Dict[str, Any]:
+    headers: Dict[str, Any] = {}
+
     _kwargs: Dict[str, Any] = {
-        "method": "get",
-        "url": "/v1/videos/{id}".format(
+        "method": "patch",
+        "url": "/v1/generations/{id}".format(
             id=id,
         ),
     }
 
+    _body = body.to_dict()
+
+    _kwargs["json"] = _body
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Optional[Union[ErrorResponse, Generation]]:
     if response.status_code == 200:
-        response_200 = VideoGenerationResponse.from_dict(response.json())
+        response_200 = Generation.from_dict(response.json())
 
         return response_200
     if response.status_code == 403:
@@ -38,6 +49,10 @@ def _parse_response(
         response_404 = ErrorResponse.from_dict(response.json())
 
         return response_404
+    if response.status_code == 409:
+        response_409 = ErrorResponse.from_dict(response.json())
+
+        return response_409
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -46,7 +61,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Response[Union[ErrorResponse, Generation]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -59,22 +74,27 @@ def sync_detailed(
     id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+    body: CancelGenerationBody,
+) -> Response[Union[ErrorResponse, Generation]]:
+    r"""PATCH /v1/generations/{id} — Soft-cancel a generation.
+    Live: `curl -X PATCH https://app.litegen.ai/api/v1/generations/{id} -H \"Authorization: Bearer
+    sk_live_...\" -d '{\"status\":\"cancelled\"}'`
 
     Args:
         id (str):
+        body (CancelGenerationBody):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[Union[ErrorResponse, Generation]]
     """
 
     kwargs = _get_kwargs(
         id=id,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -88,23 +108,28 @@ def sync(
     id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+    body: CancelGenerationBody,
+) -> Optional[Union[ErrorResponse, Generation]]:
+    r"""PATCH /v1/generations/{id} — Soft-cancel a generation.
+    Live: `curl -X PATCH https://app.litegen.ai/api/v1/generations/{id} -H \"Authorization: Bearer
+    sk_live_...\" -d '{\"status\":\"cancelled\"}'`
 
     Args:
         id (str):
+        body (CancelGenerationBody):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        Union[ErrorResponse, Generation]
     """
 
     return sync_detailed(
         id=id,
         client=client,
+        body=body,
     ).parsed
 
 
@@ -112,22 +137,27 @@ async def asyncio_detailed(
     id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+    body: CancelGenerationBody,
+) -> Response[Union[ErrorResponse, Generation]]:
+    r"""PATCH /v1/generations/{id} — Soft-cancel a generation.
+    Live: `curl -X PATCH https://app.litegen.ai/api/v1/generations/{id} -H \"Authorization: Bearer
+    sk_live_...\" -d '{\"status\":\"cancelled\"}'`
 
     Args:
         id (str):
+        body (CancelGenerationBody):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[Union[ErrorResponse, Generation]]
     """
 
     kwargs = _get_kwargs(
         id=id,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -139,23 +169,28 @@ async def asyncio(
     id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+    body: CancelGenerationBody,
+) -> Optional[Union[ErrorResponse, Generation]]:
+    r"""PATCH /v1/generations/{id} — Soft-cancel a generation.
+    Live: `curl -X PATCH https://app.litegen.ai/api/v1/generations/{id} -H \"Authorization: Bearer
+    sk_live_...\" -d '{\"status\":\"cancelled\"}'`
 
     Args:
         id (str):
+        body (CancelGenerationBody):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        Union[ErrorResponse, Generation]
     """
 
     return (
         await asyncio_detailed(
             id=id,
             client=client,
+            body=body,
         )
     ).parsed

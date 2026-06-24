@@ -1,23 +1,18 @@
 from http import HTTPStatus
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.error_response import ErrorResponse
-from ...models.video_generation_response import VideoGenerationResponse
+from ...models.provider_catalog_entry import ProviderCatalogEntry
 from ...types import Response
 
 
-def _get_kwargs(
-    id: str,
-) -> Dict[str, Any]:
+def _get_kwargs() -> Dict[str, Any]:
     _kwargs: Dict[str, Any] = {
         "method": "get",
-        "url": "/v1/videos/{id}".format(
-            id=id,
-        ),
+        "url": "/v1/providers",
     }
 
     return _kwargs
@@ -25,19 +20,16 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Optional[List["ProviderCatalogEntry"]]:
     if response.status_code == 200:
-        response_200 = VideoGenerationResponse.from_dict(response.json())
+        response_200 = []
+        _response_200 = response.json()
+        for response_200_item_data in _response_200:
+            response_200_item = ProviderCatalogEntry.from_dict(response_200_item_data)
+
+            response_200.append(response_200_item)
 
         return response_200
-    if response.status_code == 403:
-        response_403 = ErrorResponse.from_dict(response.json())
-
-        return response_403
-    if response.status_code == 404:
-        response_404 = ErrorResponse.from_dict(response.json())
-
-        return response_404
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -46,7 +38,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Response[List["ProviderCatalogEntry"]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -56,26 +48,22 @@ def _build_response(
 
 
 def sync_detailed(
-    id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
-
-    Args:
-        id (str):
+) -> Response[List["ProviderCatalogEntry"]]:
+    r"""GET /v1/providers — Catalog of supported providers and the credential fields
+    each one needs. Drives the dashboard's dynamic credential form.
+    Live: `curl https://app.litegen.ai/api/v1/providers -H \"Authorization: Bearer sk_live_...\"`
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[List['ProviderCatalogEntry']]
     """
 
-    kwargs = _get_kwargs(
-        id=id,
-    )
+    kwargs = _get_kwargs()
 
     response = client.get_httpx_client().request(
         **kwargs,
@@ -85,50 +73,43 @@ def sync_detailed(
 
 
 def sync(
-    id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
-
-    Args:
-        id (str):
+) -> Optional[List["ProviderCatalogEntry"]]:
+    r"""GET /v1/providers — Catalog of supported providers and the credential fields
+    each one needs. Drives the dashboard's dynamic credential form.
+    Live: `curl https://app.litegen.ai/api/v1/providers -H \"Authorization: Bearer sk_live_...\"`
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        List['ProviderCatalogEntry']
     """
 
     return sync_detailed(
-        id=id,
         client=client,
     ).parsed
 
 
 async def asyncio_detailed(
-    id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
-
-    Args:
-        id (str):
+) -> Response[List["ProviderCatalogEntry"]]:
+    r"""GET /v1/providers — Catalog of supported providers and the credential fields
+    each one needs. Drives the dashboard's dynamic credential form.
+    Live: `curl https://app.litegen.ai/api/v1/providers -H \"Authorization: Bearer sk_live_...\"`
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[List['ProviderCatalogEntry']]
     """
 
-    kwargs = _get_kwargs(
-        id=id,
-    )
+    kwargs = _get_kwargs()
 
     response = await client.get_async_httpx_client().request(**kwargs)
 
@@ -136,26 +117,23 @@ async def asyncio_detailed(
 
 
 async def asyncio(
-    id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
-
-    Args:
-        id (str):
+) -> Optional[List["ProviderCatalogEntry"]]:
+    r"""GET /v1/providers — Catalog of supported providers and the credential fields
+    each one needs. Drives the dashboard's dynamic credential form.
+    Live: `curl https://app.litegen.ai/api/v1/providers -H \"Authorization: Bearer sk_live_...\"`
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        List['ProviderCatalogEntry']
     """
 
     return (
         await asyncio_detailed(
-            id=id,
             client=client,
         )
     ).parsed

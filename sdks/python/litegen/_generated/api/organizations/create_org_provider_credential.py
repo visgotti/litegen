@@ -5,39 +5,50 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.create_provider_credential_request import CreateProviderCredentialRequest
 from ...models.error_response import ErrorResponse
-from ...models.video_generation_response import VideoGenerationResponse
+from ...models.provider_credential_info import ProviderCredentialInfo
 from ...types import Response
 
 
 def _get_kwargs(
-    id: str,
+    org_id: str,
+    *,
+    body: CreateProviderCredentialRequest,
 ) -> Dict[str, Any]:
+    headers: Dict[str, Any] = {}
+
     _kwargs: Dict[str, Any] = {
-        "method": "get",
-        "url": "/v1/videos/{id}".format(
-            id=id,
+        "method": "post",
+        "url": "/v1/orgs/{org_id}/provider-credentials".format(
+            org_id=org_id,
         ),
     }
 
+    _body = body.to_dict()
+
+    _kwargs["json"] = _body
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Optional[Union[ErrorResponse, ProviderCredentialInfo]]:
     if response.status_code == 200:
-        response_200 = VideoGenerationResponse.from_dict(response.json())
+        response_200 = ProviderCredentialInfo.from_dict(response.json())
 
         return response_200
+    if response.status_code == 400:
+        response_400 = ErrorResponse.from_dict(response.json())
+
+        return response_400
     if response.status_code == 403:
         response_403 = ErrorResponse.from_dict(response.json())
 
         return response_403
-    if response.status_code == 404:
-        response_404 = ErrorResponse.from_dict(response.json())
-
-        return response_404
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -46,7 +57,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Response[Union[ErrorResponse, ProviderCredentialInfo]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -56,25 +67,30 @@ def _build_response(
 
 
 def sync_detailed(
-    id: str,
+    org_id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+    body: CreateProviderCredentialRequest,
+) -> Response[Union[ErrorResponse, ProviderCredentialInfo]]:
+    """POST /v1/orgs/{org_id}/provider-credentials — Store a BYO credential for an org
+    (provider_cred:write).
+    Encrypts the credential JSON; returns `ProviderCredentialInfo` (no plaintext).
 
     Args:
-        id (str):
+        org_id (str):
+        body (CreateProviderCredentialRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[Union[ErrorResponse, ProviderCredentialInfo]]
     """
 
     kwargs = _get_kwargs(
-        id=id,
+        org_id=org_id,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -85,49 +101,59 @@ def sync_detailed(
 
 
 def sync(
-    id: str,
+    org_id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+    body: CreateProviderCredentialRequest,
+) -> Optional[Union[ErrorResponse, ProviderCredentialInfo]]:
+    """POST /v1/orgs/{org_id}/provider-credentials — Store a BYO credential for an org
+    (provider_cred:write).
+    Encrypts the credential JSON; returns `ProviderCredentialInfo` (no plaintext).
 
     Args:
-        id (str):
+        org_id (str):
+        body (CreateProviderCredentialRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        Union[ErrorResponse, ProviderCredentialInfo]
     """
 
     return sync_detailed(
-        id=id,
+        org_id=org_id,
         client=client,
+        body=body,
     ).parsed
 
 
 async def asyncio_detailed(
-    id: str,
+    org_id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+    body: CreateProviderCredentialRequest,
+) -> Response[Union[ErrorResponse, ProviderCredentialInfo]]:
+    """POST /v1/orgs/{org_id}/provider-credentials — Store a BYO credential for an org
+    (provider_cred:write).
+    Encrypts the credential JSON; returns `ProviderCredentialInfo` (no plaintext).
 
     Args:
-        id (str):
+        org_id (str):
+        body (CreateProviderCredentialRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[Union[ErrorResponse, ProviderCredentialInfo]]
     """
 
     kwargs = _get_kwargs(
-        id=id,
+        org_id=org_id,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -136,26 +162,31 @@ async def asyncio_detailed(
 
 
 async def asyncio(
-    id: str,
+    org_id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+    body: CreateProviderCredentialRequest,
+) -> Optional[Union[ErrorResponse, ProviderCredentialInfo]]:
+    """POST /v1/orgs/{org_id}/provider-credentials — Store a BYO credential for an org
+    (provider_cred:write).
+    Encrypts the credential JSON; returns `ProviderCredentialInfo` (no plaintext).
 
     Args:
-        id (str):
+        org_id (str):
+        body (CreateProviderCredentialRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        Union[ErrorResponse, ProviderCredentialInfo]
     """
 
     return (
         await asyncio_detailed(
-            id=id,
+            org_id=org_id,
             client=client,
+            body=body,
         )
     ).parsed

@@ -1211,6 +1211,17 @@ pub async fn delete_app_storage(
 
 // ─── GET /v1/orgs/{id}/allowed-models ──────────────────────────────────────
 
+/// GET /v1/orgs/{id}/allowed-models — The org's model pool (org read).
+#[utoipa::path(
+    get,
+    path = "/v1/orgs/{id}/allowed-models",
+    params(("id" = String, Path, description = "Organization ID")),
+    responses(
+        (status = 200, description = "Org allowed-models pool", body = crate::types::OrgAllowedModels),
+        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+    ),
+    tag = "Organizations"
+)]
 pub async fn get_org_allowed_models(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<KeyContext>,
@@ -1227,6 +1238,18 @@ pub async fn get_org_allowed_models(
 
 // ─── PUT /v1/orgs/{id}/allowed-models ──────────────────────────────────────
 
+/// PUT /v1/orgs/{id}/allowed-models — Replace the org's model pool (org write).
+#[utoipa::path(
+    put,
+    path = "/v1/orgs/{id}/allowed-models",
+    params(("id" = String, Path, description = "Organization ID")),
+    request_body = SetOrgAllowedModelsRequest,
+    responses(
+        (status = 200, description = "Updated org allowed-models pool", body = crate::types::OrgAllowedModels),
+        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+    ),
+    tag = "Organizations"
+)]
 pub async fn put_org_allowed_models(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<KeyContext>,
@@ -1244,6 +1267,18 @@ pub async fn put_org_allowed_models(
 
 // ─── GET /v1/apps/{app_id}/allowed-models ──────────────────────────────────
 
+/// GET /v1/apps/{app_id}/allowed-models — Which org models this app's keys may call (app read).
+#[utoipa::path(
+    get,
+    path = "/v1/apps/{app_id}/allowed-models",
+    params(("app_id" = String, Path, description = "Application ID")),
+    responses(
+        (status = 200, description = "App model access", body = crate::types::AppModelAccess),
+        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+        (status = 404, description = "App not found", body = crate::types::ErrorResponse),
+    ),
+    tag = "Applications"
+)]
 pub async fn get_app_allowed_models(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<KeyContext>,
@@ -1264,6 +1299,20 @@ pub async fn get_app_allowed_models(
 
 // ─── PUT /v1/apps/{app_id}/allowed-models ──────────────────────────────────
 
+/// PUT /v1/apps/{app_id}/allowed-models — Set this app's model access (app write).
+#[utoipa::path(
+    put,
+    path = "/v1/apps/{app_id}/allowed-models",
+    params(("app_id" = String, Path, description = "Application ID")),
+    request_body = SetAppModelAccessRequest,
+    responses(
+        (status = 200, description = "Updated app model access", body = crate::types::AppModelAccess),
+        (status = 400, description = "Invalid mode or model not in org pool", body = crate::types::ErrorResponse),
+        (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+        (status = 404, description = "App not found", body = crate::types::ErrorResponse),
+    ),
+    tag = "Applications"
+)]
 pub async fn put_app_allowed_models(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<KeyContext>,

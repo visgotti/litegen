@@ -6,18 +6,27 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
-from ...models.video_generation_response import VideoGenerationResponse
-from ...types import Response
+from ...models.paginated_response_generation import PaginatedResponseGeneration
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
-    id: str,
+    *,
+    page: Union[Unset, int] = UNSET,
+    per_page: Union[Unset, int] = UNSET,
 ) -> Dict[str, Any]:
+    params: Dict[str, Any] = {}
+
+    params["page"] = page
+
+    params["per_page"] = per_page
+
+    params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
+
     _kwargs: Dict[str, Any] = {
         "method": "get",
-        "url": "/v1/videos/{id}".format(
-            id=id,
-        ),
+        "url": "/v1/generations",
+        "params": params,
     }
 
     return _kwargs
@@ -25,19 +34,15 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Optional[Union[ErrorResponse, PaginatedResponseGeneration]]:
     if response.status_code == 200:
-        response_200 = VideoGenerationResponse.from_dict(response.json())
+        response_200 = PaginatedResponseGeneration.from_dict(response.json())
 
         return response_200
     if response.status_code == 403:
         response_403 = ErrorResponse.from_dict(response.json())
 
         return response_403
-    if response.status_code == 404:
-        response_404 = ErrorResponse.from_dict(response.json())
-
-        return response_404
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -46,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Response[Union[ErrorResponse, PaginatedResponseGeneration]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -56,25 +61,30 @@ def _build_response(
 
 
 def sync_detailed(
-    id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+    page: Union[Unset, int] = UNSET,
+    per_page: Union[Unset, int] = UNSET,
+) -> Response[Union[ErrorResponse, PaginatedResponseGeneration]]:
+    r"""GET /v1/generations — Paginated list of generations.
+    Live: `curl https://app.litegen.ai/api/v1/generations?page=1&per_page=50 -H \"Authorization: Bearer
+    sk_live_...\"`
 
     Args:
-        id (str):
+        page (Union[Unset, int]):
+        per_page (Union[Unset, int]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[Union[ErrorResponse, PaginatedResponseGeneration]]
     """
 
     kwargs = _get_kwargs(
-        id=id,
+        page=page,
+        per_page=per_page,
     )
 
     response = client.get_httpx_client().request(
@@ -85,49 +95,59 @@ def sync_detailed(
 
 
 def sync(
-    id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+    page: Union[Unset, int] = UNSET,
+    per_page: Union[Unset, int] = UNSET,
+) -> Optional[Union[ErrorResponse, PaginatedResponseGeneration]]:
+    r"""GET /v1/generations — Paginated list of generations.
+    Live: `curl https://app.litegen.ai/api/v1/generations?page=1&per_page=50 -H \"Authorization: Bearer
+    sk_live_...\"`
 
     Args:
-        id (str):
+        page (Union[Unset, int]):
+        per_page (Union[Unset, int]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        Union[ErrorResponse, PaginatedResponseGeneration]
     """
 
     return sync_detailed(
-        id=id,
         client=client,
+        page=page,
+        per_page=per_page,
     ).parsed
 
 
 async def asyncio_detailed(
-    id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+    page: Union[Unset, int] = UNSET,
+    per_page: Union[Unset, int] = UNSET,
+) -> Response[Union[ErrorResponse, PaginatedResponseGeneration]]:
+    r"""GET /v1/generations — Paginated list of generations.
+    Live: `curl https://app.litegen.ai/api/v1/generations?page=1&per_page=50 -H \"Authorization: Bearer
+    sk_live_...\"`
 
     Args:
-        id (str):
+        page (Union[Unset, int]):
+        per_page (Union[Unset, int]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[Union[ErrorResponse, PaginatedResponseGeneration]]
     """
 
     kwargs = _get_kwargs(
-        id=id,
+        page=page,
+        per_page=per_page,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -136,26 +156,31 @@ async def asyncio_detailed(
 
 
 async def asyncio(
-    id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+    page: Union[Unset, int] = UNSET,
+    per_page: Union[Unset, int] = UNSET,
+) -> Optional[Union[ErrorResponse, PaginatedResponseGeneration]]:
+    r"""GET /v1/generations — Paginated list of generations.
+    Live: `curl https://app.litegen.ai/api/v1/generations?page=1&per_page=50 -H \"Authorization: Bearer
+    sk_live_...\"`
 
     Args:
-        id (str):
+        page (Union[Unset, int]):
+        per_page (Union[Unset, int]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        Union[ErrorResponse, PaginatedResponseGeneration]
     """
 
     return (
         await asyncio_detailed(
-            id=id,
             client=client,
+            page=page,
+            per_page=per_page,
         )
     ).parsed

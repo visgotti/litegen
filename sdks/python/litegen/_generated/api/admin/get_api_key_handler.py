@@ -1,21 +1,22 @@
 from http import HTTPStatus
 from typing import Any, Dict, Optional, Union
+from uuid import UUID
 
 import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.api_key_detail import ApiKeyDetail
 from ...models.error_response import ErrorResponse
-from ...models.video_generation_response import VideoGenerationResponse
 from ...types import Response
 
 
 def _get_kwargs(
-    id: str,
+    id: UUID,
 ) -> Dict[str, Any]:
     _kwargs: Dict[str, Any] = {
         "method": "get",
-        "url": "/v1/videos/{id}".format(
+        "url": "/v1/keys/{id}".format(
             id=id,
         ),
     }
@@ -25,15 +26,11 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Optional[Union[ApiKeyDetail, ErrorResponse]]:
     if response.status_code == 200:
-        response_200 = VideoGenerationResponse.from_dict(response.json())
+        response_200 = ApiKeyDetail.from_dict(response.json())
 
         return response_200
-    if response.status_code == 403:
-        response_403 = ErrorResponse.from_dict(response.json())
-
-        return response_403
     if response.status_code == 404:
         response_404 = ErrorResponse.from_dict(response.json())
 
@@ -46,7 +43,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Response[Union[ApiKeyDetail, ErrorResponse]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -56,21 +53,22 @@ def _build_response(
 
 
 def sync_detailed(
-    id: str,
+    id: UUID,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Response[Union[ApiKeyDetail, ErrorResponse]]:
+    r"""GET /v1/keys/:id — Get a single API key by ID.
+    Live: `curl https://app.litegen.ai/api/v1/keys/{id} -H \"Authorization: Bearer sk_live_...\"`
 
     Args:
-        id (str):
+        id (UUID):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[Union[ApiKeyDetail, ErrorResponse]]
     """
 
     kwargs = _get_kwargs(
@@ -85,21 +83,22 @@ def sync_detailed(
 
 
 def sync(
-    id: str,
+    id: UUID,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Optional[Union[ApiKeyDetail, ErrorResponse]]:
+    r"""GET /v1/keys/:id — Get a single API key by ID.
+    Live: `curl https://app.litegen.ai/api/v1/keys/{id} -H \"Authorization: Bearer sk_live_...\"`
 
     Args:
-        id (str):
+        id (UUID):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        Union[ApiKeyDetail, ErrorResponse]
     """
 
     return sync_detailed(
@@ -109,21 +108,22 @@ def sync(
 
 
 async def asyncio_detailed(
-    id: str,
+    id: UUID,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Response[Union[ApiKeyDetail, ErrorResponse]]:
+    r"""GET /v1/keys/:id — Get a single API key by ID.
+    Live: `curl https://app.litegen.ai/api/v1/keys/{id} -H \"Authorization: Bearer sk_live_...\"`
 
     Args:
-        id (str):
+        id (UUID):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[Union[ApiKeyDetail, ErrorResponse]]
     """
 
     kwargs = _get_kwargs(
@@ -136,21 +136,22 @@ async def asyncio_detailed(
 
 
 async def asyncio(
-    id: str,
+    id: UUID,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Optional[Union[ApiKeyDetail, ErrorResponse]]:
+    r"""GET /v1/keys/:id — Get a single API key by ID.
+    Live: `curl https://app.litegen.ai/api/v1/keys/{id} -H \"Authorization: Bearer sk_live_...\"`
 
     Args:
-        id (str):
+        id (UUID):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        Union[ApiKeyDetail, ErrorResponse]
     """
 
     return (

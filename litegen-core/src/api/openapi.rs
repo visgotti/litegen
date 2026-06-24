@@ -92,6 +92,11 @@ use utoipa::OpenApi;
         crate::api::handlers::orgs::get_app_storage,
         crate::api::handlers::orgs::put_app_storage,
         crate::api::handlers::orgs::delete_app_storage,
+        // Model allowlists (org pool + per-app access)
+        crate::api::handlers::orgs::get_org_allowed_models,
+        crate::api::handlers::orgs::put_org_allowed_models,
+        crate::api::handlers::orgs::get_app_allowed_models,
+        crate::api::handlers::orgs::put_app_allowed_models,
     ),
     components(schemas(
         // Request / response types (from `types`)
@@ -195,6 +200,11 @@ use utoipa::OpenApi;
         crate::api::handlers::orgs::TransferOwnerRequest,
         crate::api::handlers::orgs::CreateProviderCredentialRequest,
         crate::api::handlers::orgs::PutAppStorageRequest,
+        // Model allowlists (org pool + per-app access)
+        crate::types::OrgAllowedModels,
+        crate::types::AppModelAccess,
+        crate::types::SetOrgAllowedModelsRequest,
+        crate::types::SetAppModelAccessRequest,
         // Capability schema (response of GET /v1/models/{id}).
         // `MediaType` and `ModelPricing` are renamed via `#[schema(as = ...)]` to
         // avoid collisions with the same-named types in `crate::types`.

@@ -1,22 +1,22 @@
 from http import HTTPStatus
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
-from ...models.video_generation_response import VideoGenerationResponse
+from ...models.provider_credential_info import ProviderCredentialInfo
 from ...types import Response
 
 
 def _get_kwargs(
-    id: str,
+    org_id: str,
 ) -> Dict[str, Any]:
     _kwargs: Dict[str, Any] = {
         "method": "get",
-        "url": "/v1/videos/{id}".format(
-            id=id,
+        "url": "/v1/orgs/{org_id}/provider-credentials".format(
+            org_id=org_id,
         ),
     }
 
@@ -25,19 +25,20 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Optional[Union[ErrorResponse, List["ProviderCredentialInfo"]]]:
     if response.status_code == 200:
-        response_200 = VideoGenerationResponse.from_dict(response.json())
+        response_200 = []
+        _response_200 = response.json()
+        for response_200_item_data in _response_200:
+            response_200_item = ProviderCredentialInfo.from_dict(response_200_item_data)
+
+            response_200.append(response_200_item)
 
         return response_200
     if response.status_code == 403:
         response_403 = ErrorResponse.from_dict(response.json())
 
         return response_403
-    if response.status_code == 404:
-        response_404 = ErrorResponse.from_dict(response.json())
-
-        return response_404
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -46,7 +47,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
+) -> Response[Union[ErrorResponse, List["ProviderCredentialInfo"]]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -56,25 +57,26 @@ def _build_response(
 
 
 def sync_detailed(
-    id: str,
+    org_id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Response[Union[ErrorResponse, List["ProviderCredentialInfo"]]]:
+    """GET /v1/orgs/{org_id}/provider-credentials — List BYO credentials for an org (provider_cred:read).
+    Never returns plaintext — only `ProviderCredentialInfo`.
 
     Args:
-        id (str):
+        org_id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[Union[ErrorResponse, List['ProviderCredentialInfo']]]
     """
 
     kwargs = _get_kwargs(
-        id=id,
+        org_id=org_id,
     )
 
     response = client.get_httpx_client().request(
@@ -85,49 +87,51 @@ def sync_detailed(
 
 
 def sync(
-    id: str,
+    org_id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Optional[Union[ErrorResponse, List["ProviderCredentialInfo"]]]:
+    """GET /v1/orgs/{org_id}/provider-credentials — List BYO credentials for an org (provider_cred:read).
+    Never returns plaintext — only `ProviderCredentialInfo`.
 
     Args:
-        id (str):
+        org_id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        Union[ErrorResponse, List['ProviderCredentialInfo']]
     """
 
     return sync_detailed(
-        id=id,
+        org_id=org_id,
         client=client,
     ).parsed
 
 
 async def asyncio_detailed(
-    id: str,
+    org_id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Response[Union[ErrorResponse, List["ProviderCredentialInfo"]]]:
+    """GET /v1/orgs/{org_id}/provider-credentials — List BYO credentials for an org (provider_cred:read).
+    Never returns plaintext — only `ProviderCredentialInfo`.
 
     Args:
-        id (str):
+        org_id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, VideoGenerationResponse]]
+        Response[Union[ErrorResponse, List['ProviderCredentialInfo']]]
     """
 
     kwargs = _get_kwargs(
-        id=id,
+        org_id=org_id,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -136,26 +140,27 @@ async def asyncio_detailed(
 
 
 async def asyncio(
-    id: str,
+    org_id: str,
     *,
     client: Union[AuthenticatedClient, Client],
-) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
-    """GET /v1/videos/{id} — Poll the status of an in-flight video generation.
+) -> Optional[Union[ErrorResponse, List["ProviderCredentialInfo"]]]:
+    """GET /v1/orgs/{org_id}/provider-credentials — List BYO credentials for an org (provider_cred:read).
+    Never returns plaintext — only `ProviderCredentialInfo`.
 
     Args:
-        id (str):
+        org_id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, VideoGenerationResponse]
+        Union[ErrorResponse, List['ProviderCredentialInfo']]
     """
 
     return (
         await asyncio_detailed(
-            id=id,
+            org_id=org_id,
             client=client,
         )
     ).parsed
