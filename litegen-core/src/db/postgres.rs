@@ -1319,10 +1319,39 @@ impl DatabaseStore for PostgresDatabase {
     }
 
     async fn delete_organization(&self, id: &str) -> Result<bool, sqlx::Error> {
+        // Cascade in one transaction, in FK-dependency order. On Postgres the
+        // tenant columns DO carry FKs to organizations/applications without
+        // ON DELETE CASCADE, so a bare `DELETE FROM organizations` fails once the
+        // org has its auto-created default app + owner membership. Delete the
+        // children first (generations references api_keys → before api_keys).
+        let mut tx = self.pool.begin().await?;
+        for stmt in [
+            "DELETE FROM webhook_deliveries WHERE org_id = $1",
+            "DELETE FROM request_artifacts WHERE org_id = $1",
+            "DELETE FROM request_logs WHERE org_id = $1",
+            "DELETE FROM generations WHERE org_id = $1",
+            "DELETE FROM api_keys WHERE org_id = $1",
+            "DELETE FROM audit_log WHERE org_id = $1",
+            "DELETE FROM invitations WHERE org_id = $1",
+            "DELETE FROM org_provider_credentials WHERE org_id = $1",
+            "DELETE FROM org_allowed_models WHERE org_id = $1",
+            "DELETE FROM organization_members WHERE org_id = $1",
+        ] {
+            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        }
+        for stmt in [
+            "DELETE FROM app_model_access_ids WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
+            "DELETE FROM app_model_access WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
+            "DELETE FROM app_storage_credentials WHERE app_id IN (SELECT id FROM applications WHERE org_id = $1)",
+        ] {
+            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        }
+        sqlx::query("DELETE FROM applications WHERE org_id = $1").bind(id).execute(&mut *tx).await?;
         let result = sqlx::query("DELETE FROM organizations WHERE id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(result.rows_affected() > 0)
     }
 

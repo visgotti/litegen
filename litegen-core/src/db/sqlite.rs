@@ -1301,10 +1301,41 @@ impl DatabaseStore for SqliteDatabase {
     }
 
     async fn delete_organization(&self, id: &str) -> Result<bool, sqlx::Error> {
+        // Cascade in one transaction, in FK-dependency order. Several tenant
+        // tables reference organizations/applications WITHOUT ON DELETE CASCADE
+        // (and on sqlite the ADD COLUMN tenant refs carry no FK at all), so a
+        // bare `DELETE FROM organizations` fails the FK check once an org has its
+        // auto-created default app + owner membership. Delete children first.
+        let mut tx = self.pool.begin().await?;
+        // org-scoped rows (generations references api_keys → before api_keys).
+        for stmt in [
+            "DELETE FROM webhook_deliveries WHERE org_id = ?",
+            "DELETE FROM request_artifacts WHERE org_id = ?",
+            "DELETE FROM request_logs WHERE org_id = ?",
+            "DELETE FROM generations WHERE org_id = ?",
+            "DELETE FROM api_keys WHERE org_id = ?",
+            "DELETE FROM audit_log WHERE org_id = ?",
+            "DELETE FROM invitations WHERE org_id = ?",
+            "DELETE FROM org_provider_credentials WHERE org_id = ?",
+            "DELETE FROM org_allowed_models WHERE org_id = ?",
+            "DELETE FROM organization_members WHERE org_id = ?",
+        ] {
+            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        }
+        // app-scoped rows for this org's apps, then the apps themselves.
+        for stmt in [
+            "DELETE FROM app_model_access_ids WHERE app_id IN (SELECT id FROM applications WHERE org_id = ?)",
+            "DELETE FROM app_model_access WHERE app_id IN (SELECT id FROM applications WHERE org_id = ?)",
+            "DELETE FROM app_storage_credentials WHERE app_id IN (SELECT id FROM applications WHERE org_id = ?)",
+        ] {
+            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        }
+        sqlx::query("DELETE FROM applications WHERE org_id = ?").bind(id).execute(&mut *tx).await?;
         let result = sqlx::query("DELETE FROM organizations WHERE id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(result.rows_affected() > 0)
     }
 
