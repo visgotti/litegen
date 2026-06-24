@@ -16,6 +16,32 @@ function StatusBadge({ id, status }: { id: string; status: string }) {
   );
 }
 
+/** Inline media for a generation: an <img> for image results, a <video> for
+ *  video results. `thumb` renders the small in-row preview; otherwise the full
+ *  detail-row player. Returns null until the result is available. */
+function MediaPreview({ g, thumb }: { g: Generation; thumb?: boolean }) {
+  if (g.status !== 'completed' || !g.result_url) {
+    return thumb ? <span style={{ color: '#8b949e' }}>—</span> : null;
+  }
+  const isVideo = g.media_type === 'video';
+  if (thumb) {
+    if (isVideo) return <span title="video result" aria-label="video">🎬</span>;
+    return (
+      <img
+        src={g.result_url}
+        alt=""
+        loading="lazy"
+        data-testid={`gen-thumb-${g.id}`}
+        style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 4, display: 'block' }}
+      />
+    );
+  }
+  const style = { maxWidth: '100%', maxHeight: 480, marginBottom: 12, display: 'block', borderRadius: 6 } as const;
+  return isVideo
+    ? <video controls src={g.result_url} data-testid={`gen-media-${g.id}`} style={style} />
+    : <img src={g.result_url} alt={g.model} loading="lazy" data-testid={`gen-media-${g.id}`} style={style} />;
+}
+
 export default function Generations() {
   const [data, setData] = useState<PaginatedResponse<Generation> | null>(null);
   const [page, setPage] = useState(1);
@@ -76,6 +102,7 @@ export default function Generations() {
             <tr>
               <th>ID</th>
               <th>Model</th>
+              <th>Preview</th>
               <th>Status</th>
               <th>Cost</th>
               <th>Created</th>
@@ -85,7 +112,7 @@ export default function Generations() {
           <tbody>
             {data.data.length === 0 && (
               <tr>
-                <td colSpan={6} style={{ textAlign: 'center', color: '#8b949e' }}>
+                <td colSpan={7} style={{ textAlign: 'center', color: '#8b949e' }}>
                   No generations yet
                 </td>
               </tr>
@@ -105,6 +132,13 @@ export default function Generations() {
                     {expandedIds.has(g.id) ? '▼ ' : '▶ '}{g.id}
                   </td>
                   <td><code style={{ fontSize: 12 }}>{g.model}</code></td>
+                  <td
+                    onClick={() => toggleExpand(g.id)}
+                    title="Click to expand"
+                    style={{ cursor: 'pointer' }}
+                  >
+                    <MediaPreview g={g} thumb />
+                  </td>
                   <td><StatusBadge id={g.id} status={g.status} /></td>
                   <td>${(g.cost_usd ?? 0).toFixed(4)}</td>
                   <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
@@ -126,14 +160,8 @@ export default function Generations() {
                 </tr>
                 {expandedIds.has(g.id) && (
                   <tr className="gen-detail-row" key={`${g.id}-detail`}>
-                    <td colSpan={6} data-testid={`gen-detail-${g.id}`}>
-                      {g.status === 'completed' && g.result_url && (
-                        <video
-                          controls
-                          src={g.result_url}
-                          style={{ maxWidth: '100%', marginBottom: 12, display: 'block' }}
-                        />
-                      )}
+                    <td colSpan={7} data-testid={`gen-detail-${g.id}`}>
+                      <MediaPreview g={g} />
                       <pre>{JSON.stringify(g, null, 2)}</pre>
                     </td>
                   </tr>
