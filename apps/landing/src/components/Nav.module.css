@@ -59,16 +59,37 @@
   padding: 8px 14px;
 }
 
+/* Medium screens: the full nav (brand + 5 links + lang + 2 CTAs) runs out of
+   room well before the mobile breakpoint. Tighten gaps + type and drop the
+   secondary GitHub button so the links stop colliding with the brand/CTAs. */
+@media (max-width: 1040px) {
+  .inner {
+    gap: 12px;
+  }
+  .links {
+    gap: 18px;
+    font-size: 0.9rem;
+  }
+  .github {
+    display: none;
+  }
+  .dashboard {
+    padding: 8px 12px;
+  }
+}
+
+@media (max-width: 860px) {
+  .links {
+    gap: 14px;
+    font-size: 0.875rem;
+  }
+}
+
 @media (max-width: 760px) {
   .links {
     display: none;
   }
   .wordmark {
-    display: none;
-  }
-  /* Keep the primary "Dashboard" CTA on small screens; drop the secondary
-     GitHub button so the header doesn't overflow. */
-  .github {
     display: none;
   }
 }
