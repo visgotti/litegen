@@ -23,13 +23,11 @@
 }
 
 .mark {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  color: var(--accent-contrast);
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  display: block;
+  width: 34px;
+  height: auto;
+  /* Lift the mark off the dark header with a soft brand glow. */
+  filter: drop-shadow(0 2px 8px color-mix(in srgb, var(--accent) 45%, transparent));
 }
 
 .wordmark {

@@ -123,7 +123,7 @@ export default function Login() {
   return (
     <div className="auth-page" data-testid="auth-page">
       <div className="auth-card">
-        <div className="auth-brand">⚡ LiteGen</div>
+        <div className="auth-brand"><img className="brand-mark" src="/litegen-logo.png" alt="" /> LiteGen</div>
         <h2 style={{ margin: '0 0 24px', color: '#e6edf3', fontSize: 24, fontWeight: 600, textAlign: 'center' }}>
           Sign in
         </h2>

@@ -1,9 +1,12 @@
 import { useTranslations } from 'next-intl';
-import { Github, Layers, LayoutDashboard } from 'lucide-react';
+import { Github, LayoutDashboard } from 'lucide-react';
 import { siteConfig } from '@/config/site';
 import { Link } from '@/i18n/navigation';
 import { LangSwitcher } from './LangSwitcher';
 import styles from './Nav.module.css';
+
+// Mirror next.config's basePath so the logo resolves under a subpath deploy.
+const BASE = process.env.NEXT_PUBLIC_BASE_PATH?.trim().replace(/\/$/, '') || '';
 
 export function Nav() {
   const t = useTranslations('nav');
@@ -12,9 +15,13 @@ export function Nav() {
     <header className={styles.header}>
       <div className={`container ${styles.inner}`}>
         <a href="#top" className={styles.brand} aria-label={siteConfig.name}>
-          <span className={styles.mark} aria-hidden="true">
-            <Layers size={18} />
-          </span>
+          <img
+            className={styles.mark}
+            src={`${BASE}/logos/litegen-logo.png`}
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+          />
           <span className={styles.wordmark}>LiteGen</span>
         </a>
 
