@@ -1,5 +1,6 @@
 :root {
-  /* Palette — consistent with the LiteGen dashboard's dark theme. */
+  /* Palette — brand-derived from the LiteGen hexagon logo (cyan → purple),
+     kept consistent with the dashboard's dark theme. */
   --bg: #0f1117;
   --surface: #161922;
   --surface-2: #1b1f2a;
@@ -8,9 +9,11 @@
   --text: #e1e4e8;
   --muted: #9aa4b2;
   --muted-2: #6b7384;
-  --accent: #7c8cff;
-  --accent-2: #a855f7;
-  --accent-contrast: #0b0d12;
+  /* Cyan-led: cyan is the primary accent, purple the secondary highlight. */
+  --accent: #25b6ed;
+  --accent-2: #744bf1;
+  --accent-contrast: #04141c;
+  --gradient-brand: linear-gradient(135deg, var(--accent), var(--accent-2));
   --success: #34d399;
 
   --radius: 12px;
@@ -89,12 +92,14 @@ p {
 }
 
 .btn-primary {
-  background: var(--accent);
-  color: var(--accent-contrast);
+  background: var(--gradient-brand);
+  color: #fff;
+  border: none;
+  box-shadow: 0 8px 24px -12px color-mix(in srgb, var(--accent) 75%, transparent);
 }
 
 .btn-primary:hover {
-  background: #93a0ff;
+  filter: brightness(1.08);
 }
 
 .btn-secondary {

@@ -85,7 +85,7 @@ function AppShell() {
     <div className="app">
       <nav className="sidebar">
         <div className="sidebar-header">
-          <h1>⚡ LiteGen</h1>
+          <h1><img className="brand-mark" src="/litegen-logo.png" alt="" /> LiteGen</h1>
           <span className="subtitle">Proxy Dashboard</span>
         </div>
         <ul className="nav-list">

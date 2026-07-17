@@ -33,7 +33,7 @@ export default function OpengraphImage() {
               width: 60,
               height: 60,
               borderRadius: 16,
-              background: 'linear-gradient(135deg, #7c8cff, #a855f7)',
+              background: 'linear-gradient(135deg, #25b6ed, #744bf1)',
             }}
           />
           <div style={{ fontSize: 38, fontWeight: 700 }}>LiteGen</div>
