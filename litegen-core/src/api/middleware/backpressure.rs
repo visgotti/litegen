@@ -1,15 +1,18 @@
-use tokio::sync::{Semaphore, SemaphorePermit, TryAcquireError};
+use std::sync::Arc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit, TryAcquireError};
 
 /// Global in-flight request limiter backed by a Tokio semaphore.
 ///
-/// Handlers call `try_acquire()` at the top of their function.  If it returns
-/// `None` the semaphore is exhausted and the handler should immediately respond
-/// with `503 Service Unavailable` + `Retry-After: 1`.
+/// The slot is acquired in the request extractor — BEFORE the (up to 25 MiB)
+/// body is buffered into memory — so the number of requests concurrently
+/// buffering a body is bounded by the capacity, not merely the number that
+/// reach the handler. If no slot is available the caller responds with
+/// `503 Service Unavailable` + `Retry-After: 1`.
 ///
-/// The permit is dropped automatically when the handler returns, freeing a
+/// The permit is dropped automatically when the request completes, freeing a
 /// slot for the next waiting caller.
 pub struct InFlightLimit {
-    sem: Semaphore,
+    sem: Arc<Semaphore>,
     cap: usize,
 }
 
@@ -17,19 +20,25 @@ impl InFlightLimit {
     /// Create a new limiter with the given capacity.
     pub fn new(cap: usize) -> Self {
         Self {
-            sem: Semaphore::new(cap),
+            sem: Arc::new(Semaphore::new(cap)),
             cap,
         }
     }
 
-    /// Try to acquire one slot.  Returns `Some(permit)` if a slot was
-    /// available, or `None` if the semaphore is exhausted.
+    /// Try to acquire one slot (borrowed permit, tied to `&self`).
     pub fn try_acquire(&self) -> Option<SemaphorePermit<'_>> {
         match self.sem.try_acquire() {
             Ok(permit) => Some(permit),
             Err(TryAcquireError::NoPermits) => None,
             Err(TryAcquireError::Closed) => None,
         }
+    }
+
+    /// Try to acquire one slot as an owned (`'static`) permit that can be held
+    /// across body extraction and the handler by moving it into the request's
+    /// validated data. Returns `None` when the semaphore is exhausted.
+    pub fn try_acquire_owned(&self) -> Option<OwnedSemaphorePermit> {
+        self.sem.clone().try_acquire_owned().ok()
     }
 
     /// Return the configured capacity (for diagnostics / tests).

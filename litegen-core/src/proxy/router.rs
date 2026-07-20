@@ -500,9 +500,13 @@ impl ProxyRouter {
             (schema.provider.clone(), h)
         };
 
-        // Build cost from schema pricing
-        let n = base.n.max(1) as f64;
-        let base_cost = schema.pricing.base_cost_usd * n;
+        // Build cost from schema pricing. This path submits exactly one
+        // provider job and returns exactly one video (a single video_url), so
+        // billing must reflect the one video delivered — NOT the requested `n`,
+        // which is meaningless for video and unbounded on the wire. (Same
+        // reasoning as the image path above, which bills per delivered image.)
+        let produced = 1.0;
+        let base_cost = schema.pricing.base_cost_usd * produced;
         let (_, total) = apply_markup(base_cost, self.config.cost_markup_percent);
         let usage_info = Some(UsageInfo {
             cost_usd: total,

@@ -295,7 +295,7 @@ impl VideoProvider for OpenAiVideoProvider {
             retryable: true,
         })?;
 
-        let data: Value = resp.json().await.unwrap_or_default();
+        let data = super::read_poll_json(resp, "openai").await?;
 
         // Sora job status: queued | in_progress | completed | failed
         let status = match data["status"].as_str() {

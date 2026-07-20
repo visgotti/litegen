@@ -131,7 +131,7 @@ impl DatabaseStore for PostgresDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<Vec<Generation>, sqlx::Error> {
-        let offset = (page.saturating_sub(1)) * per_page;
+        let offset = crate::api::pagination::offset(page, per_page);
         let rows = if let Some(kid) = key_id {
             let sql = format!(
                 "SELECT {} FROM generations WHERE key_id = $1 OR key_id IS NULL \
@@ -247,7 +247,7 @@ impl DatabaseStore for PostgresDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<(Vec<RequestLog>, u64), sqlx::Error> {
-        let offset = (page.saturating_sub(1)) * per_page;
+        let offset = crate::api::pagination::offset(page, per_page);
 
         let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM request_logs")
             .fetch_one(&self.pool)
@@ -276,7 +276,7 @@ impl DatabaseStore for PostgresDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<(Vec<RequestLog>, u64), sqlx::Error> {
-        let offset = (page.saturating_sub(1)) * per_page;
+        let offset = crate::api::pagination::offset(page, per_page);
 
         let mut count_qb: QueryBuilder<sqlx::Postgres> =
             QueryBuilder::new("SELECT COUNT(*) FROM request_logs WHERE 1=1");
@@ -468,6 +468,18 @@ impl DatabaseStore for PostgresDatabase {
         .fetch_optional(&self.pool)
         .await?;
         row.map(|r| r.0).ok_or(sqlx::Error::RowNotFound)
+    }
+
+    async fn reserve_tokens(&self, id: &Uuid, amount: f64) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE api_keys SET tokens_used = tokens_used + $1 \
+             WHERE id = $2 AND (token_quota IS NULL OR tokens_used + $1 <= token_quota)",
+        )
+        .bind(amount)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     async fn validate_api_key(&self, key_hash: &str) -> Result<Option<ApiKey>, sqlx::Error> {
@@ -718,7 +730,7 @@ impl DatabaseStore for PostgresDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<(Vec<AuditLogEntry>, i64), sqlx::Error> {
-        let offset = (page.saturating_sub(1)) * per_page;
+        let offset = crate::api::pagination::offset(page, per_page);
 
         let mut count_qb: QueryBuilder<sqlx::Postgres> =
             QueryBuilder::new("SELECT COUNT(*) FROM audit_log WHERE 1=1");
@@ -800,7 +812,7 @@ impl DatabaseStore for PostgresDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<(Vec<WebhookDelivery>, i64), sqlx::Error> {
-        let offset = (page.saturating_sub(1)) * per_page;
+        let offset = crate::api::pagination::offset(page, per_page);
 
         let total: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM webhook_deliveries WHERE key_id = $1"
@@ -1511,10 +1523,31 @@ impl DatabaseStore for PostgresDatabase {
     }
 
     async fn delete_application(&self, id: &str) -> Result<bool, sqlx::Error> {
+        // Cascade in one transaction, in FK-dependency order. The app_id columns
+        // on api_keys/generations/request_logs/request_artifacts/webhook_deliveries
+        // and app_storage_credentials reference applications WITHOUT ON DELETE
+        // CASCADE, so a bare `DELETE FROM applications` fails the FK check once the
+        // app has issued a key or run a generation, leaving used apps permanently
+        // undeletable. Delete the app-scoped children first (generations
+        // references api_keys → before api_keys), mirroring delete_organization.
+        let mut tx = self.pool.begin().await?;
+        for stmt in [
+            "DELETE FROM webhook_deliveries WHERE app_id = $1",
+            "DELETE FROM request_artifacts WHERE app_id = $1",
+            "DELETE FROM request_logs WHERE app_id = $1",
+            "DELETE FROM generations WHERE app_id = $1",
+            "DELETE FROM api_keys WHERE app_id = $1",
+            "DELETE FROM app_model_access_ids WHERE app_id = $1",
+            "DELETE FROM app_model_access WHERE app_id = $1",
+            "DELETE FROM app_storage_credentials WHERE app_id = $1",
+        ] {
+            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        }
         let result = sqlx::query("DELETE FROM applications WHERE id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -1741,13 +1774,14 @@ impl DatabaseStore for PostgresDatabase {
         rpm_limit: Option<u32>,
         scopes: &str,
         webhook_url: Option<&str>,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<ApiKey, sqlx::Error> {
         let id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO api_keys \
                 (id, org_id, app_id, public_id, name, key_hash, key_prefix, is_active, \
-                 tokens_used, token_quota, rpm_limit, scopes, webhook_url, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, 0, $8, $9, $10, $11, NOW())",
+                 tokens_used, token_quota, rpm_limit, scopes, webhook_url, expires_at, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, 0, $8, $9, $10, $11, $12, NOW())",
         )
         .bind(id.to_string())
         .bind(org_id)
@@ -1760,6 +1794,7 @@ impl DatabaseStore for PostgresDatabase {
         .bind(rpm_limit.map(|v| v as i32))
         .bind(scopes)
         .bind(webhook_url)
+        .bind(expires_at)
         .execute(&self.pool)
         .await?;
         self.get_api_key(&id).await?.ok_or(sqlx::Error::RowNotFound)
@@ -1786,7 +1821,7 @@ impl DatabaseStore for PostgresDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<Vec<Generation>, sqlx::Error> {
-        let offset = ((page.saturating_sub(1)) * per_page) as i64;
+        let offset = crate::api::pagination::offset(page, per_page) as i64;
         let rows = match app_id {
             Some(app) => {
                 let sql = format!(
@@ -1840,6 +1875,58 @@ impl DatabaseStore for PostgresDatabase {
         Ok(row.0)
     }
 
+    async fn list_generations_for_owner(
+        &self,
+        org_id: &str,
+        app_id: Option<&str>,
+        key_ids: &[Uuid],
+        page: u32,
+        per_page: u32,
+    ) -> Result<(Vec<Generation>, u64), sqlx::Error> {
+        if key_ids.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+        use sqlx::QueryBuilder;
+
+        // COUNT of every matching row (not just the current page).
+        let mut cb = QueryBuilder::new("SELECT COUNT(*) FROM generations WHERE org_id = ");
+        cb.push_bind(org_id.to_string());
+        if let Some(app) = app_id {
+            cb.push(" AND app_id = ").push_bind(app.to_string());
+        }
+        cb.push(" AND key_id IN (");
+        {
+            let mut sep = cb.separated(", ");
+            for kid in key_ids {
+                sep.push_bind(kid.to_string());
+            }
+        }
+        cb.push(")");
+        let (total,): (i64,) = cb.build_query_as().fetch_one(&self.pool).await?;
+
+        // The requested page, filtered + ordered + limited at the DB.
+        let offset = crate::api::pagination::offset(page, per_page) as i64;
+        let mut qb = QueryBuilder::new(format!("SELECT {GENERATION_COLS} FROM generations WHERE org_id = "));
+        qb.push_bind(org_id.to_string());
+        if let Some(app) = app_id {
+            qb.push(" AND app_id = ").push_bind(app.to_string());
+        }
+        qb.push(" AND key_id IN (");
+        {
+            let mut sep = qb.separated(", ");
+            for kid in key_ids {
+                sep.push_bind(kid.to_string());
+            }
+        }
+        qb.push(") ORDER BY created_at DESC LIMIT ")
+            .push_bind(per_page as i64)
+            .push(" OFFSET ")
+            .push_bind(offset);
+        let rows: Vec<GenerationRow> = qb.build_query_as().fetch_all(&self.pool).await?;
+
+        Ok((rows.into_iter().map(generation_from_row).collect(), total as u64))
+    }
+
     async fn get_request_logs_for_tenant(
         &self,
         org_id: &str,
@@ -1847,7 +1934,7 @@ impl DatabaseStore for PostgresDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<(Vec<RequestLog>, u64), sqlx::Error> {
-        let offset = ((page.saturating_sub(1)) * per_page) as i64;
+        let offset = crate::api::pagination::offset(page, per_page) as i64;
         const COLS: &str = REQUEST_LOG_COLS;
         let (total, rows) = match app_id {
             Some(app) => {
@@ -1900,7 +1987,7 @@ impl DatabaseStore for PostgresDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<(Vec<AuditLogEntry>, i64), sqlx::Error> {
-        let offset = ((page.saturating_sub(1)) * per_page) as i64;
+        let offset = crate::api::pagination::offset(page, per_page) as i64;
         let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE org_id = $1")
             .bind(org_id)
             .fetch_one(&self.pool)
@@ -1917,5 +2004,69 @@ impl DatabaseStore for PostgresDatabase {
         .await?;
         let entries = rows.into_iter().map(audit_log_from_row).collect();
         Ok((entries, total.0))
+    }
+
+    async fn get_request_logs_for_tenant_filtered(
+        &self,
+        org_id: &str,
+        app_id: Option<&str>,
+        filter: &crate::db::RequestLogFilter<'_>,
+        page: u32,
+        per_page: u32,
+    ) -> Result<(Vec<RequestLog>, u64), sqlx::Error> {
+        use sqlx::QueryBuilder;
+        // created_at is TIMESTAMPTZ, so bind the range as real timestamps (a
+        // string bind would fail the type check — see the TIMESTAMPTZ-vs-TEXT bug).
+        let mut cb = QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*) FROM request_logs WHERE org_id = ");
+        cb.push_bind(org_id.to_string());
+        if let Some(app) = app_id { cb.push(" AND app_id = ").push_bind(app.to_string()); }
+        if let Some(m) = filter.model { cb.push(" AND model = ").push_bind(m.to_string()); }
+        if let Some(p) = filter.provider { cb.push(" AND provider = ").push_bind(p.to_string()); }
+        if let Some(s) = filter.status { cb.push(" AND status = ").push_bind(s.to_string()); }
+        if let Some(f) = filter.from { cb.push(" AND created_at >= ").push_bind(f); }
+        if let Some(t) = filter.to { cb.push(" AND created_at <= ").push_bind(t); }
+        let (total,): (i64,) = cb.build_query_as().fetch_one(&self.pool).await?;
+
+        let offset = crate::api::pagination::offset(page, per_page) as i64;
+        let mut qb = QueryBuilder::<sqlx::Postgres>::new(format!("SELECT {REQUEST_LOG_COLS} FROM request_logs WHERE org_id = "));
+        qb.push_bind(org_id.to_string());
+        if let Some(app) = app_id { qb.push(" AND app_id = ").push_bind(app.to_string()); }
+        if let Some(m) = filter.model { qb.push(" AND model = ").push_bind(m.to_string()); }
+        if let Some(p) = filter.provider { qb.push(" AND provider = ").push_bind(p.to_string()); }
+        if let Some(s) = filter.status { qb.push(" AND status = ").push_bind(s.to_string()); }
+        if let Some(f) = filter.from { qb.push(" AND created_at >= ").push_bind(f); }
+        if let Some(t) = filter.to { qb.push(" AND created_at <= ").push_bind(t); }
+        qb.push(" ORDER BY created_at DESC LIMIT ").push_bind(per_page as i64).push(" OFFSET ").push_bind(offset);
+        let rows: Vec<RequestLogRow> = qb.build_query_as().fetch_all(&self.pool).await?;
+        Ok((rows.into_iter().map(request_log_from_row).collect(), total as u64))
+    }
+
+    async fn list_audit_log_for_tenant_filtered(
+        &self,
+        org_id: &str,
+        filter: &crate::db::TenantAuditFilter<'_>,
+        page: u32,
+        per_page: u32,
+    ) -> Result<(Vec<AuditLogEntry>, u64), sqlx::Error> {
+        use sqlx::QueryBuilder;
+        const COLS: &str = "id, actor_key_id, actor_label, action, target_type, target_id, before_json, after_json, created_at, org_id";
+        let mut cb = QueryBuilder::<sqlx::Postgres>::new("SELECT COUNT(*) FROM audit_log WHERE org_id = ");
+        cb.push_bind(org_id.to_string());
+        if let Some(a) = filter.actor_key_id { cb.push(" AND actor_key_id = ").push_bind(a.to_string()); }
+        if let Some(a) = filter.action { cb.push(" AND action = ").push_bind(a.to_string()); }
+        if let Some(f) = filter.from { cb.push(" AND created_at >= ").push_bind(f); }
+        if let Some(t) = filter.to { cb.push(" AND created_at <= ").push_bind(t); }
+        let (total,): (i64,) = cb.build_query_as().fetch_one(&self.pool).await?;
+
+        let offset = crate::api::pagination::offset(page, per_page) as i64;
+        let mut qb = QueryBuilder::<sqlx::Postgres>::new(format!("SELECT {COLS} FROM audit_log WHERE org_id = "));
+        qb.push_bind(org_id.to_string());
+        if let Some(a) = filter.actor_key_id { qb.push(" AND actor_key_id = ").push_bind(a.to_string()); }
+        if let Some(a) = filter.action { qb.push(" AND action = ").push_bind(a.to_string()); }
+        if let Some(f) = filter.from { qb.push(" AND created_at >= ").push_bind(f); }
+        if let Some(t) = filter.to { qb.push(" AND created_at <= ").push_bind(t); }
+        qb.push(" ORDER BY created_at DESC LIMIT ").push_bind(per_page as i64).push(" OFFSET ").push_bind(offset);
+        let rows: Vec<AuditLogRow> = qb.build_query_as().fetch_all(&self.pool).await?;
+        Ok((rows.into_iter().map(audit_log_from_row).collect(), total as u64))
     }
 }

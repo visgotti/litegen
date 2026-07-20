@@ -1237,3 +1237,61 @@ async fn platform_admin_master_key_manages_any_org_provider_credentials() {
         "platform admin must delete ANY org's credential"
     );
 }
+
+#[tokio::test]
+async fn internal_error_does_not_leak_the_raw_detail() {
+    // A raw DB/sqlx error string (table/column/constraint names) must never
+    // reach an untrusted caller — it is logged server-side and the response
+    // body carries only a generic message.
+    let secret_detail =
+        "error returned from database: value too long for type character varying(255) in table users";
+    let resp = super::internal_error(secret_detail);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        !text.contains("character varying")
+            && !text.contains("table users")
+            && !text.contains(secret_detail),
+        "500 body must not echo the raw DB error detail, got: {text}"
+    );
+    // But it must still be a well-formed error envelope.
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "internal_error");
+}
+
+#[tokio::test]
+async fn deleting_a_provider_credential_writes_an_audit_entry() {
+    // Privileged, billing-sensitive mutations must be attributable after the
+    // fact. Deleting a provider credential must leave an audit_log entry.
+    let db = build_db().await;
+    let (_, sess, csrf) = seed_user(&db, "owner@test.com").await;
+    let app = create_router(build_state(db.clone(), Some([7u8; 32])).await);
+
+    let req = Request::builder().method("POST").uri("/v1/orgs")
+        .header("cookie", cookie(&sess)).header("x-csrf-token", &csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "name": "Audited" })).unwrap())).unwrap();
+    let org_id = body_json(app.clone().oneshot(req).await.unwrap()).await["id"].as_str().unwrap().to_string();
+
+    let req = Request::builder().method("POST")
+        .uri(format!("/v1/orgs/{}/provider-credentials", org_id))
+        .header("cookie", cookie(&sess)).header("x-csrf-token", &csrf)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({ "provider": "openai", "credentials": { "api_key": "sk-secret1234" } })).unwrap())).unwrap();
+    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+
+    let req = Request::builder().method("DELETE")
+        .uri(format!("/v1/orgs/{}/provider-credentials/openai", org_id))
+        .header("cookie", cookie(&sess)).header("x-csrf-token", &csrf).body(Body::empty()).unwrap();
+    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::NO_CONTENT);
+
+    // log_audit is fire-and-forget (tokio::spawn); let it land.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let (entries, _) = db.list_audit_log_for_tenant(&org_id, 1, 100).await.unwrap();
+    assert!(
+        entries.iter().any(|e| e.action == "org.provider_credential.delete"),
+        "deleting a provider credential must write an audit entry, got: {:?}",
+        entries.iter().map(|e| e.action.clone()).collect::<Vec<_>>()
+    );
+}

@@ -7,6 +7,25 @@ use crate::providers::VideoGenerationHandle;
 use crate::proxy::webhook::dispatch_webhook_logged;
 use crate::types::GenerationStatus;
 
+/// Maximum time a generation may sit in `pending`/`processing` before the
+/// poller reaps it as `failed`. Without this, a row that never reports a
+/// terminal status — revoked key, purged job, removed provider, missing job id,
+/// or an endlessly-retryable upstream error — sits at the head of the
+/// oldest-first active window forever and starves every newer generation from
+/// ever being polled. Set generously so a genuinely slow provider job is never
+/// reaped prematurely.
+const MAX_ACTIVE_AGE_SECS: i64 = 2 * 60 * 60; // 2 hours
+
+/// Terminalise a stuck generation as `failed` so it leaves the active window.
+async fn reap_generation(db: &Arc<dyn DatabaseStore>, gen_id: &str, reason: &str) {
+    if let Err(e) = db
+        .update_generation_status(gen_id, "failed", 0, None, Some(reason), Some(chrono::Utc::now()))
+        .await
+    {
+        warn!(generation_id = %gen_id, error = %e, "poller: failed to reap stuck generation");
+    }
+}
+
 /// Run one polling iteration.
 ///
 /// Queries up to 100 `pending`/`processing` rows, polls each provider,
@@ -33,6 +52,12 @@ pub(crate) async fn poll_once(
     let wh_client = crate::util::ssrf::no_redirect_client();
 
     for gen in rows {
+        // Age of this row in the active window. Rows that can never advance are
+        // reaped once they exceed MAX_ACTIVE_AGE so they stop starving the
+        // oldest-first poll window (see reap_generation).
+        let over_age =
+            (chrono::Utc::now() - gen.created_at).num_seconds() > MAX_ACTIVE_AGE_SECS;
+
         // Resolve this generation's per-app BYO credential, if the app stored one.
         // Any failure (no secrets key, lookup error, decrypt/parse error) falls back
         // to `None` (→ the platform default global instance). The poller must never
@@ -45,11 +70,12 @@ pub(crate) async fn poll_once(
         {
             Some(p) => p,
             None => {
-                warn!(
-                    generation_id = %gen.id,
-                    provider = %gen.provider,
-                    "poller: provider not found, skipping"
-                );
+                if over_age {
+                    warn!(generation_id = %gen.id, provider = %gen.provider, "poller: provider not found past max age, reaping");
+                    reap_generation(db, &gen.id, "provider no longer configured").await;
+                } else {
+                    warn!(generation_id = %gen.id, provider = %gen.provider, "poller: provider not found, skipping");
+                }
                 continue;
             }
         };
@@ -57,7 +83,12 @@ pub(crate) async fn poll_once(
         let provider_job_id = match &gen.provider_job_id {
             Some(id) => id.clone(),
             None => {
-                warn!(generation_id = %gen.id, "poller: no provider_job_id, skipping");
+                if over_age {
+                    warn!(generation_id = %gen.id, "poller: no provider_job_id past max age, reaping");
+                    reap_generation(db, &gen.id, "no provider job id was recorded").await;
+                } else {
+                    warn!(generation_id = %gen.id, "poller: no provider_job_id, skipping");
+                }
                 continue;
             }
         };
@@ -71,11 +102,17 @@ pub(crate) async fn poll_once(
         let poll = match provider.poll_status(&handle).await {
             Ok(p) => p,
             Err(e) => {
-                warn!(
-                    generation_id = %gen.id,
-                    error = %e,
-                    "poller: poll_status failed"
-                );
+                if !e.is_retryable() {
+                    // Terminal upstream error (auth revoked, job purged): the job
+                    // is gone and retrying can't recover it, so fail the row now.
+                    warn!(generation_id = %gen.id, error = %e, "poller: non-retryable poll error, marking failed");
+                    reap_generation(db, &gen.id, &e.to_string()).await;
+                } else if over_age {
+                    warn!(generation_id = %gen.id, error = %e, "poller: poll failing past max age, reaping");
+                    reap_generation(db, &gen.id, "timed out awaiting provider").await;
+                } else {
+                    warn!(generation_id = %gen.id, error = %e, "poller: poll_status failed, will retry");
+                }
                 continue;
             }
         };
@@ -84,6 +121,14 @@ pub(crate) async fn poll_once(
             poll.status,
             GenerationStatus::Completed | GenerationStatus::Failed | GenerationStatus::Cancelled
         );
+
+        // A row that is reachable and polling cleanly but still hasn't reached a
+        // terminal state after MAX_ACTIVE_AGE is treated as stuck and reaped.
+        if !is_terminal && over_age {
+            warn!(generation_id = %gen.id, "poller: still non-terminal past max age, reaping");
+            reap_generation(db, &gen.id, "timed out: no terminal status within max active age").await;
+            continue;
+        }
         let completed_at = if is_terminal {
             Some(chrono::Utc::now())
         } else {
@@ -382,5 +427,148 @@ mod poller_tests {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         server.verify().await;
+    }
+
+    // ─── Reaper: stuck rows must leave the active window ──────────────────────
+
+    use crate::capabilities::ModelSchema;
+    use crate::providers::{
+        HealthCheckResult, ProviderError, VideoExtras,
+        VideoGenerationHandle, VideoGenerationPollResult,
+    };
+    use crate::proxy::materializer::MaterializedRequest;
+    use crate::types::{BaseGenerationRequest, CostEstimate, GenerationStatus, VideoGenerationRequest};
+
+    enum PollBehavior {
+        /// Never reaches a terminal state — always reports "processing".
+        StuckProcessing,
+        /// Returns a non-retryable upstream error (e.g. HTTP 401 / job purged).
+        TerminalError,
+    }
+
+    struct ScriptedVideoProvider {
+        behavior: PollBehavior,
+    }
+
+    #[async_trait::async_trait]
+    impl VideoProvider for ScriptedVideoProvider {
+        fn name(&self) -> &str { "mock" }
+        fn configure(&mut self, _c: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+
+        async fn generate(
+            &self,
+            _m: &ModelSchema,
+            _b: &BaseGenerationRequest,
+            _e: &VideoExtras,
+            _mat: &MaterializedRequest,
+        ) -> Result<VideoGenerationHandle, ProviderError> {
+            unimplemented!("poller tests never call generate")
+        }
+
+        async fn poll_status(
+            &self,
+            _h: &VideoGenerationHandle,
+        ) -> Result<VideoGenerationPollResult, ProviderError> {
+            match self.behavior {
+                PollBehavior::StuckProcessing => Ok(VideoGenerationPollResult {
+                    status: GenerationStatus::Processing,
+                    progress: 10,
+                    video_url: None,
+                    video_data: None,
+                    content_type: None,
+                    error: None,
+                    metadata: Default::default(),
+                }),
+                PollBehavior::TerminalError => Err(ProviderError::RequestFailed {
+                    message: "poll returned HTTP 401: invalid api key".into(),
+                    status_code: Some(401),
+                    provider_error: None,
+                    retryable: false,
+                }),
+            }
+        }
+
+        async fn estimate_cost(
+            &self,
+            _m: &ModelSchema,
+            _r: &VideoGenerationRequest,
+        ) -> Result<CostEstimate, ProviderError> {
+            unimplemented!("poller tests never estimate cost")
+        }
+
+        async fn health_check(&self) -> HealthCheckResult {
+            unimplemented!("poller tests never health-check")
+        }
+    }
+
+    async fn registry_with(behavior: PollBehavior) -> Arc<ProviderRegistry> {
+        let reg = Arc::new(ProviderRegistry::new());
+        reg.register_mock_video(Arc::new(ScriptedVideoProvider { behavior })).await;
+        reg
+    }
+
+    #[tokio::test]
+    async fn poll_once_fails_generation_on_non_retryable_error() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = registry_with(PollBehavior::TerminalError).await;
+        db.insert_generation(
+            "litegen-vid-dead", None, "mock/video-gen", "mock", "video",
+            Some("job-dead"), 0.0, None, None,
+        ).await.unwrap();
+
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant).await;
+
+        let row = db.get_generation("litegen-vid-dead").await.unwrap().unwrap();
+        assert_eq!(
+            row.status,
+            GenerationStatus::Failed,
+            "a non-retryable poll error must terminalise the row so it leaves the active window"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_once_reaps_overage_stuck_generation() {
+        let concrete = in_memory_db().await;
+        let db: Arc<dyn DatabaseStore> = concrete.clone();
+        let registry = registry_with(PollBehavior::StuckProcessing).await;
+        db.insert_generation(
+            "litegen-vid-stuck", None, "mock/video-gen", "mock", "video",
+            Some("job-stuck"), 0.0, None, None,
+        ).await.unwrap();
+        // Backdate the row well past the max active age.
+        sqlx::query("UPDATE generations SET created_at = datetime('now','-6 hours') WHERE id = ?")
+            .bind("litegen-vid-stuck")
+            .execute(concrete.pool())
+            .await
+            .unwrap();
+
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant).await;
+
+        let row = db.get_generation("litegen-vid-stuck").await.unwrap().unwrap();
+        assert_eq!(
+            row.status,
+            GenerationStatus::Failed,
+            "a generation stuck past the max active age must be reaped so it stops starving the poll window"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_once_does_not_reap_fresh_processing_generation() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = registry_with(PollBehavior::StuckProcessing).await;
+        db.insert_generation(
+            "litegen-vid-fresh", None, "mock/video-gen", "mock", "video",
+            Some("job-fresh"), 0.0, None, None,
+        ).await.unwrap();
+
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant).await;
+
+        let row = db.get_generation("litegen-vid-fresh").await.unwrap().unwrap();
+        assert_eq!(
+            row.status,
+            GenerationStatus::Processing,
+            "a fresh in-flight generation must not be reaped by the age cap"
+        );
     }
 }

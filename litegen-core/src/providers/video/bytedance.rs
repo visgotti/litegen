@@ -203,7 +203,7 @@ impl VideoProvider for ByteDanceVideoProvider {
                 provider_error: None,
                 retryable: true,
             })?;
-        let data: Value = resp.json().await.unwrap_or_default();
+        let data = super::read_poll_json(resp, "bytedance").await?;
 
         let status = match data["status"].as_str() {
             Some("succeeded") => GenerationStatus::Completed,

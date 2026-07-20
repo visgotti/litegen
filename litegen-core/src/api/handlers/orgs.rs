@@ -46,7 +46,55 @@ fn forbidden(message: &str) -> Response {
 }
 
 fn internal_error(message: &str) -> Response {
-    err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", message)
+    // `message` is typically a raw sqlx/DB error carrying table/column/constraint
+    // names. That is operator-only detail: log it server-side and return a
+    // generic body so schema internals never reach an untrusted caller.
+    tracing::error!(detail = %message, "org handler internal error");
+    err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "internal server error")
+}
+
+/// Record an audit-log entry for a privileged org mutation, attributed to the
+/// acting principal and scoped to the *target* org (the path org, which is not
+/// necessarily the session's active org). Fire-and-forget: a failed insert is
+/// logged, never surfaced to the caller. Mirrors `super::log_audit` but takes an
+/// explicit target org so org-management actions are recoverable per-tenant.
+fn log_org_audit(
+    state: &AppState,
+    ctx: &KeyContext,
+    org_id: &str,
+    action: &str,
+    target_type: &str,
+    target_id: &str,
+) {
+    let db = state.db.clone();
+    let actor_key_id = ctx.key_id.map(|id| id.to_string());
+    let actor_label = ctx
+        .user
+        .as_ref()
+        .map(|u| u.email.clone())
+        .or_else(|| ctx.key_id.map(|id| id.to_string()))
+        .unwrap_or_else(|| "master-key".to_string());
+    let action = action.to_string();
+    let target_type = target_type.to_string();
+    let target_id = target_id.to_string();
+    let org_id = org_id.to_string();
+    tokio::spawn(async move {
+        let entry = crate::types::AuditLogEntry {
+            id: format!("audit-{}", uuid::Uuid::new_v4()),
+            actor_key_id,
+            actor_label,
+            action,
+            target_type,
+            target_id,
+            before_json: None,
+            after_json: None,
+            created_at: chrono::Utc::now(),
+            org_id: Some(org_id),
+        };
+        if let Err(e) = db.insert_audit_log(&entry).await {
+            tracing::warn!(error = %e, "Failed to insert org audit log entry");
+        }
+    });
 }
 
 // ─── Slug helpers ──────────────────────────────────────────────────────────────
@@ -416,7 +464,10 @@ pub async fn delete_org(
         return resp;
     }
     match state.db.delete_organization(&id).await {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(true) => {
+            log_org_audit(&state, &ctx, &id, "org.delete", "organization", &id);
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(false) => err(StatusCode::NOT_FOUND, "org_not_found", "Organization not found"),
         Err(e) => internal_error(&e.to_string()),
     }
@@ -607,7 +658,10 @@ pub async fn remove_member(
         Err(e) => return internal_error(&e.to_string()),
     }
     match state.db.remove_org_member(&id, &user_id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => {
+            log_org_audit(&state, &ctx, &id, "org.member.remove", "membership", &user_id);
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => internal_error(&e.to_string()),
     }
 }
@@ -637,7 +691,10 @@ pub async fn transfer_owner(
         return resp;
     }
     match state.db.transfer_org_owner(&id, &body.new_owner_user_id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => {
+            log_org_audit(&state, &ctx, &id, "org.transfer_owner", "organization", &body.new_owner_user_id);
+            StatusCode::NO_CONTENT.into_response()
+        }
         // RowNotFound means the target user is not a member of this org.
         Err(sqlx::Error::RowNotFound) => err(
             StatusCode::NOT_FOUND,
@@ -818,7 +875,10 @@ pub async fn delete_app(
         return resp;
     }
     match state.db.delete_application(&app_id).await {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(true) => {
+            log_org_audit(&state, &ctx, &org_id, "org.app.delete", "application", &app_id);
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(false) => err(StatusCode::NOT_FOUND, "app_not_found", "Application not found"),
         Err(e) => internal_error(&e.to_string()),
     }
@@ -937,6 +997,7 @@ pub async fn create_org_provider_credential(
     {
         return internal_error(&e.to_string());
     }
+    log_org_audit(&state, &ctx, &org_id, "org.provider_credential.upsert", "provider_credential", &provider);
     let info = ProviderCredentialInfo { provider, display_hint, created_at: chrono::Utc::now() };
     (StatusCode::OK, Json(info)).into_response()
 }
@@ -967,7 +1028,10 @@ pub async fn delete_org_provider_credential(
         return resp;
     }
     match state.db.delete_org_provider_credential(&org_id, &provider).await {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(true) => {
+            log_org_audit(&state, &ctx, &org_id, "org.provider_credential.delete", "provider_credential", &provider);
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(false) => err(StatusCode::NOT_FOUND, "credential_not_found", "Credential not found"),
         Err(e) => internal_error(&e.to_string()),
     }

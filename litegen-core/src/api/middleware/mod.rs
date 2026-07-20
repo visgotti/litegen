@@ -103,6 +103,107 @@ pub(crate) fn is_platform_admin(ctx: &KeyContext) -> bool {
     ctx.user.is_none() && ctx.key_id.is_none() && ctx.session_id.is_none()
 }
 
+/// The maximal set of scopes `ctx` is permitted to grant to a newly created API
+/// key. A key must never carry more privilege than the principal that mints it:
+/// the `admin` scope bypasses permission gates on the Bearer auth path, so it
+/// may only be granted by a principal that itself wields admin authority.
+///
+/// - platform master key → unrestricted.
+/// - session (cookie) auth → role-derived: Admin/Owner (who hold `KeyWriteAny`)
+///   may grant `admin`; a Member (only `KeyWriteOwn`) may not.
+/// - Bearer/DB-key auth → a key may only confer scopes it itself holds.
+pub fn grantable_scopes(ctx: &KeyContext) -> Vec<Scope> {
+    if is_platform_admin(ctx) {
+        return vec![Scope::Generate, Scope::Read, Scope::Admin];
+    }
+    if ctx.user.is_some() {
+        return if ctx.permissions.contains(&Permission::KeyWriteAny) {
+            vec![Scope::Generate, Scope::Read, Scope::Admin]
+        } else {
+            vec![Scope::Generate, Scope::Read]
+        };
+    }
+    ctx.scopes.clone()
+}
+
+#[cfg(test)]
+mod scope_grant_tests {
+    use super::*;
+    use crate::auth::permissions::{permissions_for, Permission};
+    use crate::types::Role;
+
+    fn session_ctx(role: Role) -> KeyContext {
+        KeyContext {
+            key_id: None,
+            scopes: vec![Scope::Generate, Scope::Read, Scope::Admin],
+            rpm_limit: None,
+            quota_remaining: None,
+            webhook_url: None,
+            user: Some(UserContext {
+                user_id: "u1".into(),
+                email: "u@example.com".into(),
+                role,
+            }),
+            permissions: permissions_for(role).to_vec(),
+            session_id: Some("sess-1".into()),
+            org_id: Some("org-1".into()),
+            app_id: Some("app-1".into()),
+        }
+    }
+
+    fn bearer_ctx(scopes: Vec<Scope>) -> KeyContext {
+        KeyContext {
+            key_id: Some(uuid::Uuid::new_v4()),
+            scopes,
+            rpm_limit: None,
+            quota_remaining: None,
+            webhook_url: None,
+            user: None,
+            permissions: vec![],
+            session_id: None,
+            org_id: Some("org-1".into()),
+            app_id: Some("app-1".into()),
+        }
+    }
+
+    #[test]
+    fn member_session_cannot_grant_admin_scope() {
+        let g = grantable_scopes(&session_ctx(Role::Member));
+        assert!(!g.contains(&Scope::Admin), "a Member must not be able to mint an admin-scope key");
+        assert!(g.contains(&Scope::Generate) && g.contains(&Scope::Read));
+    }
+
+    #[test]
+    fn admin_session_can_grant_admin_scope() {
+        assert!(grantable_scopes(&session_ctx(Role::Admin)).contains(&Scope::Admin));
+        assert!(grantable_scopes(&session_ctx(Role::Owner)).contains(&Scope::Admin));
+    }
+
+    #[test]
+    fn bearer_key_can_only_grant_scopes_it_holds() {
+        // A generate+read key cannot escalate by minting an admin key.
+        let g = grantable_scopes(&bearer_ctx(vec![Scope::Generate, Scope::Read]));
+        assert!(!g.contains(&Scope::Admin));
+        // An admin-scope key may pass admin along.
+        assert!(grantable_scopes(&bearer_ctx(vec![Scope::Admin])).contains(&Scope::Admin));
+    }
+
+    #[test]
+    fn platform_master_key_can_grant_admin() {
+        let mut ctx = bearer_ctx(vec![]);
+        ctx.key_id = None; // master key: no user, no key_id, no session
+        assert!(grantable_scopes(&ctx).contains(&Scope::Admin));
+    }
+
+    // Guard against the permission model drifting: the whole check hinges on
+    // Member lacking KeyWriteAny while Admin/Owner hold it.
+    #[test]
+    fn member_lacks_key_write_any() {
+        assert!(!permissions_for(Role::Member).contains(&Permission::KeyWriteAny));
+        assert!(permissions_for(Role::Admin).contains(&Permission::KeyWriteAny));
+    }
+}
+
 // ─── AppState ────────────────────────────────────────────────────────────────
 
 /// Shared application state passed to all handlers.

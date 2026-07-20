@@ -260,7 +260,7 @@ impl VideoProvider for PixverseProvider {
                 provider_error: None,
                 retryable: true,
             })?;
-        let data: Value = resp.json().await.unwrap_or_default();
+        let data = super::read_poll_json(resp, "pixverse").await?;
 
         // Resp.status: 1=success, 5=processing, 7=moderation fail, 8=failed.
         let (status, video_url) = match data["Resp"]["status"].as_i64() {

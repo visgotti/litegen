@@ -697,14 +697,16 @@ async fn hosted_master_key_cannot_read_tenant_data() {
 //
 // The non-zero-cost `mock/expensive-image` model (base_cost_usd = $5.00 on the
 // credential-free `mock` provider) lets us exercise the real quota path:
-//   * `generate_image` charges `tokens_used += cost` AFTER a successful 200
-//     (only when cost > 0.0; the charge itself never fails on over-quota — it
-//     just increments — so the first request returns a clean 200).
-//   * The hard 402 is enforced PRE-FLIGHT in `handle_db_key` on the NEXT request
-//     when `tokens_used >= token_quota` (middleware mod.rs:404-417).
-// With token_quota = $1.00, one $5 generation pushes tokens_used to $5 ≥ $1, so
-// the second identical request is rejected 402 before it ever reaches the
-// handler.
+//   * `generate_image` RESERVES the estimated cost against the key BEFORE
+//     dispatch (`reserve_tokens`: an atomic conditional charge), then settles to
+//     the actual cost on success. A request whose cost would exceed the
+//     remaining quota is rejected 402 up front — a single oversized request can
+//     no longer slip through and overspend.
+//   * A subsequent request with no quota left is also rejected (either by the
+//     reservation, or by the pre-flight `tokens_used >= token_quota` check in
+//     `handle_db_key`).
+// With token_quota = $5.00, exactly one $5 generation fits (0 + 5 ≤ 5); the
+// second identical request cannot reserve ($5 + $5 > $5) and is rejected 402.
 
 const MOCK_EXPENSIVE_MODEL: &str = "mock/expensive-image";
 
@@ -715,11 +717,11 @@ async fn quota_exhausted_402() {
     signup(&mut c, &unique_email("quota"), "QuotaOrg").await;
     let csrf = c.csrf().await;
 
-    // A key with a $1.00 USD budget — one $5 generation blows past it.
+    // A key with a $5.00 USD budget — room for exactly one $5 generation.
     let created = c
         .post_with(
             "/v1/keys",
-            json!({ "name": "quota-key", "token_quota": 1.0, "scopes": "generate,read" }),
+            json!({ "name": "quota-key", "token_quota": 5.0, "scopes": "generate,read" }),
             &[("x-csrf-token", &csrf)],
         )
         .await;
@@ -731,17 +733,17 @@ async fn quota_exhausted_402() {
     let bearer_hdr = format!("Bearer {secret}");
     let body = json!({ "model": MOCK_EXPENSIVE_MODEL, "prompt": "x" });
 
-    // 1st request: succeeds (200), charges $5 → now over quota.
+    // 1st request: reserves $5 (fits exactly), succeeds (200), settles to $5.
     let first = bearer
         .post_with("/v1/images/generations", body.clone(), &[("authorization", &bearer_hdr)])
         .await;
     assert_eq!(
         first.status, 200,
-        "first generation should succeed (charge is post-success): {} {:?}",
+        "first generation should succeed (reserves $5 against a $5 quota): {} {:?}",
         first.status, first.body
     );
 
-    // 2nd identical request: pre-flight quota check rejects with 402.
+    // 2nd identical request: no quota left, rejected 402 before dispatch.
     let second = bearer
         .post_with("/v1/images/generations", body, &[("authorization", &bearer_hdr)])
         .await;

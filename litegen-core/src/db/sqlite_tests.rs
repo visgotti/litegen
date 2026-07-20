@@ -978,7 +978,7 @@ mod tests {
 
         let key = db.create_api_key_scoped(
             &org.id, &app.id, "pk_live_abc123", "scoped-key",
-            "hash_scoped", "lg-sc", Some(25.0), Some(120), "generate,read", None,
+            "hash_scoped", "lg-sc", Some(25.0), Some(120), "generate,read", None, None,
         ).await.unwrap();
         assert_eq!(key.org_id.as_deref(), Some(org.id.as_str()));
         assert_eq!(key.app_id.as_deref(), Some(app.id.as_str()));
@@ -1168,6 +1168,217 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "a different provider must not return the stored credential"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_request_logs_for_tenant_filtered_pushes_filters_to_db() {
+        use crate::db::RequestLogFilter;
+        let db = in_memory_db().await;
+        let org = "flt-org";
+
+        // 2 openai logs + 1 fal log, all in the same org.
+        db.log_request("lg-1", "m", "openai", "completed", "image", 0.0, 10, None, None, Some(org), None).await.unwrap();
+        db.log_request("lg-2", "m", "openai", "completed", "image", 0.0, 10, None, None, Some(org), None).await.unwrap();
+        db.log_request("lg-3", "m", "fal", "completed", "image", 0.0, 10, None, None, Some(org), None).await.unwrap();
+
+        // Filter by provider — count + rows reflect the true match, at the DB.
+        let filter = RequestLogFilter { provider: Some("openai"), ..Default::default() };
+        let (rows, total) = db.get_request_logs_for_tenant_filtered(org, None, &filter, 1, 50).await.unwrap();
+        assert_eq!(total, 2, "provider filter must be applied + counted at the DB");
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|l| l.provider == "openai"));
+
+        // Backdate lg-3 (fal) and use a `from` cutoff that excludes it.
+        sqlx::query("UPDATE request_logs SET created_at = '2000-01-01 00:00:00' WHERE id = 'lg-3'")
+            .execute(db.pool()).await.unwrap();
+        let cutoff = chrono::DateTime::parse_from_rfc3339("2010-01-01T00:00:00Z").unwrap().with_timezone(&chrono::Utc);
+        let filter = RequestLogFilter { from: Some(cutoff), ..Default::default() };
+        let (_, total_after) = db.get_request_logs_for_tenant_filtered(org, None, &filter, 1, 50).await.unwrap();
+        assert_eq!(total_after, 2, "the from-cutoff must exclude the backdated row via a DB timestamp comparison");
+    }
+
+    #[tokio::test]
+    async fn list_generations_for_owner_filters_and_counts_at_db() {
+        // A read-own member must see their complete history via a DB-level
+        // ownership filter + count — not an in-memory filter over a truncated
+        // window (which silently drops older rows and mis-reports the total).
+        let db = in_memory_db().await;
+        let org = make_org(&Uuid::new_v4().to_string(), "own-org");
+        db.create_organization(&org).await.unwrap();
+        let app = make_app(&Uuid::new_v4().to_string(), &org.id, "own-app");
+        db.create_application(&app).await.unwrap();
+
+        let key_a = db
+            .create_api_key_scoped(&org.id, &app.id, "pk_a", "ka", "hash_a", "lg-a", None, None, "generate", None, None)
+            .await
+            .unwrap();
+        let key_b = db
+            .create_api_key_scoped(&org.id, &app.id, "pk_b", "kb", "hash_b", "lg-b", None, None, "generate", None, None)
+            .await
+            .unwrap();
+
+        // 3 generations for A, 2 for B.
+        for i in 0..3 {
+            db.insert_generation(&format!("gen-a-{i}"), Some(&key_a.id), "mock/v", "mock", "video", None, 0.0, Some(&org.id), Some(&app.id)).await.unwrap();
+        }
+        for i in 0..2 {
+            db.insert_generation(&format!("gen-b-{i}"), Some(&key_b.id), "mock/v", "mock", "video", None, 0.0, Some(&org.id), Some(&app.id)).await.unwrap();
+        }
+
+        let (rows, total) = db
+            .list_generations_for_owner(&org.id, None, &[key_a.id], 1, 50)
+            .await
+            .unwrap();
+        assert_eq!(total, 3, "total must count only A's generations at the DB layer");
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|g| g.key_id == Some(key_a.id)), "must return only A's rows");
+
+        // Pagination is applied at the DB, and total still reflects the full match.
+        let (page2, total2) = db
+            .list_generations_for_owner(&org.id, None, &[key_a.id], 2, 2)
+            .await
+            .unwrap();
+        assert_eq!(total2, 3);
+        assert_eq!(page2.len(), 1, "page 2 of size 2 over 3 rows holds the last row");
+
+        // No owned keys => nothing.
+        let (empty, zero) = db.list_generations_for_owner(&org.id, None, &[], 1, 50).await.unwrap();
+        assert!(empty.is_empty() && zero == 0);
+    }
+
+    #[tokio::test]
+    async fn reserve_tokens_enforces_quota_atomically() {
+        // reserve_tokens is the real quota gate: it must reject a reservation
+        // that would push tokens_used past token_quota, and must NOT increment
+        // when it rejects (so the next request sees the true remaining quota).
+        let db = in_memory_db().await;
+        let org = make_org(&Uuid::new_v4().to_string(), "q-org");
+        db.create_organization(&org).await.unwrap();
+        let app = make_app(&Uuid::new_v4().to_string(), &org.id, "q-app");
+        db.create_application(&app).await.unwrap();
+
+        // Key with a $10 quota.
+        let key = db
+            .create_api_key_scoped(
+                &org.id, &app.id, "pk_q", "quota-key", "hash_q", "lg-q",
+                Some(10.0), None, "generate", None, None,
+            )
+            .await
+            .unwrap();
+
+        assert!(db.reserve_tokens(&key.id, 9.0).await.unwrap(), "9 <= 10 must reserve");
+        assert!(
+            !db.reserve_tokens(&key.id, 5.0).await.unwrap(),
+            "9 + 5 > 10 must be rejected"
+        );
+        let after = db.get_api_key(&key.id).await.unwrap().unwrap();
+        assert!(
+            (after.tokens_used - 9.0).abs() < 1e-9,
+            "a rejected reservation must not change tokens_used, got {}",
+            after.tokens_used
+        );
+        assert!(
+            db.reserve_tokens(&key.id, 1.0).await.unwrap(),
+            "9 + 1 == 10 must reserve (boundary is inclusive)"
+        );
+
+        // A key with no quota reserves any amount.
+        let unlimited = db
+            .create_api_key_scoped(
+                &org.id, &app.id, "pk_u", "unlimited", "hash_u", "lg-u",
+                None, None, "generate", None, None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            db.reserve_tokens(&unlimited.id, 1_000_000.0).await.unwrap(),
+            "a key with no quota reserves any amount"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_api_key_scoped_persists_expiry() {
+        // expires_at is enforced at auth (middleware) and settable on PATCH, so
+        // it must also be persisted at creation — otherwise an SDK caller who
+        // asks for a short-lived key silently gets one that never expires.
+        let db = in_memory_db().await;
+        let org = make_org(&Uuid::new_v4().to_string(), "exp-org");
+        db.create_organization(&org).await.unwrap();
+        let app = make_app(&Uuid::new_v4().to_string(), &org.id, "exp-app");
+        db.create_application(&app).await.unwrap();
+
+        let expiry = chrono::Utc::now() + chrono::Duration::hours(24);
+        let key = db
+            .create_api_key_scoped(
+                &org.id, &app.id, "pk_live_exp", "ephemeral", "hash_exp", "lg-exp",
+                None, None, "generate", None, Some(expiry),
+            )
+            .await
+            .unwrap();
+
+        // Returned key and the persisted row both carry the expiry.
+        assert!(key.expires_at.is_some(), "created key must carry the requested expiry");
+        let fetched = db.get_api_key(&key.id).await.unwrap().expect("key");
+        let stored = fetched.expires_at.expect("expiry persisted");
+        assert!(
+            (stored - expiry).num_seconds().abs() <= 1,
+            "persisted expiry {stored} must match requested {expiry}"
+        );
+
+        // A key created without an expiry stays non-expiring.
+        let perpetual = db
+            .create_api_key_scoped(
+                &org.id, &app.id, "pk_live_perp", "perpetual", "hash_perp", "lg-perp",
+                None, None, "generate", None, None,
+            )
+            .await
+            .unwrap();
+        assert!(perpetual.expires_at.is_none(), "no expiry requested => never expires");
+    }
+
+    #[tokio::test]
+    async fn delete_application_cascades_child_rows() {
+        // Deleting an app must remove the rows that reference it. On Postgres
+        // those columns carry FKs without ON DELETE CASCADE, so a bare
+        // `DELETE FROM applications` errors once the app has been used and the
+        // app becomes permanently undeletable. The fix cascades in a
+        // transaction, mirroring delete_organization. On SQLite (FKs off in
+        // tests) a bare delete instead orphans the child rows, so this test
+        // asserts the cascade semantics directly: no orphans left behind.
+        let db = in_memory_db().await;
+        let org = make_org(&Uuid::new_v4().to_string(), "del-org");
+        db.create_organization(&org).await.unwrap();
+        let app = make_app(&Uuid::new_v4().to_string(), &org.id, "del-app");
+        db.create_application(&app).await.unwrap();
+
+        // Use the app: issue a key and record a generation scoped to it.
+        let key = db
+            .create_api_key_scoped(
+                &org.id, &app.id, "pk_live_del", "k", "hash_del", "lg-del",
+                None, None, "generate", None, None,
+            )
+            .await
+            .unwrap();
+        db.insert_generation(
+            "gen-del-1", Some(&key.id), "mock/v", "mock", "video", None, 0.0,
+            Some(&org.id), Some(&app.id),
+        )
+        .await
+        .unwrap();
+
+        // A used app must still be deletable...
+        let deleted = db.delete_application(&app.id).await.unwrap();
+        assert!(deleted, "delete_application must report success for a used app");
+
+        // ...and must not leave orphaned child rows behind.
+        assert!(
+            db.list_api_keys_for_app(&app.id).await.unwrap().is_empty(),
+            "api_keys referencing the deleted app must be removed"
+        );
+        assert!(
+            db.get_generation("gen-del-1").await.unwrap().is_none(),
+            "generations referencing the deleted app must be removed"
         );
     }
 }

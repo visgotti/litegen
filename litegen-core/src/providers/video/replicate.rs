@@ -354,7 +354,7 @@ impl VideoProvider for ReplicateVideoProvider {
             retryable: true,
         })?;
 
-        let data: Value = resp.json().await.unwrap_or_default();
+        let data = super::read_poll_json(resp, "replicate").await?;
 
         let status = match data["status"].as_str() {
             Some("succeeded") => GenerationStatus::Completed,

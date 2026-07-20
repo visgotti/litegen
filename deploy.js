@@ -406,11 +406,14 @@ async function deployProxy() {
         await sleep(3000);
       }
       if (!healthy) {
-        console.warn('  Health check did not pass within 120s — dumping logs:');
+        console.error('  ✗ Health check did not pass within 120s — dumping logs:');
         await sshExec(ssh, 'cd /opt/litegen && docker compose -f docker-compose.prod.yml logs --tail 80', 'compose logs');
-      } else {
-        console.log('  Proxy is healthy.');
+        // Abort with a non-zero exit instead of falsely reporting success. In
+        // `deployAll` this also stops the subsequent web/landing steps from
+        // shipping a fresh dashboard bundle pointed at a backend that is down.
+        throw new Error('proxy failed its /health/live check — aborting deploy');
       }
+      console.log('  Proxy is healthy.');
     }
 
     await sshExec(ssh, 'docker image prune -af --filter "until=168h" >/dev/null 2>&1 || true', 'prune old images');
@@ -553,7 +556,7 @@ async function deployWeb() {
   // If the landing build fails (e.g. due to in-progress edits to apps/landing),
   // don't abort the whole web deploy — ship a minimal valid placeholder so
   // litegen.ai still returns valid HTML.
-  let landingSrcDir = landingOut; // what we tar up; flips to the fallback on failure
+  const landingSrcDir = landingOut; // what we tar up (a failed build aborts the deploy)
   console.log('\n=== Building landing (Next.js static export → apps/landing/out) ===');
   if (!DRY_RUN) {
     try {
@@ -570,15 +573,13 @@ async function deployWeb() {
       // is for the dashboard, whose wired API base must never be localhost.
       console.log('  Landing build OK.');
     } catch (err) {
-      console.warn(`\n  ⚠ Landing build FAILED: ${err.message}`);
-      console.warn('  ⚠ Shipping a minimal placeholder index.html so litegen.ai still serves valid HTML.');
-      fs.rmSync(landingFallbackDir, { recursive: true, force: true });
-      fs.mkdirSync(landingFallbackDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(landingFallbackDir, 'index.html'),
-        '<!doctype html><html><head><meta charset=utf-8><title>LiteGen</title></head><body><h1>LiteGen</h1><p>Coming soon.</p></body></html>\n',
-      );
-      landingSrcDir = landingFallbackDir;
+      // Do NOT substitute a placeholder and continue. The remote unpack is
+      // destructive (`find landing-dist -mindepth 1 -delete` before extracting),
+      // so shipping a placeholder would WIPE the live litegen.ai and replace it
+      // with "Coming soon". Abort instead — the running site stays untouched and
+      // the operator gets a non-zero exit to fix the build and re-run.
+      console.error(`\n  ✗ Landing build FAILED: ${err.message}`);
+      throw new Error('landing build failed — aborting deploy so the live site is not overwritten');
     }
   } else {
     console.log('  [dry-run] skipping landing build.');

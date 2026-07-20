@@ -571,6 +571,9 @@ pub struct ValidatedImage {
     pub request: ImageGenerationRequest,
     pub dropped: Vec<String>,
     pub ctx: MaterializeContext,
+    /// In-flight slot, acquired before the body was buffered and held until the
+    /// handler returns. Never read; exists only so the permit lives that long.
+    pub _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 pub struct ValidatedVideo {
@@ -578,6 +581,7 @@ pub struct ValidatedVideo {
     pub request: VideoGenerationRequest,
     pub dropped: Vec<String>,
     pub ctx: MaterializeContext,
+    pub _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 #[derive(Debug)]
@@ -585,8 +589,27 @@ pub struct ValidationRejection(pub StatusCode, pub serde_json::Value);
 
 impl IntoResponse for ValidationRejection {
     fn into_response(self) -> Response {
-        (self.0, Json(self.1)).into_response()
+        let is_overloaded = self.0 == StatusCode::SERVICE_UNAVAILABLE;
+        let mut resp = (self.0, Json(self.1)).into_response();
+        if is_overloaded {
+            resp.headers_mut()
+                .insert("retry-after", axum::http::HeaderValue::from_static("1"));
+        }
+        resp
     }
+}
+
+/// Acquire an in-flight slot before buffering the request body. Returns a 503
+/// rejection (with `Retry-After: 1`) when the server is at capacity.
+fn acquire_in_flight(
+    state: &Arc<AppState>,
+) -> Result<tokio::sync::OwnedSemaphorePermit, ValidationRejection> {
+    state.in_flight.try_acquire_owned().ok_or_else(|| {
+        ValidationRejection(
+            StatusCode::SERVICE_UNAVAILABLE,
+            err_body("server_at_capacity", "server at capacity, retry shortly", None, ""),
+        )
+    })
 }
 
 pub fn err_body(code: &str, msg: &str, param: Option<&str>, model: &str) -> serde_json::Value {
@@ -651,6 +674,9 @@ async fn parse_request_and_context(
 impl FromRequest<Arc<AppState>> for ValidatedImage {
     type Rejection = ValidationRejection;
     async fn from_request(req: Request, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
+        // Acquire the in-flight slot BEFORE buffering the body, so concurrent
+        // body buffering is bounded by the semaphore rather than unbounded.
+        let permit = acquire_in_flight(state)?;
         let (parts, body) = req.into_parts();
         let headers = parts.headers;
         let bytes = axum::body::to_bytes(body, 25 * 1024 * 1024).await.map_err(|e| {
@@ -665,7 +691,7 @@ impl FromRequest<Arc<AppState>> for ValidatedImage {
             .clone();
         let schema = Arc::new(schema);
         match validate_image(&schema, req) {
-            Ok(out) => Ok(ValidatedImage { schema, request: out.request, dropped: out.dropped, ctx }),
+            Ok(out) => Ok(ValidatedImage { schema, request: out.request, dropped: out.dropped, ctx, _permit: permit }),
             Err(e) => Err(ValidationRejection(
                 StatusCode::BAD_REQUEST,
                 err_body(&e.code, &e.message, e.param.as_deref(), &schema.id),
@@ -677,6 +703,8 @@ impl FromRequest<Arc<AppState>> for ValidatedImage {
 impl FromRequest<Arc<AppState>> for ValidatedVideo {
     type Rejection = ValidationRejection;
     async fn from_request(req: Request, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
+        // Acquire the in-flight slot BEFORE buffering the body (see ValidatedImage).
+        let permit = acquire_in_flight(state)?;
         let (parts, body) = req.into_parts();
         let headers = parts.headers;
         let bytes = axum::body::to_bytes(body, 25 * 1024 * 1024).await.map_err(|e| {
@@ -691,7 +719,7 @@ impl FromRequest<Arc<AppState>> for ValidatedVideo {
             .clone();
         let schema = Arc::new(schema);
         match validate_video(&schema, req) {
-            Ok(out) => Ok(ValidatedVideo { schema, request: out.request, dropped: out.dropped, ctx }),
+            Ok(out) => Ok(ValidatedVideo { schema, request: out.request, dropped: out.dropped, ctx, _permit: permit }),
             Err(e) => Err(ValidationRejection(
                 StatusCode::BAD_REQUEST,
                 err_body(&e.code, &e.message, e.param.as_deref(), &schema.id),
