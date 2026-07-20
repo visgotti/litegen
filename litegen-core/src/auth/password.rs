@@ -49,6 +49,33 @@ pub fn verify_dummy(plain: &str) {
     let _ = verify_password(plain, &DUMMY_HASH);
 }
 
+// ─── Async wrappers ─────────────────────────────────────────────────────────
+//
+// Argon2id here is deliberately expensive (64 MiB, t=3). Called inline on an
+// async task it blocks a tokio worker thread for the whole computation, so a
+// burst of unauthenticated /auth/login|signup requests can starve the worker
+// pool and stall the entire gateway. These wrappers offload the CPU-bound work
+// to the blocking pool, keeping the async workers free to serve other requests.
+
+/// Offloaded [`hash_password`].
+pub async fn hash_password_async(plain: String) -> Result<String, PasswordError> {
+    tokio::task::spawn_blocking(move || hash_password(&plain))
+        .await
+        .map_err(|e| PasswordError::Hash(format!("hash task join error: {e}")))?
+}
+
+/// Offloaded [`verify_password`].
+pub async fn verify_password_async(plain: String, phc: String) -> Result<bool, PasswordError> {
+    tokio::task::spawn_blocking(move || verify_password(&plain, &phc))
+        .await
+        .map_err(|e| PasswordError::Verify(format!("verify task join error: {e}")))?
+}
+
+/// Offloaded [`verify_dummy`].
+pub async fn verify_dummy_async(plain: String) {
+    let _ = tokio::task::spawn_blocking(move || verify_dummy(&plain)).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,6 +96,22 @@ mod tests {
     fn min_length_enforced() {
         let result = hash_password("short");
         assert!(matches!(result, Err(PasswordError::TooShort)));
+    }
+
+    #[tokio::test]
+    async fn async_hash_then_verify_roundtrips() {
+        // The offloaded wrappers must produce a real, verifiable hash — a
+        // burst of these runs on the blocking pool, but correctness is identical.
+        let pw = "correct-horse-battery-staple-1".to_string();
+        let hash = hash_password_async(pw.clone()).await.expect("hash");
+        assert!(
+            verify_password_async(pw, hash.clone()).await.unwrap(),
+            "async round-trip must verify the correct password"
+        );
+        assert!(
+            !verify_password_async("wrong-password".to_string(), hash).await.unwrap(),
+            "async verify must reject a wrong password"
+        );
     }
 
     #[test]

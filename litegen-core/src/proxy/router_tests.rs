@@ -372,6 +372,56 @@ mod tests {
         );
     }
 
+    // ─── Billing: video charges for the single video delivered, not requested n ─
+
+    #[tokio::test]
+    async fn video_billing_charges_for_one_video_not_requested_n() {
+        // generate_video submits exactly one provider job and returns one
+        // VideoGenerationResponse (a single video_url), so billing must reflect
+        // the one video actually delivered — NOT the requested `n`, which is
+        // meaningless for video and unbounded on the wire. This mirrors the
+        // image-path billing fix (charge for delivered, not requested).
+        let registry = Arc::new(ProviderRegistry::new());
+        {
+            use crate::providers::video::mock::MockVideoProvider;
+            use crate::providers::VideoProvider as _;
+            let mut mp = MockVideoProvider::new();
+            mp.configure(default_instance_config());
+            registry.register_mock_video(Arc::new(mp)).await;
+        }
+        let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig::default()));
+        let image_store = Arc::new(LocalStore);
+        // Default config => direct dispatch and 0% markup.
+        let config = Arc::new(AppConfig::default());
+        let router = ProxyRouter::new(registry, cache, config, image_store);
+
+        let mut schema = shipped_schema("mock/video-gen");
+        schema.pricing.base_cost_usd = 1.00; // non-zero so 1 vs n differ
+
+        let mut base = make_base("billing test", "mock/video-gen");
+        base.n = 5; // request 5 — but the proxy submits/returns exactly one video
+
+        let extras = crate::providers::VideoExtras {
+            duration_seconds: 5.0,
+            aspect_ratio: None,
+            resolution: None,
+            fps: None,
+            extra: None,
+        };
+        let materialized = empty_materialized();
+
+        let response = router
+            .generate_video(&schema, &base, &extras, &materialized, None)
+            .await
+            .expect("generate_video should succeed");
+
+        let cost = response.usage.as_ref().expect("usage present").cost_usd;
+        assert!(
+            (cost - 1.00).abs() < 1e-9,
+            "billed cost {cost} must equal per-video 1.00 × 1 delivered, not × n=5"
+        );
+    }
+
     // ─── G1: lowest_latency routes to provider with lower average latency ─────
 
     #[tokio::test]

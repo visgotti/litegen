@@ -278,7 +278,7 @@ impl VideoProvider for FalVideoProvider {
             retryable: true,
         })?;
 
-        let data: Value = resp.json().await.unwrap_or_default();
+        let data = super::read_poll_json(resp, "fal").await?;
 
         let status = match data["status"].as_str() {
             Some("COMPLETED") => GenerationStatus::Completed,
@@ -316,7 +316,7 @@ impl VideoProvider for FalVideoProvider {
                 retryable: true,
             })?;
 
-            let result: Value = result_resp.json().await.unwrap_or_default();
+            let result = super::read_poll_json(result_resp, "fal").await?;
 
             // Video URL is in various locations depending on the model
             let video_url = result["video"]["url"]

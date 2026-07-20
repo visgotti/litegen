@@ -223,7 +223,7 @@ impl VideoProvider for MiniMaxVideoProvider {
                 provider_error: None,
                 retryable: true,
             })?;
-        let data: Value = resp.json().await.unwrap_or_default();
+        let data = super::read_poll_json(resp, "minimax").await?;
 
         let status_str = data["status"].as_str().unwrap_or("");
         let (status, video_url) = match status_str {

@@ -16,8 +16,10 @@ type LivenessResponse = Schemas["LivenessResponse"];
 type ProxyStats = Schemas["ProxyStats"];
 type RequestLog = Schemas["RequestLog"];
 type ApiKeyInfo = Schemas["ApiKeyInfo"];
+type ApiKeyDetail = Schemas["ApiKeyDetail"];
 type ApiKeyListResponse = Schemas["ApiKeyListResponse"];
 type ApiKeyCreatedResponse = Schemas["ApiKeyCreatedResponse"];
+type RotatedKeyResponse = Schemas["RotatedKeyResponse"];
 type RevokeKeyResponse = Schemas["RevokeKeyResponse"];
 type CacheClearedResponse = Schemas["CacheClearedResponse"];
 // Auth + user types
@@ -720,7 +722,8 @@ class KeysNamespace {
     );
     return resp.data;
   }
-  patch(id: string, body: PatchKeyBody, signal?: AbortSignal): Promise<ApiKeyInfo> {
+  patch(id: string, body: PatchKeyBody, signal?: AbortSignal): Promise<ApiKeyDetail> {
+    // Server returns ApiKeyDetail (key_prefix; no public_id/app_id) — not ApiKeyInfo.
     return this.client.request("PATCH", `/v1/keys/${encodeURIComponent(id)}`, body, signal);
   }
   revoke(id: string, signal?: AbortSignal): Promise<RevokeKeyResponse> {
@@ -730,7 +733,8 @@ class KeysNamespace {
   delete(id: string, signal?: AbortSignal): Promise<RevokeKeyResponse> {
     return this.revoke(id, signal);
   }
-  rotate(id: string, signal?: AbortSignal): Promise<ApiKeyCreatedResponse> {
+  rotate(id: string, signal?: AbortSignal): Promise<RotatedKeyResponse> {
+    // Server returns RotatedKeyResponse (no created_at) — not ApiKeyCreatedResponse.
     return this.client.request("POST", `/v1/keys/${encodeURIComponent(id)}/rotate`, undefined, signal);
   }
   testWebhook(id: string, signal?: AbortSignal): Promise<TestWebhookResponse> {

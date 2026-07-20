@@ -133,7 +133,7 @@ impl DatabaseStore for SqliteDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<Vec<Generation>, sqlx::Error> {
-        let offset = (page.saturating_sub(1)) * per_page;
+        let offset = crate::api::pagination::offset(page, per_page);
         let rows = if let Some(kid) = key_id {
             let sql = format!(
                 "SELECT {} FROM generations WHERE key_id = ? OR key_id IS NULL \
@@ -250,7 +250,7 @@ impl DatabaseStore for SqliteDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<(Vec<RequestLog>, u64), sqlx::Error> {
-        let offset = (page.saturating_sub(1)) * per_page;
+        let offset = crate::api::pagination::offset(page, per_page);
 
         let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM request_logs")
             .fetch_one(&self.pool)
@@ -279,7 +279,7 @@ impl DatabaseStore for SqliteDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<(Vec<RequestLog>, u64), sqlx::Error> {
-        let offset = (page.saturating_sub(1)) * per_page;
+        let offset = crate::api::pagination::offset(page, per_page);
 
         // Build the WHERE clause conditionally using QueryBuilder.
         // We build count and data queries separately so we can reuse the filter logic.
@@ -473,6 +473,19 @@ impl DatabaseStore for SqliteDatabase {
         .await?;
         tx.commit().await?;
         row.map(|r| r.0).ok_or(sqlx::Error::RowNotFound)
+    }
+
+    async fn reserve_tokens(&self, id: &Uuid, amount: f64) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE api_keys SET tokens_used = tokens_used + ? \
+             WHERE id = ? AND (token_quota IS NULL OR tokens_used + ? <= token_quota)",
+        )
+        .bind(amount)
+        .bind(id.to_string())
+        .bind(amount)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     async fn validate_api_key(&self, key_hash: &str) -> Result<Option<ApiKey>, sqlx::Error> {
@@ -708,7 +721,7 @@ impl DatabaseStore for SqliteDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<(Vec<AuditLogEntry>, i64), sqlx::Error> {
-        let offset = (page.saturating_sub(1)) * per_page;
+        let offset = crate::api::pagination::offset(page, per_page);
 
         let mut count_qb: QueryBuilder<sqlx::Sqlite> =
             QueryBuilder::new("SELECT COUNT(*) FROM audit_log WHERE 1=1");
@@ -790,7 +803,7 @@ impl DatabaseStore for SqliteDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<(Vec<WebhookDelivery>, i64), sqlx::Error> {
-        let offset = (page.saturating_sub(1)) * per_page;
+        let offset = crate::api::pagination::offset(page, per_page);
 
         let total: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM webhook_deliveries WHERE key_id = ?"
@@ -1495,10 +1508,30 @@ impl DatabaseStore for SqliteDatabase {
     }
 
     async fn delete_application(&self, id: &str) -> Result<bool, sqlx::Error> {
+        // Cascade in one transaction, in FK-dependency order. On Postgres the
+        // app_id columns reference applications WITHOUT ON DELETE CASCADE, so a
+        // bare `DELETE FROM applications` fails once the app has been used; on
+        // sqlite (no FK) it instead orphans the children. Either way we delete
+        // the app-scoped children first (generations references api_keys →
+        // before api_keys), mirroring delete_organization.
+        let mut tx = self.pool.begin().await?;
+        for stmt in [
+            "DELETE FROM webhook_deliveries WHERE app_id = ?",
+            "DELETE FROM request_artifacts WHERE app_id = ?",
+            "DELETE FROM request_logs WHERE app_id = ?",
+            "DELETE FROM generations WHERE app_id = ?",
+            "DELETE FROM api_keys WHERE app_id = ?",
+            "DELETE FROM app_model_access_ids WHERE app_id = ?",
+            "DELETE FROM app_model_access WHERE app_id = ?",
+            "DELETE FROM app_storage_credentials WHERE app_id = ?",
+        ] {
+            sqlx::query(stmt).bind(id).execute(&mut *tx).await?;
+        }
         let result = sqlx::query("DELETE FROM applications WHERE id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -1721,13 +1754,14 @@ impl DatabaseStore for SqliteDatabase {
         rpm_limit: Option<u32>,
         scopes: &str,
         webhook_url: Option<&str>,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<ApiKey, sqlx::Error> {
         let id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO api_keys \
                 (id, org_id, app_id, public_id, name, key_hash, key_prefix, is_active, \
-                 tokens_used, token_quota, rpm_limit, scopes, webhook_url, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, datetime('now'))",
+                 tokens_used, token_quota, rpm_limit, scopes, webhook_url, expires_at, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, datetime('now'))",
         )
         .bind(id.to_string())
         .bind(org_id)
@@ -1740,6 +1774,7 @@ impl DatabaseStore for SqliteDatabase {
         .bind(rpm_limit.map(|v| v as i64))
         .bind(scopes)
         .bind(webhook_url)
+        .bind(expires_at)
         .execute(&self.pool)
         .await?;
         self.get_api_key(&id).await?.ok_or(sqlx::Error::RowNotFound)
@@ -1766,7 +1801,7 @@ impl DatabaseStore for SqliteDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<Vec<Generation>, sqlx::Error> {
-        let offset = ((page.saturating_sub(1)) * per_page) as i64;
+        let offset = crate::api::pagination::offset(page, per_page) as i64;
         let rows = match app_id {
             Some(app) => {
                 let sql = format!(
@@ -1820,6 +1855,58 @@ impl DatabaseStore for SqliteDatabase {
         Ok(row.0)
     }
 
+    async fn list_generations_for_owner(
+        &self,
+        org_id: &str,
+        app_id: Option<&str>,
+        key_ids: &[Uuid],
+        page: u32,
+        per_page: u32,
+    ) -> Result<(Vec<Generation>, u64), sqlx::Error> {
+        if key_ids.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+        use sqlx::QueryBuilder;
+
+        // COUNT of every matching row (not just the current page).
+        let mut cb = QueryBuilder::new("SELECT COUNT(*) FROM generations WHERE org_id = ");
+        cb.push_bind(org_id.to_string());
+        if let Some(app) = app_id {
+            cb.push(" AND app_id = ").push_bind(app.to_string());
+        }
+        cb.push(" AND key_id IN (");
+        {
+            let mut sep = cb.separated(", ");
+            for kid in key_ids {
+                sep.push_bind(kid.to_string());
+            }
+        }
+        cb.push(")");
+        let (total,): (i64,) = cb.build_query_as().fetch_one(&self.pool).await?;
+
+        // The requested page, filtered + ordered + limited at the DB.
+        let offset = crate::api::pagination::offset(page, per_page) as i64;
+        let mut qb = QueryBuilder::new(format!("SELECT {GENERATION_COLS} FROM generations WHERE org_id = "));
+        qb.push_bind(org_id.to_string());
+        if let Some(app) = app_id {
+            qb.push(" AND app_id = ").push_bind(app.to_string());
+        }
+        qb.push(" AND key_id IN (");
+        {
+            let mut sep = qb.separated(", ");
+            for kid in key_ids {
+                sep.push_bind(kid.to_string());
+            }
+        }
+        qb.push(") ORDER BY created_at DESC LIMIT ")
+            .push_bind(per_page as i64)
+            .push(" OFFSET ")
+            .push_bind(offset);
+        let rows: Vec<GenerationRow> = qb.build_query_as().fetch_all(&self.pool).await?;
+
+        Ok((rows.into_iter().map(generation_from_row).collect(), total as u64))
+    }
+
     async fn get_request_logs_for_tenant(
         &self,
         org_id: &str,
@@ -1827,7 +1914,7 @@ impl DatabaseStore for SqliteDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<(Vec<RequestLog>, u64), sqlx::Error> {
-        let offset = ((page.saturating_sub(1)) * per_page) as i64;
+        let offset = crate::api::pagination::offset(page, per_page) as i64;
         const COLS: &str = REQUEST_LOG_COLS;
         let (total, rows) = match app_id {
             Some(app) => {
@@ -1880,7 +1967,7 @@ impl DatabaseStore for SqliteDatabase {
         page: u32,
         per_page: u32,
     ) -> Result<(Vec<AuditLogEntry>, i64), sqlx::Error> {
-        let offset = ((page.saturating_sub(1)) * per_page) as i64;
+        let offset = crate::api::pagination::offset(page, per_page) as i64;
         let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_log WHERE org_id = ?")
             .bind(org_id)
             .fetch_one(&self.pool)
@@ -1897,6 +1984,75 @@ impl DatabaseStore for SqliteDatabase {
         .await?;
         let entries = rows.into_iter().map(audit_log_from_row).collect();
         Ok((entries, total.0))
+    }
+
+    async fn get_request_logs_for_tenant_filtered(
+        &self,
+        org_id: &str,
+        app_id: Option<&str>,
+        filter: &crate::db::RequestLogFilter<'_>,
+        page: u32,
+        per_page: u32,
+    ) -> Result<(Vec<RequestLog>, u64), sqlx::Error> {
+        use sqlx::QueryBuilder;
+        // SQLite stores created_at as fixed-width "YYYY-MM-DD HH:MM:SS" (via
+        // datetime('now')), so binding the range as the same-format string makes
+        // a lexicographic comparison equivalent to a chronological one.
+        let fmt = |dt: chrono::DateTime<chrono::Utc>| dt.format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let mut cb = QueryBuilder::<sqlx::Sqlite>::new("SELECT COUNT(*) FROM request_logs WHERE org_id = ");
+        cb.push_bind(org_id.to_string());
+        if let Some(app) = app_id { cb.push(" AND app_id = ").push_bind(app.to_string()); }
+        if let Some(m) = filter.model { cb.push(" AND model = ").push_bind(m.to_string()); }
+        if let Some(p) = filter.provider { cb.push(" AND provider = ").push_bind(p.to_string()); }
+        if let Some(s) = filter.status { cb.push(" AND status = ").push_bind(s.to_string()); }
+        if let Some(f) = filter.from { cb.push(" AND created_at >= ").push_bind(fmt(f)); }
+        if let Some(t) = filter.to { cb.push(" AND created_at <= ").push_bind(fmt(t)); }
+        let (total,): (i64,) = cb.build_query_as().fetch_one(&self.pool).await?;
+
+        let offset = crate::api::pagination::offset(page, per_page) as i64;
+        let mut qb = QueryBuilder::<sqlx::Sqlite>::new(format!("SELECT {REQUEST_LOG_COLS} FROM request_logs WHERE org_id = "));
+        qb.push_bind(org_id.to_string());
+        if let Some(app) = app_id { qb.push(" AND app_id = ").push_bind(app.to_string()); }
+        if let Some(m) = filter.model { qb.push(" AND model = ").push_bind(m.to_string()); }
+        if let Some(p) = filter.provider { qb.push(" AND provider = ").push_bind(p.to_string()); }
+        if let Some(s) = filter.status { qb.push(" AND status = ").push_bind(s.to_string()); }
+        if let Some(f) = filter.from { qb.push(" AND created_at >= ").push_bind(fmt(f)); }
+        if let Some(t) = filter.to { qb.push(" AND created_at <= ").push_bind(fmt(t)); }
+        qb.push(" ORDER BY created_at DESC LIMIT ").push_bind(per_page as i64).push(" OFFSET ").push_bind(offset);
+        let rows: Vec<RequestLogRow> = qb.build_query_as().fetch_all(&self.pool).await?;
+        Ok((rows.into_iter().map(request_log_from_row).collect(), total as u64))
+    }
+
+    async fn list_audit_log_for_tenant_filtered(
+        &self,
+        org_id: &str,
+        filter: &crate::db::TenantAuditFilter<'_>,
+        page: u32,
+        per_page: u32,
+    ) -> Result<(Vec<AuditLogEntry>, u64), sqlx::Error> {
+        use sqlx::QueryBuilder;
+        let fmt = |dt: chrono::DateTime<chrono::Utc>| dt.format("%Y-%m-%d %H:%M:%S").to_string();
+        const COLS: &str = "id, actor_key_id, actor_label, action, target_type, target_id, before_json, after_json, created_at, org_id";
+
+        let mut cb = QueryBuilder::<sqlx::Sqlite>::new("SELECT COUNT(*) FROM audit_log WHERE org_id = ");
+        cb.push_bind(org_id.to_string());
+        if let Some(a) = filter.actor_key_id { cb.push(" AND actor_key_id = ").push_bind(a.to_string()); }
+        if let Some(a) = filter.action { cb.push(" AND action = ").push_bind(a.to_string()); }
+        if let Some(f) = filter.from { cb.push(" AND created_at >= ").push_bind(fmt(f)); }
+        if let Some(t) = filter.to { cb.push(" AND created_at <= ").push_bind(fmt(t)); }
+        let (total,): (i64,) = cb.build_query_as().fetch_one(&self.pool).await?;
+
+        let offset = crate::api::pagination::offset(page, per_page) as i64;
+        let mut qb = QueryBuilder::<sqlx::Sqlite>::new(format!("SELECT {COLS} FROM audit_log WHERE org_id = "));
+        qb.push_bind(org_id.to_string());
+        if let Some(a) = filter.actor_key_id { qb.push(" AND actor_key_id = ").push_bind(a.to_string()); }
+        if let Some(a) = filter.action { qb.push(" AND action = ").push_bind(a.to_string()); }
+        if let Some(f) = filter.from { qb.push(" AND created_at >= ").push_bind(fmt(f)); }
+        if let Some(t) = filter.to { qb.push(" AND created_at <= ").push_bind(fmt(t)); }
+        qb.push(" ORDER BY created_at DESC LIMIT ").push_bind(per_page as i64).push(" OFFSET ").push_bind(offset);
+        let rows: Vec<AuditLogRow> = qb.build_query_as().fetch_all(&self.pool).await?;
+        Ok((rows.into_iter().map(audit_log_from_row).collect(), total as u64))
     }
 }
 

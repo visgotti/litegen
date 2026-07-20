@@ -20,7 +20,10 @@ export class LiteGenAPIError extends LiteGenError {
     this.name = "LiteGenAPIError";
     this.status = status;
     this.type = detail.type;
-    this.code = detail.code ?? undefined;
+    // The server emits `code` as a number in some paths and a string in others,
+    // while the declared type is `string`. Coerce so `error.code === "429"`
+    // comparisons behave as the type promises, regardless of the wire form.
+    this.code = detail.code != null ? String(detail.code) : undefined;
     this.providerError = detail.provider_error ?? undefined;
   }
 }

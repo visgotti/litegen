@@ -114,9 +114,25 @@ pub async fn validate_public_url(url: &str) -> Result<(), String> {
 /// has checked the original URL (see the DNS-rebinding note above). Falls back to
 /// a default client only if the builder somehow fails. Use this anywhere the
 /// server fetches a webhook/reference URL rather than hand-rolling the builder.
+/// Total-request timeout for server-side fetches of user-supplied URLs. A
+/// hostile or hung host must never be able to pin a webhook/reference-fetch task
+/// (and its connection) open forever.
+const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Connect-phase timeout (a subset of the total), so a host that accepts the TCP
+/// SYN but never completes the handshake is bounded too.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub fn no_redirect_client() -> reqwest::Client {
+    no_redirect_client_with_timeout(FETCH_TIMEOUT)
+}
+
+/// Same as [`no_redirect_client`] but with a caller-chosen total timeout. Kept
+/// separate so tests can exercise the timeout behaviour with a short deadline.
+pub fn no_redirect_client_with_timeout(timeout: std::time::Duration) -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .timeout(timeout)
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -125,6 +141,34 @@ pub fn no_redirect_client() -> reqwest::Client {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    #[tokio::test]
+    async fn no_redirect_client_times_out_on_a_hung_host() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // Server accepts the connection but stalls for 4s before responding.
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(4)),
+            )
+            .mount(&server)
+            .await;
+
+        // A 1s timeout must abort the fetch well before the 4s response — a
+        // client with no timeout would instead block until the response lands.
+        let client = no_redirect_client_with_timeout(std::time::Duration::from_secs(1));
+        let start = std::time::Instant::now();
+        let result = client.get(server.uri()).send().await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "request to a hung host must time out, not hang");
+        assert!(
+            elapsed < std::time::Duration::from_secs(3),
+            "timeout must fire near its 1s deadline, took {elapsed:?}"
+        );
+    }
 
     #[test]
     fn blocks_private_and_metadata_v4() {

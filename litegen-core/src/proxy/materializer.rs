@@ -192,9 +192,45 @@ impl Materializer {
         if !resp.status().is_success() {
             return Err(MaterializeError::Fetch(format!("status {}", resp.status())));
         }
-        let bytes = resp.bytes().await.map_err(|e| MaterializeError::Fetch(e.to_string()))?;
-        Ok(bytes.to_vec())
+        read_body_capped(resp, MAX_REF_IMAGE_BYTES).await
     }
+}
+
+/// Maximum size of a server-side reference-image fetch. The URL is caller-
+/// supplied, so an unbounded `resp.bytes()` would let a hostile or misbehaving
+/// host stream an arbitrarily large body straight into memory.
+const MAX_REF_IMAGE_BYTES: usize = 20 * 1024 * 1024; // 20 MiB
+
+/// Read a response body into memory, aborting once it exceeds `max_bytes`.
+///
+/// The declared `Content-Length` is rejected up front (cheap), and the cap is
+/// re-enforced while streaming so a missing or dishonest length can't bypass it.
+async fn read_body_capped(
+    resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, MaterializeError> {
+    if let Some(len) = resp.content_length() {
+        if len > max_bytes as u64 {
+            return Err(MaterializeError::Fetch(format!(
+                "reference image too large: {len} bytes exceeds {max_bytes} limit"
+            )));
+        }
+    }
+    let mut resp = resp;
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| MaterializeError::Fetch(e.to_string()))?
+    {
+        if buf.len() + chunk.len() > max_bytes {
+            return Err(MaterializeError::Fetch(format!(
+                "reference image exceeds {max_bytes} byte limit"
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
 }
 
 pub fn strip_data_prefix(s: &str) -> &str {
@@ -226,5 +262,43 @@ impl TempStorage for StorageAdapter {
     async fn delete(&self, key: &str) -> Result<(), MaterializeError> {
         self.inner.delete(key).await
             .map_err(|e| MaterializeError::Upload(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod fetch_cap_tests {
+    use super::*;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn rejects_body_larger_than_cap() {
+        let server = MockServer::start().await;
+        let big = vec![b'x'; 5000];
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(big))
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new().get(server.uri()).send().await.unwrap();
+        // A 5000-byte body must be rejected under a 1000-byte cap rather than
+        // being read fully into memory.
+        assert!(
+            read_body_capped(resp, 1000).await.is_err(),
+            "an over-cap reference body must be rejected, not buffered"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepts_body_within_cap() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'y'; 500]))
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new().get(server.uri()).send().await.unwrap();
+        let body = read_body_capped(resp, 1000).await.expect("within-cap body should read");
+        assert_eq!(body.len(), 500);
     }
 }

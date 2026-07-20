@@ -125,15 +125,8 @@ pub async fn generate_image(
     OptionalKeyContext(key_ctx): OptionalKeyContext,
     validated: ValidatedImage,
 ) -> impl IntoResponse {
-    // Acquire an in-flight slot; 503 immediately if at capacity.
-    let _permit = match state.in_flight.try_acquire() {
-        Some(p) => p,
-        None => return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [("retry-after", "1")],
-            Json(error_response("server at capacity, retry shortly", 503)),
-        ).into_response(),
-    };
+    // The in-flight slot was acquired in the Validated* extractor (before the
+    // body was buffered) and is held for this request via `validated._permit`.
 
     let start = std::time::Instant::now();
 
@@ -180,24 +173,23 @@ pub async fn generate_image(
     // resolved we fall back to the calling principal (key/user/master) instead
     // of a shared global bucket. See `cache_scope`.
     let cache_scope = key_ctx.as_ref().map(cache_scope);
+
+    // Reserve the estimated cost against the key's quota BEFORE dispatch (the
+    // real spend cap; see reserve_quota). Settled to the actual cost on success
+    // and released on failure so a failed request is never billed.
+    let charge_key = key_ctx.as_ref().and_then(|c| c.key_id);
+    let reserved = match reserve_quota(&state, charge_key, validated.schema.pricing.base_cost_usd).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
     match state.router.generate_image(&validated.schema, &validated.request.base, &extras, &materialized, app_creds, app_store, cache_scope.as_deref()).await {
         Ok(response) => {
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
 
-            // Post-charge quota if a DB key was used
-            let mut quota_exceeded = false;
-            if let Some(key_id) = key_ctx.as_ref().and_then(|c| c.key_id) {
-                if cost > 0.0 {
-                    match state.db.atomic_charge_tokens(&key_id, cost).await {
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::warn!(error = %e, key_id = %key_id, "Quota charge failed after generation");
-                            quota_exceeded = true;
-                        }
-                    }
-                }
-            }
+            // Settle the reservation to the actual cost.
+            settle_quota(&state, charge_key, reserved, cost).await;
 
             // Build artifact for drill-down storage
             let artifact = {
@@ -259,15 +251,12 @@ pub async fn generate_image(
             if let Some((k, v)) = dropped_header(&validated.dropped) {
                 resp.headers_mut().insert(k, v);
             }
-            if quota_exceeded {
-                resp.headers_mut().insert(
-                    "x-litegen-quota-exceeded",
-                    axum::http::HeaderValue::from_static("true"),
-                );
-            }
             resp
         }
         Err(e) => {
+            // Nothing was delivered — release the reservation so a failed
+            // request is never billed.
+            settle_quota(&state, charge_key, reserved, 0.0).await;
             let latency = start.elapsed().as_millis() as i64;
             let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             error!(error = %e, "Image generation failed");
@@ -358,15 +347,8 @@ pub async fn generate_video(
     OptionalKeyContext(key_ctx): OptionalKeyContext,
     validated: ValidatedVideo,
 ) -> impl IntoResponse {
-    // Acquire an in-flight slot; 503 immediately if at capacity.
-    let _permit = match state.in_flight.try_acquire() {
-        Some(p) => p,
-        None => return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [("retry-after", "1")],
-            Json(error_response("server at capacity, retry shortly", 503)),
-        ).into_response(),
-    };
+    // The in-flight slot was acquired in the Validated* extractor (before the
+    // body was buffered) and is held for this request via `validated._permit`.
 
     let start = std::time::Instant::now();
 
@@ -397,24 +379,21 @@ pub async fn generate_video(
         return provider_not_configured_response(&validated.schema.provider);
     }
 
+    // Reserve the estimated cost against the key's quota BEFORE dispatch, then
+    // settle to the actual cost on success / release on failure.
+    let charge_key = key_ctx.as_ref().and_then(|c| c.key_id);
+    let reserved = match reserve_quota(&state, charge_key, validated.schema.pricing.base_cost_usd).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
     match state.router.generate_video(&validated.schema, &validated.request.base, &extras, &materialized, app_creds).await {
         Ok(response) => {
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
 
-            // Post-charge quota if a DB key was used
-            let mut quota_exceeded = false;
-            if let Some(key_id) = key_ctx.as_ref().and_then(|c| c.key_id) {
-                if cost > 0.0 {
-                    match state.db.atomic_charge_tokens(&key_id, cost).await {
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::warn!(error = %e, key_id = %key_id, "Quota charge failed after video generation");
-                            quota_exceeded = true;
-                        }
-                    }
-                }
-            }
+            // Settle the reservation to the actual cost.
+            settle_quota(&state, charge_key, reserved, cost).await;
 
             // Build video artifact
             let video_artifact = {
@@ -478,15 +457,11 @@ pub async fn generate_video(
             if let Some((k, v)) = dropped_header(&validated.dropped) {
                 resp.headers_mut().insert(k, v);
             }
-            if quota_exceeded {
-                resp.headers_mut().insert(
-                    "x-litegen-quota-exceeded",
-                    axum::http::HeaderValue::from_static("true"),
-                );
-            }
             resp
         }
         Err(e) => {
+            // Nothing was delivered — release the reservation.
+            settle_quota(&state, charge_key, reserved, 0.0).await;
             let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             error!(error = %e, "Video generation failed");
             (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
@@ -870,6 +845,10 @@ pub struct CreateApiKeyRequest {
     /// Webhook URL for async callbacks.
     #[serde(default)]
     pub webhook_url: Option<String>,
+    /// Optional expiry; after this instant the key is rejected at auth. None =
+    /// never expires. Enforced in auth_middleware and honoured on PATCH too.
+    #[serde(default)]
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 fn default_key_scopes() -> String { "generate,read".to_string() }
@@ -949,6 +928,35 @@ pub async fn create_api_key(
         }
     }
 
+    // Privilege check: a key must never be granted more authority than its
+    // creator holds. In particular the `admin` scope bypasses permission gates
+    // on the Bearer path, so a Member (or a non-admin key) must not be able to
+    // mint an admin-scope key. Reject unknown scope tokens too, so a typo is a
+    // 400 rather than a silently dropped (and thus missing) scope.
+    if let Some(ref ctx) = key_ctx {
+        let grantable = crate::api::middleware::grantable_scopes(ctx);
+        for token in request.scopes.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            match crate::api::middleware::Scope::parse(token) {
+                Some(scope) if grantable.contains(&scope) => {}
+                Some(_) => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(error_response(
+                            &format!("insufficient privilege to grant scope '{token}'"),
+                            403,
+                        )),
+                    ).into_response();
+                }
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(error_response(&format!("unknown scope '{token}'"), 400)),
+                    ).into_response();
+                }
+            }
+        }
+    }
+
     // Mint a pk_live_/sk_live_ id+secret pair. The secret_hash is what auth looks up.
     let kp = crate::auth::secrets::generate_key_pair();
 
@@ -962,6 +970,7 @@ pub async fn create_api_key(
         &kp.secret_hash, &kp.prefix,
         request.token_quota, request.rpm_limit,
         &request.scopes, request.webhook_url.as_deref(),
+        request.expires_at,
     ).await {
         Ok(key) => {
             // Set owner if session-authenticated
@@ -1310,6 +1319,11 @@ pub async fn list_generations(
 ) -> impl IntoResponse {
     use crate::auth::permissions::Permission;
 
+    // Clamp caller-supplied paging so per_page can't drive an unbounded SQL LIMIT
+    // / in-memory buffer and the offset can't overflow u32. See api::pagination.
+    let page = crate::api::pagination::clamp_page(query.page);
+    let per_page = crate::api::pagination::clamp_per_page(query.per_page);
+
     // Tenant scope: require an active org; results are scoped to org (+ app when set).
     let org_id = match ctx.org_id.as_deref() {
         Some(o) => o,
@@ -1334,26 +1348,25 @@ pub async fn list_generations(
     };
 
     if let Some(owned_key_ids) = owned_filter {
-        // Read-own member: tenant-scope the rows then filter to their owned keys.
-        let all_gens = match state.db.list_generations_for_tenant(org_id, app_id, 1, 10000).await {
-            Ok(g) => g,
+        // Read-own member: filter to the caller's owned keys AND paginate/count
+        // at the DB, so their complete history is visible (not just whichever
+        // rows fall inside a truncated in-memory window).
+        let (paged, total) = match state.db
+            .list_generations_for_owner(org_id, app_id, &owned_key_ids, page, per_page)
+            .await
+        {
+            Ok(pair) => pair,
             Err(e) => {
                 error!(error = %e, "Failed to list generations");
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
             }
         };
-        let filtered: Vec<_> = all_gens.into_iter()
-            .filter(|g| g.key_id.map(|kid| owned_key_ids.contains(&kid)).unwrap_or(false))
-            .collect();
-        let total = filtered.len() as i64;
-        let offset = ((query.page.saturating_sub(1)) * query.per_page) as usize;
-        let paged: Vec<_> = filtered.into_iter().skip(offset).take(query.per_page as usize).collect();
-        let total_pages = ((total as f64) / (query.per_page as f64)).ceil() as u32;
+        let total_pages = crate::api::pagination::total_pages(total, per_page);
         let response = PaginatedResponse {
             data: paged,
-            total: total as u64,
-            page: query.page,
-            per_page: query.per_page,
+            total,
+            page,
+            per_page,
             total_pages,
         };
         return (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response();
@@ -1361,7 +1374,7 @@ pub async fn list_generations(
 
     let (total, gens) = match tokio::try_join!(
         state.db.count_generations_for_tenant(org_id, app_id),
-        state.db.list_generations_for_tenant(org_id, app_id, query.page, query.per_page),
+        state.db.list_generations_for_tenant(org_id, app_id, page, per_page),
     ) {
         Ok(pair) => pair,
         Err(e) => {
@@ -1370,12 +1383,12 @@ pub async fn list_generations(
         }
     };
 
-    let total_pages = ((total as f64) / (query.per_page as f64)).ceil() as u32;
+    let total_pages = crate::api::pagination::total_pages(total as u64, per_page);
     let response = PaginatedResponse {
         data: gens,
         total: total as u64,
-        page: query.page,
-        per_page: query.per_page,
+        page,
+        per_page,
         total_pages,
     };
     (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response()
@@ -1721,46 +1734,59 @@ pub async fn get_logs_filtered(
     let app_id = key_ctx.as_ref().and_then(|c| c.app_id.as_deref());
 
     let is_csv = query.format.as_deref() == Some("csv");
-    let page = query.page.unwrap_or(1);
-    let per_page = if is_csv { 10000 } else { query.per_page.unwrap_or(50) };
+    let page = crate::api::pagination::clamp_page(query.page.unwrap_or(1));
+    let per_page = if is_csv {
+        10000
+    } else {
+        crate::api::pagination::clamp_per_page(query.per_page.unwrap_or(crate::api::pagination::DEFAULT_PER_PAGE))
+    };
 
-    // Fetch all tenant rows, then apply the optional model/provider/status/date
-    // filters in-handler (the tenant-scoped query is not itself filter-aware).
-    let (all_logs, _) = match state.db.get_request_logs_for_tenant(org_id, app_id, 1, 100_000).await {
+    // Push the optional model/provider/status/date filters + pagination + count
+    // down to the DB so a filtered or deep-page query returns the true matching
+    // set and total — not a slice of a truncated in-memory window. Unparseable
+    // date bounds are ignored (as the old lexicographic compare effectively did).
+    let filter = crate::db::RequestLogFilter {
+        model: query.model.as_deref(),
+        provider: query.provider.as_deref(),
+        status: query.status.as_deref(),
+        from: query.from.as_deref().and_then(parse_rfc3339_utc),
+        to: query.to.as_deref().and_then(parse_rfc3339_utc),
+    };
+    let (rows, total) = match state.db
+        .get_request_logs_for_tenant_filtered(org_id, app_id, &filter, page, per_page)
+        .await
+    {
         Ok(pair) => pair,
         Err(e) => {
             error!(error = %e, "Failed to get tenant logs");
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
         }
     };
-    let filtered: Vec<RequestLog> = all_logs
-        .into_iter()
-        .filter(|l| query.model.as_deref().map(|m| l.model == m).unwrap_or(true))
-        .filter(|l| query.provider.as_deref().map(|p| l.provider == p).unwrap_or(true))
-        .filter(|l| query.status.as_deref().map(|s| format!("{}", l.status) == s).unwrap_or(true))
-        // `from`/`to` params are compared lexicographically after formatting as RFC 3339
-        .filter(|l| query.from.as_deref().map(|f| l.created_at.to_rfc3339().as_str() >= f).unwrap_or(true))
-        .filter(|l| query.to.as_deref().map(|t| l.created_at.to_rfc3339().as_str() <= t).unwrap_or(true))
-        .collect();
 
     if is_csv {
+        // CSV export takes the (DB-filtered) first `per_page` (10k) rows.
         let date = chrono::Utc::now().format("%Y%m%d").to_string();
         let filename = format!("logs-{}.csv", date);
-        return csv_response(logs_to_csv(&filtered), &filename);
+        return csv_response(logs_to_csv(&rows), &filename);
     }
 
-    let total = filtered.len() as u64;
-    let offset = ((page.saturating_sub(1)) * per_page) as usize;
-    let paged: Vec<RequestLog> = filtered.into_iter().skip(offset).take(per_page as usize).collect();
-    let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+    let total_pages = crate::api::pagination::total_pages(total, per_page);
     let response = PaginatedResponse {
-        data: paged,
+        data: rows,
         total,
         page,
         per_page,
         total_pages,
     };
     (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response()
+}
+
+/// Parse an RFC-3339 timestamp into UTC, returning `None` on failure so an
+/// unparseable filter bound is simply ignored rather than 400ing the request.
+fn parse_rfc3339_utc(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
 // ─── Webhook Delivery Log ────────────────────────────────────────────────────
@@ -1807,14 +1833,16 @@ pub async fn list_webhook_deliveries(
         return resp;
     }
     let key_id_str = id.to_string();
-    match state.db.list_webhook_deliveries(&key_id_str, params.page, params.per_page).await {
+    let page = crate::api::pagination::clamp_page(params.page);
+    let per_page = crate::api::pagination::clamp_per_page(params.per_page);
+    match state.db.list_webhook_deliveries(&key_id_str, page, per_page).await {
         Ok((deliveries, total)) => {
-            let total_pages = ((total as f64) / (params.per_page as f64)).ceil() as u32;
+            let total_pages = crate::api::pagination::total_pages(total as u64, per_page);
             let response = PaginatedResponse {
                 data: deliveries,
                 total: total as u64,
-                page: params.page,
-                per_page: params.per_page,
+                page,
+                per_page,
                 total_pages,
             };
             (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response()
@@ -1877,38 +1905,40 @@ pub async fn list_audit(
         None => return forbidden_no_org(),
     };
     let is_csv = query.format.as_deref() == Some("csv");
-    let page = query.page.unwrap_or(1);
-    let per_page = if is_csv { 10000 } else { query.per_page.unwrap_or(50) };
+    let page = crate::api::pagination::clamp_page(query.page.unwrap_or(1));
+    let per_page = if is_csv {
+        10000
+    } else {
+        crate::api::pagination::clamp_per_page(query.per_page.unwrap_or(crate::api::pagination::DEFAULT_PER_PAGE))
+    };
 
-    // Fetch all org-scoped entries, then apply the optional actor/action/date
-    // filters in-handler (the tenant-scoped query is not itself filter-aware).
-    let (all_entries, _) = match state.db.list_audit_log_for_tenant(org_id, 1, 100_000).await {
+    // Push the optional actor/action/date filters + pagination + count down to
+    // the DB (true matching set + total, not a slice of a truncated window).
+    let filter = crate::db::TenantAuditFilter {
+        actor_key_id: query.actor_key_id.as_deref(),
+        action: query.action.as_deref(),
+        from: query.from.as_deref().and_then(parse_rfc3339_utc),
+        to: query.to.as_deref().and_then(parse_rfc3339_utc),
+    };
+    let (rows, total) = match state.db
+        .list_audit_log_for_tenant_filtered(org_id, &filter, page, per_page)
+        .await
+    {
         Ok(pair) => pair,
         Err(e) => {
             error!(error = %e, "Failed to list audit log");
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response();
         }
     };
-    let filtered: Vec<AuditLogEntry> = all_entries
-        .into_iter()
-        .filter(|e| query.actor_key_id.as_deref().map(|a| e.actor_key_id.as_deref() == Some(a)).unwrap_or(true))
-        .filter(|e| query.action.as_deref().map(|a| e.action == a).unwrap_or(true))
-        // `from`/`to` params are compared lexicographically after formatting as RFC 3339
-        .filter(|e| query.from.as_deref().map(|f| e.created_at.to_rfc3339().as_str() >= f).unwrap_or(true))
-        .filter(|e| query.to.as_deref().map(|t| e.created_at.to_rfc3339().as_str() <= t).unwrap_or(true))
-        .collect();
 
     if is_csv {
         let date = chrono::Utc::now().format("%Y%m%d").to_string();
         let filename = format!("audit-{}.csv", date);
-        return csv_response(audit_to_csv(&filtered), &filename);
+        return csv_response(audit_to_csv(&rows), &filename);
     }
-    let total = filtered.len() as u64;
-    let offset = ((page.saturating_sub(1)) * per_page) as usize;
-    let paged: Vec<AuditLogEntry> = filtered.into_iter().skip(offset).take(per_page as usize).collect();
-    let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+    let total_pages = crate::api::pagination::total_pages(total, per_page);
     let response = PaginatedResponse {
-        data: paged,
+        data: rows,
         total,
         page,
         per_page,
@@ -2293,6 +2323,60 @@ fn forbidden_no_org() -> axum::response::Response {
         StatusCode::FORBIDDEN,
         Json(error_response("no active organization", 403)),
     ).into_response()
+}
+
+/// 402 returned when a pre-dispatch quota reservation would exceed the key's cap.
+fn quota_exceeded_response() -> axum::response::Response {
+    (
+        StatusCode::PAYMENT_REQUIRED,
+        Json(serde_json::json!({
+            "error": { "message": "quota exceeded", "type": "quota_exceeded", "code": 402 }
+        })),
+    ).into_response()
+}
+
+/// Atomically reserve `estimate` of quota against `key_id` BEFORE dispatching a
+/// billable generation. This — not the stale pre-flight read in the auth
+/// middleware — is what actually caps spend: a single oversized request or a
+/// burst of concurrent requests cannot slip past because the check-and-increment
+/// is one atomic UPDATE. Returns the reserved amount (0.0 when there is no DB key
+/// or nothing to charge), or an `Err(response)` (402 over-quota, 503 on DB error)
+/// the caller must return without dispatching.
+async fn reserve_quota(
+    state: &AppState,
+    key_id: Option<uuid::Uuid>,
+    estimate: f64,
+) -> Result<f64, axum::response::Response> {
+    let Some(key_id) = key_id else { return Ok(0.0) };
+    if estimate <= 0.0 {
+        return Ok(0.0);
+    }
+    match state.db.reserve_tokens(&key_id, estimate).await {
+        Ok(true) => Ok(estimate),
+        Ok(false) => Err(quota_exceeded_response()),
+        Err(e) => {
+            tracing::error!(error = %e, key_id = %key_id, "quota reservation failed");
+            Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                [("retry-after", "1")],
+                Json(error_response("temporarily unable to authorize request", 503)),
+            ).into_response())
+        }
+    }
+}
+
+/// Settle a prior [`reserve_quota`] hold once the generation resolves: adjust the
+/// held `reserved` amount to the `actual` cost. A negative delta refunds the
+/// difference; `actual == 0.0` releases the whole hold (used when generation
+/// fails so a failed request is never billed).
+async fn settle_quota(state: &AppState, key_id: Option<uuid::Uuid>, reserved: f64, actual: f64) {
+    let Some(key_id) = key_id else { return };
+    let delta = actual - reserved;
+    if delta.abs() > f64::EPSILON {
+        if let Err(e) = state.db.atomic_charge_tokens(&key_id, delta).await {
+            tracing::warn!(error = %e, key_id = %key_id, "quota settlement failed");
+        }
+    }
 }
 
 fn forbidden_perm_resp(perm: &str) -> axum::response::Response {
@@ -3675,8 +3759,8 @@ mod tenant_scoping_tests {
 
         let kp_a = crate::auth::secrets::generate_key_pair();
         let kp_b = crate::auth::secrets::generate_key_pair();
-        db.create_api_key_scoped("org-a", "app-a", &kp_a.public_id, "ka", &kp_a.secret_hash, &kp_a.prefix, None, None, "generate,read", None).await.unwrap();
-        db.create_api_key_scoped("org-b", "app-b", &kp_b.public_id, "kb", &kp_b.secret_hash, &kp_b.prefix, None, None, "generate,read", None).await.unwrap();
+        db.create_api_key_scoped("org-a", "app-a", &kp_a.public_id, "ka", &kp_a.secret_hash, &kp_a.prefix, None, None, "generate,read", None, None).await.unwrap();
+        db.create_api_key_scoped("org-b", "app-b", &kp_b.public_id, "kb", &kp_b.secret_hash, &kp_b.prefix, None, None, "generate,read", None, None).await.unwrap();
 
         // One generation per tenant.
         db.insert_generation("gen-org-a", None, "mock/v", "mock", "video", None, 0.0, Some("org-a"), Some("app-a")).await.unwrap();
@@ -3705,7 +3789,7 @@ mod tenant_scoping_tests {
         db.create_organization(&make_org("org-a", "org-a")).await.unwrap();
         db.create_application(&make_app("app-a", "org-a", "app-a")).await.unwrap();
         let kp = crate::auth::secrets::generate_key_pair();
-        db.create_api_key_scoped("org-a", "app-a", &kp.public_id, "ka", &kp.secret_hash, &kp.prefix, None, None, "generate,read", None).await.unwrap();
+        db.create_api_key_scoped("org-a", "app-a", &kp.public_id, "ka", &kp.secret_hash, &kp.prefix, None, None, "generate,read", None, None).await.unwrap();
 
         let state = build_state(db, Mode::Hosted, Some("master".to_string())).await;
         let app = build_router(state);

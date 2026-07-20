@@ -213,7 +213,7 @@ impl VideoProvider for ViduProvider {
                 provider_error: None,
                 retryable: true,
             })?;
-        let data: Value = resp.json().await.unwrap_or_default();
+        let data = super::read_poll_json(resp, "vidu").await?;
 
         let status = match data["state"].as_str() {
             Some("success") => GenerationStatus::Completed,

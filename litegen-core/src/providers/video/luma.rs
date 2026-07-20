@@ -280,7 +280,7 @@ impl VideoProvider for LumaProvider {
             retryable: true,
         })?;
 
-        let data: Value = resp.json().await.unwrap_or_default();
+        let data = super::read_poll_json(resp, "luma").await?;
 
         let status = match data["state"].as_str() {
             Some("completed") => GenerationStatus::Completed,

@@ -224,7 +224,7 @@ impl VideoProvider for GoogleVideoProvider {
                 retryable: true,
             })?;
 
-        let data: Value = resp.json().await.unwrap_or_default();
+        let data = super::read_poll_json(resp, "google").await?;
 
         // Operation-level error → failed.
         if let Some(err) = data["error"]["message"].as_str() {

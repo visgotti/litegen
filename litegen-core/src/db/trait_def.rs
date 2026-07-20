@@ -3,6 +3,28 @@ use uuid::Uuid;
 
 use crate::types::*;
 
+/// Optional filters for a tenant-scoped request-log query. Any `None` field is
+/// ignored. `from`/`to` bound the `created_at` range (inclusive).
+#[derive(Default)]
+pub struct RequestLogFilter<'a> {
+    pub model: Option<&'a str>,
+    pub provider: Option<&'a str>,
+    pub status: Option<&'a str>,
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Optional filters for a tenant-scoped audit-log query. Any `None` field is
+/// ignored. `from`/`to` bound the `created_at` range (inclusive). Named to avoid
+/// colliding with the older global `types::AuditLogFilter`.
+#[derive(Default)]
+pub struct TenantAuditFilter<'a> {
+    pub actor_key_id: Option<&'a str>,
+    pub action: Option<&'a str>,
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// Trait defining the database operations. Implementations exist for SQLite and PostgreSQL.
 #[async_trait]
 #[allow(clippy::too_many_arguments)] // DB trait methods need many params; would need wrapper structs to reduce
@@ -127,6 +149,28 @@ pub trait DatabaseStore: Send + Sync {
         id: &Uuid,
         cost_usd: f64,
     ) -> Result<f64, sqlx::Error>;
+
+    /// Atomically reserve `amount` of quota against a key BEFORE dispatching a
+    /// (billable) generation. Adds `amount` to `tokens_used` in a single
+    /// conditional statement, but only if the key has no quota or the new total
+    /// would stay within `token_quota`. Returns `true` if the reservation
+    /// succeeded, `false` if it would exceed the quota (or the key is missing).
+    ///
+    /// This is what actually enforces the quota: because the check-and-increment
+    /// is one atomic UPDATE, concurrent requests cannot all pass a stale
+    /// pre-flight read, and a single oversized request is rejected up front.
+    /// The caller reconciles the delta (or releases the hold) after the
+    /// generation completes via [`atomic_charge_tokens`].
+    async fn reserve_tokens(
+        &self,
+        _id: &Uuid,
+        _amount: f64,
+    ) -> Result<bool, sqlx::Error> {
+        // Default is permissive so lightweight test doubles need not implement
+        // quota logic. The production SqliteDatabase/PostgresDatabase impls
+        // override this with the atomic conditional reservation.
+        Ok(true)
+    }
 
     async fn validate_api_key(&self, key_hash: &str) -> Result<Option<ApiKey>, sqlx::Error>;
 
@@ -593,6 +637,7 @@ pub trait DatabaseStore: Send + Sync {
         _rpm_limit: Option<u32>,
         _scopes: &str,
         _webhook_url: Option<&str>,
+        _expires_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<ApiKey, sqlx::Error> {
         Err(sqlx::Error::RowNotFound)
     }
@@ -637,6 +682,49 @@ pub trait DatabaseStore: Send + Sync {
         _page: u32,
         _per_page: u32,
     ) -> Result<(Vec<AuditLogEntry>, i64), sqlx::Error> {
+        Ok((Vec::new(), 0))
+    }
+
+    /// Tenant-scoped, filtered, paginated request logs — filtered and counted at
+    /// the DB so a filtered or deep-page query returns the true matching set and
+    /// total, not a slice of a truncated in-memory window. `from`/`to` are bound
+    /// as real timestamps (correct on Postgres TIMESTAMPTZ; lexicographic on the
+    /// fixed-width SQLite text column).
+    async fn get_request_logs_for_tenant_filtered(
+        &self,
+        _org_id: &str,
+        _app_id: Option<&str>,
+        _filter: &RequestLogFilter<'_>,
+        _page: u32,
+        _per_page: u32,
+    ) -> Result<(Vec<RequestLog>, u64), sqlx::Error> {
+        Ok((Vec::new(), 0))
+    }
+
+    /// Tenant-scoped, filtered, paginated audit log (see
+    /// `get_request_logs_for_tenant_filtered`).
+    async fn list_audit_log_for_tenant_filtered(
+        &self,
+        _org_id: &str,
+        _filter: &TenantAuditFilter<'_>,
+        _page: u32,
+        _per_page: u32,
+    ) -> Result<(Vec<AuditLogEntry>, u64), sqlx::Error> {
+        Ok((Vec::new(), 0))
+    }
+
+    /// Paginated generations owned by a specific set of API keys within a tenant,
+    /// filtered and counted at the DB layer. Returns `(rows, total_matching)` so
+    /// a read-own member sees their complete history — not just whichever of
+    /// their rows happen to fall inside a truncated in-memory window.
+    async fn list_generations_for_owner(
+        &self,
+        _org_id: &str,
+        _app_id: Option<&str>,
+        _key_ids: &[Uuid],
+        _page: u32,
+        _per_page: u32,
+    ) -> Result<(Vec<Generation>, u64), sqlx::Error> {
         Ok((Vec::new(), 0))
     }
 }

@@ -203,10 +203,21 @@ impl LeonardoImageProvider {
     async fn fetch_image_bytes(&self, url: &str) -> Result<Vec<u8>, ProviderError> {
         let resp = self.client.get(url).send().await.map_err(|e| ProviderError::RequestFailed {
             message: format!("Failed to fetch Leonardo image: {e}"),
-            status_code: None,
+            status_code: e.status().map(|s| s.as_u16()),
             provider_error: None,
             retryable: true,
         })?;
+        if !resp.status().is_success() {
+            // A non-2xx (e.g. an expired/throttled presigned CDN URL) delivers a
+            // short error body, not image bytes. Returning it would store an
+            // error blob as the generated image and bill for a broken asset.
+            return Err(ProviderError::RequestFailed {
+                message: format!("Leonardo image URL returned HTTP {}", resp.status()),
+                status_code: Some(resp.status().as_u16()),
+                provider_error: None,
+                retryable: false,
+            });
+        }
         Ok(resp
             .bytes()
             .await
@@ -396,6 +407,30 @@ mod tests {
         cfg.credentials.api_key = Some("leo-key".to_string());
         p.configure(cfg);
         p
+    }
+
+    #[tokio::test]
+    async fn fetch_image_bytes_errors_on_non_success_status() {
+        // An expired/throttled presigned CDN URL returns a non-2xx with a short
+        // error body. Draining it as if it were the image would store an error
+        // blob and bill the customer for a broken asset, so the fetch must error.
+        let cdn = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/expired.png"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .set_body_string("<?xml version=\"1.0\"?><Error><Code>AccessDenied</Code></Error>"),
+            )
+            .mount(&cdn)
+            .await;
+
+        let p = make_provider("http://unused.invalid");
+        let result = p.fetch_image_bytes(&format!("{}/expired.png", cdn.uri())).await;
+        assert!(
+            result.is_err(),
+            "fetch_image_bytes must error on HTTP 403, got Ok with {:?} bytes",
+            result.map(|b| b.len())
+        );
     }
 
     fn make_base(prompt: &str, model: &str) -> BaseGenerationRequest {

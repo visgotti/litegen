@@ -12,12 +12,23 @@ use crate::api::middleware::{
     create_session_cookies, make_clear_session_cookies, AppState, KeyContext, DEFAULT_ORG_ID,
 };
 use crate::auth::lockout::{is_locked_out, retry_after_seconds};
-use crate::auth::password::{hash_password, verify_dummy, verify_password, PasswordError};
+use crate::auth::password::{
+    hash_password_async, verify_dummy_async, verify_password_async, PasswordError,
+};
 use crate::config::Mode;
 use crate::types::{Application, Organization, PasswordReset, Role, User};
 use crate::util::slug::{default_org_name_from_email, slugify, unique_org_slug};
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
+
+/// Build a 500 without leaking the underlying error to the (often
+/// unauthenticated) caller. The detail — usually a raw sqlx/DB error naming
+/// tables/columns/constraints — is logged server-side only; the client gets a
+/// generic message under `error_code`.
+fn sanitized_500(error_code: &str, detail: impl std::fmt::Display) -> Response {
+    tracing::error!(error = %detail, code = error_code, "auth handler internal error");
+    error_resp(StatusCode::INTERNAL_SERVER_ERROR, error_code, "internal server error")
+}
 
 fn error_resp(code: StatusCode, error_code: &str, message: &str) -> Response {
     (
@@ -167,7 +178,7 @@ pub async fn signup(
                 return error_resp(StatusCode::CONFLICT, "signup_closed", "Signup is closed: users already exist");
             }
             Err(e) => {
-                return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+                return sanitized_500("db_error", e);
             }
             _ => {}
         }
@@ -191,19 +202,19 @@ pub async fn signup(
                 return error_resp(StatusCode::CONFLICT, "email_taken", "An account with that email already exists");
             }
             Err(e) => {
-                return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+                return sanitized_500("db_error", e);
             }
             Ok(None) => {}
         }
     }
 
-    let hash = match hash_password(&body.password) {
+    let hash = match hash_password_async(body.password.clone()).await {
         Ok(h) => h,
         Err(PasswordError::TooShort) => {
             return error_resp(StatusCode::BAD_REQUEST, "password_too_short", "Password must be at least 12 characters");
         }
         Err(e) => {
-            return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "hash_error", &e.to_string());
+            return sanitized_500("hash_error", e);
         }
     };
 
@@ -228,7 +239,7 @@ pub async fn signup(
         if msg.contains("unique") && msg.contains("email") {
             return error_resp(StatusCode::CONFLICT, "email_taken", "An account with that email already exists");
         }
-        return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+        return sanitized_500("db_error", e);
     }
 
     // Provision tenant membership. NOTE: this is a sequence of non-atomic DB
@@ -239,7 +250,7 @@ pub async fn signup(
         Mode::SingleTenant => {
             // Owner becomes a member of the pre-existing default org (migration 0008).
             if let Err(e) = state.db.add_org_member(DEFAULT_ORG_ID, &user.id, Role::Owner).await {
-                return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+                return sanitized_500("db_error", e);
             }
             // Reflect the default org in the response for forward-compat.
             match state.db.get_organization(DEFAULT_ORG_ID).await {
@@ -250,7 +261,7 @@ pub async fn signup(
         Mode::Hosted => {
             match create_org_for_user(&state.db, &user.id, &email, body.org_name.clone()).await {
                 Ok(view) => view,
-                Err(e) => return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+                Err(e) => return sanitized_500("db_error", e),
             }
         }
     };
@@ -267,7 +278,7 @@ pub async fn signup(
             resp.headers_mut().append("set-cookie", cc);
             resp
         }
-        Err(e) => error_resp(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
+        Err(e) => sanitized_500("session_error", e),
     }
 }
 
@@ -327,9 +338,9 @@ pub async fn login(
     let phc = user_opt.as_ref().and_then(|u| u.password_hash.clone());
 
     let verified = match phc {
-        Some(ref h) => verify_password(&body.password, h).unwrap_or(false),
+        Some(ref h) => verify_password_async(body.password.clone(), h.clone()).await.unwrap_or(false),
         None => {
-            verify_dummy(&body.password);
+            verify_dummy_async(body.password.clone()).await;
             false
         }
     };
@@ -362,7 +373,7 @@ pub async fn login(
             resp.headers_mut().append("set-cookie", cc);
             resp
         }
-        Err(e) => error_resp(StatusCode::INTERNAL_SERVER_ERROR, "session_error", &e.to_string()),
+        Err(e) => sanitized_500("session_error", e),
     }
 }
 
@@ -598,13 +609,13 @@ pub async fn password_reset_confirm(
         return error_resp(StatusCode::BAD_REQUEST, "token_expired", "Token already used or expired");
     }
 
-    let hash = match hash_password(&body.new_password) {
+    let hash = match hash_password_async(body.new_password.clone()).await {
         Ok(h) => h,
         Err(PasswordError::TooShort) => {
             return error_resp(StatusCode::BAD_REQUEST, "password_too_short", "Password must be at least 12 characters");
         }
         Err(e) => {
-            return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "hash_error", &e.to_string());
+            return sanitized_500("hash_error", e);
         }
     };
 
@@ -615,7 +626,7 @@ pub async fn password_reset_confirm(
     // mark_password_reset_used CAS below: only one confirm wins it, and a duplicate
     // re-running this idempotent update is harmless.
     if let Err(e) = state.db.update_user(&reset.user_id, None, None, Some(&hash)).await {
-        return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string());
+        return sanitized_500("db_error", e);
     }
 
     // Atomically consume the token so it can't be replayed. The CAS is the
@@ -623,7 +634,7 @@ pub async fn password_reset_confirm(
     match state.db.mark_password_reset_used(&body.token).await {
         Ok(true) => {}
         Ok(false) => return error_resp(StatusCode::BAD_REQUEST, "token_expired", "Token already used or expired"),
-        Err(e) => return error_resp(StatusCode::INTERNAL_SERVER_ERROR, "db_error", &e.to_string()),
+        Err(e) => return sanitized_500("db_error", e),
     }
     let _ = state.db.delete_user_sessions(&reset.user_id, None).await;
 
