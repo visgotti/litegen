@@ -274,8 +274,14 @@ impl ImageProvider for GoogleProvider {
                 gen_config["seed"] = Value::Number(seed.into());
             }
 
-            // Number of images
-            gen_config["numberOfImages"] = Value::Number(base.n.max(1).into());
+            // Number of images — the generateContent surface uses
+            // candidateCount; `numberOfImages` belongs to the Imagen :predict
+            // API and Google 400s on unknown generationConfig fields. Omit
+            // entirely for n<=1 (the default) to stay off models that reject
+            // candidateCount for image output.
+            if base.n > 1 {
+                gen_config["candidateCount"] = Value::Number(base.n.into());
+            }
 
             // Shallow-merge extra fields into generationConfig
             if let Some(Value::Object(extra_map)) = &extras.extra {
