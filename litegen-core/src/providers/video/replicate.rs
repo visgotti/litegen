@@ -65,24 +65,13 @@ fn resolve_model_version(model: &str) -> ModelVersion {
             requires_image: false,
         },
 
-        // Stable Video Diffusion — image-to-video (14 frames)
-        // https://replicate.com/stability-ai/stable-video-diffusion
-        "replicate/svd" | "replicate-svd" => ModelVersion {
-            model: "stability-ai/stable-video-diffusion",
-            version: "3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438",
-            default_fps: 6,
-            max_frames: 14,
-            requires_image: true,
-        },
-
-        // Stable Video Diffusion XT — image-to-video (25 frames, longer)
-        "replicate/svd-xt" | "replicate-svd-xt" => ModelVersion {
-            model: "stability-ai/stable-video-diffusion",
-            version: "3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438",
-            default_fps: 6,
-            max_frames: 25,
-            requires_image: true,
-        },
+        // NOTE: `replicate/svd` and `replicate/svd-xt` used to map to
+        // stability-ai/stable-video-diffusion. That model has been removed from
+        // Replicate — https://replicate.com/stability-ai/stable-video-diffusion
+        // returns HTTP 404 — so the entries were deleted rather than left to
+        // fail at request time. There is no drop-in Replicate replacement;
+        // current official video models are minimax/hailuo-02, kwaivgi/kling-v2.1
+        // and google/veo-3.
 
         // Zeroscope v2 XL — text-to-video
         // https://replicate.com/anotherjesse/zeroscope-v2-xl
@@ -94,8 +83,11 @@ fn resolve_model_version(model: &str) -> ModelVersion {
             requires_image: false,
         },
 
-        // ModelScope — text-to-video
-        "replicate/modelscope" | "replicate-modelscope" => ModelVersion {
+        // Deforum Stable Diffusion — text-to-video.
+        // (Previously mislabelled "ModelScope"; the slug has always been
+        // deforum/deforum_stable_diffusion, which is a different model.)
+        "replicate/deforum" | "replicate-deforum" | "replicate/modelscope"
+        | "replicate-modelscope" => ModelVersion {
             model: "deforum/deforum_stable_diffusion",
             version: "e22e77495f2fb83c34d5fae2ad8ab63c0a87b6b573b6208e1535b23b89ea66d6",
             default_fps: 8,
@@ -558,5 +550,26 @@ mod tests {
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
         assert!(body["version"].as_str().is_some(), "version hash missing");
         assert_eq!(body["input"]["prompt"], "a time lapse of clouds");
+    }
+
+    /// https://replicate.com/stability-ai/stable-video-diffusion returns 404 —
+    /// the model was removed from Replicate. No id may still resolve to it.
+    #[test]
+    fn no_model_id_resolves_to_the_removed_stable_video_diffusion() {
+        for id in [
+            "replicate/svd",
+            "replicate/svd-xt",
+            "replicate/video",
+            "replicate/animate-diff",
+            "replicate/zeroscope",
+            "replicate/modelscope",
+            "replicate/anything-else",
+        ] {
+            let mv = resolve_model_version(id);
+            assert_ne!(
+                mv.model, "stability-ai/stable-video-diffusion",
+                "{id} still resolves to a model Replicate has removed"
+            );
+        }
     }
 }

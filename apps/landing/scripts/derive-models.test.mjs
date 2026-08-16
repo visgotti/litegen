@@ -80,8 +80,10 @@ test('the real models/ directory derives a sane catalog', () => {
   const models = deriveModels(all);
   assert.ok(models.length >= 50, `expected a substantial catalog, got ${models.length}`);
 
-  const dalle3 = models.find((m) => m.id === 'openai/dall-e-3');
-  assert.ok(dalle3, 'openai/dall-e-3 should be present');
-  assert.deepEqual(dalle3.sizes, ['1024x1024', '1792x1024', '1024x1792']);
-  assert.equal(dalle3.capabilities.textToImage, true);
+  // openai/dall-e-3 was retired by OpenAI on 2026-05-12; gpt-image-1 is the
+  // replacement and carries the three standard GPT-image sizes.
+  const gptImage1 = models.find((m) => m.id === 'openai/gpt-image-1');
+  assert.ok(gptImage1, 'openai/gpt-image-1 should be present');
+  assert.deepEqual(gptImage1.sizes, ['1024x1024', '1536x1024', '1024x1536']);
+  assert.equal(gptImage1.capabilities.textToImage, true);
 });

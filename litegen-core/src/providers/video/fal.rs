@@ -29,6 +29,26 @@ pub struct FalVideoProvider {
     client: Client,
 }
 
+/// What a given fal endpoint's input schema actually accepts.
+///
+/// fal endpoints are per-model, and their schemas differ sharply — sending a
+/// field the schema does not define is not harmless. `fal-ai/stable-video` has
+/// no `prompt` at all; only the Kling endpoints take `duration`; none of the
+/// endpoints we map take `aspect_ratio`.
+///
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id={id}>
+///   — each endpoint publishes its own OpenAPI document.
+struct EndpointSpec {
+    /// Endpoint used when no reference image is supplied.
+    text_to_video: &'static str,
+    /// Endpoint used when a reference image is supplied, if the model has a
+    /// distinct image-to-video variant.
+    image_to_video: &'static str,
+    supports_prompt: bool,
+    supports_duration: bool,
+    supports_aspect_ratio: bool,
+}
+
 impl FalVideoProvider {
     pub fn new() -> Self {
         Self {
@@ -59,32 +79,68 @@ impl FalVideoProvider {
             .unwrap_or("https://queue.fal.run")
     }
 
-    /// Resolve internal model ID to the Fal queue endpoint.
-    /// Each model maps to a specific Fal endpoint path.
-    ///
-    /// @see <https://fal.ai/models> — individual model pages (the endpoint paths returned here)
-    fn resolve_endpoint(model: &str) -> &'static str {
+    /// Resolve internal model ID to its fal endpoints and field support.
+    fn resolve_spec(model: &str) -> EndpointSpec {
         match model {
-            // Kling Video v1 standard — image-to-video
-            "fal/kling" | "fal-kling" => "fal-ai/kling-video/v1/standard/image-to-video",
-            // Kling Video v1.5 pro — higher quality, longer duration
-            "fal/kling-pro" | "fal-kling-pro" => "fal-ai/kling-video/v1.5/pro/image-to-video",
-            // MiniMax Video — image-to-video
-            "fal/minimax" | "fal-minimax" => "fal-ai/minimax-video/image-to-video",
-            // MiniMax Hailuo (Video-01-Live) — image-to-video
-            "fal/minimax-hailuo" | "fal-minimax-hailuo" => {
-                "fal-ai/minimax/video-01-live/image-to-video"
-            }
-            // AnimateDiff Turbo — text-to-video
-            "fal/animate-diff" | "fal-animate-diff-turbo" => {
-                "fal-ai/fast-animatediff/turbo/text-to-video"
-            }
-            // Stable Video Diffusion — image-to-video
-            "fal/svd" | "fal-svd" => "fal-ai/stable-video",
-            // LTX Video — text/image-to-video
-            "fal/ltx-video" | "fal-ltx-video" => "fal-ai/ltx-video",
-            // Generic fal/video — default to LTX Video
-            _ => "fal-ai/ltx-video",
+            // Kling Video v1 standard — image-to-video only; takes `duration`.
+            "fal/kling" | "fal-kling" => EndpointSpec {
+                text_to_video: "fal-ai/kling-video/v1/standard/image-to-video",
+                image_to_video: "fal-ai/kling-video/v1/standard/image-to-video",
+                supports_prompt: true,
+                supports_duration: true,
+                supports_aspect_ratio: false,
+            },
+            // Kling Video v1.5 pro — higher quality, longer duration.
+            "fal/kling-pro" | "fal-kling-pro" => EndpointSpec {
+                text_to_video: "fal-ai/kling-video/v1.5/pro/image-to-video",
+                image_to_video: "fal-ai/kling-video/v1.5/pro/image-to-video",
+                supports_prompt: true,
+                supports_duration: true,
+                supports_aspect_ratio: false,
+            },
+            // MiniMax Video — image-to-video.
+            "fal/minimax" | "fal-minimax" => EndpointSpec {
+                text_to_video: "fal-ai/minimax-video/image-to-video",
+                image_to_video: "fal-ai/minimax-video/image-to-video",
+                supports_prompt: true,
+                supports_duration: false,
+                supports_aspect_ratio: false,
+            },
+            // MiniMax Hailuo (Video-01-Live) — image-to-video.
+            "fal/minimax-hailuo" | "fal-minimax-hailuo" => EndpointSpec {
+                text_to_video: "fal-ai/minimax/video-01-live/image-to-video",
+                image_to_video: "fal-ai/minimax/video-01-live/image-to-video",
+                supports_prompt: true,
+                supports_duration: false,
+                supports_aspect_ratio: false,
+            },
+            // AnimateDiff Turbo — text-to-video; takes num_frames/fps/video_size,
+            // none of which map onto our unified extras.
+            "fal/animate-diff" | "fal-animate-diff-turbo" => EndpointSpec {
+                text_to_video: "fal-ai/fast-animatediff/turbo/text-to-video",
+                image_to_video: "fal-ai/fast-animatediff/turbo/text-to-video",
+                supports_prompt: true,
+                supports_duration: false,
+                supports_aspect_ratio: false,
+            },
+            // Stable Video Diffusion — image-only; its schema is
+            // [cond_aug, fps, seed, motion_bucket_id, image_url] with no prompt.
+            "fal/svd" | "fal-svd" => EndpointSpec {
+                text_to_video: "fal-ai/stable-video",
+                image_to_video: "fal-ai/stable-video",
+                supports_prompt: false,
+                supports_duration: false,
+                supports_aspect_ratio: false,
+            },
+            // LTX Video — the base endpoint is text-to-video only and has no
+            // `image_url`; image-to-video is a separate endpoint.
+            _ => EndpointSpec {
+                text_to_video: "fal-ai/ltx-video",
+                image_to_video: "fal-ai/ltx-video/image-to-video",
+                supports_prompt: true,
+                supports_duration: false,
+                supports_aspect_ratio: false,
+            },
         }
     }
 }
@@ -127,39 +183,44 @@ impl VideoProvider for FalVideoProvider {
         materialized: &MaterializedRequest,
     ) -> Result<VideoGenerationHandle, ProviderError> {
         let api_key = self.api_key()?;
-        let endpoint = Self::resolve_endpoint(&model.id);
-        let url = format!("{}/{}", self.api_base(), endpoint);
+        let spec = Self::resolve_spec(&model.id);
 
-        let mut body = json!({
-            "prompt": base.prompt,
+        // Reference image (init role, URL form preferred by Fal).
+        let image_url: Option<String> = materialized.refs.iter().find_map(|r| match &r.form {
+            MaterializedRefForm::Url(u) => Some(u.clone()),
+            MaterializedRefForm::Base64(b64) => Some(format!("data:image/png;base64,{b64}")),
+            _ => None,
         });
 
-        if extras.duration_seconds > 0.0 {
+        // Pick the endpoint that actually accepts an image when one is present.
+        let endpoint = if image_url.is_some() {
+            spec.image_to_video
+        } else {
+            spec.text_to_video
+        };
+        let url = format!("{}/{}", self.api_base(), endpoint);
+
+        let mut body = json!({});
+        if spec.supports_prompt {
+            body["prompt"] = Value::String(base.prompt.clone());
+        }
+
+        if spec.supports_duration && extras.duration_seconds > 0.0 {
             body["duration"] = json!(extras.duration_seconds);
         }
 
-        if let Some(ar) = extras.aspect_ratio.as_deref() {
-            body["aspect_ratio"] = Value::String(ar.to_string());
+        if spec.supports_aspect_ratio {
+            if let Some(ar) = extras.aspect_ratio.as_deref() {
+                body["aspect_ratio"] = Value::String(ar.to_string());
+            }
         }
 
         if let Some(seed) = base.seed {
             body["seed"] = json!(seed);
         }
 
-        // Reference image (init role, URL form preferred by Fal)
-        for r in &materialized.refs {
-            match &r.form {
-                MaterializedRefForm::Url(img_url) => {
-                    body["image_url"] = Value::String(img_url.clone());
-                    break;
-                }
-                MaterializedRefForm::Base64(b64) => {
-                    body["image_url"] =
-                        Value::String(format!("data:image/png;base64,{b64}"));
-                    break;
-                }
-                _ => {}
-            }
+        if let Some(u) = image_url {
+            body["image_url"] = Value::String(u);
         }
 
         // Shallow-merge extra
@@ -522,5 +583,118 @@ mod tests {
         assert_eq!(received.len(), 1);
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
         assert_eq!(body["prompt"], "a robot walking through a city");
+    }
+
+    /// `fal-ai/ltx-video`'s input schema is
+    /// `[guidance_scale, seed, num_inference_steps, negative_prompt, prompt]`.
+    /// There is no `image_url`; the image-to-video variant is a separate
+    /// endpoint, `fal-ai/ltx-video/image-to-video`.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-video>
+    #[tokio::test]
+    async fn reference_image_routes_to_the_image_to_video_endpoint() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/fal-ai/ltx-video/image-to-video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "request_id": "req-1"
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("fal/video");
+        let base = make_base("pan across the valley", "fal/video");
+        let materialized = crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".to_string(),
+                form: crate::proxy::materializer::MaterializedRefForm::Url(
+                    "https://example.com/frame.png".to_string(),
+                ),
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+
+        provider
+            .generate(&schema, &base, &make_extras(), &materialized)
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1, "should hit the i2v endpoint exactly once");
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["image_url"], "https://example.com/frame.png");
+    }
+
+    /// None of the mapped fal video endpoints declare `aspect_ratio`, and only
+    /// the Kling ones declare `duration`. Sending them to `fal-ai/ltx-video`
+    /// puts fields in the body that its schema does not define.
+    #[tokio::test]
+    async fn does_not_send_duration_or_aspect_ratio_to_ltx_video() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/fal-ai/ltx-video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "request_id": "req-1"
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("fal/video");
+        let base = make_base("pan across the valley", "fal/video");
+        // Set both fields explicitly so the assertions below are not vacuous.
+        let mut extras = make_extras();
+        extras.aspect_ratio = Some("16:9".to_string());
+        assert!(extras.duration_seconds > 0.0, "duration must be set for this test to mean anything");
+
+        provider
+            .generate(&schema, &base, &extras, &empty_materialized())
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert!(body.get("aspect_ratio").is_none(), "ltx-video has no aspect_ratio: {body}");
+        assert!(body.get("duration").is_none(), "ltx-video has no duration: {body}");
+        assert_eq!(body["prompt"], "pan across the valley");
+    }
+
+    /// `fal-ai/stable-video`'s schema is
+    /// `[cond_aug, fps, seed, motion_bucket_id, image_url]` — it has no
+    /// `prompt` field at all, yet `prompt` used to be sent unconditionally.
+    #[tokio::test]
+    async fn stable_video_endpoint_receives_no_prompt() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/fal-ai/stable-video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "request_id": "req-1"
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let mut schema = ref_schema("fal/video");
+        schema.id = "fal/svd".to_string();
+        let base = make_base("ignored by this endpoint", "fal/svd");
+        let materialized = crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".to_string(),
+                form: crate::proxy::materializer::MaterializedRefForm::Url(
+                    "https://example.com/frame.png".to_string(),
+                ),
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+
+        provider
+            .generate(&schema, &base, &make_extras(), &materialized)
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert!(body.get("prompt").is_none(), "stable-video has no prompt field: {body}");
+        assert_eq!(body["image_url"], "https://example.com/frame.png");
     }
 }

@@ -196,10 +196,13 @@ impl VideoProvider for OpenAiVideoProvider {
                 .multipart(form)
         } else {
             // Text-to-video: JSON body.
+            // `CreateVideoJsonBody.seconds` is `VideoSeconds`, a *string* enum
+            // ("4" | "8" | "12") — not a number. The multipart branch above
+            // stringifies via `.text(...)`; this branch has to do it explicitly.
             let mut body = json!({
                 "model": model_name,
                 "prompt": base.prompt,
-                "seconds": seconds,
+                "seconds": seconds.to_string(),
                 "size": size,
             });
             if let Some(Value::Object(extra_map)) = &extras.extra {
@@ -534,7 +537,41 @@ mod tests {
         assert_eq!(body["model"], "sora-2");
         assert_eq!(body["prompt"], "a spaceship launching from Earth");
         // duration 5.0 → nearest supported clip length (4s); size defaults to landscape.
-        assert_eq!(body["seconds"], 4);
+        // VideoSeconds is a string enum ("4" | "8" | "12"), not a number.
+        assert_eq!(body["seconds"], json!("4"));
         assert_eq!(body["size"], "1280x720");
+    }
+
+    /// `CreateVideoJsonBody.seconds` is `$ref: VideoSeconds`, which is
+    /// `{type: string, enum: ["4","8","12"]}`. The multipart path already
+    /// stringifies; the JSON (text-to-video) path sent a bare number.
+    /// @see openai/openai-openapi `VideoSeconds`
+    #[tokio::test]
+    async fn seconds_is_sent_as_a_string_in_the_json_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/videos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "video_1", "status": "queued"
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("openai/sora");
+        let base = make_base("a kite over dunes", "openai/sora");
+        provider
+            .generate(&schema, &base, &make_extras(), &empty_materialized())
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(
+            body["seconds"],
+            json!("4"),
+            "seconds must be the string form, got {}",
+            body["seconds"]
+        );
     }
 }

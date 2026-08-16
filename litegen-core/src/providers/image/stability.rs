@@ -72,10 +72,14 @@ impl StabilityProvider {
         }
         let native = Self::native_model_id(model_id);
         // Map canonical names to Stability API model names
+        // The /v2beta/stable-image/generate/sd3 `model` enum is exactly
+        // sd3.5-large | sd3.5-large-turbo | sd3.5-medium. The bare sd3-*
+        // values are no longer members.
+        // @see <https://api.stability.ai/v2alpha/openapi>
         match native {
-            "sd3-large" => "sd3-large".to_string(),
-            "sd3-medium" => "sd3-medium".to_string(),
-            "sd3-turbo" => "sd3-turbo".to_string(),
+            "sd3-large" | "sd3.5-large" => "sd3.5-large".to_string(),
+            "sd3-turbo" | "sd3.5-large-turbo" => "sd3.5-large-turbo".to_string(),
+            "sd3-medium" | "sd3.5-medium" => "sd3.5-medium".to_string(),
             "core" => "core".to_string(),
             "ultra" => "ultra".to_string(),
             "sdxl" => "stable-diffusion-xl-1024-v1-0".to_string(),
@@ -89,7 +93,7 @@ impl StabilityProvider {
     /// @see <https://platform.stability.ai/docs/api-reference#tag/Generate> — V2beta Stable Image generate routes
     fn v2_endpoint(model: &str) -> Option<&'static str> {
         match model {
-            "sd3-large" | "sd3-medium" | "sd3-turbo" => Some("sd3"),
+            "sd3.5-large" | "sd3.5-large-turbo" | "sd3.5-medium" => Some("sd3"),
             "core" => Some("core"),
             "ultra" => Some("ultra"),
             _ => None,
@@ -112,20 +116,28 @@ impl StabilityProvider {
             return None;
         }
         let ratio = w / h;
-        Some(if ratio >= 1.75 {
+        // The v2 `aspect_ratio` enum is exactly
+        // 21:9 | 16:9 | 3:2 | 5:4 | 1:1 | 4:5 | 2:3 | 9:16 | 9:21.
+        // `4:3` and `3:4` are NOT members; the nearest legal neighbours are
+        // `5:4` and `4:5`.
+        Some(if ratio >= 2.1 {
+            "21:9"
+        } else if ratio >= 1.6 {
             "16:9"
-        } else if ratio >= 1.4 {
+        } else if ratio >= 1.35 {
             "3:2"
-        } else if ratio >= 1.25 {
-            "4:3"
-        } else if ratio >= 0.95 {
+        } else if ratio >= 1.12 {
+            "5:4"
+        } else if ratio >= 0.9 {
             "1:1"
-        } else if ratio >= 0.75 {
-            "3:4"
-        } else if ratio >= 0.6 {
+        } else if ratio >= 0.74 {
+            "4:5"
+        } else if ratio >= 0.58 {
             "2:3"
-        } else {
+        } else if ratio >= 0.48 {
             "9:16"
+        } else {
+            "9:21"
         })
     }
 }
@@ -180,18 +192,46 @@ impl ImageProvider for StabilityProvider {
             let url = format!("{}/v2beta/stable-image/generate/{endpoint}", self.api_base());
 
             let mut form = reqwest::multipart::Form::new()
-                .text("prompt", base.prompt.clone())
-                .text("model", model_name.clone());
+                .text("prompt", base.prompt.clone());
+
+            // Only /generate/sd3 has a `model` property — the core and ultra
+            // request schemas do not define one; the route selects the model.
+            if endpoint == "sd3" {
+                form = form.text("model", model_name.clone());
+            }
 
             // output_format defaults to "png" for bytes
             form = form.text("output_format", "png");
 
-            // Aspect ratio: prefer direct aspect_ratio field, fallback to size derivation
-            if let Some(ar) = extras.aspect_ratio.as_deref() {
-                form = form.text("aspect_ratio", ar.to_string());
-            } else if let Some(size) = extras.size.as_deref() {
-                if let Some(ar) = Self::aspect_ratio_from_size(size) {
+            // sd3 gates image-to-image behind `mode`; without it the uploaded
+            // `image` part is ignored and the request runs as text-to-image.
+            let has_image_ref = materialized.refs.iter().any(|r| {
+                matches!(&r.form, MaterializedRefForm::MultipartField { field_name, .. }
+                    if field_name == "image")
+            });
+            if endpoint == "sd3" {
+                form = form.text(
+                    "mode",
+                    if has_image_ref { "image-to-image" } else { "text-to-image" },
+                );
+            }
+
+            // `style` is validated against the API's style_preset values.
+            if let Some(style) = extras.style.as_deref() {
+                form = form.text("style_preset", style.to_string());
+            }
+
+            // Aspect ratio: prefer direct aspect_ratio field, fallback to size
+            // derivation. Skipped in image-to-image mode — the spec says
+            // "This parameter is only valid for text-to-image requests";
+            // there the output takes its shape from the input image.
+            if !has_image_ref {
+                if let Some(ar) = extras.aspect_ratio.as_deref() {
                     form = form.text("aspect_ratio", ar.to_string());
+                } else if let Some(size) = extras.size.as_deref() {
+                    if let Some(ar) = Self::aspect_ratio_from_size(size) {
+                        form = form.text("aspect_ratio", ar.to_string());
+                    }
                 }
             }
 
@@ -203,8 +243,12 @@ impl ImageProvider for StabilityProvider {
                 form = form.text("negative_prompt", np.to_string());
             }
 
-            if let Some(strength) = extras.strength {
-                form = form.text("strength", format!("{:.2}", strength));
+            // `strength` is *required* for image-to-image ("image-to-image
+            // requires the prompt, image, and strength parameters") and is
+            // "only valid for image-to-image requests" — so default it when a
+            // reference image is present, and never send it otherwise.
+            if has_image_ref {
+                form = form.text("strength", format!("{:.2}", extras.strength.unwrap_or(0.5)));
             }
 
             // extra fields shallow-merged (allowlist enforced by validator)
@@ -680,9 +724,242 @@ mod tests {
         let body_str = String::from_utf8_lossy(&received[0].body);
         // Multipart body should contain these field names and values
         assert!(body_str.contains("a photorealistic landscape"), "prompt not in body");
-        assert!(body_str.contains("sd3-large"), "model not in body");
+        assert!(body_str.contains("sd3.5-large"), "model not in body");
         assert!(body_str.contains("1:1"), "aspect_ratio not in body");
         assert!(body_str.contains("42"), "seed not in body");
         assert!(body_str.contains("bad quality"), "negative_prompt not in body");
+    }
+
+    /// Extract a simple text field's value out of a multipart/form-data body.
+    fn multipart_field(body: &[u8], name: &str) -> Option<String> {
+        let s = String::from_utf8_lossy(body).into_owned();
+        let marker = format!("name=\"{name}\"");
+        let at = s.find(&marker)? + marker.len();
+        let rest = &s[at..];
+        let value_at = rest.find("\r\n\r\n")? + 4;
+        let value = &rest[value_at..];
+        let end = value.find("\r\n")?;
+        Some(value[..end].to_string())
+    }
+
+    async fn mock_v2(server: &MockServer, endpoint: &str) {
+        Mock::given(method("POST"))
+            .and(path(format!("/v2beta/stable-image/generate/{endpoint}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(b"PNG".to_vec())
+                    .insert_header("content-type", "image/png"),
+            )
+            .mount(server)
+            .await;
+    }
+
+    /// The `/v2beta/stable-image/generate/sd3` `model` enum is
+    /// `sd3.5-large | sd3.5-large-turbo | sd3.5-medium`. `sd3-large` and
+    /// `sd3-turbo` are no longer members.
+    #[tokio::test]
+    async fn sd3_catalog_ids_map_to_the_current_sd35_model_values() {
+        for (catalog_id, expected) in [
+            ("stability/sd3-large", "sd3.5-large"),
+            ("stability/sd3-turbo", "sd3.5-large-turbo"),
+        ] {
+            let server = MockServer::start().await;
+            mock_v2(&server, "sd3").await;
+
+            let provider = make_provider(&server.uri());
+            let schema = ref_schema(catalog_id);
+            let base = make_base("a canyon", catalog_id);
+            provider
+                .generate(&schema, &base, &make_extras_sd3(), &empty_materialized())
+                .await
+                .expect("generate");
+
+            let received = server.received_requests().await.unwrap();
+            assert_eq!(
+                multipart_field(&received[0].body, "model").as_deref(),
+                Some(expected),
+                "{catalog_id} must send {expected}"
+            );
+        }
+    }
+
+    /// The `core` and `ultra` request schemas have no `model` property at all —
+    /// the route selects the model. Only `sd3` takes one.
+    #[tokio::test]
+    async fn model_field_is_only_sent_to_the_sd3_route() {
+        for (catalog_id, endpoint) in [
+            ("stability/core", "core"),
+            ("stability/ultra", "ultra"),
+        ] {
+            let server = MockServer::start().await;
+            mock_v2(&server, endpoint).await;
+
+            let provider = make_provider(&server.uri());
+            let schema = ref_schema(catalog_id);
+            let base = make_base("a canyon", catalog_id);
+            provider
+                .generate(&schema, &base, &make_extras_sd3(), &empty_materialized())
+                .await
+                .expect("generate");
+
+            let received = server.received_requests().await.unwrap();
+            assert!(
+                multipart_field(&received[0].body, "model").is_none(),
+                "/generate/{endpoint} has no `model` field in its schema"
+            );
+        }
+    }
+
+    /// `style` is validated against the same values as the API's `style_preset`
+    /// but was never written to the form — the caller's choice was dropped.
+    #[tokio::test]
+    async fn style_is_forwarded_as_style_preset() {
+        let server = MockServer::start().await;
+        mock_v2(&server, "core").await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("stability/core");
+        let base = make_base("a canyon", "stability/core");
+        let mut extras = make_extras_sd3();
+        extras.style = Some("cinematic".to_string());
+
+        provider
+            .generate(&schema, &base, &extras, &empty_materialized())
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(
+            multipart_field(&received[0].body, "style_preset").as_deref(),
+            Some("cinematic")
+        );
+    }
+
+    /// sd3 gates image-to-image behind `mode`. Without it the uploaded `image`
+    /// part is ignored and the request runs as text-to-image.
+    #[tokio::test]
+    async fn image_to_image_sends_mode_image_to_image() {
+        let server = MockServer::start().await;
+        mock_v2(&server, "sd3").await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("stability/sd3-large");
+        let base = make_base("repaint in oils", "stability/sd3-large");
+        let mut extras = make_extras_sd3();
+        extras.strength = Some(0.6);
+        let materialized = crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".to_string(),
+                form: crate::proxy::materializer::MaterializedRefForm::MultipartField {
+                    field_name: "image".to_string(),
+                    bytes: bytes::Bytes::from_static(b"src"),
+                    content_type: "image/png".to_string(),
+                },
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+
+        provider
+            .generate(&schema, &base, &extras, &materialized)
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(
+            multipart_field(&received[0].body, "mode").as_deref(),
+            Some("image-to-image")
+        );
+        // "image-to-image requires the prompt, image, and strength parameters".
+        assert_eq!(
+            multipart_field(&received[0].body, "strength").as_deref(),
+            Some("0.60")
+        );
+        // "aspect_ratio ... is only valid for text-to-image requests".
+        assert!(
+            multipart_field(&received[0].body, "aspect_ratio").is_none(),
+            "aspect_ratio must not be sent in image-to-image mode"
+        );
+    }
+
+    /// `strength` is "only valid for image-to-image requests" — sending it on a
+    /// text-to-image call is an invalid-parameter error.
+    #[tokio::test]
+    async fn strength_is_not_sent_for_text_to_image() {
+        let server = MockServer::start().await;
+        mock_v2(&server, "sd3").await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("stability/sd3-large");
+        let base = make_base("a canyon", "stability/sd3-large");
+        let mut extras = make_extras_sd3();
+        extras.strength = Some(0.7);
+
+        provider
+            .generate(&schema, &base, &extras, &empty_materialized())
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(
+            multipart_field(&received[0].body, "mode").as_deref(),
+            Some("text-to-image")
+        );
+        assert!(
+            multipart_field(&received[0].body, "strength").is_none(),
+            "strength is image-to-image-only"
+        );
+    }
+
+    /// image-to-image requires `strength`; supply a sane default rather than
+    /// letting the request fail when the caller omits it.
+    #[tokio::test]
+    async fn image_to_image_defaults_strength_when_omitted() {
+        let server = MockServer::start().await;
+        mock_v2(&server, "sd3").await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("stability/sd3-large");
+        let base = make_base("repaint in oils", "stability/sd3-large");
+        let materialized = crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".to_string(),
+                form: crate::proxy::materializer::MaterializedRefForm::MultipartField {
+                    field_name: "image".to_string(),
+                    bytes: bytes::Bytes::from_static(b"src"),
+                    content_type: "image/png".to_string(),
+                },
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+
+        provider
+            .generate(&schema, &base, &make_extras_sd3(), &materialized)
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        assert!(
+            multipart_field(&received[0].body, "strength").is_some(),
+            "image-to-image must always carry a strength"
+        );
+    }
+
+    /// v2 `aspect_ratio` enum: `21:9, 16:9, 3:2, 5:4, 1:1, 4:5, 2:3, 9:16, 9:21`.
+    /// The size-derivation helper used to emit `4:3` and `3:4`.
+    #[test]
+    fn every_derived_aspect_ratio_is_in_the_v2_enum() {
+        const SUPPORTED: [&str; 9] = [
+            "21:9", "16:9", "3:2", "5:4", "1:1", "4:5", "2:3", "9:16", "9:21",
+        ];
+        for w in (256..=3072).step_by(16) {
+            for h in [256u32, 512, 768, 832, 1024, 1200, 1280, 1536, 2048] {
+                if let Some(ar) = StabilityProvider::aspect_ratio_from_size(&format!("{w}x{h}")) {
+                    assert!(
+                        SUPPORTED.contains(&ar),
+                        "{w}x{h} derived unsupported aspect ratio {ar:?}"
+                    );
+                }
+            }
+        }
     }
 }

@@ -14,7 +14,7 @@ def main() -> None:
     # finished — it submits and polls under the hood:
     final = client.videos.generate(
         prompt="a timelapse of clouds drifting over a quiet city",
-        model="runway/gen-3",
+        model="runway/gen4-turbo",
         duration_seconds=5,
         interval=5.0,
         timeout=600.0,

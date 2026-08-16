@@ -43,7 +43,7 @@ export function Hero() {
               {'  '}-d {"'"}
               {'{'}
               <span className={styles.key}>&quot;model&quot;</span>:
-              <span className={styles.str}>&quot;openai/dall-e-3&quot;</span>,{'\n'}
+              <span className={styles.str}>&quot;openai/gpt-image-2&quot;</span>,{'\n'}
               {'        '}
               <span className={styles.key}>&quot;prompt&quot;</span>:
               <span className={styles.str}>&quot;a red panda coding&quot;</span>

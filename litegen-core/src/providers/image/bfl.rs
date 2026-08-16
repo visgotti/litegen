@@ -19,10 +19,10 @@ use crate::types::*;
 /// `result.sample` (a signed URL valid ~10 min). Authenticated with the `x-key`
 /// header. Image-only (BFL has no first-party video API).
 ///
-/// @see <https://docs.bfl.ai/flux_models/flux_1_1_pro> — generate + poll
+/// @see <https://docs.bfl.ml/flux_models/flux_1_1_pro> — generate + poll
 ///   Verbatim: "curl -X POST 'https://api.bfl.ai/v1/flux-pro-1.1' -H \"x-key: ${BFL_API_KEY}\" -H 'Content-Type: application/json' -d '{ \"prompt\": ..., \"width\": 1024, \"height\": 1024 }'"
 ///   Verbatim: "echo \"Image ready: $(echo $result | jq -r .result.sample)\""
-/// @see <https://docs.bfl.ai/kontext/kontext_image_editing> — input_image (base64) editing
+/// @see <https://docs.bfl.ml/kontext/kontext_image_editing> — input_image (base64) editing
 pub struct BflProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,

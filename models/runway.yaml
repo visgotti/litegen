@@ -10,10 +10,11 @@ models:
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 5500 }
     params:
-      seed: { kind: seed, min: 0, max: 4294967294 }
+      seed: { kind: seed, min: 0, max: 4294967295 }
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["16:9","9:16","1:1","4:3","3:4","21:9","3:2","2:3"]
+        # Runway's ratio enum has no true 3:2 pair, so 3:2 / 2:3 are not offered.
+        allowed: ["16:9","9:16","1:1","4:3","3:4","21:9"]
         default: "16:9"
     ref_inputs:
       max_total: 3
@@ -33,10 +34,11 @@ models:
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 5500 }
     params:
-      seed: { kind: seed, min: 0, max: 4294967294 }
+      seed: { kind: seed, min: 0, max: 4294967295 }
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["16:9","9:16","1:1","4:3","3:4","21:9","3:2","2:3"]
+        # Runway's ratio enum has no true 3:2 pair, so 3:2 / 2:3 are not offered.
+        allowed: ["16:9","9:16","1:1","4:3","3:4","21:9"]
         default: "16:9"
     ref_inputs:
       max_total: 3
@@ -47,55 +49,56 @@ models:
     extra_allowlist: [contentModeration]
     tags: [text-to-image, image-to-image, fast]
 
-  - id: runway/gen-3
+  # gen3a_turbo was removed from the Runway API on 2026-07-30 ("Requests that
+  # use these model identifiers will fail"). gen4_turbo is the fast tier and
+  # gen4.5 the quality tier.
+  # @see https://docs.dev.runwayml.com/api-details/api_changelog/
+  - id: runway/gen4-turbo
     provider: runway
     media_type: video
-    display_name: Runway Gen-3
-    description: Runway Gen-3.
-    pricing: { base_cost_usd: 0.50 }
-    capabilities: { text_to_video: true, image_to_video: true }
-    prompt: { required: true, max_length: 1000 }
-    params:
-      duration_seconds: { kind: int, min: 5, max: 10, default: 5 }
-      seed: { kind: seed, min: 0, max: 4294967294 }
-      # Runway video `ratio` is a pixel-pair string (gen3a_turbo supports landscape
-      # 1280:768 and portrait 768:1280). The provider always sends one, defaulting
-      # to 1280:768 when unset.
-      aspect_ratio:
-        kind: aspect_ratio
-        allowed: ["1280:768","768:1280"]
-        default: "1280:768"
-    ref_inputs:
-      max_total: 1
-      default_role: init
-      provider_format: { form: url }
-      roles:
-        init: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: []
-    tags: [text-to-video, image-to-video]
-
-  - id: runway/gen-3-turbo
-    provider: runway
-    media_type: video
-    display_name: Runway Gen-3 Turbo
+    display_name: Runway Gen-4 Turbo
+    description: Runway Gen-4 Turbo image-to-video and text-to-video.
     pricing: { base_cost_usd: 0.25 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 1000 }
     params:
-      duration_seconds: { kind: int, min: 5, max: 10, default: 5 }
-      seed: { kind: seed, min: 0, max: 4294967294 }
-      # Runway video `ratio` is a pixel-pair string (gen3a_turbo supports landscape
-      # 1280:768 and portrait 768:1280). The provider always sends one, defaulting
-      # to 1280:768 when unset.
+      duration_seconds: { kind: int, min: 2, max: 10, default: 5 }
+      seed: { kind: seed, min: 0, max: 4294967295 }
+      # Runway video `ratio` is a pixel-pair string. The gen4 enum is exactly
+      # these six values; 1280:768 / 768:1280 were gen3-era and now 400.
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["1280:768","768:1280"]
-        default: "1280:768"
+        allowed: ["1280:720","720:1280","1104:832","832:1104","960:960","1584:672"]
+        default: "1280:720"
     ref_inputs:
       max_total: 1
       default_role: init
       provider_format: { form: url }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: []
+    extra_allowlist: [contentModeration]
     tags: [text-to-video, image-to-video, fast]
+
+  - id: runway/gen4.5
+    provider: runway
+    media_type: video
+    display_name: Runway Gen-4.5
+    description: Runway Gen-4.5, the highest-quality Runway video tier.
+    pricing: { base_cost_usd: 0.50 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: int, min: 2, max: 10, default: 5 }
+      seed: { kind: seed, min: 0, max: 4294967295 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1280:720","720:1280","1104:832","832:1104","960:960","1584:672"]
+        default: "1280:720"
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [contentModeration, outputFormat]
+    tags: [text-to-video, image-to-video, premium]

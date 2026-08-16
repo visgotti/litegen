@@ -46,7 +46,9 @@ models:
     prompt: { required: true, max_length: 4000 }
     params:
       seed: { kind: seed, min: 0, max: 2147483646 }
-      duration_seconds: { kind: float, min: 6.0, max: 120.0, default: 6.0 }
+      # TEXT_VIDEO supports durationSeconds: 6 only. 12-120s (multiples of 6)
+      # requires taskType MULTI_SHOT_AUTOMATED, which this adapter does not emit.
+      duration_seconds: { kind: float, min: 6.0, max: 6.0, default: 6.0 }
       fps: { kind: int, min: 24, max: 24, default: 24 }
       resolution:
         kind: string

@@ -28,27 +28,6 @@ models:
     extra_allowlist: [output_format, prompt_upsampling, safety_tolerance]
     tags: [text-to-image]
 
-  - id: bfl/flux-pro
-    provider: bfl
-    media_type: image
-    display_name: FLUX [pro]
-    description: Black Forest Labs FLUX pro text-to-image.
-    pricing: { base_cost_usd: 0.05 }
-    capabilities: { text_to_image: true }
-    prompt: { required: true, max_length: 10000 }
-    params:
-      seed: { kind: seed, min: 0, max: 4294967294 }
-      size:
-        kind: size
-        mode: freeform
-        min_width: 256
-        max_width: 1440
-        min_height: 256
-        max_height: 1440
-        multiple_of: 32
-    extra_allowlist: [output_format, prompt_upsampling, safety_tolerance]
-    tags: [text-to-image]
-
   - id: bfl/flux-dev
     provider: bfl
     media_type: image
@@ -130,3 +109,33 @@ models:
         init: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [output_format, safety_tolerance]
     tags: [text-to-image, image-to-image, editing]
+
+  # bfl/flux-pro (FLUX.1 [pro]) is gone: api.bfl.ai/openapi.json has no
+  # /v1/flux-pro path. FLUX.2 [pro] is BFL's documented default for new work.
+  - id: bfl/flux-2-pro
+    provider: bfl
+    media_type: image
+    display_name: FLUX.2 [pro]
+    description: Black Forest Labs FLUX.2 pro — recommended default for image
+      generation and multi-reference editing.
+    pricing: { base_cost_usd: 0.05 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 2048
+        min_height: 256
+        max_height: 2048
+        multiple_of: 32
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [output_format, safety_tolerance]
+    tags: [text-to-image, image-to-image]
