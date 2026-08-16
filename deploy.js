@@ -559,14 +559,40 @@ async function deployWeb() {
   const landingSrcDir = landingOut; // what we tar up (a failed build aborts the deploy)
   console.log('\n=== Building landing (Next.js static export → apps/landing/out) ===');
   if (!DRY_RUN) {
+    const buildStartedAt = Date.now();
     try {
       run(`npm run build`, {
         cwd: landingDir,
-        // NEXT_DIST_DIR keeps this build off a running `next dev`'s `.next`.
-        env: { ...process.env, NODE_ENV: 'production', NEXT_DIST_DIR: '.next-prod' },
+        // NEXT_DIST_DIR must be `out` — the directory we tar up below.
+        //
+        // With `output: 'export'` in next.config.ts, `distDir` IS the export
+        // destination. This used to be `.next-prod`, which meant the export
+        // landed in apps/landing/.next-prod while `out/` kept whatever an
+        // earlier build left there. The existence check below still passed, so
+        // the deploy silently shipped a stale `out/` — and because the remote
+        // unpack deletes before extracting, that overwrites the live site with
+        // old content. Observed 2026-08-16: a successful build left `out/` a
+        // month stale, still advertising models the vendor had retired.
+        //
+        // `out` also satisfies the original reason for setting this at all:
+        // keeping the production build off a running `next dev`'s `.next`.
+        env: { ...process.env, NODE_ENV: 'production', NEXT_DIST_DIR: 'out' },
       });
       if (!fs.existsSync(landingOut)) {
         throw new Error(`landing build produced no ${landingOut} directory`);
+      }
+      // Existence is not freshness. Assert the build actually rewrote the
+      // directory we are about to ship, so a misrouted export can never again
+      // publish stale HTML over a live site.
+      const indexPath = path.join(landingOut, 'en.html');
+      const stampPath = fs.existsSync(indexPath) ? indexPath : landingOut;
+      const writtenAt = fs.statSync(stampPath).mtimeMs;
+      if (writtenAt < buildStartedAt) {
+        throw new Error(
+          `landing build did not refresh ${stampPath} ` +
+            `(last written ${new Date(writtenAt).toISOString()}, build started ` +
+            `${new Date(buildStartedAt).toISOString()}). Refusing to ship a stale export.`,
+        );
       }
       // NOTE: no localhost guard here — the landing is a marketing/docs site that
       // intentionally shows `http://localhost:4000` in API code-examples. The guard
