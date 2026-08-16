@@ -71,12 +71,29 @@ impl RunwayImageProvider {
         }
     }
 
+    /// The exact `ratio` enum shared by `gen4_image` and `gen4_image_turbo` on
+    /// `POST /v1/text_to_image`. Anything outside this set is a 400.
+    /// @see <https://docs.dev.runwayml.com/openapi.json>
+    pub(crate) const RATIOS: [&'static str; 16] = [
+        "1024:1024", "1080:1080", "1168:880", "1360:768", "1440:1080", "1080:1440",
+        "1808:768", "1920:1080", "1080:1920", "2112:912", "1280:720", "720:1280",
+        "720:720", "960:720", "720:960", "1680:720",
+    ];
+
     /// Map a unified size / aspect ratio to a Runway `ratio` (pixel WxH string).
+    ///
+    /// Every return value is a member of [`Self::RATIOS`]. A caller-supplied
+    /// `size` is snapped to the closest enum member by aspect ratio rather than
+    /// forwarded verbatim — `1000x800` is not a legal Runway ratio. Note there
+    /// is no true 3:2 pair in the enum, which is why `3:2` / `2:3` are not in
+    /// any Runway model's `allowed` list.
     fn resolve_ratio(extras: &ImageExtras) -> String {
         if let Some(size) = extras.size.as_deref() {
             if let Some((w, h)) = size.split_once('x') {
-                if w.parse::<u32>().is_ok() && h.parse::<u32>().is_ok() {
-                    return format!("{w}:{h}");
+                if let (Ok(w), Ok(h)) = (w.parse::<f64>(), h.parse::<f64>()) {
+                    if h > 0.0 {
+                        return Self::closest_ratio(w / h).to_string();
+                    }
                 }
             }
         }
@@ -86,11 +103,31 @@ impl RunwayImageProvider {
             Some("4:3") => "1440:1080",
             Some("3:4") => "1080:1440",
             Some("21:9") => "2112:912",
-            Some("3:2") => "1808:1152",
-            Some("2:3") => "1152:1808",
-            _ => "1920:1080",
+            Some("16:9") => "1920:1080",
+            Some(other) => Self::closest_ratio(Self::parse_ratio(other).unwrap_or(16.0 / 9.0)),
+            None => "1920:1080",
         }
         .to_string()
+    }
+
+    /// Parse a `"w:h"` or `"wxh"` ratio string into a numeric ratio.
+    fn parse_ratio(s: &str) -> Option<f64> {
+        let (a, b) = s.split_once(':').or_else(|| s.split_once('x'))?;
+        let (a, b) = (a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?);
+        if b == 0.0 { None } else { Some(a / b) }
+    }
+
+    /// The enum member whose aspect ratio is nearest `target`.
+    fn closest_ratio(target: f64) -> &'static str {
+        Self::RATIOS
+            .iter()
+            .copied()
+            .min_by(|a, b| {
+                let da = (Self::parse_ratio(a).unwrap_or(1.0) - target).abs();
+                let db = (Self::parse_ratio(b).unwrap_or(1.0) - target).abs();
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap_or("1920:1080")
     }
 
     async fn poll_task(&self, id: &str) -> Result<Value, ProviderError> {
@@ -431,5 +468,59 @@ mod tests {
         assert_eq!(body["promptText"], "a neon tokyo alley");
         assert_eq!(body["model"], "gen4_image");
         assert_eq!(body["ratio"], "1920:1080");
+    }
+
+    /// Exercise the real `resolve_ratio`, not a copy of its table: every value
+    /// it can produce must be a member of Runway's `ratio` enum.
+    #[test]
+    fn resolve_ratio_only_ever_returns_enum_members() {
+        let mk = |ar: Option<&str>, size: Option<&str>| ImageExtras {
+            size: size.map(str::to_string),
+            aspect_ratio: ar.map(str::to_string),
+            quality: None,
+            style: None,
+            steps: None,
+            guidance_scale: None,
+            strength: None,
+            response_format: "url".to_string(),
+            extra: None,
+        };
+
+        // Every aspect ratio any Runway model advertises.
+        for id in ["runway/gen4_image", "runway/gen4_image_turbo"] {
+            let schema = ref_schema(id);
+            let allowed = match schema.params.get("aspect_ratio") {
+                Some(crate::capabilities::schema::ParamSpec::AspectRatio(ar)) => ar.allowed.clone(),
+                other => panic!("{id} aspect_ratio is {other:?}"),
+            };
+            assert!(!allowed.is_empty());
+            for ar in allowed {
+                let got = RunwayImageProvider::resolve_ratio(&mk(Some(&ar), None));
+                assert!(
+                    RunwayImageProvider::RATIOS.contains(&got.as_str()),
+                    "{id} ratio {ar:?} produced {got:?}, which Runway rejects"
+                );
+            }
+        }
+
+        // Unset, unknown, and free-form pixel sizes must also land in the enum —
+        // a caller-supplied size used to be forwarded verbatim.
+        for (ar, size) in [
+            (None, None),
+            (Some("3:2"), None),
+            (Some("2:3"), None),
+            (Some("banana"), None),
+            (None, Some("1000x800")),
+            (None, Some("512x2048")),
+            (None, Some("4096x1024")),
+            (None, Some("not-a-size")),
+            (None, Some("100x0")),
+        ] {
+            let got = RunwayImageProvider::resolve_ratio(&mk(ar, size));
+            assert!(
+                RunwayImageProvider::RATIOS.contains(&got.as_str()),
+                "ar={ar:?} size={size:?} produced {got:?}, which Runway rejects"
+            );
+        }
     }
 }

@@ -253,7 +253,7 @@ impl VideoProvider for HunyuanVideoProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::materializer::Cleanup;
+    use crate::proxy::materializer::{Cleanup, MaterializedRef};
     use wiremock::matchers::{header, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -306,10 +306,29 @@ mod tests {
         let schema = ref_schema("hunyuan/hunyuan-video");
         let base = make_base("a calligraphy brush stroke coming alive", "hunyuan/hunyuan-video");
         let extras = make_extras();
-        let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+        // SubmitImageToVideoJob needs a driving image; the catalog marks
+        // first_frame required for exactly this reason.
+        let materialized = MaterializedRequest {
+            refs: vec![MaterializedRef {
+                role: "first_frame".to_string(),
+                form: MaterializedRefForm::Base64("aW1n".to_string()),
+            }],
+            cleanup: Cleanup::empty(),
+        };
 
         let handle = provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
         assert_eq!(handle.provider_job_id, "hv-1");
+
+        // The driving image goes in nested as Image{Base64}.
+        let submitted = server.received_requests().await.unwrap();
+        let submit_body: Value = serde_json::from_slice(
+            &submitted.iter()
+                .find(|r| r.headers.get("x-tc-action").map(|v| v == "SubmitImageToVideoJob").unwrap_or(false))
+                .unwrap()
+                .body,
+        )
+        .unwrap();
+        assert_eq!(submit_body["Image"]["Base64"], "aW1n");
 
         let received = server.received_requests().await.unwrap();
         let submit = received.iter().find(|r| r.headers.get("x-tc-action").map(|v| v == "SubmitImageToVideoJob").unwrap_or(false)).unwrap();

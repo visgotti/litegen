@@ -120,15 +120,26 @@ impl VideoProvider for GoogleVideoProvider {
 
         // Build the instance (prompt + optional keyframes as base64 inlineData).
         let mut instance = json!({ "prompt": base.prompt });
+        let mut reference_images: Vec<Value> = Vec::new();
         for r in &materialized.refs {
             if let MaterializedRefForm::Base64(b64) = &r.form {
-                let img = json!({ "inlineData": { "mimeType": "image/png", "data": b64 } });
+                // The `:predictLongRunning` instances take the Vertex-style
+                // `Image` shape — `{bytesBase64Encoded, mimeType}`. `inlineData`
+                // is the `generateContent` shape and is not understood here.
+                // @see googleapis/python-genai `_Image_to_mldev`
+                let img = json!({ "bytesBase64Encoded": b64, "mimeType": "image/png" });
                 match r.role.as_str() {
                     "first_frame" | "init" => instance["image"] = img,
                     "last_frame" => instance["lastFrame"] = img,
+                    // Veo 3.1 reference images.
+                    // @see `_GenerateVideosConfig_to_mldev` → instances[0].referenceImages
+                    "reference" => reference_images.push(img),
                     _ => {}
                 }
             }
+        }
+        if !reference_images.is_empty() {
+            instance["referenceImages"] = Value::Array(reference_images);
         }
 
         // Build the parameters block.
@@ -387,23 +398,23 @@ mod tests {
     async fn submits_veo_job_and_sends_api_key_header() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path_regex(r"/models/veo-3\.0-generate-001:predictLongRunning"))
+            .and(path_regex(r"/models/veo-3\.1-generate-preview:predictLongRunning"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "name": "models/veo-3.0-generate-001/operations/abc123"
+                "name": "models/veo-3.1-generate-preview/operations/abc123"
             })))
             .mount(&server)
             .await;
 
         let provider = make_provider(&format!("{}/v1beta", server.uri()));
-        let schema = ref_schema("google/veo-3.0-generate-001");
-        let base = make_base("a cat surfing a wave", "google/veo-3.0-generate-001");
+        let schema = ref_schema("google/veo-3.1-generate-preview");
+        let base = make_base("a cat surfing a wave", "google/veo-3.1-generate-preview");
         let extras = make_extras();
         let materialized = materialized_first_frame("Zm9vYmFy");
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
         assert!(result.is_ok(), "generate failed: {:?}", result.err());
         let handle = result.unwrap();
-        assert_eq!(handle.provider_job_id, "models/veo-3.0-generate-001/operations/abc123");
+        assert_eq!(handle.provider_job_id, "models/veo-3.1-generate-preview/operations/abc123");
         assert_eq!(handle.provider, "google");
 
         let received = server.received_requests().await.unwrap();
@@ -412,7 +423,8 @@ mod tests {
         assert_eq!(received[0].headers.get("x-goog-api-key").unwrap(), "test-key");
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
         assert_eq!(body["instances"][0]["prompt"], "a cat surfing a wave");
-        assert_eq!(body["instances"][0]["image"]["inlineData"]["data"], "Zm9vYmFy");
+        assert_eq!(body["instances"][0]["image"]["bytesBase64Encoded"], "Zm9vYmFy");
+        assert_eq!(body["instances"][0]["image"]["mimeType"], "image/png");
         assert_eq!(body["parameters"]["aspectRatio"], "16:9");
         assert_eq!(body["parameters"]["durationSeconds"], 8);
         assert_eq!(body["parameters"]["resolution"], "720p");
@@ -422,9 +434,9 @@ mod tests {
     async fn poll_returns_completed_with_video_uri() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path_regex(r"/models/veo-3\.0-generate-001/operations/abc123"))
+            .and(path_regex(r"/models/veo-3\.1-generate-preview/operations/abc123"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "name": "models/veo-3.0-generate-001/operations/abc123",
+                "name": "models/veo-3.1-generate-preview/operations/abc123",
                 "done": true,
                 "response": {
                     "generateVideoResponse": {
@@ -439,14 +451,73 @@ mod tests {
 
         let provider = make_provider(&format!("{}/v1beta", server.uri()));
         let handle = VideoGenerationHandle {
-            provider_job_id: "models/veo-3.0-generate-001/operations/abc123".to_string(),
+            provider_job_id: "models/veo-3.1-generate-preview/operations/abc123".to_string(),
             provider: "google".to_string(),
-            model: "google/veo-3.0-generate-001".to_string(),
+            model: "google/veo-3.1-generate-preview".to_string(),
         };
 
         let poll = provider.poll_status(&handle).await.unwrap();
         assert_eq!(poll.status, GenerationStatus::Completed);
         assert_eq!(poll.progress, 100);
         assert!(poll.video_url.unwrap().contains("/files/xyz:download"));
+    }
+
+    /// `lastFrame` takes the same `Image` shape as `image`. `_Image_to_mldev`
+    /// in googleapis/python-genai emits `{bytesBase64Encoded, mimeType}` for the
+    /// Gemini Developer API; `inlineData` is the `generateContent` shape and is
+    /// not understood by `:predictLongRunning`.
+    #[tokio::test]
+    async fn last_frame_uses_bytes_base64_encoded_shape() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/veo-3\.1-generate-preview:predictLongRunning"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "name": "ops/1" })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&format!("{}/v1beta", server.uri()));
+        let schema = ref_schema("google/veo-3.1-generate-preview");
+        let base = make_base("a slow dissolve", "google/veo-3.1-generate-preview");
+        let materialized = MaterializedRequest {
+            refs: vec![MaterializedRef {
+                role: "last_frame".to_string(),
+                form: MaterializedRefForm::Base64("bGFzdA==".to_string()),
+            }],
+            cleanup: Cleanup::empty(),
+        };
+
+        provider
+            .generate(&schema, &base, &make_extras(), &materialized)
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["instances"][0]["lastFrame"]["bytesBase64Encoded"], "bGFzdA==");
+        assert_eq!(body["instances"][0]["lastFrame"]["mimeType"], "image/png");
+        assert!(
+            body["instances"][0]["lastFrame"].get("inlineData").is_none(),
+            "inlineData is the generateContent shape, not the predict shape"
+        );
+    }
+
+    /// Veo 2.0 / 3.0 / 3.0-fast were shut down on 2026-06-30.
+    /// @see <https://ai.google.dev/gemini-api/docs/deprecations>
+    #[test]
+    fn catalog_ships_no_retired_veo_models() {
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.pop();
+        p.push("models");
+        let r = crate::capabilities::CapabilityRegistry::from_dir(&p).expect("load");
+        for dead in [
+            "google/veo-2.0-generate-001",
+            "google/veo-3.0-generate-001",
+            "google/veo-3.0-fast-generate-001",
+        ] {
+            assert!(
+                r.get(dead).is_none(),
+                "{dead} was shut down on 2026-06-30 and must not be advertised"
+            );
+        }
     }
 }

@@ -85,8 +85,8 @@ providers:
 
 # Model routing rules (optional — auto-discovery works without these)
 model_routes:
-  # Example: route dall-e-3 through OpenAI with Stability as fallback
-  # - model: "dall-e-3"
+  # Example: route gpt-image-2 through OpenAI with Stability as fallback
+  # - model: "gpt-image-2"
   #   strategy: "fallback"
   #   deployments:
   #     - provider: openai

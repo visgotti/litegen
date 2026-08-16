@@ -267,7 +267,7 @@ async fn live_google_veo_video() {
     skip_if_missing!("GOOGLE_API_KEY");
     let mut p = litegen::providers::video::google::GoogleVideoProvider::new();
     p.configure(api_key_cfg(&env("GOOGLE_API_KEY").unwrap()));
-    let h = p.generate(&schema("google/veo-3.0-generate-001"), &base("a cat surfing a wave", "google/veo-3.0-generate-001"), &vid_extras(), &empty_mat()).await.expect("veo submit");
+    let h = p.generate(&schema("google/veo-3.1-generate-preview"), &base("a cat surfing a wave", "google/veo-3.1-generate-preview"), &vid_extras(), &empty_mat()).await.expect("veo submit");
     assert!(drive_video(&p, h).await.is_some());
 }
 

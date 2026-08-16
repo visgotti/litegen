@@ -121,7 +121,7 @@ curl -X POST http://localhost:4000/v1/images/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "a serene mountain landscape at sunset",
-    "model": "openai/dall-e-3",
+    "model": "openai/gpt-image-2",
     "size": "1024x1024",
     "quality": "hd"
   }'
@@ -133,7 +133,7 @@ curl -X POST http://localhost:4000/v1/videos/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "a timelapse of clouds over a city",
-    "model": "runway/gen-3",
+    "model": "runway/gen4-turbo",
     "duration_seconds": 5
   }'
 ```
@@ -165,7 +165,7 @@ Configure sophisticated routing in `litegen.yaml`:
 ```yaml
 model_routes:
   # Fallback: try OpenAI first, then Stability
-  - model: "dall-e-3"
+  - model: "gpt-image-2"
     strategy: fallback
     deployments:
       - provider: openai
@@ -243,7 +243,7 @@ litegen/
 ## Supported Providers
 
 Several vendors serve **both** image and video under one provider name — e.g. a single
-`openai` provider routes `openai/dall-e-3` (image) and `openai/sora` (video), and the same
+`openai` provider routes `openai/gpt-image-2` (image) and `openai/sora` (video), and the same
 holds for `fal` and `replicate`. The model ID prefix (`<provider>/<model>`) selects the
 modality automatically.
 

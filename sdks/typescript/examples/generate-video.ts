@@ -11,7 +11,7 @@ const client = new LiteGenClient({
 const video = await client.videos.generate(
   {
     prompt: "a timelapse of clouds drifting over a quiet city",
-    model: "runway/gen-3",
+    model: "runway/gen4-turbo",
     duration_seconds: 5,
   },
   { intervalMs: 5_000, timeoutMs: 10 * 60_000 },

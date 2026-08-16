@@ -176,6 +176,52 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://docs.aws.amazon.com/nova/latest/userguide/getting-started-api.html"
   },
   {
+    "id": "bfl/flux-2-pro",
+    "provider": "bfl",
+    "displayName": "FLUX.2 [pro]",
+    "description": "Black Forest Labs FLUX.2 pro — recommended default for image generation and multi-reference editing.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.05
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.bfl.ml/"
+  },
+  {
     "id": "bfl/flux-dev",
     "provider": "bfl",
     "displayName": "FLUX.1 [dev]",
@@ -320,44 +366,6 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image",
       "editing"
-    ],
-    "referenceUrl": "https://docs.bfl.ml/"
-  },
-  {
-    "id": "bfl/flux-pro",
-    "provider": "bfl",
-    "displayName": "FLUX [pro]",
-    "description": "Black Forest Labs FLUX pro text-to-image.",
-    "mediaType": "image",
-    "output": "image",
-    "capabilities": {
-      "textToImage": true,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": false,
-      "imageToVideo": false
-    },
-    "sizes": [],
-    "aspectRatios": [],
-    "maxRefImages": 0,
-    "refRoles": [],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 10000
-    },
-    "params": [
-      {
-        "name": "seed",
-        "kind": "seed",
-        "min": 0,
-        "max": 4294967294
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.05
-    },
-    "tags": [
-      "text-to-image"
     ],
     "referenceUrl": "https://docs.bfl.ml/"
   },
@@ -1085,7 +1093,7 @@ export const MODELS: ModelEntry[] = [
     "id": "google/gemini-2.5-flash-image",
     "provider": "google",
     "displayName": "Gemini 2.5 Flash (image)",
-    "description": "Gemini 2.5 Flash image generation.",
+    "description": "Gemini 2.5 Flash image generation. Shuts down 2026-10-02; migrate to google/gemini-3.1-flash-image.",
     "mediaType": "image",
     "output": "image",
     "capabilities": {
@@ -1098,10 +1106,13 @@ export const MODELS: ModelEntry[] = [
     "sizes": [],
     "aspectRatios": [
       "1:1",
-      "16:9",
-      "9:16",
+      "2:3",
+      "3:2",
+      "3:4",
       "4:3",
-      "3:4"
+      "9:16",
+      "16:9",
+      "21:9"
     ],
     "maxRefImages": 1,
     "refRoles": [
@@ -1143,12 +1154,13 @@ export const MODELS: ModelEntry[] = [
     "sizes": [],
     "aspectRatios": [
       "1:1",
-      "16:9",
-      "9:16",
-      "4:3",
+      "2:3",
+      "3:2",
       "3:4",
-      "21:9",
-      "9:21"
+      "4:3",
+      "9:16",
+      "16:9",
+      "21:9"
     ],
     "maxRefImages": 3,
     "refRoles": [
@@ -1175,15 +1187,15 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://ai.google.dev/gemini-api/docs"
   },
   {
-    "id": "google/imagen-3",
+    "id": "google/gemini-3.1-flash-image",
     "provider": "google",
-    "displayName": "Imagen 3",
-    "description": "Google Imagen 3 (imagen-3.0-generate-002) via the Imagen :predict API.",
+    "displayName": "Gemini 3.1 Flash Image (Nano Banana 2)",
+    "description": "Google's current general-purpose image model (GA 2026-05-28).",
     "mediaType": "image",
     "output": "image",
     "capabilities": {
       "textToImage": true,
-      "imageToImage": false,
+      "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
       "imageToVideo": false
@@ -1191,98 +1203,91 @@ export const MODELS: ModelEntry[] = [
     "sizes": [],
     "aspectRatios": [
       "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
       "9:16",
       "16:9",
-      "3:4",
-      "4:3"
+      "21:9"
     ],
-    "maxRefImages": 0,
-    "refRoles": [],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 4000
-    },
-    "params": [
+    "maxRefImages": 3,
+    "refRoles": [
       {
-        "name": "negative_prompt",
-        "kind": "string"
-      },
-      {
-        "name": "seed",
-        "kind": "seed",
+        "name": "init",
+        "required": false,
         "min": 0,
-        "max": 2147483647
+        "max": 3
       }
     ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 8000
+    },
+    "params": [],
     "pricing": {
-      "baseCostUsd": 0.04
+      "baseCostUsd": 0.02
     },
     "tags": [
-      "text-to-image"
+      "text-to-image",
+      "image-to-image"
     ],
     "referenceUrl": "https://ai.google.dev/gemini-api/docs"
   },
   {
-    "id": "google/veo-2.0-generate-001",
+    "id": "google/gemini-3.1-flash-lite-image",
     "provider": "google",
-    "displayName": "Veo 2",
-    "description": "Google Veo 2 text-to-video and image-to-video.",
-    "mediaType": "video",
-    "output": "video",
+    "displayName": "Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite)",
+    "description": "Fastest, cheapest Nano Banana 2 tier.",
+    "mediaType": "image",
+    "output": "image",
     "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
+      "textToImage": true,
+      "imageToImage": true,
       "inpainting": false,
-      "textToVideo": true,
-      "imageToVideo": true
+      "textToVideo": false,
+      "imageToVideo": false
     },
     "sizes": [],
     "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "9:16",
       "16:9",
-      "9:16"
+      "21:9"
     ],
-    "maxRefImages": 2,
+    "maxRefImages": 3,
     "refRoles": [
       {
-        "name": "first_frame",
+        "name": "init",
         "required": false,
         "min": 0,
-        "max": 1
-      },
-      {
-        "name": "last_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
+        "max": 3
       }
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 4000
+      "maxLength": 8000
     },
-    "params": [
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "default": 8,
-        "min": 4,
-        "max": 8
-      }
-    ],
+    "params": [],
     "pricing": {
-      "baseCostUsd": 2.8
+      "baseCostUsd": 0.01
     },
     "tags": [
-      "text-to-video",
-      "image-to-video"
+      "text-to-image",
+      "image-to-image",
+      "fast"
     ],
     "referenceUrl": "https://ai.google.dev/gemini-api/docs"
   },
   {
-    "id": "google/veo-3.0-fast-generate-001",
+    "id": "google/veo-3.1-fast-generate-preview",
     "provider": "google",
-    "displayName": "Veo 3 Fast",
-    "description": "Faster, cheaper Veo 3 variant.",
+    "displayName": "Veo 3.1 Fast (preview)",
+    "description": "Faster, cheaper Veo 3.1 preview variant (with audio).",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -1329,7 +1334,8 @@ export const MODELS: ModelEntry[] = [
         "kind": "string",
         "enum": [
           "720p",
-          "1080p"
+          "1080p",
+          "4k"
         ]
       }
     ],
@@ -1339,71 +1345,8 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-video",
       "image-to-video",
+      "preview",
       "fast"
-    ],
-    "referenceUrl": "https://ai.google.dev/gemini-api/docs"
-  },
-  {
-    "id": "google/veo-3.0-generate-001",
-    "provider": "google",
-    "displayName": "Veo 3",
-    "description": "Google Veo 3 text-to-video and image-to-video (with audio).",
-    "mediaType": "video",
-    "output": "video",
-    "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": true,
-      "imageToVideo": true
-    },
-    "sizes": [],
-    "aspectRatios": [
-      "16:9",
-      "9:16"
-    ],
-    "maxRefImages": 2,
-    "refRoles": [
-      {
-        "name": "first_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      },
-      {
-        "name": "last_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 4000
-    },
-    "params": [
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "default": 8,
-        "min": 4,
-        "max": 8
-      },
-      {
-        "name": "resolution",
-        "kind": "string",
-        "enum": [
-          "720p",
-          "1080p"
-        ]
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 3.2
-    },
-    "tags": [
-      "text-to-video",
-      "image-to-video"
     ],
     "referenceUrl": "https://ai.google.dev/gemini-api/docs"
   },
@@ -1470,6 +1413,72 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video",
       "preview"
+    ],
+    "referenceUrl": "https://ai.google.dev/gemini-api/docs"
+  },
+  {
+    "id": "google/veo-3.1-lite-generate-preview",
+    "provider": "google",
+    "displayName": "Veo 3.1 Lite (preview)",
+    "description": "Cheapest Veo 3.1 preview tier (with audio).",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16"
+    ],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 4000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 8,
+        "min": 4,
+        "max": 8
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.4
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "preview",
+      "budget"
     ],
     "referenceUrl": "https://ai.google.dev/gemini-api/docs"
   },
@@ -2964,10 +2973,10 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://platform.minimax.io/docs"
   },
   {
-    "id": "openai/dall-e-2",
+    "id": "openai/gpt-image-1",
     "provider": "openai",
-    "displayName": "DALL-E 2",
-    "description": "OpenAI's older text-to-image model. Supports edits.",
+    "displayName": "GPT Image 1",
+    "description": "OpenAI GPT Image 1. Text-to-image plus prompt-driven editing and inpainting via the images/edits endpoint.",
     "mediaType": "image",
     "output": "image",
     "capabilities": {
@@ -2978,9 +2987,9 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false
     },
     "sizes": [
-      "256x256",
-      "512x512",
-      "1024x1024"
+      "1024x1024",
+      "1536x1024",
+      "1024x1536"
     ],
     "aspectRatios": [],
     "maxRefImages": 2,
@@ -3000,11 +3009,23 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 1000
+      "maxLength": 32000
     },
-    "params": [],
+    "params": [
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "auto",
+          "low",
+          "medium",
+          "high"
+        ],
+        "default": "auto"
+      }
+    ],
     "pricing": {
-      "baseCostUsd": 0.02
+      "baseCostUsd": 0.04
     },
     "tags": [
       "text-to-image",
@@ -3014,10 +3035,10 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://platform.openai.com/docs/guides/image-generation"
   },
   {
-    "id": "openai/dall-e-3",
+    "id": "openai/gpt-image-2",
     "provider": "openai",
-    "displayName": "DALL-E 3",
-    "description": "OpenAI's high-quality text-to-image model.",
+    "displayName": "GPT Image 2",
+    "description": "OpenAI's current flagship image model. Arbitrary resolutions (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1).",
     "mediaType": "image",
     "output": "image",
     "capabilities": {
@@ -3027,36 +3048,25 @@ export const MODELS: ModelEntry[] = [
       "textToVideo": false,
       "imageToVideo": false
     },
-    "sizes": [
-      "1024x1024",
-      "1792x1024",
-      "1024x1792"
-    ],
+    "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 0,
     "refRoles": [],
     "promptLimits": {
       "required": true,
-      "maxLength": 4000
+      "maxLength": 32000
     },
     "params": [
       {
         "name": "quality",
         "kind": "string",
         "enum": [
-          "standard",
-          "hd"
+          "auto",
+          "low",
+          "medium",
+          "high"
         ],
-        "default": "standard"
-      },
-      {
-        "name": "style",
-        "kind": "string",
-        "enum": [
-          "vivid",
-          "natural"
-        ],
-        "default": "vivid"
+        "default": "auto"
       }
     ],
     "pricing": {
@@ -3071,7 +3081,7 @@ export const MODELS: ModelEntry[] = [
     "id": "openai/sora",
     "provider": "openai",
     "displayName": "Sora 2",
-    "description": "OpenAI Sora 2 text-to-video and image-to-video (maps to the `sora-2` model).",
+    "description": "DEPRECATED: OpenAI is shutting down the Videos API and every Sora 2 model on 2026-09-24 with no replacement offered. Sora 2 text-to-video and image-to-video (maps to the `sora-2` model).",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -3129,7 +3139,7 @@ export const MODELS: ModelEntry[] = [
     "id": "openai/sora-2-pro",
     "provider": "openai",
     "displayName": "Sora 2 Pro",
-    "description": "Higher-fidelity Sora 2 Pro (maps to the `sora-2-pro` model); adds 1080p sizes.",
+    "description": "DEPRECATED: shutting down 2026-09-24 with the rest of the Videos API. Higher-fidelity Sora 2 Pro (maps to `sora-2-pro`); adds 1080p sizes.",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -3448,6 +3458,12 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
         "name": "style",
         "kind": "string",
         "enum": [
@@ -3505,6 +3521,12 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 1000
     },
     "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
       {
         "name": "negative_prompt",
         "kind": "string"
@@ -3568,6 +3590,12 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
         "name": "negative_prompt",
         "kind": "string"
       },
@@ -3627,6 +3655,12 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 1000
     },
     "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
       {
         "name": "negative_prompt",
         "kind": "string"
@@ -3689,6 +3723,12 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 1000
     },
     "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
       {
         "name": "negative_prompt",
         "kind": "string"
@@ -4096,119 +4136,6 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://replicate.com/docs/reference/http"
   },
   {
-    "id": "runway/gen-3",
-    "provider": "runway",
-    "displayName": "Runway Gen-3",
-    "description": "Runway Gen-3.",
-    "mediaType": "video",
-    "output": "video",
-    "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": true,
-      "imageToVideo": true
-    },
-    "sizes": [],
-    "aspectRatios": [
-      "1280:768",
-      "768:1280"
-    ],
-    "maxRefImages": 1,
-    "refRoles": [
-      {
-        "name": "init",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 1000
-    },
-    "params": [
-      {
-        "name": "duration_seconds",
-        "kind": "int",
-        "default": 5,
-        "min": 5,
-        "max": 10
-      },
-      {
-        "name": "seed",
-        "kind": "seed",
-        "min": 0,
-        "max": 4294967294
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.5
-    },
-    "tags": [
-      "text-to-video",
-      "image-to-video"
-    ],
-    "referenceUrl": "https://docs.dev.runwayml.com/"
-  },
-  {
-    "id": "runway/gen-3-turbo",
-    "provider": "runway",
-    "displayName": "Runway Gen-3 Turbo",
-    "description": "",
-    "mediaType": "video",
-    "output": "video",
-    "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": true,
-      "imageToVideo": true
-    },
-    "sizes": [],
-    "aspectRatios": [
-      "1280:768",
-      "768:1280"
-    ],
-    "maxRefImages": 1,
-    "refRoles": [
-      {
-        "name": "init",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 1000
-    },
-    "params": [
-      {
-        "name": "duration_seconds",
-        "kind": "int",
-        "default": 5,
-        "min": 5,
-        "max": 10
-      },
-      {
-        "name": "seed",
-        "kind": "seed",
-        "min": 0,
-        "max": 4294967294
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.25
-    },
-    "tags": [
-      "text-to-video",
-      "image-to-video",
-      "fast"
-    ],
-    "referenceUrl": "https://docs.dev.runwayml.com/"
-  },
-  {
     "id": "runway/gen4_image",
     "provider": "runway",
     "displayName": "Runway Gen-4 Image",
@@ -4229,9 +4156,7 @@ export const MODELS: ModelEntry[] = [
       "1:1",
       "4:3",
       "3:4",
-      "21:9",
-      "3:2",
-      "2:3"
+      "21:9"
     ],
     "maxRefImages": 3,
     "refRoles": [
@@ -4251,7 +4176,7 @@ export const MODELS: ModelEntry[] = [
         "name": "seed",
         "kind": "seed",
         "min": 0,
-        "max": 4294967294
+        "max": 4294967295
       }
     ],
     "pricing": {
@@ -4284,9 +4209,7 @@ export const MODELS: ModelEntry[] = [
       "1:1",
       "4:3",
       "3:4",
-      "21:9",
-      "3:2",
-      "2:3"
+      "21:9"
     ],
     "maxRefImages": 3,
     "refRoles": [
@@ -4306,7 +4229,7 @@ export const MODELS: ModelEntry[] = [
         "name": "seed",
         "kind": "seed",
         "min": 0,
-        "max": 4294967294
+        "max": 4294967295
       }
     ],
     "pricing": {
@@ -4316,6 +4239,128 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image",
       "fast"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/"
+  },
+  {
+    "id": "runway/gen4-turbo",
+    "provider": "runway",
+    "displayName": "Runway Gen-4 Turbo",
+    "description": "Runway Gen-4 Turbo image-to-video and text-to-video.",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "1280:720",
+      "720:1280",
+      "1104:832",
+      "832:1104",
+      "960:960",
+      "1584:672"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 1000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 2,
+        "max": 10
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.25
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "fast"
+    ],
+    "referenceUrl": "https://docs.dev.runwayml.com/"
+  },
+  {
+    "id": "runway/gen4.5",
+    "provider": "runway",
+    "displayName": "Runway Gen-4.5",
+    "description": "Runway Gen-4.5, the highest-quality Runway video tier.",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "1280:720",
+      "720:1280",
+      "1104:832",
+      "832:1104",
+      "960:960",
+      "1584:672"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 1000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 2,
+        "max": 10
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.5
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "premium"
     ],
     "referenceUrl": "https://docs.dev.runwayml.com/"
   },
@@ -4639,14 +4684,14 @@ export const MODELS: ModelEntry[] = [
     "id": "vidu/vidu2.0",
     "provider": "vidu",
     "displayName": "Vidu 2.0",
-    "description": "Vidu 2.0 text/image/reference to video.",
+    "description": "Vidu 2.0 image/reference to video (no text-to-video).",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
       "inpainting": false,
-      "textToVideo": true,
+      "textToVideo": false,
       "imageToVideo": true
     },
     "sizes": [],
@@ -4704,7 +4749,6 @@ export const MODELS: ModelEntry[] = [
       "baseCostUsd": 0.2
     },
     "tags": [
-      "text-to-video",
       "image-to-video",
       "reference-to-video"
     ],
@@ -4762,15 +4806,13 @@ export const MODELS: ModelEntry[] = [
         "name": "duration_seconds",
         "kind": "float",
         "default": 5,
-        "min": 4,
+        "min": 5,
         "max": 5
       },
       {
         "name": "resolution",
         "kind": "string",
         "enum": [
-          "360p",
-          "720p",
           "1080p"
         ]
       }
@@ -4789,14 +4831,14 @@ export const MODELS: ModelEntry[] = [
     "id": "vidu/viduq2-pro",
     "provider": "vidu",
     "displayName": "Vidu Q2 Pro",
-    "description": "Vidu Q2 Pro high-quality text/image/reference to video.",
+    "description": "Vidu Q2 Pro high-quality image/reference to video (no text-to-video).",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
       "inpainting": false,
-      "textToVideo": true,
+      "textToVideo": false,
       "imageToVideo": true
     },
     "sizes": [],
@@ -4853,7 +4895,6 @@ export const MODELS: ModelEntry[] = [
       "baseCostUsd": 0.4
     },
     "tags": [
-      "text-to-video",
       "image-to-video",
       "reference-to-video",
       "premium"

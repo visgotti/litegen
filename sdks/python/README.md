@@ -20,7 +20,7 @@ client = LiteGenClient(
 
 result = client.images.generate(
     prompt="a serene mountain landscape at sunset",
-    model="openai/dall-e-3",
+    model="openai/gpt-image-2",
     size="1024x1024",
 )
 print(result)

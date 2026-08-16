@@ -130,6 +130,11 @@ impl ImageProvider for RecraftProvider {
         if let Some(np) = base.negative_prompt.as_deref() {
             body["negative_prompt"] = Value::String(np.to_string());
         }
+        // Recraft's seed parameter is `random_seed`, supported on all models.
+        // @see <https://www.recraft.ai/docs/api-reference/endpoints.md>
+        if let Some(seed) = base.seed {
+            body["random_seed"] = Value::Number(seed.into());
+        }
         if let Some(Value::Object(extra_map)) = &extras.extra {
             if let Some(obj) = body.as_object_mut() {
                 for (k, v) in extra_map {
@@ -358,5 +363,39 @@ mod tests {
         assert_eq!(body["size"], "1024x1024");
         assert_eq!(body["style"], "digital_illustration");
         assert_eq!(body["response_format"], "b64_json");
+    }
+
+    /// Recraft's seed parameter is `random_seed`, not `seed`.
+    /// @see <https://www.recraft.ai/docs/api-reference/endpoints.md>
+    #[tokio::test]
+    async fn seed_is_sent_as_random_seed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/images/generations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": [{ "b64_json": B64.encode(b"png") }]
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("recraft/recraftv3");
+        let mut base = make_base("a race car", "recraft/recraftv3");
+        base.seed = Some(4242);
+
+        provider
+            .generate(
+                &schema,
+                &base,
+                &make_extras(),
+                &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() },
+            )
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["random_seed"], 4242);
+        assert!(body.get("seed").is_none(), "Recraft has no `seed` field");
     }
 }

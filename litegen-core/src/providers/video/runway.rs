@@ -54,11 +54,17 @@ impl RunwayProvider {
     }
 
     /// Map internal model ID to Runway API model name.
+    ///
+    /// `gen3a_turbo` and `gen4_aleph` were removed from the API on 2026-07-30
+    /// ("Requests that use these model identifiers will fail") and are not in
+    /// the `/v1/image_to_video` model union. `gen4_turbo` is the fast tier,
+    /// `gen4.5` the quality tier.
+    /// @see <https://docs.dev.runwayml.com/api-details/api_changelog/>
     fn resolve_model(model: &str) -> &'static str {
         match model {
-            "runway/gen-3" | "runway-gen-3" => "gen3a_turbo",
-            "runway/gen-3-turbo" | "runway-gen-3-turbo" => "gen3a_turbo",
-            _ => "gen3a_turbo",
+            "runway/gen4.5" | "runway-gen4.5" | "gen4.5" => "gen4.5",
+            "runway/gen4-turbo" | "runway-gen4-turbo" | "gen4_turbo" => "gen4_turbo",
+            _ => "gen4_turbo",
         }
     }
 }
@@ -139,13 +145,13 @@ impl VideoProvider for RunwayProvider {
             body["promptImage"] = Value::String(img_url);
         }
 
-        // Runway video requires `ratio` as a pixel-pair string (e.g. "1280:768").
-        // gen3a_turbo supports landscape 1280:768 and portrait 768:1280. The
-        // unified aspect_ratio (validated against the model's allowed pixel-pair
-        // ratios in models/runway.yaml) is forwarded verbatim; default to the
-        // landscape ratio when none was supplied so the required field is always
-        // present.
-        let ratio = extras.aspect_ratio.as_deref().unwrap_or("1280:768");
+        // Runway video requires `ratio` as a pixel-pair string. The gen4 enum is
+        // 1280:720 | 720:1280 | 1104:832 | 832:1104 | 960:960 | 1584:672 — the
+        // gen3-era 1280:768 / 768:1280 pair is no longer accepted. The unified
+        // aspect_ratio (validated against models/runway.yaml, which lists exactly
+        // the enum above) is forwarded verbatim; default to landscape 720p when
+        // none was supplied so the required field is always present.
+        let ratio = extras.aspect_ratio.as_deref().unwrap_or("1280:720");
         body["ratio"] = Value::String(ratio.to_string());
 
         if let Some(seed) = base.seed {
@@ -251,9 +257,12 @@ impl VideoProvider for RunwayProvider {
             }
         })?;
 
+        // The task response union's status constants are
+        // PENDING | THROTTLED | CANCELLED | RUNNING | FAILED | SUCCEEDED.
+        // CANCELLED is terminal — treating it as Pending polls until timeout.
         let status = match data["status"].as_str() {
             Some("SUCCEEDED") => GenerationStatus::Completed,
-            Some("FAILED") => GenerationStatus::Failed,
+            Some("FAILED") | Some("CANCELLED") => GenerationStatus::Failed,
             Some("RUNNING") | Some("THROTTLED") => GenerationStatus::Processing,
             _ => GenerationStatus::Pending,
         };
@@ -388,8 +397,8 @@ mod tests {
             .await;
 
         let provider = make_provider(&server.uri());
-        let schema = ref_schema("runway/gen-3");
-        let base = make_base("a drone shot over a misty forest", "runway/gen-3");
+        let schema = ref_schema("runway/gen4-turbo");
+        let base = make_base("a drone shot over a misty forest", "runway/gen4-turbo");
         let extras = make_extras();
         let materialized = empty_materialized();
 
@@ -404,7 +413,7 @@ mod tests {
         let received = server.received_requests().await.unwrap();
         assert_eq!(received.len(), 1);
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
-        assert_eq!(body["model"], "gen3a_turbo");
+        assert_eq!(body["model"], "gen4_turbo");
         assert_eq!(body["promptText"], "a drone shot over a misty forest");
         assert_eq!(body["duration"], 5);
 
@@ -413,5 +422,135 @@ mod tests {
         let version_header = req.headers.get("x-runway-version");
         assert!(version_header.is_some(), "X-Runway-Version header missing");
         assert_eq!(version_header.unwrap(), "2024-11-06");
+    }
+
+    /// `gen3a_turbo` was removed from the Runway API on 2026-07-30 ("Requests
+    /// that use these model identifiers will fail"), and does not appear in the
+    /// `/v1/image_to_video` model union in docs.dev.runwayml.com/openapi.json.
+    /// The current fast model is `gen4_turbo`.
+    #[tokio::test]
+    async fn sends_gen4_turbo_not_the_retired_gen3a_turbo() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/text_to_video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "t1" })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("runway/gen4-turbo");
+        let base = make_base("a drone shot over a misty forest", "runway/gen4-turbo");
+        provider
+            .generate(&schema, &base, &make_extras(), &empty_materialized())
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["model"], "gen4_turbo");
+    }
+
+    /// The quality tier is `gen4.5` (dot, not underscore) per the spec's
+    /// discriminated-union variant title.
+    #[tokio::test]
+    async fn sends_gen4_5_model_id_verbatim() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/text_to_video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "t1" })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("runway/gen4.5");
+        let base = make_base("a slow push through a canyon", "runway/gen4.5");
+        provider
+            .generate(&schema, &base, &make_extras(), &empty_materialized())
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["model"], "gen4.5");
+    }
+
+    /// `1280:768` / `768:1280` are gen3-era ratios. The gen4 `ratio` enum is
+    /// `1280:720 | 720:1280 | 1104:832 | 832:1104 | 960:960 | 1584:672`, so the
+    /// default we substitute when the caller omits one must be a member of it.
+    #[tokio::test]
+    async fn default_ratio_is_a_member_of_the_gen4_enum() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/text_to_video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "t1" })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("runway/gen4-turbo");
+        let base = make_base("a city at night", "runway/gen4-turbo");
+        provider
+            .generate(&schema, &base, &make_extras(), &empty_materialized())
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        const GEN4_RATIOS: [&str; 6] = [
+            "1280:720", "720:1280", "1104:832", "832:1104", "960:960", "1584:672",
+        ];
+        let ratio = body["ratio"].as_str().expect("ratio must always be sent");
+        assert!(
+            GEN4_RATIOS.contains(&ratio),
+            "ratio {ratio:?} is not in the gen4 enum {GEN4_RATIOS:?}"
+        );
+    }
+
+    /// Every catalog ratio must also be a member of the vendor enum — the
+    /// validator accepts anything in `allowed` and forwards it verbatim.
+    #[test]
+    fn catalog_video_ratios_are_all_in_the_gen4_enum() {
+        const GEN4_RATIOS: [&str; 6] = [
+            "1280:720", "720:1280", "1104:832", "832:1104", "960:960", "1584:672",
+        ];
+        for id in ["runway/gen4-turbo", "runway/gen4.5"] {
+            let schema = ref_schema(id);
+            let allowed: Vec<String> = match schema.params.get("aspect_ratio") {
+                Some(crate::capabilities::schema::ParamSpec::AspectRatio(ar)) => ar.allowed.clone(),
+                other => panic!("{id} aspect_ratio param is {other:?}, expected AspectRatio"),
+            };
+            assert!(!allowed.is_empty(), "{id} declares no aspect_ratio.allowed");
+            for ar in allowed {
+                assert!(
+                    GEN4_RATIOS.contains(&ar.as_str()),
+                    "{id} allows ratio {ar:?}, which Runway's gen4 enum rejects"
+                );
+            }
+        }
+    }
+
+    /// `CANCELLED` is one of the six task states in the spec's response union.
+    /// Falling through to `Pending` makes a cancelled job poll until timeout.
+    #[tokio::test]
+    async fn cancelled_task_reports_failed_rather_than_pending() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/tasks/task-cancelled"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "task-cancelled",
+                "status": "CANCELLED"
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let handle = VideoGenerationHandle {
+            provider_job_id: "task-cancelled".to_string(),
+            provider: "runway".to_string(),
+            model: "runway/gen4-turbo".to_string(),
+        };
+
+        let poll = provider.poll_status(&handle).await.expect("poll");
+        assert_eq!(poll.status, GenerationStatus::Failed);
     }
 }

@@ -1080,8 +1080,8 @@ async fn byo_missing_credential_returns_400() {
     let r = bearer
         .post_with(
             "/v1/images/generations",
-            // `openai/dall-e-3` is a real, non-mock provider model shipped in models/.
-            json!({ "model": "openai/dall-e-3", "prompt": "x" }),
+            // `openai/gpt-image-2` is a real, non-mock provider model shipped in models/.
+            json!({ "model": "openai/gpt-image-2", "prompt": "x" }),
             &[("authorization", &bearer_hdr)],
         )
         .await;
@@ -1184,7 +1184,7 @@ async fn byo_credential_reaches_upstream() {
     let r = bearer
         .post_with(
             "/v1/images/generations",
-            json!({ "model": "openai/dall-e-3", "prompt": "x", "response_format": "b64_json" }),
+            json!({ "model": "openai/gpt-image-2", "prompt": "x", "response_format": "b64_json" }),
             &[("authorization", &bearer_hdr)],
         )
         .await;
@@ -1307,7 +1307,7 @@ async fn byo_weighted_keys_rotate_across_requests() {
         let r = bearer
             .post_with(
                 "/v1/images/generations",
-                json!({ "model": "openai/dall-e-3", "prompt": "x", "response_format": "b64_json" }),
+                json!({ "model": "openai/gpt-image-2", "prompt": "x", "response_format": "b64_json" }),
                 &[("authorization", &bearer_hdr)],
             )
             .await;

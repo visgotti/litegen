@@ -84,11 +84,16 @@ impl GoogleProvider {
         };
 
         match native {
-            "imagen-3" => "imagen-3.0-generate-002",
             "gemini-2.5-flash-image" | "gemini-2.5-flash" => "gemini-2.5-flash-image",
-            "gemini-3-pro-image" | "gemini-3-pro" => "gemini-3-pro-image-preview",
-            "gemini-2.0-flash" => "gemini-2.0-flash",
-            _ => "gemini-2.5-flash-image",
+            // GA since 2026-05-28. The `-preview` alias we used to append was
+            // shut down on 2026-06-25.
+            // @see <https://ai.google.dev/gemini-api/docs/changelog>
+            "gemini-3-pro-image" | "gemini-3-pro" => "gemini-3-pro-image",
+            "gemini-3.1-flash-image" => "gemini-3.1-flash-image",
+            "gemini-3.1-flash-lite-image" => "gemini-3.1-flash-lite-image",
+            // Google's migration target for both gemini-2.5-flash-image
+            // (shutdown 2026-10-02) and the retired Imagen line.
+            _ => "gemini-3.1-flash-image",
         }
     }
 
@@ -104,23 +109,23 @@ impl GoogleProvider {
             return None;
         }
         let ratio = w / h;
+        // `ImageConfig.aspect_ratio` supports exactly these eight values.
+        // `5:4` and `4:5` are NOT members and are rejected by the API, so the
+        // near-square band collapses to `1:1`.
+        // @see googleapis/python-genai `types.ImageConfig.aspect_ratio`
         Some(if ratio >= 2.1 {
             "21:9"
         } else if ratio >= 1.7 {
             "16:9"
         } else if ratio >= 1.4 {
             "3:2"
-        } else if ratio >= 1.25 {
+        } else if ratio >= 1.18 {
             "4:3"
-        } else if ratio >= 1.1 {
-            "5:4"
-        } else if ratio >= 0.95 {
-            "1:1"
         } else if ratio >= 0.85 {
-            "4:5"
+            "1:1"
         } else if ratio >= 0.7 {
             "3:4"
-        } else if ratio >= 0.6 {
+        } else if ratio >= 0.58 {
             "2:3"
         } else {
             "9:16"
@@ -259,8 +264,10 @@ impl ImageProvider for GoogleProvider {
             }
 
             // Build generationConfig
+            // The wire value is the proto enum name — `Modality.IMAGE` in the
+            // Google GenAI SDK. Lowercase is undocumented.
             let mut gen_config = json!({
-                "responseModalities": ["image"]
+                "responseModalities": ["IMAGE"]
             });
 
             // Aspect ratio must be nested under imageConfig for the
@@ -283,10 +290,19 @@ impl ImageProvider for GoogleProvider {
                 gen_config["candidateCount"] = Value::Number(base.n.into());
             }
 
-            // Shallow-merge extra fields into generationConfig
+            // Merge extra fields. `imageSize` and `personGeneration` are
+            // members of `generationConfig.imageConfig`, not of
+            // `generationConfig` itself, so they have to be nested.
+            // @see googleapis/python-genai `types.ImageConfig`
+            const IMAGE_CONFIG_KEYS: [&str; 2] = ["imageSize", "personGeneration"];
             if let Some(Value::Object(extra_map)) = &extras.extra {
-                if let Some(cfg_obj) = gen_config.as_object_mut() {
-                    for (k, v) in extra_map {
+                for (k, v) in extra_map {
+                    if IMAGE_CONFIG_KEYS.contains(&k.as_str()) {
+                        if !gen_config["imageConfig"].is_object() {
+                            gen_config["imageConfig"] = json!({});
+                        }
+                        gen_config["imageConfig"][k] = v.clone();
+                    } else if let Some(cfg_obj) = gen_config.as_object_mut() {
                         cfg_obj.insert(k.clone(), v.clone());
                     }
                 }
@@ -621,5 +637,135 @@ mod tests {
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
         assert_eq!(body["contents"][0]["parts"][0]["text"], "a beautiful mountain landscape");
         assert!(body["generationConfig"]["responseModalities"].as_array().is_some());
+    }
+
+    fn registry() -> crate::capabilities::CapabilityRegistry {
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.pop();
+        p.push("models");
+        crate::capabilities::CapabilityRegistry::from_dir(&p).expect("load")
+    }
+
+    /// `gemini-3-pro-image-preview` was shut down on 2026-06-25 when
+    /// `gemini-3-pro-image` went GA. Appending `-preview` targets the dead id.
+    /// @see <https://ai.google.dev/gemini-api/docs/changelog>
+    #[test]
+    fn gemini_3_pro_image_is_not_rewritten_to_the_retired_preview_id() {
+        let resolved = GoogleProvider::resolve_model("google/gemini-3-pro-image");
+        assert_eq!(resolved, "gemini-3-pro-image");
+    }
+
+    /// Imagen 3 was shut down 2025-11-10; the whole Imagen surface (Imagen 4)
+    /// shuts down 2026-08-17. @see <https://ai.google.dev/gemini-api/docs/deprecations>
+    #[test]
+    fn catalog_ships_no_imagen_models() {
+        let r = registry();
+        assert!(
+            r.get("google/imagen-3").is_none(),
+            "imagen-3.0-generate-002 was shut down on 2025-11-10"
+        );
+    }
+
+    #[test]
+    fn catalog_ships_the_current_nano_banana_2_model() {
+        let r = registry();
+        assert!(
+            r.get("google/gemini-3.1-flash-image").is_some(),
+            "gemini-3.1-flash-image (GA 2026-05-28) is the migration target for \
+             both gemini-2.5-flash-image and Imagen"
+        );
+    }
+
+    /// `ImageConfig.aspect_ratio` supports exactly
+    /// `1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 21:9`. The size-derivation helper
+    /// used to emit `5:4` and `4:5`, which are rejected.
+    #[test]
+    fn every_derived_aspect_ratio_is_supported_by_image_config() {
+        const SUPPORTED: [&str; 8] =
+            ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"];
+        // Sweep a wide range of plausible sizes, including the ratios that used
+        // to fall into the 5:4 and 4:5 buckets.
+        for w in (256..=3072).step_by(16) {
+            for h in [256u32, 512, 768, 832, 1024, 1200, 1280, 1536, 2048] {
+                if let Some(ar) = GoogleProvider::aspect_ratio_from_size(&format!("{w}x{h}")) {
+                    assert!(
+                        SUPPORTED.contains(&ar),
+                        "{w}x{h} derived unsupported aspect ratio {ar:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The canonical wire value is the proto enum name. `Modality.IMAGE` in the
+    /// Google GenAI SDK serialises as `"IMAGE"`; lowercase is undocumented.
+    #[tokio::test]
+    async fn response_modalities_uses_the_canonical_uppercase_enum_name() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex("/models/.*:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{ "content": { "parts": [
+                    { "inlineData": { "mimeType": "image/png", "data": B64.encode(b"x") } }
+                ] } }]
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("google/gemini-3.1-flash-image");
+        let base = make_base("a fern", "google/gemini-3.1-flash-image");
+        provider
+            .generate(&schema, &base, &make_extras(), &empty_materialized())
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(
+            body["generationConfig"]["responseModalities"],
+            json!(["IMAGE"])
+        );
+    }
+
+    /// `imageSize` and `personGeneration` are members of
+    /// `generationConfig.imageConfig`, not of `generationConfig` itself.
+    /// @see googleapis/python-genai `types.ImageConfig`
+    #[tokio::test]
+    async fn image_config_keys_are_nested_under_image_config() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex("/models/.*:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{ "content": { "parts": [
+                    { "inlineData": { "mimeType": "image/png", "data": B64.encode(b"x") } }
+                ] } }]
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("google/gemini-3-pro-image");
+        let base = make_base("a lighthouse", "google/gemini-3-pro-image");
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "imageSize": "2K", "personGeneration": "ALLOW_ADULT" }));
+
+        provider
+            .generate(&schema, &base, &extras, &empty_materialized())
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        let cfg = &body["generationConfig"];
+        assert_eq!(cfg["imageConfig"]["imageSize"], "2K");
+        assert_eq!(cfg["imageConfig"]["personGeneration"], "ALLOW_ADULT");
+        assert!(cfg.get("imageSize").is_none(), "imageSize must not be top-level");
+        assert!(
+            cfg.get("personGeneration").is_none(),
+            "personGeneration must not be top-level"
+        );
+        // The aspect ratio still nests under imageConfig alongside them.
+        assert_eq!(cfg["imageConfig"]["aspectRatio"], "1:1");
     }
 }

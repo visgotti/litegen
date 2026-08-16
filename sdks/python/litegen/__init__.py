@@ -2,7 +2,7 @@
 
 >>> from litegen import LiteGenClient
 >>> client = LiteGenClient(api_key="lg-...", base_url="http://localhost:4000")
->>> img = client.images.generate(prompt="a cat", model="openai/dall-e-3")
+>>> img = client.images.generate(prompt="a cat", model="openai/gpt-image-2")
 """
 from __future__ import annotations
 

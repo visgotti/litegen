@@ -21,7 +21,8 @@ use crate::types::*;
 /// `generated_images[0].motionMP4URL`. Bearer auth; start frame uploaded via the
 /// shared presigned init-image flow.
 ///
-/// @see <https://docs.leonardo.ai/reference/createimagetovideogeneration>
+/// @see <https://docs.leonardo.ai/docs/list-of-models.md> — current model line-up
+///   (the older /reference/createimagetovideogeneration page now 404s)
 ///   (required: prompt, imageId, imageType; optional: model [MOTION2/VEO3/...],
 ///    resolution [RESOLUTION_720/...], duration)
 /// @see <https://docs.leonardo.ai/docs/generate-with-veo3-veo3-fast-using-start-frame>
