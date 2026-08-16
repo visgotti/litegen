@@ -1806,3 +1806,47 @@ Not executed here:
   provider credentials. These are the only tests that would exercise a real
   vendor endpoint, so **no fix in this pass has been confirmed against a live
   API** — every claim rests on published specs plus mocked-transport tests.
+
+
+---
+
+## Deploy blocker found while shipping this (2026-08-16)
+
+`node deploy.js landing` would have **overwritten litegen.ai with a month-old
+copy of the site**, silently. Found while preparing the deploy for this work;
+recorded here because the failure mode is invisible from the deploy log.
+
+`apps/landing/next.config.ts` sets `output: 'export'` and
+`distDir: process.env.NEXT_DIST_DIR || '.next'`. With `output: 'export'`,
+**`distDir` is the export destination.** `deploy.js` ran the build with
+`NEXT_DIST_DIR=.next-prod`, so the export landed in `apps/landing/.next-prod/`
+— while the directory the deploy actually tars up, `apps/landing/out/`, kept
+whatever an earlier build had left in it.
+
+The guard in place only checked existence:
+
+```js
+if (!fs.existsSync(landingOut)) { throw ... }   // passes on a stale directory
+```
+
+Measured on this checkout after a **successful** (`EXIT=0`) production build:
+
+| | `out/` (shipped) | `.next-prod/` (freshly built) |
+|---|---|---|
+| `en.html` mtime | Jul 17 17:03 | Aug 16 10:01 |
+| `dall-e-3` | present | 0 occurrences |
+| `gpt-image-2` | absent | present |
+
+Because the remote unpack is destructive — `find landing-dist -mindepth 1 -delete`
+before extracting — shipping that `out/` replaces the live site wholesale. It
+would have reverted a month of landing changes *and* re-published the retired
+`openai/dall-e-3` that this very audit removed.
+
+Two changes to `deploy.js`:
+
+1. `NEXT_DIST_DIR: 'out'` — point the export at the directory that gets shipped.
+   This still satisfies the original reason the variable was set at all (keeping
+   the production build off a running `next dev`'s `.next`).
+2. A **freshness assertion**: capture `Date.now()` before the build and fail if
+   the shipped directory's mtime predates it. Existence is not freshness; a
+   misrouted export now aborts loudly instead of publishing stale HTML.
