@@ -52,3 +52,16 @@ litegen.db
 litegen-dev.db
 *.db-shm
 *.db-wal
+.credentials
+# Ad-hoc verification / browser-automation artifacts (screenshots, MCP session
+# snapshots). Save these under .artifacts/ (below) during manual verification,
+# never loose at repo root — a loose PNG here is almost always a leftover
+# screenshot, not a real asset (those live under public/ or src/assets/).
+/*.png
+/*.jpg
+/*.jpeg
+.playwright-mcp/
+
+# Scratch/verification artifacts — screenshots, one-off dumps, anything from a
+# manual check that isn't a build output or a real repo asset.
+.artifacts/
