@@ -464,4 +464,75 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn model3d_request_deserializes_with_flattened_base() {
+        let json = serde_json::json!({
+            "model": "mock/mesh-3d",
+            "prompt": "a low-poly fox",
+            "output_format": "glb",
+            "texture": true,
+            "target_polycount": 5000,
+            "topology": "triangle",
+            "strict": false
+        });
+        let req: Model3dGenerationRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.base.model, "mock/mesh-3d");
+        assert_eq!(req.base.prompt, "a low-poly fox");
+        assert!(!req.base.strict);
+        assert_eq!(req.output_format.as_deref(), Some("glb"));
+        assert_eq!(req.texture, Some(true));
+        assert_eq!(req.target_polycount, Some(5000));
+        assert_eq!(req.topology.as_deref(), Some("triangle"));
+        // Unset optionals stay None rather than defaulting to a vendor opinion.
+        assert_eq!(req.pbr, None);
+        assert_eq!(req.rig, None);
+        assert_eq!(req.symmetry, None);
+    }
+
+    #[test]
+    fn model3d_asset_kind_serializes_lowercase() {
+        assert_eq!(serde_json::to_string(&Model3dAssetKind::Mesh).unwrap(), "\"mesh\"");
+        assert_eq!(serde_json::to_string(&Model3dAssetKind::Texture).unwrap(), "\"texture\"");
+        assert_eq!(serde_json::to_string(&Model3dAssetKind::Preview).unwrap(), "\"preview\"");
+    }
+
+    #[test]
+    fn model3d_response_omits_empty_assets_and_keeps_progress() {
+        let pending = Model3dGenerationResponse {
+            id: "litegen-3d-1".into(),
+            status: GenerationStatus::Pending,
+            model: "mock/mesh-3d".into(),
+            provider: "mock".into(),
+            assets: Vec::new(),
+            progress: 0,
+            error: None,
+            usage: None,
+            created: 1_760_000_000,
+        };
+        let v = serde_json::to_value(&pending).unwrap();
+        assert!(v.get("assets").is_none(), "empty assets must be omitted, not sent as []");
+        assert_eq!(v["progress"], 0);
+        assert_eq!(v["status"], "pending");
+
+        let done = Model3dGenerationResponse {
+            assets: vec![Model3dAsset {
+                kind: Model3dAssetKind::Mesh,
+                url: "https://cdn.example.com/litegen/3d/litegen-3d-1/model.glb".into(),
+                format: "glb".into(),
+                size_bytes: Some(780),
+                polycount: Some(12),
+                width: None,
+                height: None,
+            }],
+            status: GenerationStatus::Completed,
+            progress: 100,
+            ..pending
+        };
+        let v = serde_json::to_value(&done).unwrap();
+        assert_eq!(v["assets"][0]["kind"], "mesh");
+        assert_eq!(v["assets"][0]["format"], "glb");
+        assert!(v["assets"][0]["url"].as_str().unwrap().starts_with("https://"));
+        assert!(v["assets"][0].get("width").is_none(), "None dimensions must be omitted");
+    }
 }

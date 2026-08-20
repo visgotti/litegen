@@ -142,6 +142,85 @@ pub struct VideoGenerationResponse {
     pub created: i64,
 }
 
+// ─── 3D Model Generation ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Model3dGenerationRequest {
+    #[serde(flatten)]
+    pub base: BaseGenerationRequest,
+    /// Desired mesh container: "glb" | "obj" | "fbx" | "usdz". Default "glb".
+    #[serde(default)] pub output_format: Option<String>,
+    /// Generate textures (vs. bare geometry).
+    #[serde(default)] pub texture: Option<bool>,
+    /// PBR materials, where the model supports them.
+    #[serde(default)] pub pbr: Option<bool>,
+    #[serde(default)] pub target_polycount: Option<u32>,
+    /// "off" | "auto" | "on".
+    #[serde(default)] pub symmetry: Option<String>,
+    /// "triangle" | "quad".
+    #[serde(default)] pub topology: Option<String>,
+    /// Auto-rig / emit a skeleton, where supported.
+    #[serde(default)] pub rig: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Model3dAssetKind {
+    Mesh,
+    Texture,
+    Preview,
+}
+
+/// One file produced by a 3D generation. A completed generation always carries
+/// exactly one `Mesh` asset; consumers treat its absence as a provider failure.
+/// `url` is always absolute — a root-relative path is indistinguishable from an
+/// outage to a client fetching it from a worker.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Model3dAsset {
+    pub kind: Model3dAssetKind,
+    pub url: String,
+    /// "glb" | "obj" | "fbx" | "usdz" | "png" | "jpg".
+    pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    /// Meshes only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polycount: Option<u32>,
+    /// Preview / texture assets only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+/// 3D generation is always async — this is both the submit response and the
+/// poll response, mirroring `VideoGenerationResponse` with `video_url` replaced
+/// by the richer `assets` list.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Model3dGenerationResponse {
+    pub id: String,
+    pub status: GenerationStatus,
+    pub model: String,
+    pub provider: String,
+    /// Populated on `completed`. Omitted entirely while the job is in flight.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assets: Vec<Model3dAsset>,
+    /// Unified 0–100 progress.
+    pub progress: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageInfo>,
+    pub created: i64,
+}
+
+impl Model3dGenerationResponse {
+    /// The single required mesh asset, if present.
+    pub fn mesh(&self) -> Option<&Model3dAsset> {
+        self.assets.iter().find(|a| a.kind == Model3dAssetKind::Mesh)
+    }
+}
+
 // ─── Shared Types ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
