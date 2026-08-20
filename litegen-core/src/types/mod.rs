@@ -217,6 +217,7 @@ pub struct ModelInfo {
 pub enum MediaType {
     Image,
     Video,
+    Model3d,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -240,6 +241,23 @@ pub struct ModelCapabilities {
     pub supports_last_frame: bool,
     #[serde(default)]
     pub max_duration_seconds: Option<f64>,
+    // 3D-specific
+    #[serde(default)]
+    pub supports_text_to_3d: bool,
+    #[serde(default)]
+    pub supports_image_to_3d: bool,
+    #[serde(default)]
+    pub supports_multiview_to_3d: bool,
+    #[serde(default)]
+    pub supports_pbr: bool,
+    #[serde(default)]
+    pub supports_rig: bool,
+    #[serde(default)]
+    pub supports_texture: bool,
+    #[serde(default)]
+    pub output_formats: Vec<String>,
+    #[serde(default)]
+    pub max_polycount: Option<u32>,
 }
 
 fn default_max_images() -> u32 {

@@ -9,6 +9,8 @@ use utoipa::ToSchema;
 pub enum MediaType {
     Image,
     Video,
+    /// Serializes as "model3d" — snake_case does not underscore before a digit.
+    Model3d,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
@@ -18,6 +20,9 @@ pub struct ModelCapabilityFlags {
     #[serde(default)] pub inpainting: bool,
     #[serde(default)] pub text_to_video: bool,
     #[serde(default)] pub image_to_video: bool,
+    #[serde(default)] pub text_to_3d: bool,
+    #[serde(default)] pub image_to_3d: bool,
+    #[serde(default)] pub multiview_to_3d: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -46,6 +51,8 @@ pub struct PromptSpec {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct ParamSpecBool {
     #[serde(default)] pub default: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
@@ -53,6 +60,8 @@ pub struct ParamSpecInt {
     #[serde(default)] pub min: Option<i64>,
     #[serde(default)] pub max: Option<i64>,
     #[serde(default)] pub default: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
@@ -60,6 +69,8 @@ pub struct ParamSpecFloat {
     #[serde(default)] pub min: Option<f64>,
     #[serde(default)] pub max: Option<f64>,
     #[serde(default)] pub default: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
@@ -68,18 +79,24 @@ pub struct ParamSpecString {
     #[serde(default)] pub enum_values: Vec<String>,
     #[serde(default)] pub pattern: Option<String>,
     #[serde(default)] pub default: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ParamSpecAspectRatio {
     pub allowed: Vec<String>,
     #[serde(default)] pub default: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ParamSpecSeed {
     pub min: i64,
     pub max: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -103,6 +120,8 @@ pub struct SizeSpecFreeform {
     pub min_height: u32,
     pub max_height: u32,
     #[serde(default)] pub multiple_of: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -111,6 +130,8 @@ pub struct SizeSpecEnum {
     // (OpenAPI 3.1's prefixItems is not portable across codegen tools yet).
     #[schema(value_type = Vec<Vec<u32>>)]
     pub values: Vec<(u32, u32)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -197,6 +218,15 @@ pub const KNOWN_PARAMS: &[&str] = &[
     "duration_seconds",
     "resolution",
     "fps",
+    // 3D (model3d). First-class rather than extra_allowlist passthrough so the
+    // aipix input panel and the litegen Playground both render real controls.
+    "output_format",
+    "texture",
+    "pbr",
+    "target_polycount",
+    "symmetry",
+    "topology",
+    "rig",
 ];
 
 fn default_true() -> bool { true }
