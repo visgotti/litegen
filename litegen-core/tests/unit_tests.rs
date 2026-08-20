@@ -407,4 +407,61 @@ mod tests {
         }
         pattern.eq_ignore_ascii_case(model)
     }
+    // ─── model3d wire format ────────────────────────────────────────────────
+
+    #[test]
+    fn media_type_model3d_serializes_without_underscore() {
+        // aipix discriminates on the literal string "model3d" (ai-model.entity.ts
+        // stores it in a varchar(10)). serde's snake_case does not insert an
+        // underscore before a digit, so this is the natural output — but it is
+        // load-bearing enough to lock down.
+        let t = serde_json::to_string(&MediaType::Model3d).unwrap();
+        assert_eq!(t, "\"model3d\"");
+        let back: MediaType = serde_json::from_str("\"model3d\"").unwrap();
+        assert_eq!(back, MediaType::Model3d);
+
+        let c = serde_json::to_string(&litegen::capabilities::MediaType::Model3d).unwrap();
+        assert_eq!(c, "\"model3d\"");
+    }
+
+    #[test]
+    fn model3d_capability_flags_default_false_and_round_trip() {
+        let yaml = "text_to_3d: true\nimage_to_3d: true\nmultiview_to_3d: false\n";
+        let flags: litegen::capabilities::ModelCapabilityFlags =
+            serde_yaml::from_str(yaml).unwrap();
+        assert!(flags.text_to_3d);
+        assert!(flags.image_to_3d);
+        assert!(!flags.multiview_to_3d);
+        // Image/video flags stay defaulted — the new fields are purely additive.
+        assert!(!flags.text_to_image);
+        assert!(!flags.text_to_video);
+    }
+
+    #[test]
+    fn param_spec_carries_optional_label_and_description() {
+        let yaml = "kind: int\nmin: 100\nmax: 300000\nlabel: Target polycount\ndescription: Approximate triangle budget\n";
+        let spec: litegen::capabilities::ParamSpec = serde_yaml::from_str(yaml).unwrap();
+        match spec {
+            litegen::capabilities::ParamSpec::Int(i) => {
+                assert_eq!(i.label.as_deref(), Some("Target polycount"));
+                assert_eq!(i.description.as_deref(), Some("Approximate triangle budget"));
+                assert_eq!(i.min, Some(100));
+            }
+            other => panic!("expected Int, got {other:?}"),
+        }
+        // Absent label/description stay None and are omitted from JSON.
+        let bare: litegen::capabilities::ParamSpec = serde_yaml::from_str("kind: bool\n").unwrap();
+        let json = serde_json::to_string(&bare).unwrap();
+        assert!(!json.contains("label"), "label must be skipped when None: {json}");
+    }
+
+    #[test]
+    fn known_params_include_the_3d_knobs() {
+        for k in ["output_format", "texture", "pbr", "target_polycount", "symmetry", "topology", "rig"] {
+            assert!(
+                litegen::capabilities::KNOWN_PARAMS.contains(&k),
+                "'{k}' must be a first-class param — aipix renders one control per params entry"
+            );
+        }
+    }
 }

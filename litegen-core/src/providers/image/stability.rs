@@ -622,6 +622,14 @@ impl Default for ModelCapabilities {
             supports_first_frame: false,
             supports_last_frame: false,
             max_duration_seconds: None,
+            supports_text_to_3d: false,
+            supports_image_to_3d: false,
+            supports_multiview_to_3d: false,
+            supports_pbr: false,
+            supports_rig: false,
+            supports_texture: false,
+            output_formats: Vec::new(),
+            max_polycount: None,
         }
     }
 }

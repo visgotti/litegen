@@ -646,6 +646,7 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
         media_type: match s.media_type {
             crate::capabilities::MediaType::Image => MediaType::Image,
             crate::capabilities::MediaType::Video => MediaType::Video,
+            crate::capabilities::MediaType::Model3d => MediaType::Model3d,
         },
         is_available: true,
         capabilities: ModelCapabilities {
@@ -659,6 +660,14 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             supported_sizes: extract_sizes(s),
             max_images: s.ref_inputs.as_ref().map(|ri| ri.max_total).unwrap_or(1),
             max_duration_seconds: None,
+            supports_text_to_3d: s.capabilities.text_to_3d,
+            supports_image_to_3d: s.capabilities.image_to_3d,
+            supports_multiview_to_3d: s.capabilities.multiview_to_3d,
+            supports_pbr: s.params.contains_key("pbr"),
+            supports_rig: s.params.contains_key("rig"),
+            supports_texture: s.params.contains_key("texture"),
+            output_formats: extract_output_formats(s),
+            max_polycount: extract_max_polycount(s),
         },
         pricing: Some(ModelPricing {
             base_cost_usd: s.pricing.base_cost_usd,
@@ -674,6 +683,23 @@ fn extract_sizes(s: &crate::capabilities::ModelSchema) -> Vec<String> {
             e.values.iter().map(|(w, h)| format!("{}x{}", w, h)).collect()
         }
         _ => Vec::new(),
+    }
+}
+
+/// `output_formats` is derived from the model's declared `output_format`
+/// enum_values, so a model advertises exactly the formats it can emit.
+fn extract_output_formats(s: &crate::capabilities::ModelSchema) -> Vec<String> {
+    match s.params.get("output_format") {
+        Some(crate::capabilities::ParamSpec::String(sp)) => sp.enum_values.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// `max_polycount` mirrors the upper bound of the `target_polycount` param.
+fn extract_max_polycount(s: &crate::capabilities::ModelSchema) -> Option<u32> {
+    match s.params.get("target_polycount") {
+        Some(crate::capabilities::ParamSpec::Int(i)) => i.max.map(|m| m.max(0) as u32),
+        _ => None,
     }
 }
 
