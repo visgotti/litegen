@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 pub mod auth;
 pub mod image;
+pub mod model3d;
 pub mod video;
 
 pub use auth::{AuthSpec, ProviderCredentials};
@@ -340,6 +341,99 @@ pub struct VideoGenerationPollResult {
     pub content_type: Option<String>,
     pub error: Option<String>,
     pub metadata: HashMap<String, serde_json::Value>,
+}
+
+/// Extra 3D-specific parameters extracted from a validated request.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Model3dExtras {
+    pub output_format: Option<String>,
+    pub texture: Option<bool>,
+    pub pbr: Option<bool>,
+    pub target_polycount: Option<u32>,
+    pub symmetry: Option<String>,
+    pub topology: Option<String>,
+    pub rig: Option<bool>,
+    pub extra: Option<serde_json::Value>,
+}
+
+/// One file a provider produced, already downloaded. litegen re-hosts every one
+/// of these on its own storage, so providers hand back BYTES, not vendor URLs —
+/// several vendors expire their download URLs within minutes of task success.
+#[derive(Debug, Clone)]
+pub struct Model3dFile {
+    pub kind: crate::types::Model3dAssetKind,
+    /// Container/extension without the dot: "glb", "png", ….
+    pub format: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+    /// Meshes only; `None` when the provider does not report it.
+    pub polycount: Option<u32>,
+    /// Preview/texture assets only.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+/// Handle returned when a 3D generation is started (for polling).
+#[derive(Debug, Clone)]
+pub struct Model3dGenerationHandle {
+    pub provider_job_id: String,
+    pub provider: String,
+    pub model: String,
+    /// Opaque per-provider continuation state for vendors whose flow has an
+    /// intermediate stage (e.g. Meshy's preview→refine text-to-3D pipeline).
+    /// Only that provider's own `poll_status` ever reads it; the generic poller,
+    /// the DB row, and the API contract all stay single-stage.
+    pub stage_context: Option<serde_json::Value>,
+}
+
+/// Status from polling a 3D generation. On `Completed`, `files` MUST contain
+/// exactly one `Mesh` entry — a completed generation without a mesh is a
+/// contract violation, not a degraded success.
+#[derive(Debug, Clone)]
+pub struct Model3dGenerationPollResult {
+    pub status: crate::types::GenerationStatus,
+    pub progress: u8,
+    pub files: Vec<Model3dFile>,
+    pub error: Option<String>,
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+/// The core trait for 3D model (mesh) generation providers.
+///
+/// Async submit + poll, mirroring [`VideoProvider`], with one deliberate
+/// divergence: `poll_status` returns downloaded bytes rather than provider URLs,
+/// because litegen re-hosts every 3D output so that per-app BYO buckets work
+/// identically across images, video, and meshes.
+#[async_trait]
+pub trait Model3dProvider: Send + Sync {
+    fn name(&self) -> &str;
+    fn configure(&mut self, config: ProviderInstanceConfig);
+    fn is_configured(&self) -> bool;
+
+    /// Start a 3D generation. Mode is inferred from `materialized.refs`: no refs
+    /// → text-to-3D, an `init` ref → image-to-3D, `view-*` refs → multiview.
+    async fn generate(
+        &self,
+        model: &ModelSchema,
+        base: &BaseGenerationRequest,
+        extras: &Model3dExtras,
+        materialized: &MaterializedRequest,
+    ) -> Result<Model3dGenerationHandle, ProviderError>;
+
+    /// Poll an in-flight generation. On `Completed`, every returned file must
+    /// already be downloaded — the caller re-hosts within the same tick.
+    async fn poll_status(
+        &self,
+        handle: &Model3dGenerationHandle,
+    ) -> Result<Model3dGenerationPollResult, ProviderError>;
+
+    async fn estimate_cost(
+        &self,
+        model: &ModelSchema,
+        request: &Model3dGenerationRequest,
+    ) -> Result<CostEstimate, ProviderError>;
+
+    async fn health_check(&self) -> HealthCheckResult;
 }
 
 // ─── Shared Helpers ─────────────────────────────────────────────────────────
