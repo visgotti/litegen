@@ -88,8 +88,17 @@ export const poll3d = (
   opts?: WaitForCompletionOptions,
 ): AsyncGenerator<Model3dResponse, Model3dResponse, void> => pollJob<Model3dResponse>(id, getStatus, opts);
 
-/** Back-compat alias — `waitForCompletion` predates the generic `pollJob` refactor. */
-export const waitForCompletion = waitForJob;
+/**
+ * Back-compat wrapper. Deliberately concrete rather than a bare alias for
+ * `waitForJob`: exporting the generic directly makes TypeScript infer `T` from
+ * the caller's `getStatus`, which silently changes inference at existing call
+ * sites that relied on the concrete `VideoResponse` signature.
+ */
+export const waitForCompletion = (
+  id: string,
+  getStatus: (id: string) => Promise<VideoResponse>,
+  opts?: WaitForCompletionOptions,
+): Promise<VideoResponse> => waitForJob<VideoResponse>(id, getStatus, opts);
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
