@@ -2197,6 +2197,11 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/metrics", get(metrics_handler))
         .route("/openapi.json", get(openapi_spec))
         .route("/mock/video/{id}", get(get_mock_video_bytes))
+        // Wildcard capture: 3D asset keys contain slashes (litegen/3d/{gen}/{name}.ext).
+        // No other /v1/models3d/... route exists yet; when one is added (e.g.
+        // /v1/models3d/{id} for generation status), keep it out of this router or
+        // confirm axum's most-specific-match rules still route asset keys here.
+        .route("/v1/models3d/assets/{*key}", get(get_model3d_asset_bytes))
         .with_state(state)
 }
 
@@ -2258,6 +2263,27 @@ pub async fn get_mock_video_bytes(
             [(axum::http::header::CONTENT_TYPE, "image/gif")],
             bytes,
         ).into_response(),
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+// ─── 3D asset bytes route ───────────────────────────────────────────────────
+
+/// GET /v1/models3d/assets/{key} — Serve a 3D asset held by the local
+/// (no-S3) store. No auth: these are the same unguessable, UUID-keyed URLs
+/// handed to clients in the response, and S3 deployments never reach here.
+pub async fn get_model3d_asset_bytes(Path(key): Path<String>) -> impl IntoResponse {
+    match crate::proxy::storage::local_asset_bytes(&key).await {
+        Some((bytes, content_type)) => (
+            StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, content_type),
+                // Meshes are immutable once written and keyed by generation id.
+                (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
+            ],
+            bytes,
+        )
+            .into_response(),
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }

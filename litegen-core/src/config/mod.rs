@@ -193,6 +193,12 @@ pub struct ServerConfig {
     /// Request timeout in seconds.
     #[serde(default = "default_request_timeout")]
     pub request_timeout_seconds: u64,
+    /// Externally reachable origin for URLs litegen mints and hands to clients
+    /// (currently 3D asset URLs, which MUST be absolute). Set this behind a
+    /// proxy — e.g. `https://app.litegen.ai/api`. Defaults to
+    /// `http://{host}:{port}`, which is correct for local dev and CI.
+    #[serde(default)]
+    pub public_base_url: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -201,7 +207,19 @@ impl Default for ServerConfig {
             host: default_host(),
             port: default_port(),
             request_timeout_seconds: default_request_timeout(),
+            public_base_url: None,
         }
+    }
+}
+
+impl ServerConfig {
+    /// The absolute origin to mint client-facing URLs from.
+    pub fn public_base_url(&self) -> String {
+        self.public_base_url
+            .clone()
+            .unwrap_or_else(|| format!("http://{}:{}", self.host, self.port))
+            .trim_end_matches('/')
+            .to_string()
     }
 }
 
@@ -590,10 +608,11 @@ impl<'a> serde::Serialize for ServerConfigSerialize<'a> {
         S: serde::Serializer,
     {
         use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(3))?;
+        let mut map = serializer.serialize_map(Some(4))?;
         map.serialize_entry("host", &self.0.host)?;
         map.serialize_entry("port", &self.0.port)?;
         map.serialize_entry("request_timeout_seconds", &self.0.request_timeout_seconds)?;
+        map.serialize_entry("public_base_url", &self.0.public_base_url)?;
         map.end()
     }
 }
