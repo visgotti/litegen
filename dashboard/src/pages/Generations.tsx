@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { client } from '../sdk-client';
 import type { Generation, PaginatedResponse } from '@litegen/sdk';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
+import ModelViewer, { meshUrl, previewUrl } from '../components/ModelViewer';
 
 const ACTIVE_STATUSES = new Set(['pending', 'processing']);
 
@@ -16,27 +17,37 @@ function StatusBadge({ id, status }: { id: string; status: string }) {
   );
 }
 
-/** Inline media for a generation: an <img> for image results, a <video> for
- *  video results. `thumb` renders the small in-row preview; otherwise the full
- *  detail-row player. Returns null until the result is available. */
-function MediaPreview({ g, thumb }: { g: Generation; thumb?: boolean }) {
+/** Inline media for a generation: <img> for images, <video> for video,
+ *  <model-viewer> for meshes. `thumb` renders the small in-row preview —
+ *  always a flat 2D image, never a GL canvas per row. */
+export function MediaPreview({ g, thumb }: { g: Generation; thumb?: boolean }) {
   if (g.status !== 'completed' || !g.result_url) {
     return thumb ? <span style={{ color: '#8b949e' }}>—</span> : null;
   }
+  const style = { maxWidth: '100%', maxHeight: 480, marginBottom: 12, display: 'block', borderRadius: 6 } as const;
+
+  if (g.media_type === 'model3d') {
+    const mesh = meshUrl(g);
+    const poster = previewUrl(g);
+    if (thumb) {
+      return poster
+        ? <img src={poster} alt="" loading="lazy" data-testid={`gen-thumb-${g.id}`}
+               style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 4, display: 'block' }} />
+        : <span title="3D result" aria-label="3d">🧊</span>;
+    }
+    return mesh
+      ? <ModelViewer src={mesh} poster={poster} testId={`gen-media-${g.id}`} style={style} />
+      : null;
+  }
+
   const isVideo = g.media_type === 'video';
   if (thumb) {
     if (isVideo) return <span title="video result" aria-label="video">🎬</span>;
     return (
-      <img
-        src={g.result_url}
-        alt=""
-        loading="lazy"
-        data-testid={`gen-thumb-${g.id}`}
-        style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 4, display: 'block' }}
-      />
+      <img src={g.result_url} alt="" loading="lazy" data-testid={`gen-thumb-${g.id}`}
+           style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 4, display: 'block' }} />
     );
   }
-  const style = { maxWidth: '100%', maxHeight: 480, marginBottom: 12, display: 'block', borderRadius: 6 } as const;
   return isVideo
     ? <video controls src={g.result_url} data-testid={`gen-media-${g.id}`} style={style} />
     : <img src={g.result_url} alt={g.model} loading="lazy" data-testid={`gen-media-${g.id}`} style={style} />;

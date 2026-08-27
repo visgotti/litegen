@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { client } from '../sdk-client';
 import type { RequestLog, RequestArtifact } from '@litegen/sdk';
+import ModelViewer from './ModelViewer';
 
 const TAB_KEY = 'litegen_trace_panel_tab';
 
@@ -221,6 +222,15 @@ function VisualTab({ artifact }: { artifact: RequestArtifact | null }) {
     // render them as <img> so the browser animates them inline.
     const mime = artifact.output_mime ?? '';
     const isGif = mime.startsWith('image/');
+    if (artifact.media_type === 'model3d') {
+      return (
+        <ModelViewer
+          src={artifact.output_value}
+          testId="trace-visual-3d"
+          style={{ maxHeight: 360, border: '1px solid #30363d' }}
+        />
+      );
+    }
     if (artifact.media_type === 'video' && !isGif) {
       return (
         <video
