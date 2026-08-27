@@ -329,6 +329,155 @@ pub fn validate_video(
     Ok(VideoValidationOutput { request: req, dropped })
 }
 
+#[derive(Debug)]
+pub struct Model3dValidationOutput {
+    pub request: Model3dGenerationRequest,
+    pub dropped: Vec<String>,
+}
+
+#[tracing::instrument(skip(schema, req), fields(model = %schema.id))]
+pub fn validate_model3d(
+    schema: &ModelSchema,
+    mut req: Model3dGenerationRequest,
+) -> Result<Model3dValidationOutput, ValidationError> {
+    let mut dropped = Vec::new();
+    let strict = req.base.strict;
+
+    check_prompt(&schema.prompt, &req.base.prompt)?;
+
+    // seed / negative_prompt — identical treatment to image and video.
+    if req.base.seed.is_some() {
+        match schema.params.get("seed") {
+            Some(ParamSpec::Seed(s)) => {
+                let v = req.base.seed.unwrap();
+                if v < s.min || v > s.max {
+                    return Err(ValidationError::new(
+                        "param_out_of_range",
+                        format!("seed {} outside [{}, {}]", v, s.min, s.max),
+                        Some("seed"),
+                    ));
+                }
+            }
+            Some(_) | None => {
+                if strict {
+                    return Err(ValidationError::new(
+                        "param_unsupported",
+                        format!("seed not supported by '{}'", schema.id),
+                        Some("seed"),
+                    ));
+                }
+                dropped.push("seed".into());
+                req.base.seed = None;
+            }
+        }
+    }
+
+    if req.base.negative_prompt.is_some() {
+        match schema.params.get("negative_prompt") {
+            Some(ParamSpec::String(s)) => {
+                let v = req.base.negative_prompt.as_deref().unwrap();
+                check_string(v, &s.enum_values, s.max_length, "negative_prompt")?;
+            }
+            Some(_) | None => {
+                if strict {
+                    return Err(ValidationError::new(
+                        "param_unsupported",
+                        format!("negative_prompt not supported by '{}'", schema.id),
+                        Some("negative_prompt"),
+                    ));
+                }
+                dropped.push("negative_prompt".into());
+                req.base.negative_prompt = None;
+            }
+        }
+    }
+
+    // ─── 3D params ──────────────────────────────────────────────────────────
+    //
+    // Each follows the same shape: a declared spec validates the VALUE (errors
+    // in both modes); an absent or mismatched spec means UNSUPPORTED, which
+    // errors in strict mode and drops in lax mode. That split is what lets a
+    // client send a superset of params without a capability table of its own.
+
+    macro_rules! string_param {
+        ($field:expr, $key:literal) => {
+            if $field.is_some() {
+                match schema.params.get($key) {
+                    Some(ParamSpec::String(s)) => {
+                        let v = $field.as_deref().unwrap();
+                        check_string(v, &s.enum_values, s.max_length, $key)?;
+                    }
+                    Some(_) | None => {
+                        if strict {
+                            return Err(ValidationError::new(
+                                "param_unsupported",
+                                format!("{} not supported by '{}'", $key, schema.id),
+                                Some($key),
+                            ));
+                        }
+                        dropped.push($key.into());
+                        $field = None;
+                    }
+                }
+            }
+        };
+    }
+
+    macro_rules! bool_param {
+        ($field:expr, $key:literal) => {
+            if $field.is_some() && !matches!(schema.params.get($key), Some(ParamSpec::Bool(_))) {
+                if strict {
+                    return Err(ValidationError::new(
+                        "param_unsupported",
+                        format!("{} not supported by '{}'", $key, schema.id),
+                        Some($key),
+                    ));
+                }
+                dropped.push($key.into());
+                $field = None;
+            }
+        };
+    }
+
+    string_param!(req.output_format, "output_format");
+    string_param!(req.symmetry, "symmetry");
+    string_param!(req.topology, "topology");
+    bool_param!(req.texture, "texture");
+    bool_param!(req.pbr, "pbr");
+    bool_param!(req.rig, "rig");
+
+    if req.target_polycount.is_some() {
+        match schema.params.get("target_polycount") {
+            Some(ParamSpec::Int(s)) => {
+                let v = req.target_polycount.unwrap() as i64;
+                if s.min.map(|m| v < m).unwrap_or(false) || s.max.map(|m| v > m).unwrap_or(false) {
+                    return Err(ValidationError::new(
+                        "param_out_of_range",
+                        format!("target_polycount {} out of range", v),
+                        Some("target_polycount"),
+                    ));
+                }
+            }
+            Some(_) | None => {
+                if strict {
+                    return Err(ValidationError::new(
+                        "param_unsupported",
+                        format!("target_polycount not supported by '{}'", schema.id),
+                        Some("target_polycount"),
+                    ));
+                }
+                dropped.push("target_polycount".into());
+                req.target_polycount = None;
+            }
+        }
+    }
+
+    check_refs(schema, &mut req.base.reference_images, strict, &mut dropped)?;
+    check_extra(schema, &mut req.base.extra, strict, &mut dropped)?;
+
+    Ok(Model3dValidationOutput { request: req, dropped })
+}
+
 fn check_prompt(spec: &PromptSpec, value: &str) -> Result<(), ValidationError> {
     if value.trim().is_empty() {
         if spec.required {
@@ -720,6 +869,42 @@ impl FromRequest<Arc<AppState>> for ValidatedVideo {
         let schema = Arc::new(schema);
         match validate_video(&schema, req) {
             Ok(out) => Ok(ValidatedVideo { schema, request: out.request, dropped: out.dropped, ctx, _permit: permit }),
+            Err(e) => Err(ValidationRejection(
+                StatusCode::BAD_REQUEST,
+                err_body(&e.code, &e.message, e.param.as_deref(), &schema.id),
+            )),
+        }
+    }
+}
+
+pub struct ValidatedModel3d {
+    pub schema: Arc<ModelSchema>,
+    pub request: Model3dGenerationRequest,
+    pub dropped: Vec<String>,
+    pub ctx: MaterializeContext,
+    pub _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl FromRequest<Arc<AppState>> for ValidatedModel3d {
+    type Rejection = ValidationRejection;
+    async fn from_request(req: Request, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
+        // Acquire the in-flight slot BEFORE buffering the body (see ValidatedImage).
+        let permit = acquire_in_flight(state)?;
+        let (parts, body) = req.into_parts();
+        let headers = parts.headers;
+        let bytes = axum::body::to_bytes(body, 25 * 1024 * 1024).await.map_err(|e| {
+            ValidationRejection(StatusCode::PAYLOAD_TOO_LARGE, err_body("body_too_large", &e.to_string(), None, ""))
+        })?;
+        let (json, ctx) = parse_request_and_context(&headers, bytes).await?;
+        let req: Model3dGenerationRequest = serde_json::from_value(json).map_err(|e| {
+            ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &e.to_string(), None, ""))
+        })?;
+        let schema = state.registry.get(&req.base.model)
+            .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.base.model), None, &req.base.model)))?
+            .clone();
+        let schema = Arc::new(schema);
+        match validate_model3d(&schema, req) {
+            Ok(out) => Ok(ValidatedModel3d { schema, request: out.request, dropped: out.dropped, ctx, _permit: permit }),
             Err(e) => Err(ValidationRejection(
                 StatusCode::BAD_REQUEST,
                 err_body(&e.code, &e.message, e.param.as_deref(), &schema.id),
