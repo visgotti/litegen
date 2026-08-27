@@ -49,6 +49,10 @@ from .liveness_response import LivenessResponse
 from .login_request import LoginRequest
 from .media_type import MediaType
 from .member_view import MemberView
+from .model_3d_asset import Model3DAsset
+from .model_3d_asset_kind import Model3DAssetKind
+from .model_3d_generation_request import Model3DGenerationRequest
+from .model_3d_generation_response import Model3DGenerationResponse
 from .model_capabilities import ModelCapabilities
 from .model_capability_flags import ModelCapabilityFlags
 from .model_info import ModelInfo
@@ -184,6 +188,10 @@ __all__ = (
     "LoginRequest",
     "MediaType",
     "MemberView",
+    "Model3DAsset",
+    "Model3DAssetKind",
+    "Model3DGenerationRequest",
+    "Model3DGenerationResponse",
     "ModelCapabilities",
     "ModelCapabilityFlags",
     "ModelInfo",

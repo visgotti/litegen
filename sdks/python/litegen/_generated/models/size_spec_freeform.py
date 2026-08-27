@@ -16,6 +16,8 @@ class SizeSpecFreeform:
         max_width (int):
         min_height (int):
         min_width (int):
+        description (Union[None, Unset, str]):
+        label (Union[None, Unset, str]):
         multiple_of (Union[None, Unset, int]):
     """
 
@@ -23,6 +25,8 @@ class SizeSpecFreeform:
     max_width: int
     min_height: int
     min_width: int
+    description: Union[None, Unset, str] = UNSET
+    label: Union[None, Unset, str] = UNSET
     multiple_of: Union[None, Unset, int] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -34,6 +38,18 @@ class SizeSpecFreeform:
         min_height = self.min_height
 
         min_width = self.min_width
+
+        description: Union[None, Unset, str]
+        if isinstance(self.description, Unset):
+            description = UNSET
+        else:
+            description = self.description
+
+        label: Union[None, Unset, str]
+        if isinstance(self.label, Unset):
+            label = UNSET
+        else:
+            label = self.label
 
         multiple_of: Union[None, Unset, int]
         if isinstance(self.multiple_of, Unset):
@@ -51,6 +67,10 @@ class SizeSpecFreeform:
                 "min_width": min_width,
             }
         )
+        if description is not UNSET:
+            field_dict["description"] = description
+        if label is not UNSET:
+            field_dict["label"] = label
         if multiple_of is not UNSET:
             field_dict["multiple_of"] = multiple_of
 
@@ -67,6 +87,24 @@ class SizeSpecFreeform:
 
         min_width = d.pop("min_width")
 
+        def _parse_description(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        description = _parse_description(d.pop("description", UNSET))
+
+        def _parse_label(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        label = _parse_label(d.pop("label", UNSET))
+
         def _parse_multiple_of(data: object) -> Union[None, Unset, int]:
             if data is None:
                 return data
@@ -81,6 +119,8 @@ class SizeSpecFreeform:
             max_width=max_width,
             min_height=min_height,
             min_width=min_width,
+            description=description,
+            label=label,
             multiple_of=multiple_of,
         )
 

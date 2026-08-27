@@ -5,36 +5,43 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.model_list_response import ModelListResponse
-from ...types import UNSET, Response, Unset
+from ...models.cost_estimate import CostEstimate
+from ...models.error_response import ErrorResponse
+from ...models.model_3d_generation_request import Model3DGenerationRequest
+from ...types import Response
 
 
 def _get_kwargs(
     *,
-    media_type: Union[Unset, str] = UNSET,
+    body: Model3DGenerationRequest,
 ) -> Dict[str, Any]:
-    params: Dict[str, Any] = {}
-
-    params["media_type"] = media_type
-
-    params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
+    headers: Dict[str, Any] = {}
 
     _kwargs: Dict[str, Any] = {
-        "method": "get",
-        "url": "/v1/models",
-        "params": params,
+        "method": "post",
+        "url": "/v1/models3d/cost",
     }
 
+    _body = body.to_dict()
+
+    _kwargs["json"] = _body
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[ModelListResponse]:
+) -> Optional[Union[CostEstimate, ErrorResponse]]:
     if response.status_code == 200:
-        response_200 = ModelListResponse.from_dict(response.json())
+        response_200 = CostEstimate.from_dict(response.json())
 
         return response_200
+    if response.status_code == 400:
+        response_400 = ErrorResponse.from_dict(response.json())
+
+        return response_400
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -43,7 +50,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[ModelListResponse]:
+) -> Response[Union[CostEstimate, ErrorResponse]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -55,23 +62,23 @@ def _build_response(
 def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
-    media_type: Union[Unset, str] = UNSET,
-) -> Response[ModelListResponse]:
-    """GET /v1/models — List all available models.
+    body: Model3DGenerationRequest,
+) -> Response[Union[CostEstimate, ErrorResponse]]:
+    """POST /v1/models3d/cost — Estimate cost for a 3D generation.
 
     Args:
-        media_type (Union[Unset, str]):
+        body (Model3DGenerationRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ModelListResponse]
+        Response[Union[CostEstimate, ErrorResponse]]
     """
 
     kwargs = _get_kwargs(
-        media_type=media_type,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -84,47 +91,47 @@ def sync_detailed(
 def sync(
     *,
     client: Union[AuthenticatedClient, Client],
-    media_type: Union[Unset, str] = UNSET,
-) -> Optional[ModelListResponse]:
-    """GET /v1/models — List all available models.
+    body: Model3DGenerationRequest,
+) -> Optional[Union[CostEstimate, ErrorResponse]]:
+    """POST /v1/models3d/cost — Estimate cost for a 3D generation.
 
     Args:
-        media_type (Union[Unset, str]):
+        body (Model3DGenerationRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ModelListResponse
+        Union[CostEstimate, ErrorResponse]
     """
 
     return sync_detailed(
         client=client,
-        media_type=media_type,
+        body=body,
     ).parsed
 
 
 async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
-    media_type: Union[Unset, str] = UNSET,
-) -> Response[ModelListResponse]:
-    """GET /v1/models — List all available models.
+    body: Model3DGenerationRequest,
+) -> Response[Union[CostEstimate, ErrorResponse]]:
+    """POST /v1/models3d/cost — Estimate cost for a 3D generation.
 
     Args:
-        media_type (Union[Unset, str]):
+        body (Model3DGenerationRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ModelListResponse]
+        Response[Union[CostEstimate, ErrorResponse]]
     """
 
     kwargs = _get_kwargs(
-        media_type=media_type,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -135,24 +142,24 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
-    media_type: Union[Unset, str] = UNSET,
-) -> Optional[ModelListResponse]:
-    """GET /v1/models — List all available models.
+    body: Model3DGenerationRequest,
+) -> Optional[Union[CostEstimate, ErrorResponse]]:
+    """POST /v1/models3d/cost — Estimate cost for a 3D generation.
 
     Args:
-        media_type (Union[Unset, str]):
+        body (Model3DGenerationRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ModelListResponse
+        Union[CostEstimate, ErrorResponse]
     """
 
     return (
         await asyncio_detailed(
             client=client,
-            media_type=media_type,
+            body=body,
         )
     ).parsed

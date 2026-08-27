@@ -2102,6 +2102,17 @@
                 ],
                 "summary": "GET /v1/models \u2014 List all available models.",
                 "operationId": "list_models",
+                "parameters": [
+                    {
+                        "name": "media_type",
+                        "in": "query",
+                        "description": "Filter by media type",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "List of available models",
@@ -2141,6 +2152,140 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/ModelSchema"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/models3d/cost": {
+            "post": {
+                "tags": [
+                    "Models3D"
+                ],
+                "summary": "POST /v1/models3d/cost \u2014 Estimate cost for a 3D generation.",
+                "operationId": "estimate_3d_cost",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Model3dGenerationRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Cost estimate",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CostEstimate"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad request",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/models3d/generations": {
+            "post": {
+                "tags": [
+                    "Models3D"
+                ],
+                "summary": "POST /v1/models3d/generations \u2014 Start a 3D (mesh) generation.",
+                "operationId": "generate_3d",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Model3dGenerationRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "3D generation started",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Model3dGenerationResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad request",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/models3d/{id}": {
+            "get": {
+                "tags": [
+                    "Models3D"
+                ],
+                "summary": "GET /v1/models3d/{id} \u2014 Poll the status of an in-flight 3D generation.",
+                "operationId": "get_3d_status",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "3D generation ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Current status",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Model3dGenerationResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
                                 }
                             }
                         }
@@ -4196,7 +4341,8 @@
                 "type": "string",
                 "enum": [
                     "image",
-                    "video"
+                    "video",
+                    "model3d"
                 ]
             },
             "CapabilityModelPricing": {
@@ -4266,6 +4412,14 @@
                     "name"
                 ],
                 "properties": {
+                    "expires_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time",
+                        "description": "Optional expiry; after this instant the key is rejected at auth. None =\nnever expires. Enforced in auth_middleware and honoured on PATCH too."
+                    },
                     "name": {
                         "type": "string"
                     },
@@ -4938,7 +5092,8 @@
                 "type": "string",
                 "enum": [
                     "image",
-                    "video"
+                    "video",
+                    "model3d"
                 ]
             },
             "MemberView": {
@@ -4968,6 +5123,190 @@
                     }
                 }
             },
+            "Model3dAsset": {
+                "type": "object",
+                "description": "One file produced by a 3D generation. A completed generation always carries\nexactly one `Mesh` asset; consumers treat its absence as a provider failure.\n`url` is always absolute \u2014 a root-relative path is indistinguishable from an\noutage to a client fetching it from a worker.",
+                "required": [
+                    "kind",
+                    "url",
+                    "format"
+                ],
+                "properties": {
+                    "format": {
+                        "type": "string",
+                        "description": "\"glb\" | \"obj\" | \"fbx\" | \"usdz\" | \"png\" | \"jpg\"."
+                    },
+                    "height": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "kind": {
+                        "$ref": "#/components/schemas/Model3dAssetKind"
+                    },
+                    "polycount": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "Meshes only.",
+                        "minimum": 0
+                    },
+                    "size_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "url": {
+                        "type": "string"
+                    },
+                    "width": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "Preview / texture assets only.",
+                        "minimum": 0
+                    }
+                }
+            },
+            "Model3dAssetKind": {
+                "type": "string",
+                "enum": [
+                    "mesh",
+                    "texture",
+                    "preview"
+                ]
+            },
+            "Model3dGenerationRequest": {
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/BaseGenerationRequest"
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "output_format": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ],
+                                "description": "Desired mesh container: \"glb\" | \"obj\" | \"fbx\" | \"usdz\". Default \"glb\"."
+                            },
+                            "pbr": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ],
+                                "description": "PBR materials, where the model supports them."
+                            },
+                            "rig": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ],
+                                "description": "Auto-rig / emit a skeleton, where supported."
+                            },
+                            "symmetry": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ],
+                                "description": "\"off\" | \"auto\" | \"on\"."
+                            },
+                            "target_polycount": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ],
+                                "format": "int32",
+                                "minimum": 0
+                            },
+                            "texture": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ],
+                                "description": "Generate textures (vs. bare geometry)."
+                            },
+                            "topology": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ],
+                                "description": "\"triangle\" | \"quad\"."
+                            }
+                        }
+                    }
+                ]
+            },
+            "Model3dGenerationResponse": {
+                "type": "object",
+                "description": "3D generation is always async \u2014 this is both the submit response and the\npoll response, mirroring `VideoGenerationResponse` with `video_url` replaced\nby the richer `assets` list.",
+                "required": [
+                    "id",
+                    "status",
+                    "model",
+                    "provider",
+                    "progress",
+                    "created"
+                ],
+                "properties": {
+                    "assets": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Model3dAsset"
+                        },
+                        "description": "Populated on `completed`. Omitted entirely while the job is in flight."
+                    },
+                    "created": {
+                        "type": "integer",
+                        "format": "int64"
+                    },
+                    "error": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "model": {
+                        "type": "string"
+                    },
+                    "progress": {
+                        "type": "integer",
+                        "format": "int32",
+                        "description": "Unified 0\u2013100 progress.",
+                        "minimum": 0
+                    },
+                    "provider": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/GenerationStatus"
+                    },
+                    "usage": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/UsageInfo"
+                            }
+                        ]
+                    }
+                }
+            },
             "ModelCapabilities": {
                 "type": "object",
                 "required": [
@@ -4987,6 +5326,20 @@
                         "format": "int32",
                         "minimum": 0
                     },
+                    "max_polycount": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "output_formats": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
                     "supported_sizes": {
                         "type": "array",
                         "items": {
@@ -4994,6 +5347,9 @@
                         }
                     },
                     "supports_first_frame": {
+                        "type": "boolean"
+                    },
+                    "supports_image_to_3d": {
                         "type": "boolean"
                     },
                     "supports_image_to_image": {
@@ -5008,10 +5364,25 @@
                     "supports_last_frame": {
                         "type": "boolean"
                     },
+                    "supports_multiview_to_3d": {
+                        "type": "boolean"
+                    },
+                    "supports_pbr": {
+                        "type": "boolean"
+                    },
+                    "supports_rig": {
+                        "type": "boolean"
+                    },
+                    "supports_text_to_3d": {
+                        "type": "boolean"
+                    },
                     "supports_text_to_image": {
                         "type": "boolean"
                     },
                     "supports_text_to_video": {
+                        "type": "boolean"
+                    },
+                    "supports_texture": {
                         "type": "boolean"
                     }
                 }
@@ -5019,6 +5390,9 @@
             "ModelCapabilityFlags": {
                 "type": "object",
                 "properties": {
+                    "image_to_3d": {
+                        "type": "boolean"
+                    },
                     "image_to_image": {
                         "type": "boolean"
                     },
@@ -5026,6 +5400,12 @@
                         "type": "boolean"
                     },
                     "inpainting": {
+                        "type": "boolean"
+                    },
+                    "multiview_to_3d": {
+                        "type": "boolean"
+                    },
+                    "text_to_3d": {
                         "type": "boolean"
                     },
                     "text_to_image": {
@@ -5983,6 +6363,18 @@
                             "string",
                             "null"
                         ]
+                    },
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
                     }
                 }
             },
@@ -5992,6 +6384,18 @@
                     "default": {
                         "type": [
                             "boolean",
+                            "null"
+                        ]
+                    },
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "label": {
+                        "type": [
+                            "string",
                             "null"
                         ]
                     }
@@ -6006,6 +6410,18 @@
                             "null"
                         ],
                         "format": "double"
+                    },
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
                     },
                     "max": {
                         "type": [
@@ -6033,6 +6449,18 @@
                         ],
                         "format": "int64"
                     },
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
                     "max": {
                         "type": [
                             "integer",
@@ -6056,6 +6484,18 @@
                     "max"
                 ],
                 "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
                     "max": {
                         "type": "integer",
                         "format": "int64"
@@ -6075,11 +6515,23 @@
                             "null"
                         ]
                     },
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
                     "enum_values": {
                         "type": "array",
                         "items": {
                             "type": "string"
                         }
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
                     },
                     "max_length": {
                         "type": [
@@ -7133,6 +7585,18 @@
                     "values"
                 ],
                 "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
                     "values": {
                         "type": "array",
                         "items": {
@@ -7155,6 +7619,18 @@
                     "max_height"
                 ],
                 "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
                     "max_height": {
                         "type": "integer",
                         "format": "int32",
@@ -7558,6 +8034,10 @@
         {
             "name": "Videos",
             "description": "Video generation endpoints"
+        },
+        {
+            "name": "Models3D",
+            "description": "3D (mesh) generation endpoints"
         },
         {
             "name": "Models",

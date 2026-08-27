@@ -13,9 +13,13 @@ class ParamSpecBool:
     """
     Attributes:
         default (Union[None, Unset, bool]):
+        description (Union[None, Unset, str]):
+        label (Union[None, Unset, str]):
     """
 
     default: Union[None, Unset, bool] = UNSET
+    description: Union[None, Unset, str] = UNSET
+    label: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -25,11 +29,27 @@ class ParamSpecBool:
         else:
             default = self.default
 
+        description: Union[None, Unset, str]
+        if isinstance(self.description, Unset):
+            description = UNSET
+        else:
+            description = self.description
+
+        label: Union[None, Unset, str]
+        if isinstance(self.label, Unset):
+            label = UNSET
+        else:
+            label = self.label
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
         if default is not UNSET:
             field_dict["default"] = default
+        if description is not UNSET:
+            field_dict["description"] = description
+        if label is not UNSET:
+            field_dict["label"] = label
 
         return field_dict
 
@@ -46,8 +66,28 @@ class ParamSpecBool:
 
         default = _parse_default(d.pop("default", UNSET))
 
+        def _parse_description(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        description = _parse_description(d.pop("description", UNSET))
+
+        def _parse_label(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        label = _parse_label(d.pop("label", UNSET))
+
         param_spec_bool = cls(
             default=default,
+            description=description,
+            label=label,
         )
 
         param_spec_bool.additional_properties = d

@@ -1,12 +1,14 @@
 import type { components } from "./generated/schema";
 import { LiteGenAPIError, LiteGenTimeoutError } from "./errors";
-import { waitForCompletion, pollVideo, type WaitForCompletionOptions } from "./polling";
+import { waitForCompletion, pollVideo, poll3d, waitForJob, type WaitForCompletionOptions } from "./polling";
 
 type Schemas = components["schemas"];
 type ImageRequest = Schemas["ImageGenerationRequest"];
 type ImageResponse = Schemas["ImageGenerationResponse"];
 type VideoRequest = Schemas["VideoGenerationRequest"];
 type VideoResponse = Schemas["VideoGenerationResponse"];
+type Model3dRequest = Schemas["Model3dGenerationRequest"];
+type Model3dResponse = Schemas["Model3dGenerationResponse"];
 type CostEstimate = Schemas["CostEstimate"];
 type ModelInfo = Schemas["ModelInfo"];
 type ModelSchema = Schemas["ModelSchema"];
@@ -300,6 +302,7 @@ export class LiteGenClient {
 
   readonly images: ImagesNamespace;
   readonly videos: VideosNamespace;
+  readonly models3d: Models3dNamespace;
   readonly models: ModelsNamespace;
   readonly providers: ProvidersNamespace;
   readonly health: HealthNamespace;
@@ -328,6 +331,7 @@ export class LiteGenClient {
 
     this.images = new ImagesNamespace(this);
     this.videos = new VideosNamespace(this);
+    this.models3d = new Models3dNamespace(this);
     this.models = new ModelsNamespace(this);
     this.providers = new ProvidersNamespace(this);
     this.health = new HealthNamespace(this);
@@ -596,6 +600,98 @@ class VideosNamespace {
     opts?: WaitForCompletionOptions,
   ): AsyncGenerator<VideoResponse, VideoResponse, void> {
     return pollVideo(id, (videoId) => this.getStatus(videoId, opts?.signal), opts);
+  }
+}
+
+/**
+ * Handle returned by `models3d.generate`. 3D generation is always async, so
+ * this is both awaitable and async-iterable — the same shape as {@link VideoJob}:
+ *
+ * ```ts
+ * const mesh = await client.models3d.generate({ ... });
+ * const url = mesh.assets?.find(a => a.kind === "mesh")?.url;
+ *
+ * for await (const update of client.models3d.generate({ ... })) {
+ *   console.log(`${update.status} — ${update.progress}%`);
+ * }
+ * ```
+ *
+ * A completed job always carries exactly one `kind: "mesh"` asset with an
+ * absolute URL; its absence means the generation failed — there is no
+ * separate failure payload to check.
+ */
+export class Model3dJob implements PromiseLike<Model3dResponse>, AsyncIterable<Model3dResponse> {
+  private submittedPromise?: Promise<Model3dResponse>;
+
+  constructor(
+    private readonly submitFn: () => Promise<Model3dResponse>,
+    private readonly pollFn: (id: string) => AsyncGenerator<Model3dResponse, Model3dResponse, void>,
+  ) {}
+
+  /** The initial submit response (id, status) — does not wait for completion. */
+  get submitted(): Promise<Model3dResponse> {
+    if (!this.submittedPromise) this.submittedPromise = this.submitFn();
+    return this.submittedPromise;
+  }
+
+  then<TResult1 = Model3dResponse, TResult2 = never>(
+    onfulfilled?: ((value: Model3dResponse) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): Promise<TResult1 | TResult2> {
+    return this.runToCompletion().then(onfulfilled, onrejected);
+  }
+
+  async *[Symbol.asyncIterator](): AsyncGenerator<Model3dResponse, void, void> {
+    const job = await this.submitted;
+    yield* this.pollFn(job.id);
+  }
+
+  private async runToCompletion(): Promise<Model3dResponse> {
+    const job = await this.submitted;
+    let last: Model3dResponse = job;
+    for await (const update of this.pollFn(job.id)) last = update;
+    return last;
+  }
+}
+
+class Models3dNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+  /**
+   * Submit a 3D job. The returned {@link Model3dJob} is awaitable (resolves to
+   * the finished job) and async-iterable (streams progress).
+   */
+  generate(req: Model3dRequest, opts?: WaitForCompletionOptions): Model3dJob {
+    return new Model3dJob(
+      () =>
+        this.client.request<Model3dResponse>(
+          "POST",
+          "/v1/models3d/generations",
+          req,
+          opts?.signal,
+        ),
+      (id) => poll3d(id, (jid) => this.getStatus(jid, opts?.signal), opts),
+    );
+  }
+  estimateCost(req: Model3dRequest, signal?: AbortSignal): Promise<CostEstimate> {
+    return this.client.request("POST", "/v1/models3d/cost", req, signal);
+  }
+  getStatus(id: string, signal?: AbortSignal): Promise<Model3dResponse> {
+    return this.client.request("GET", `/v1/models3d/${encodeURIComponent(id)}`, undefined, signal);
+  }
+  waitForCompletion(id: string, opts?: WaitForCompletionOptions): Promise<Model3dResponse> {
+    return waitForJob(id, (jid) => this.getStatus(jid, opts?.signal), opts);
+  }
+  /**
+   * Stream progress updates for a 3D job as an async iterable:
+   * `for await (const update of client.models3d.poll(job.id)) { ... }`.
+   * Yields each poll (incl. the terminal one); `update.progress` is the unified
+   * 0–100 value.
+   */
+  poll(
+    id: string,
+    opts?: WaitForCompletionOptions,
+  ): AsyncGenerator<Model3dResponse, Model3dResponse, void> {
+    return poll3d(id, (jid) => this.getStatus(jid, opts?.signal), opts);
   }
 }
 

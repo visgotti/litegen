@@ -1,6 +1,7 @@
 export {
   LiteGenClient,
   VideoJob,
+  Model3dJob,
   type LiteGenClientOptions,
   type FetchLike,
   type AuditLogEntry,
@@ -30,7 +31,7 @@ export {
   LiteGenTimeoutError,
   LiteGenPollingTimeoutError,
 } from "./errors";
-export { waitForCompletion, pollVideo, type WaitForCompletionOptions } from "./polling";
+export { waitForCompletion, pollVideo, poll3d, waitForJob, pollJob, type WaitForCompletionOptions } from "./polling";
 
 // Re-export raw schema types for advanced use.
 export type { components, operations, paths } from "./generated/schema";
@@ -50,6 +51,7 @@ export type GenerationStatus = (typeof GenerationStatus)[keyof typeof Generation
 export const MediaType = {
   Image: "image",
   Video: "video",
+  Model3d: "model3d",
 } as const;
 export type MediaType = (typeof MediaType)[keyof typeof MediaType];
 
@@ -80,6 +82,9 @@ export type ImageGenerationResponse = components["schemas"]["ImageGenerationResp
 export type ImageResult = components["schemas"]["ImageResult"];
 export type VideoGenerationRequest = components["schemas"]["VideoGenerationRequest"];
 export type VideoGenerationResponse = components["schemas"]["VideoGenerationResponse"];
+export type Model3dGenerationRequest = components["schemas"]["Model3dGenerationRequest"];
+export type Model3dGenerationResponse = components["schemas"]["Model3dGenerationResponse"];
+export type Model3dAsset = components["schemas"]["Model3dAsset"];
 export type ReferenceImage = components["schemas"]["ReferenceImage"];
 export type ModelInfo = components["schemas"]["ModelInfo"];
 export type ModelSchema = components["schemas"]["ModelSchema"];

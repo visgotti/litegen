@@ -1,7 +1,17 @@
-from typing import Any, Dict, List, Type, TypeVar, Union, cast
+import datetime
+from typing import (
+    Any,
+    Dict,
+    List,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from dateutil.parser import isoparse
 
 from ..types import UNSET, Unset
 
@@ -13,6 +23,9 @@ class CreateApiKeyRequest:
     """
     Attributes:
         name (str):
+        expires_at (Union[None, Unset, datetime.datetime]): Optional expiry; after this instant the key is rejected at
+            auth. None =
+            never expires. Enforced in auth_middleware and honoured on PATCH too.
         rpm_limit (Union[None, Unset, int]): Requests-per-minute cap; None = unlimited.
         scopes (Union[Unset, str]): CSV of scopes (default: "generate,read").
         token_quota (Union[None, Unset, float]): USD budget cap; None = unlimited.
@@ -20,6 +33,7 @@ class CreateApiKeyRequest:
     """
 
     name: str
+    expires_at: Union[None, Unset, datetime.datetime] = UNSET
     rpm_limit: Union[None, Unset, int] = UNSET
     scopes: Union[Unset, str] = UNSET
     token_quota: Union[None, Unset, float] = UNSET
@@ -28,6 +42,14 @@ class CreateApiKeyRequest:
 
     def to_dict(self) -> Dict[str, Any]:
         name = self.name
+
+        expires_at: Union[None, Unset, str]
+        if isinstance(self.expires_at, Unset):
+            expires_at = UNSET
+        elif isinstance(self.expires_at, datetime.datetime):
+            expires_at = self.expires_at.isoformat()
+        else:
+            expires_at = self.expires_at
 
         rpm_limit: Union[None, Unset, int]
         if isinstance(self.rpm_limit, Unset):
@@ -56,6 +78,8 @@ class CreateApiKeyRequest:
                 "name": name,
             }
         )
+        if expires_at is not UNSET:
+            field_dict["expires_at"] = expires_at
         if rpm_limit is not UNSET:
             field_dict["rpm_limit"] = rpm_limit
         if scopes is not UNSET:
@@ -71,6 +95,23 @@ class CreateApiKeyRequest:
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         d = src_dict.copy()
         name = d.pop("name")
+
+        def _parse_expires_at(data: object) -> Union[None, Unset, datetime.datetime]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                expires_at_type_0 = isoparse(data)
+
+                return expires_at_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[None, Unset, datetime.datetime], data)
+
+        expires_at = _parse_expires_at(d.pop("expires_at", UNSET))
 
         def _parse_rpm_limit(data: object) -> Union[None, Unset, int]:
             if data is None:
@@ -103,6 +144,7 @@ class CreateApiKeyRequest:
 
         create_api_key_request = cls(
             name=name,
+            expires_at=expires_at,
             rpm_limit=rpm_limit,
             scopes=scopes,
             token_quota=token_quota,
