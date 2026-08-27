@@ -28,7 +28,7 @@ export default function CompareMode() {
 
   useEffect(() => {
     client.models.list()
-      .then(all => setModels(all.filter(m => m.media_type === 'image')))
+      .then(all => setModels(all.filter(m => m.media_type === 'image' || m.media_type === 'model3d')))
       .catch(e => setError(e.message));
     setHistory(getMultiHistory());
   }, []);
@@ -69,9 +69,16 @@ export default function CompareMode() {
 
   const generate = async (only?: string) => {
     setError('');
-    const reqs = only ? requests.filter(r => r.modelId === only) : requests;
-    if (reqs.length === 0 || !form.prompt.trim()) return;
+    const picked = only ? requests.filter(r => r.modelId === only) : requests;
+    if (picked.length === 0 || !form.prompt.trim()) return;
     setView('results');
+    // buildRequests doesn't know media family — look it up from the loaded
+    // model list so useFanOut can route each request to the right client call.
+    const reqs = picked.map(r => ({
+      ...r,
+      mediaType: (models.find(m => m.id === r.modelId)?.media_type === 'model3d'
+        ? 'model3d' : 'image') as 'image' | 'model3d',
+    }));
     await run(reqs);
     const entry: MultiRunHistoryEntry = {
       id: crypto.randomUUID(),
