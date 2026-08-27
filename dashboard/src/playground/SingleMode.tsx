@@ -48,7 +48,7 @@ export default function SingleMode() {
     client.models.list()
       .then(allModels => {
         const imageModels = allModels.filter(
-          m => m.media_type === 'image' && m.provider === 'mock',
+          m => m.provider === 'mock' && (m.media_type === 'image' || m.media_type === 'model3d'),
         );
         setModels(imageModels);
         if (imageModels.length > 0) {
