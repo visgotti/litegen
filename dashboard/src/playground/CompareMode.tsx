@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { client } from '../sdk-client';
-import type { ModelInfo } from '@litegen/sdk';
+import type { ModelInfo, Model3dGenerationRequest } from '@litegen/sdk';
 import ModelPicker from './ModelPicker';
 import ParamField from './ParamField';
 import ResultGrid from './ResultGrid';
@@ -48,16 +48,25 @@ export default function CompareMode() {
   const requests = buildRequests(selected);
   const sig = JSON.stringify(requests);
 
+  // buildRequests (useUnifiedParams) doesn't know media family — look it up
+  // from the loaded model list. Shared by the cost preview and generate() so
+  // both route a 3D selection to the 3D client calls instead of the image ones.
+  const mediaTypeOf = (modelId: string): 'image' | 'model3d' =>
+    models.find(m => m.id === modelId)?.media_type === 'model3d' ? 'model3d' : 'image';
+
   // Debounced cost preview across all selected models.
   useEffect(() => {
     if (requests.length === 0 || !form.prompt.trim()) { setEstCost(null); return; }
     const handle = setTimeout(async () => {
       try {
-        const estimates = await Promise.all(requests.map(r =>
-          client.images.estimateCost(r.request)
+        const estimates = await Promise.all(requests.map(r => {
+          const estimate = mediaTypeOf(r.modelId) === 'model3d'
+            ? client.models3d.estimateCost(r.request as Model3dGenerationRequest)
+            : client.images.estimateCost(r.request);
+          return estimate
             .then(c => (c as { total_cost_usd?: number }).total_cost_usd ?? 0)
-            .catch(() => 0),
-        ));
+            .catch(() => 0);
+        }));
         setEstCost(estimates.reduce((a, b) => a + b, 0));
       } catch {
         setEstCost(null);
@@ -72,13 +81,7 @@ export default function CompareMode() {
     const picked = only ? requests.filter(r => r.modelId === only) : requests;
     if (picked.length === 0 || !form.prompt.trim()) return;
     setView('results');
-    // buildRequests doesn't know media family — look it up from the loaded
-    // model list so useFanOut can route each request to the right client call.
-    const reqs = picked.map(r => ({
-      ...r,
-      mediaType: (models.find(m => m.id === r.modelId)?.media_type === 'model3d'
-        ? 'model3d' : 'image') as 'image' | 'model3d',
-    }));
+    const reqs = picked.map(r => ({ ...r, mediaType: mediaTypeOf(r.modelId) }));
     await run(reqs);
     const entry: MultiRunHistoryEntry = {
       id: crypto.randomUUID(),

@@ -7,9 +7,43 @@ import {
   removePlaygroundHistory,
 } from '../playground-history';
 import type { PlaygroundHistoryEntry } from '../playground-history';
-import type { ModelInfo } from '@litegen/sdk';
+import type { ModelInfo, Model3dGenerationRequest, Model3dGenerationResponse, Model3dAsset } from '@litegen/sdk';
+import ModelViewer from '../components/ModelViewer';
 
 type Tab = 'image' | 'request' | 'response';
+
+/** Extract a mesh asset list from a stored/live response body, if it's one. Used
+ *  to tell a 3D result apart from an image one without threading media_type
+ *  through history storage. */
+function meshAssetsFromResponse(body: Record<string, unknown>): Model3dAsset[] | null {
+  const assets = (body as { assets?: unknown }).assets;
+  return Array.isArray(assets) ? (assets as Model3dAsset[]) : null;
+}
+
+/** Submit a 3D job and poll it to completion, reporting progress as it goes.
+ *  Throws (like `client.images.generate` does on failure) so callers can share
+ *  one try/catch with the image path — completion without a mesh is treated
+ *  as failure per the platform-wide "a completed 3D job always has a mesh" rule. */
+async function generateModel3dJob(
+  body: Record<string, unknown>,
+  onProgress: (p: number) => void,
+): Promise<Model3dGenerationResponse> {
+  const job = client.models3d.generate(body as Model3dGenerationRequest, { intervalMs: 1500 });
+  const submitted = await job.submitted;
+  onProgress(submitted.progress ?? 0);
+  let final = submitted;
+  for await (const update of client.models3d.poll(submitted.id, { intervalMs: 1500 })) {
+    final = update;
+    onProgress(update.progress ?? 0);
+  }
+  if (final.status !== 'completed') {
+    throw new Error(final.error ?? `job ${final.status}`);
+  }
+  if (!final.assets?.some(a => a.kind === 'mesh')) {
+    throw new Error('completed without a mesh asset');
+  }
+  return final;
+}
 
 interface FormState {
   model: string;
@@ -40,6 +74,9 @@ export default function SingleMode() {
   const [requestJson, setRequestJson] = useState<string>('');
   const [responseJson, setResponseJson] = useState<string>('');
   const [imageData, setImageData] = useState<{ b64_json?: string | null; url?: string | null } | null>(null);
+  const [resultMediaType, setResultMediaType] = useState<'image' | 'model3d'>('image');
+  const [meshAssets, setMeshAssets] = useState<Model3dAsset[]>([]);
+  const [progress, setProgress] = useState<number | null>(null);
   const [history, setHistory] = useState<PlaygroundHistoryEntry[]>([]);
   const [error, setError] = useState('');
 
@@ -101,6 +138,11 @@ export default function SingleMode() {
     if (!form.prompt.trim()) return;
     setLoading(true);
     setError('');
+    setProgress(null);
+
+    const isModel3d = models.find(m => m.id === form.model)?.media_type === 'model3d';
+    setResultMediaType(isModel3d ? 'model3d' : 'image');
+    if (isModel3d) setMeshAssets([]); else setImageData(null);
 
     const body: Record<string, unknown> = {
       model: form.model,
@@ -115,27 +157,46 @@ export default function SingleMode() {
     setRequestJson(JSON.stringify(body, null, 2));
 
     try {
-      // Cast body to ImageGenerationRequest — the server accepts extra fields gracefully.
-      const res = await client.images.generate(body as Parameters<typeof client.images.generate>[0]);
-      setResponseJson(JSON.stringify(res, null, 2));
-      setImageData(res.data?.[0] ?? null);
-      setActiveTab('image');
+      if (isModel3d) {
+        const final = await generateModel3dJob(body, setProgress);
+        setResponseJson(JSON.stringify(final, null, 2));
+        setMeshAssets(final.assets ?? []);
+        setActiveTab('image');
 
-      // Save to history
-      const entry: PlaygroundHistoryEntry = {
-        id: crypto.randomUUID(),
-        model: form.model,
-        prompt: form.prompt,
-        timestamp: new Date().toISOString(),
-        requestBody: body,
-        responseBody: res as Record<string, unknown>,
-      };
-      pushPlaygroundHistory(entry);
-      refreshHistory();
+        const entry: PlaygroundHistoryEntry = {
+          id: crypto.randomUUID(),
+          model: form.model,
+          prompt: form.prompt,
+          timestamp: new Date().toISOString(),
+          requestBody: body,
+          responseBody: final as unknown as Record<string, unknown>,
+        };
+        pushPlaygroundHistory(entry);
+        refreshHistory();
+      } else {
+        // Cast body to ImageGenerationRequest — the server accepts extra fields gracefully.
+        const res = await client.images.generate(body as Parameters<typeof client.images.generate>[0]);
+        setResponseJson(JSON.stringify(res, null, 2));
+        setImageData(res.data?.[0] ?? null);
+        setActiveTab('image');
+
+        // Save to history
+        const entry: PlaygroundHistoryEntry = {
+          id: crypto.randomUUID(),
+          model: form.model,
+          prompt: form.prompt,
+          timestamp: new Date().toISOString(),
+          requestBody: body,
+          responseBody: res as Record<string, unknown>,
+        };
+        pushPlaygroundHistory(entry);
+        refreshHistory();
+      }
     } catch (e: unknown) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
+      setProgress(null);
     }
   };
 
@@ -153,8 +214,17 @@ export default function SingleMode() {
     }));
     setRequestJson(JSON.stringify(req, null, 2));
     setResponseJson(JSON.stringify(entry.responseBody, null, 2));
-    const respData = entry.responseBody as { data?: Array<{ b64_json?: string; url?: string }> };
-    setImageData(respData?.data?.[0] ?? null);
+    const assets = meshAssetsFromResponse(entry.responseBody);
+    if (assets) {
+      setResultMediaType('model3d');
+      setMeshAssets(assets);
+      setImageData(null);
+    } else {
+      const respData = entry.responseBody as { data?: Array<{ b64_json?: string; url?: string }> };
+      setResultMediaType('image');
+      setImageData(respData?.data?.[0] ?? null);
+      setMeshAssets([]);
+    }
     setActiveTab('image');
   };
 
@@ -163,29 +233,52 @@ export default function SingleMode() {
     // Small delay to let state settle before firing
     await new Promise(r => setTimeout(r, 0));
     const body = entry.requestBody;
+    const isModel3d = models.find(m => m.id === entry.model)?.media_type === 'model3d';
     setLoading(true);
     setError('');
+    setProgress(null);
     setRequestJson(JSON.stringify(body, null, 2));
     try {
-      const res = await client.images.generate(body as Parameters<typeof client.images.generate>[0]);
-      setResponseJson(JSON.stringify(res, null, 2));
-      setImageData(res.data?.[0] ?? null);
-      setActiveTab('image');
+      if (isModel3d) {
+        const final = await generateModel3dJob(body, setProgress);
+        setResponseJson(JSON.stringify(final, null, 2));
+        setResultMediaType('model3d');
+        setMeshAssets(final.assets ?? []);
+        setActiveTab('image');
 
-      const newEntry: PlaygroundHistoryEntry = {
-        id: crypto.randomUUID(),
-        model: entry.model,
-        prompt: entry.prompt,
-        timestamp: new Date().toISOString(),
-        requestBody: body,
-        responseBody: res as Record<string, unknown>,
-      };
-      pushPlaygroundHistory(newEntry);
-      refreshHistory();
+        const newEntry: PlaygroundHistoryEntry = {
+          id: crypto.randomUUID(),
+          model: entry.model,
+          prompt: entry.prompt,
+          timestamp: new Date().toISOString(),
+          requestBody: body,
+          responseBody: final as unknown as Record<string, unknown>,
+        };
+        pushPlaygroundHistory(newEntry);
+        refreshHistory();
+      } else {
+        const res = await client.images.generate(body as Parameters<typeof client.images.generate>[0]);
+        setResponseJson(JSON.stringify(res, null, 2));
+        setResultMediaType('image');
+        setImageData(res.data?.[0] ?? null);
+        setActiveTab('image');
+
+        const newEntry: PlaygroundHistoryEntry = {
+          id: crypto.randomUUID(),
+          model: entry.model,
+          prompt: entry.prompt,
+          timestamp: new Date().toISOString(),
+          requestBody: body,
+          responseBody: res as Record<string, unknown>,
+        };
+        pushPlaygroundHistory(newEntry);
+        refreshHistory();
+      }
     } catch (e: unknown) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
+      setProgress(null);
     }
   };
 
@@ -327,7 +420,7 @@ export default function SingleMode() {
             disabled={loading || !form.prompt.trim()}
             onClick={handleGenerate}
           >
-            {loading ? 'Generating...' : 'Generate'}
+            {loading ? (progress != null ? `Generating… ${progress}%` : 'Generating...') : 'Generate'}
           </button>
         </div>
 
@@ -339,7 +432,7 @@ export default function SingleMode() {
               className={`playground-tab${activeTab === 'image' ? ' active' : ''}`}
               onClick={() => setActiveTab('image')}
             >
-              Image
+              {resultMediaType === 'model3d' ? '3D Model' : 'Image'}
             </button>
             <button
               data-testid="playground-tab-request"
@@ -359,7 +452,20 @@ export default function SingleMode() {
 
           {activeTab === 'image' && (
             <div className="playground-image-area">
-              {imageData?.b64_json ? (
+              {resultMediaType === 'model3d' ? (
+                meshAssets.length > 0 ? (
+                  <ModelViewer
+                    src={meshAssets.find(a => a.kind === 'mesh')?.url ?? ''}
+                    poster={meshAssets.find(a => a.kind === 'preview')?.url}
+                    testId="playground-mesh"
+                    style={{ maxHeight: 480 }}
+                  />
+                ) : (
+                  <span style={{ color: '#8b949e' }}>
+                    {progress != null ? `generating… ${progress}%` : 'No mesh yet'}
+                  </span>
+                )
+              ) : imageData?.b64_json ? (
                 <img
                   data-testid="playground-image"
                   src={`data:image/png;base64,${imageData.b64_json}`}
