@@ -3028,7 +3028,6 @@ async fn resolve_app_image_store(
 /// (Task 11) is the only real caller and it has no `AppState` — it holds these
 /// two fields on their own. A handler-side caller passes `&state.db,
 /// state.secrets_key`.
-#[allow(dead_code)] // consumed by the background poller landing in the next task
 pub(crate) async fn resolve_app_model3d_store(
     db: &std::sync::Arc<dyn crate::db::DatabaseStore>,
     secrets_key: Option<[u8; 32]>,
