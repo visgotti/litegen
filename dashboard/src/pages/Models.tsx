@@ -85,7 +85,7 @@ export default function Models() {
             data-testid="models-filter-media-type"
             style={{ display: 'flex', gap: 12, alignItems: 'center', paddingTop: 6 }}
           >
-            {['', 'image', 'video'].map(val => (
+            {['', 'image', 'video', 'model3d'].map(val => (
               <label key={val} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', color: '#e1e4e8', fontSize: 14 }}>
                 <input
                   type="radio"
@@ -94,7 +94,7 @@ export default function Models() {
                   checked={filterMediaType === val}
                   onChange={() => setFilterMediaType(val)}
                 />
-                {val === '' ? 'All' : val}
+                {val === '' ? 'All' : val === 'model3d' ? '3D' : val}
               </label>
             ))}
           </div>
