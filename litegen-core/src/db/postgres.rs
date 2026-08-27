@@ -116,6 +116,19 @@ impl DatabaseStore for PostgresDatabase {
         Ok(())
     }
 
+    async fn update_generation_metadata(
+        &self,
+        id: &str,
+        metadata: &serde_json::Value,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE generations SET metadata = $1 WHERE id = $2")
+            .bind(serde_json::to_string(metadata).unwrap_or_else(|_| "null".into()))
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn get_generation(&self, id: &str) -> Result<Option<Generation>, sqlx::Error> {
         let sql = format!("SELECT {} FROM generations WHERE id = $1", GENERATION_COLS);
         let row = sqlx::query_as::<_, GenerationRow>(&sql)

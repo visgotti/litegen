@@ -80,11 +80,11 @@ fn csv_response(body: String, filename: &str) -> axum::response::Response {
 
 use crate::types::UpdateApiKeyRequest;
 
-use crate::providers::{ImageExtras, VideoExtras};
+use crate::providers::{ImageExtras, Model3dExtras, VideoExtras};
 use crate::types::*;
 
 use super::middleware::{AppState, KeyContext};
-use super::middleware::validator::{ValidatedImage, ValidatedVideo, dropped_header};
+use super::middleware::validator::{ValidatedImage, ValidatedModel3d, ValidatedVideo, dropped_header};
 
 // ─── Key context extractor ───────────────────────────────────────────────────
 
@@ -593,12 +593,260 @@ pub async fn estimate_video_cost(
     }
 }
 
+// ─── 3D Model Generation ────────────────────────────────────────────────────
+
+/// POST /v1/models3d/generations — Start a 3D (mesh) generation.
+#[utoipa::path(
+    post,
+    path = "/v1/models3d/generations",
+    request_body = Model3dGenerationRequest,
+    responses(
+        (status = 200, description = "3D generation started", body = Model3dGenerationResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+    ),
+    tag = "Models3D"
+)]
+pub async fn generate_3d(
+    State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
+    validated: ValidatedModel3d,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+
+    let materialized = match state.materializer.materialize(
+        &validated.schema,
+        validated.request.base.reference_images.clone(),
+        &validated.ctx,
+    ).await {
+        Ok(m) => m,
+        Err(e) => return validation_rejection_response(&e.to_string(), 400, &validated.schema.id),
+    };
+
+    let extras = Model3dExtras {
+        output_format: validated.request.output_format.clone(),
+        texture: validated.request.texture,
+        pbr: validated.request.pbr,
+        target_polycount: validated.request.target_polycount,
+        symmetry: validated.request.symmetry.clone(),
+        topology: validated.request.topology.clone(),
+        rig: validated.request.rig,
+        extra: validated.request.base.extra.clone(),
+    };
+
+    let app_creds = match resolve_org_provider_credential(&state, &key_ctx, &validated.schema.provider).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if app_creds.is_none() && !state.router.has_model3d_provider(&validated.schema.provider).await {
+        return provider_not_configured_response(&validated.schema.provider);
+    }
+
+    let charge_key = key_ctx.as_ref().and_then(|c| c.key_id);
+    let reserved = match reserve_quota(&state, charge_key, validated.schema.pricing.base_cost_usd).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    match state.router.generate_model3d(
+        &validated.schema, &validated.request.base, &extras, &materialized, app_creds,
+    ).await {
+        Ok(response) => {
+            let latency = start.elapsed().as_millis() as i64;
+            let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
+            settle_quota(&state, charge_key, reserved, cost).await;
+
+            let artifact = RequestArtifact {
+                request_id: response.id.clone(),
+                media_type: "model3d".to_string(),
+                prompt: Some(validated.request.base.prompt.clone()),
+                negative_prompt: validated.request.base.negative_prompt.clone(),
+                params_json: serde_json::to_value(&extras).ok(),
+                refs_meta_json: build_refs_meta(&validated.request.base.reference_images),
+                output_kind: "url".to_string(),
+                output_value: None, // async — the mesh URL is not known yet
+                output_mime: None,
+                output_truncated: false,
+                error_message: None,
+                created_at: chrono::Utc::now(),
+                org_id: key_ctx.as_ref().and_then(|c| c.org_id.clone()),
+                app_id: key_ctx.as_ref().and_then(|c| c.app_id.clone()),
+            };
+
+            let db = state.db.clone();
+            let id = response.id.clone();
+            let model = response.model.clone();
+            let provider = response.provider.clone();
+            let provider_job_id = state.router.get_model3d_provider_job_id(&id).await;
+            let key_id = key_ctx.as_ref().and_then(|c| c.key_id);
+            let org_id = key_ctx.as_ref().and_then(|c| c.org_id.clone());
+            let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
+            tokio::spawn(async move {
+                let _ = db.log_request(&id, &model, &provider, "pending", "model3d", cost, latency, None, None, org_id.as_deref(), app_id.as_deref()).await;
+                let _ = db.insert_generation(
+                    &id, key_id.as_ref(), &model, &provider, "model3d",
+                    provider_job_id.as_deref(), cost, org_id.as_deref(), app_id.as_deref(),
+                ).await;
+                if let Err(e) = db.insert_request_artifact(&artifact).await {
+                    tracing::warn!(error = %e, request_id = %artifact.request_id, "Failed to store 3d artifact");
+                }
+            });
+
+            let mut resp = (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response();
+            if let Some((k, v)) = dropped_header(&validated.dropped) {
+                resp.headers_mut().insert(k, v);
+            }
+            resp
+        }
+        Err(e) => {
+            settle_quota(&state, charge_key, reserved, 0.0).await;
+            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            error!(error = %e, "3D generation failed");
+            (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
+        }
+    }
+}
+
+/// GET /v1/models3d/{id} — Poll the status of an in-flight 3D generation.
+#[utoipa::path(
+    get,
+    path = "/v1/models3d/{id}",
+    params(("id" = String, Path, description = "3D generation ID")),
+    responses(
+        (status = 200, description = "Current status", body = Model3dGenerationResponse),
+        (status = 403, description = "Forbidden", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+    ),
+    tag = "Models3D"
+)]
+pub async fn get_3d_status(
+    State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Same tenant scoping as get_video_status: a persisted row must belong to
+    // the caller's org; router-tracked in-flight jobs pass through.
+    let ctx_org = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
+        Some(o) => o,
+        None => return forbidden_no_org(),
+    };
+    if let Ok(Some(gen)) = state.db.get_generation(&id).await {
+        if gen.org_id.as_deref() != Some(ctx_org) {
+            return (StatusCode::NOT_FOUND, Json(error_response("Not found", 404))).into_response();
+        }
+        if let Err(resp) = authorize_generation_for_session(
+            &state, key_ctx.as_ref(), &gen,
+            crate::auth::permissions::Permission::GenerationReadAny,
+            crate::auth::permissions::Permission::GenerationReadOwn,
+            "generation:read:own",
+        ).await {
+            return resp;
+        }
+    }
+
+    match state.router.get_model3d_status(&id).await {
+        Ok(resp) => {
+            // Persist the terminal result so `GET /v1/generations/{id}`, the
+            // gallery, and any webhook see the same assets the poller would have
+            // written — whichever path observed completion first.
+            if resp.status == GenerationStatus::Completed && !resp.assets.is_empty() {
+                persist_model3d_result(&state, &resp).await;
+            } else if resp.status == GenerationStatus::Failed {
+                let _ = state.db.update_generation_status(
+                    &id, "failed", resp.progress as i32, None,
+                    resp.error.as_deref(), Some(chrono::Utc::now()),
+                ).await;
+            }
+            (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response()
+        }
+        Err(e) => {
+            // Fall through to the DB row: once the poller has terminalised a
+            // job the router no longer tracks it.
+            if let Ok(Some(gen)) = state.db.get_generation(&id).await {
+                return (StatusCode::OK, Json(serde_json::to_value(model3d_response_from_row(&gen)).unwrap())).into_response();
+            }
+            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
+        }
+    }
+}
+
+/// POST /v1/models3d/cost — Estimate cost for a 3D generation.
+#[utoipa::path(
+    post,
+    path = "/v1/models3d/cost",
+    request_body = Model3dGenerationRequest,
+    responses(
+        (status = 200, description = "Cost estimate", body = CostEstimate),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+    ),
+    tag = "Models3D"
+)]
+pub async fn estimate_3d_cost(
+    State(state): State<Arc<AppState>>,
+    validated: ValidatedModel3d,
+) -> impl IntoResponse {
+    match state.router.estimate_model3d_cost(&validated.schema, &validated.request).await {
+        Ok(est) => (StatusCode::OK, Json(serde_json::to_value(est).unwrap())).into_response(),
+        Err(e) => {
+            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
+        }
+    }
+}
+
+/// Write a completed 3D result to its generation row: `result_url` is the
+/// primary mesh (so every existing cross-modal consumer keeps working), and the
+/// full asset list rides `metadata.assets`.
+pub(crate) async fn persist_model3d_result(state: &AppState, resp: &Model3dGenerationResponse) {
+    let mesh_url = resp.mesh().map(|m| m.url.clone());
+    if let Err(e) = state.db.update_generation_status(
+        &resp.id, "completed", resp.progress as i32,
+        mesh_url.as_deref(), None, Some(chrono::Utc::now()),
+    ).await {
+        tracing::warn!(generation_id = %resp.id, error = %e, "failed to persist 3d status");
+        return;
+    }
+    let meta = serde_json::json!({ "assets": resp.assets });
+    if let Err(e) = state.db.update_generation_metadata(&resp.id, &meta).await {
+        tracing::warn!(generation_id = %resp.id, error = %e, "failed to persist 3d assets");
+    }
+}
+
+/// Rebuild a `Model3dGenerationResponse` from a persisted row (used once the
+/// poller has terminalised a job and the router no longer tracks it).
+pub(crate) fn model3d_response_from_row(gen: &crate::types::Generation) -> Model3dGenerationResponse {
+    let assets = gen.metadata.as_ref()
+        .and_then(|m| m.get("assets"))
+        .and_then(|a| serde_json::from_value::<Vec<Model3dAsset>>(a.clone()).ok())
+        .unwrap_or_default();
+    Model3dGenerationResponse {
+        id: gen.id.clone(),
+        status: gen.status,
+        model: gen.model.clone(),
+        provider: gen.provider.clone(),
+        assets,
+        progress: gen.progress.clamp(0, 100) as u8,
+        error: gen.error_message.clone(),
+        usage: None,
+        created: gen.created_at.timestamp(),
+    }
+}
+
 // ─── Models ─────────────────────────────────────────────────────────────────
+
+/// Optional filter for `GET /v1/models`.
+#[derive(serde::Deserialize)]
+pub struct ListModelsQuery {
+    /// Optional `image` | `video` | `model3d` filter.
+    #[serde(default)]
+    pub media_type: Option<String>,
+}
 
 /// GET /v1/models — List all available models.
 #[utoipa::path(
     get,
     path = "/v1/models",
+    params(("media_type" = Option<String>, Query, description = "Filter by media type")),
     responses(
         (status = 200, description = "List of available models", body = ModelListResponse),
     ),
@@ -606,9 +854,17 @@ pub async fn estimate_video_cost(
 )]
 pub async fn list_models(
     State(state): State<Arc<AppState>>,
+    Query(q): Query<ListModelsQuery>,
 ) -> impl IntoResponse {
     let models: Vec<ModelInfo> = state.registry.all()
         .map(project_model_info)
+        .filter(|m| match q.media_type.as_deref() {
+            None | Some("") => true,
+            Some(want) => serde_json::to_value(m.media_type)
+                .ok()
+                .and_then(|v| v.as_str().map(|s| s == want))
+                .unwrap_or(false),
+        })
         .collect();
     Json(ModelListResponse { object: "list".to_string(), data: models })
 }
@@ -2042,6 +2298,15 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/videos/generations", post(generate_video))
         .route("/v1/videos/cost", post(estimate_video_cost))
         .route("/v1/videos/{id}", get(get_video_status))
+        .route("/v1/models3d/generations", post(generate_3d))
+        .route("/v1/models3d/cost", post(estimate_3d_cost))
+        // Registered after the two literal-segment routes above so they win the
+        // match; axum/matchit gives static segments precedence over a capture
+        // regardless of declaration order, but the ordering is kept anyway for
+        // readability. The only theoretical collision is a generation id
+        // literally equal to "assets" — unreachable, since ids are minted
+        // `litegen-3d-{uuid}`.
+        .route("/v1/models3d/{id}", get(get_3d_status))
         .layer(middleware::from_fn(|req: axum::extract::Request, next: middleware::Next| async {
             check_scope(Scope::Generate, req, next).await
         }))
@@ -2198,9 +2463,12 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/openapi.json", get(openapi_spec))
         .route("/mock/video/{id}", get(get_mock_video_bytes))
         // Wildcard capture: 3D asset keys contain slashes (litegen/3d/{gen}/{name}.ext).
-        // No other /v1/models3d/... route exists yet; when one is added (e.g.
-        // /v1/models3d/{id} for generation status), keep it out of this router or
-        // confirm axum's most-specific-match rules still route asset keys here.
+        // `/v1/models3d/generations`, `/v1/models3d/cost`, and `/v1/models3d/{id}`
+        // (see `generate_routes` above) are merged into this same route table;
+        // axum/matchit gives the static "assets" segment precedence over the
+        // single-segment `{id}` capture, so these don't collide (the only
+        // theoretical collision — a generation id literally equal to "assets" —
+        // is unreachable, since ids are minted `litegen-3d-{uuid}`).
         .route("/v1/models3d/assets/{*key}", get(get_model3d_asset_bytes))
         .with_state(state)
 }
@@ -2724,6 +2992,65 @@ async fn resolve_app_image_store(
         Ok(store) => Some(std::sync::Arc::new(store) as std::sync::Arc<dyn crate::proxy::storage::ImageStore>),
         Err(e) => {
             tracing::warn!(app_id, error = %e, "byo storage: build failed, using global store");
+            None
+        }
+    }
+}
+
+/// Resolve the calling app's BYO 3D asset store, if configured & usable.
+///
+/// Reads the SAME `app_storage_credentials` row as `resolve_app_image_store`,
+/// but builds an `S3Storage` (key-explicit `put`) rather than an `S3Store`
+/// (content-type→extension inference, which would save a `.glb` as `.png`).
+/// Returns the store and the app's configured path prefix. Fails open to the
+/// global store on any error — a bad BYO row must never break a generation.
+///
+/// Takes `db`/`secrets_key` directly rather than `&AppState`: the poller
+/// (Task 11) is the only real caller and it has no `AppState` — it holds these
+/// two fields on their own. A handler-side caller passes `&state.db,
+/// state.secrets_key`.
+#[allow(dead_code)] // consumed by the background poller landing in the next task
+pub(crate) async fn resolve_app_model3d_store(
+    db: &std::sync::Arc<dyn crate::db::DatabaseStore>,
+    secrets_key: Option<[u8; 32]>,
+    app_id: &str,
+) -> Option<(std::sync::Arc<dyn crate::proxy::storage::ImageStorage>, Option<String>)> {
+    let secrets_key = secrets_key?;
+    let row = match db.get_app_storage(app_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return None,
+        Err(e) => {
+            tracing::warn!(app_id, error = %e, "byo 3d storage: lookup failed, using global store");
+            return None;
+        }
+    };
+
+    #[derive(serde::Deserialize)]
+    struct StorageSecret { access_key_id: String, secret_access_key: String }
+
+    let plaintext = crate::auth::secrets::decrypt(&secrets_key, &row.secret_ciphertext, &row.secret_nonce)
+        .map_err(|e| tracing::warn!(app_id, error = %e, "byo 3d storage: decrypt failed"))
+        .ok()?;
+    let secret: StorageSecret = serde_json::from_slice(&plaintext)
+        .map_err(|e| tracing::warn!(app_id, error = %e, "byo 3d storage: corrupt secret"))
+        .ok()?;
+
+    let cfg = crate::config::ImageStorageConfig {
+        backend: row.backend.clone(),
+        path_prefix: row.path_prefix.clone(),
+        s3: Some(crate::config::S3StorageConfig {
+            bucket_name: row.bucket_name.clone(),
+            region: row.region.clone(),
+            access_key_id: Some(secret.access_key_id),
+            secret_access_key: Some(secret.secret_access_key),
+            endpoint_url: row.endpoint_url.clone(),
+            custom_public_url: row.custom_public_url.clone(),
+        }),
+    };
+    match crate::proxy::storage::S3Storage::from_config(&cfg) {
+        Ok(store) => Some((std::sync::Arc::new(store), row.path_prefix.clone())),
+        Err(e) => {
+            tracing::warn!(app_id, error = %e, "byo 3d storage: build failed, using global store");
             None
         }
     }
