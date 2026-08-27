@@ -79,7 +79,7 @@ describe("pollJob", () => {
     const states = [{ status: "processing" }, { status: "completed" }];
     let n = -1;
     const seen: string[] = [];
-    for await (const u of pollJob("x", async () => states[Math.min(++n, 1)], { intervalMs: 1 })) {
+    for await (const u of pollJob("x", async () => states[Math.min(++n, 1)]!, { intervalMs: 1 })) {
       seen.push(u.status);
     }
     expect(seen).toEqual(["processing", "completed"]);
