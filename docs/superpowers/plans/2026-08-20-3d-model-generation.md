@@ -4693,6 +4693,10 @@ curl -s -X PATCH "$BASE/v1/generations/$ID2" -H "Authorization: Bearer $KEY" \
 ```
 Tick each box in `~/source/repos/aipix/docs/litegen-3d-specs.md` §7 as it is verified, and record any item that does NOT pass rather than quietly moving on.
 
+See also `docs/superpowers/param-mapping-matrix.md` (Task 18) for the per-param
+request-flow checklist — the tickable record of which mappings are actually
+proven by a named test, for every family including this one.
+
 - [ ] **Step 4: Mark this plan complete**
 
 Tick every `- [ ]` in this file as `- [x] DONE 2026-08-20` with the shipping commit subject, in the same commit that ships Step 5. A stale open item that actually shipped is as bad as an unmarked one.
