@@ -54,6 +54,7 @@ pub enum MaterializedRefForm {
     MultipartField { field_name: String, bytes: Bytes, content_type: String },
 }
 
+#[derive(Default)]
 pub struct MaterializedRequest {
     pub refs: Vec<MaterializedRef>,
     /// Drop guard: cleans up temp-uploaded objects when this is dropped.
@@ -67,6 +68,10 @@ pub struct Cleanup {
 
 impl Cleanup {
     pub fn empty() -> Self { Self { storage: None, keys: Vec::new() } }
+}
+
+impl Default for Cleanup {
+    fn default() -> Self { Self::empty() }
 }
 
 impl Drop for Cleanup {
