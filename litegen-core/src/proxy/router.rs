@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use crate::capabilities::ModelSchema;
 use crate::config::AppConfig;
 use crate::proxy::circuit_breaker::CircuitBreaker;
-use crate::providers::{apply_markup, GenerationOutput, ImageExtras, ProviderCredentials, ProviderError, VideoExtras, VideoGenerationHandle};
+use crate::providers::{apply_markup, GenerationOutput, ImageExtras, Model3dExtras, Model3dGenerationHandle, ProviderCredentials, ProviderError, VideoExtras, VideoGenerationHandle};
 use crate::proxy::cache::GenerationCache;
 use crate::proxy::materializer::MaterializedRequest;
 use crate::proxy::registry::ProviderRegistry;
@@ -27,6 +27,10 @@ pub struct ProxyRouter {
     latency_history: Arc<tokio::sync::RwLock<HashMap<String, VecDeque<u64>>>>,
     /// In-flight video generation jobs, keyed by the locally-generated `litegen-vid-...` ID.
     video_jobs: Arc<tokio::sync::RwLock<HashMap<String, VideoGenerationHandle>>>,
+    /// In-flight 3D generation jobs, keyed by the local `litegen-3d-...` ID.
+    model3d_jobs: Arc<tokio::sync::RwLock<HashMap<String, Model3dGenerationHandle>>>,
+    /// Storage for re-hosted 3D assets (S3 when configured, local otherwise).
+    pub model3d_store: Arc<dyn crate::proxy::storage::ImageStorage>,
     /// Circuit breaker tracking consecutive failures per provider.
     pub circuit_breaker: Arc<CircuitBreaker>,
 }
@@ -42,6 +46,14 @@ impl ProxyRouter {
             config.circuit_breaker.threshold,
             std::time::Duration::from_secs(config.circuit_breaker.open_for_seconds),
         ));
+        // Derived from the same config the image store uses — 3D assets get
+        // their own key prefix (see `MODEL3D_PATH_PREFIX`) but share the S3
+        // bucket / local-serving decision, so no separate config surface is
+        // needed for this modality.
+        let model3d_store = crate::proxy::storage::build_model3d_store(
+            &config.image_storage,
+            &config.server.public_base_url(),
+        );
         Self {
             registry,
             cache,
@@ -49,6 +61,8 @@ impl ProxyRouter {
             image_store,
             latency_history: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             video_jobs: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            model3d_jobs: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            model3d_store,
             circuit_breaker: cb,
         }
     }
@@ -570,6 +584,172 @@ impl ProxyRouter {
         })
     }
 
+    // ─── 3D Model Generation ────────────────────────────────────────────
+
+    /// Submit a 3D generation. Always async: the response is `pending` and the
+    /// poller (or `get_model3d_status`) drives it to a terminal state.
+    #[tracing::instrument(
+        skip(self, schema, base, extras, materialized),
+        fields(model = %schema.id, provider = %schema.provider)
+    )]
+    pub async fn generate_model3d(
+        &self,
+        schema: &ModelSchema,
+        base: &BaseGenerationRequest,
+        extras: &Model3dExtras,
+        materialized: &MaterializedRequest,
+        app_creds: Option<ProviderCredentials>,
+    ) -> Result<Model3dGenerationResponse, ProxyError> {
+        let provider = self
+            .registry
+            .model3d_provider_for_request(&schema.provider, app_creds)
+            .await
+            .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
+
+        let max_retries = 2u32;
+        let mut last_error: Option<ProviderError> = None;
+        let mut handle: Option<Model3dGenerationHandle> = None;
+
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                info!(provider = %schema.provider, attempt, "Retrying 3D generation");
+            }
+            let attempt_start = Instant::now();
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                provider.generate(schema, base, extras, materialized),
+            )
+            .await
+            {
+                Ok(Ok(h)) => {
+                    self.record_latency(&schema.provider, attempt_start.elapsed().as_millis() as u64).await;
+                    handle = Some(h);
+                    break;
+                }
+                Ok(Err(e)) => {
+                    let retryable = e.is_retryable();
+                    last_error = Some(e);
+                    if !retryable { break; }
+                }
+                Err(_) => last_error = Some(ProviderError::Timeout { timeout_ms: 120_000 }),
+            }
+        }
+
+        let handle = handle.ok_or_else(|| ProxyError::AllDeploymentsFailed {
+            model: schema.id.clone(),
+            last_error: last_error.map(|e| e.to_string()),
+        })?;
+
+        // One submitted job produces one mesh, so billing is flat per generation
+        // — `n` is meaningless here, exactly as it is for video.
+        let base_cost = schema.pricing.base_cost_usd;
+        let (_, total) = apply_markup(base_cost, self.config.cost_markup_percent);
+        let usage_info = Some(UsageInfo {
+            cost_usd: total,
+            tokens: crate::providers::usd_to_tokens(total, 0.001),
+            cost_source: CostSource::Estimated,
+        });
+
+        let local_id = format!("litegen-3d-{}", uuid::Uuid::new_v4());
+        self.model3d_jobs.write().await.insert(local_id.clone(), handle);
+
+        Ok(Model3dGenerationResponse {
+            id: local_id,
+            status: GenerationStatus::Pending,
+            model: schema.id.clone(),
+            provider: schema.provider.clone(),
+            assets: Vec::new(),
+            progress: 0,
+            error: None,
+            usage: usage_info,
+            created: chrono::Utc::now().timestamp(),
+        })
+    }
+
+    /// Poll an in-flight 3D generation by local ID, re-hosting its files if the
+    /// provider reports completion on this call.
+    #[tracing::instrument(skip(self), fields(id = %id))]
+    pub async fn get_model3d_status(&self, id: &str) -> Result<Model3dGenerationResponse, ProxyError> {
+        let handle = {
+            let jobs = self.model3d_jobs.read().await;
+            jobs.get(id).cloned()
+        };
+        let handle = handle.ok_or_else(|| ProxyError::NotFound(format!("3d job '{}' not found", id)))?;
+
+        let provider = self
+            .registry
+            .model3d_provider_for(&handle.provider)
+            .await
+            .ok_or_else(|| ProxyError::ProviderNotConfigured(handle.provider.clone()))?;
+
+        let poll = provider.poll_status(&handle).await.map_err(|e| ProxyError::ProviderError {
+            provider: handle.provider.clone(),
+            error: e.to_string(),
+            retryable: e.is_retryable(),
+        })?;
+
+        let is_terminal = matches!(
+            poll.status,
+            GenerationStatus::Completed | GenerationStatus::Failed | GenerationStatus::Cancelled
+        );
+
+        // Re-host in the same call that saw completion — provider URLs expire.
+        let assets = if poll.status == GenerationStatus::Completed && !poll.files.is_empty() {
+            rehost_model3d_files(&self.model3d_store, None, id, &poll.files)
+                .await
+                .map_err(|e| ProxyError::ProviderError {
+                    provider: handle.provider.clone(),
+                    error: format!("failed to store 3d assets: {e}"),
+                    retryable: true,
+                })?
+        } else {
+            Vec::new()
+        };
+
+        if is_terminal {
+            self.model3d_jobs.write().await.remove(id);
+        }
+
+        Ok(Model3dGenerationResponse {
+            id: id.to_string(),
+            status: poll.status,
+            model: handle.model.clone(),
+            provider: handle.provider.clone(),
+            assets,
+            progress: poll.progress,
+            error: poll.error,
+            usage: None,
+            created: chrono::Utc::now().timestamp(),
+        })
+    }
+
+    /// Provider job id for a submitted 3D generation (for the DB row).
+    pub async fn get_model3d_provider_job_id(&self, local_id: &str) -> Option<String> {
+        self.model3d_jobs.read().await.get(local_id).map(|h| h.provider_job_id.clone())
+    }
+
+    pub async fn has_model3d_provider(&self, name: &str) -> bool {
+        self.registry.model3d_provider_for(name).await.is_some()
+    }
+
+    /// Estimate the cost of a 3D generation without dispatching it.
+    pub async fn estimate_model3d_cost(
+        &self,
+        schema: &ModelSchema,
+        request: &Model3dGenerationRequest,
+    ) -> Result<CostEstimate, ProxyError> {
+        let provider = self
+            .registry
+            .model3d_provider_for(&schema.provider)
+            .await
+            .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
+        provider.estimate_cost(schema, request).await.map_err(|e| ProxyError::ProviderError {
+            provider: schema.provider.clone(),
+            error: e.to_string(),
+            retryable: e.is_retryable(),
+        })
+    }
+
     /// Dispatch a video request through a configured model route.
     async fn execute_route_video(
         &self,
@@ -959,6 +1139,57 @@ async fn build_image_results(
     }]
 }
 
+/// Upload every file a 3D provider returned to litegen storage and describe them
+/// as `Model3dAsset`s.
+///
+/// Called from BOTH the router (when a provider completes inline) and the poller
+/// (the usual case), which is why it is a free function. It must run in the same
+/// tick that observed completion: several vendors expire their download URLs
+/// within minutes of task success, and re-hosting is also what makes an app's
+/// BYO bucket apply to meshes exactly as it does to images.
+///
+/// The mesh is always keyed `model.<ext>`, so a client can construct the primary
+/// URL without parsing the asset list. Additional files of the same kind get a
+/// numeric suffix so keys never collide.
+pub async fn rehost_model3d_files(
+    store: &Arc<dyn crate::proxy::storage::ImageStorage>,
+    path_prefix: Option<&str>,
+    generation_id: &str,
+    files: &[crate::providers::Model3dFile],
+) -> Result<Vec<Model3dAsset>, crate::proxy::storage::ImageStoreError> {
+    use crate::proxy::storage::model3d_asset_key;
+
+    let mut seen: HashMap<&'static str, u32> = HashMap::new();
+    let mut assets = Vec::with_capacity(files.len());
+
+    for f in files {
+        let stem: &'static str = match f.kind {
+            Model3dAssetKind::Mesh => "model",
+            Model3dAssetKind::Texture => "texture",
+            Model3dAssetKind::Preview => "preview",
+        };
+        let n = seen.entry(stem).or_insert(0);
+        let name = if *n == 0 { stem.to_string() } else { format!("{stem}_{n}") };
+        *n += 1;
+
+        let key = model3d_asset_key(path_prefix, generation_id, &name, &f.format);
+        let url = store
+            .put(&key, &bytes::Bytes::from(f.bytes.clone()), &f.content_type)
+            .await?;
+
+        assets.push(Model3dAsset {
+            kind: f.kind,
+            url,
+            format: f.format.clone(),
+            size_bytes: Some(f.bytes.len() as u64),
+            polycount: f.polycount,
+            width: f.width,
+            height: f.height,
+        });
+    }
+    Ok(assets)
+}
+
 // ─── Proxy Error ────────────────────────────────────────────────────────────
 
 #[derive(Debug, thiserror::Error)]
@@ -1014,3 +1245,86 @@ impl ProxyError {
 #[cfg(test)]
 #[path = "router_tests.rs"]
 mod router_tests;
+
+#[cfg(test)]
+mod model3d_router_tests {
+    use super::*;
+    use crate::providers::Model3dFile;
+    use crate::proxy::storage::LocalModel3dStorage;
+    use crate::types::Model3dAssetKind;
+
+    fn mesh_file() -> Model3dFile {
+        Model3dFile {
+            kind: Model3dAssetKind::Mesh,
+            format: "glb".into(),
+            content_type: "model/gltf-binary".into(),
+            bytes: b"glTF\x02\x00\x00\x00fake".to_vec(),
+            polycount: Some(12),
+            width: None,
+            height: None,
+        }
+    }
+
+    fn preview_file() -> Model3dFile {
+        Model3dFile {
+            kind: Model3dAssetKind::Preview,
+            format: "png".into(),
+            content_type: "image/png".into(),
+            bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
+            polycount: None,
+            width: Some(512),
+            height: Some(512),
+        }
+    }
+
+    #[tokio::test]
+    async fn rehost_writes_each_file_under_a_predictable_key_and_returns_absolute_urls() {
+        let store: Arc<dyn crate::proxy::storage::ImageStorage> =
+            Arc::new(LocalModel3dStorage::new("https://cdn.example.com".into()));
+
+        let assets = rehost_model3d_files(&store, None, "litegen-3d-42", &[mesh_file(), preview_file()])
+            .await
+            .unwrap();
+
+        assert_eq!(assets.len(), 2);
+        let mesh = assets.iter().find(|a| a.kind == Model3dAssetKind::Mesh).unwrap();
+        assert_eq!(mesh.url, "https://cdn.example.com/v1/models3d/assets/litegen/3d/litegen-3d-42/model.glb");
+        assert_eq!(mesh.format, "glb");
+        assert_eq!(mesh.polycount, Some(12));
+        assert_eq!(mesh.size_bytes, Some(mesh_file().bytes.len() as u64));
+
+        let preview = assets.iter().find(|a| a.kind == Model3dAssetKind::Preview).unwrap();
+        assert!(preview.url.ends_with("/litegen-3d-42/preview.png"), "got {}", preview.url);
+        assert_eq!(preview.width, Some(512));
+        assert_eq!(preview.polycount, None);
+
+        for a in &assets {
+            assert!(a.url.starts_with("https://"), "asset urls must be absolute: {}", a.url);
+        }
+    }
+
+    #[tokio::test]
+    async fn rehost_numbers_multiple_files_of_the_same_kind() {
+        let store: Arc<dyn crate::proxy::storage::ImageStorage> =
+            Arc::new(LocalModel3dStorage::new("https://cdn.example.com".into()));
+        let mut a = preview_file();
+        a.format = "png".into();
+        let b = preview_file();
+        let assets = rehost_model3d_files(&store, None, "litegen-3d-7", &[mesh_file(), a, b]).await.unwrap();
+        let urls: Vec<&str> = assets.iter().map(|x| x.url.as_str()).collect();
+        assert_eq!(urls.len(), 3);
+        assert_eq!(
+            urls.iter().collect::<std::collections::HashSet<_>>().len(),
+            3,
+            "keys must not collide: {urls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rehost_honours_a_per_app_path_prefix() {
+        let store: Arc<dyn crate::proxy::storage::ImageStorage> =
+            Arc::new(LocalModel3dStorage::new("https://cdn.example.com".into()));
+        let assets = rehost_model3d_files(&store, Some("tenant-9/meshes"), "g1", &[mesh_file()]).await.unwrap();
+        assert!(assets[0].url.contains("/tenant-9/meshes/g1/model.glb"), "got {}", assets[0].url);
+    }
+}
