@@ -46,6 +46,8 @@ mod tests {
             _error: Option<&str>, _completed_at: Option<chrono::DateTime<chrono::Utc>>,
         ) -> Result<(), sqlx::Error> { Ok(()) }
 
+        async fn update_generation_metadata(&self, _id: &str, _metadata: &serde_json::Value) -> Result<(), sqlx::Error> { Ok(()) }
+
         async fn get_generation(&self, _id: &str) -> Result<Option<crate::types::Generation>, sqlx::Error> { Ok(None) }
 
         async fn list_active_generations(&self, _limit: u32) -> Result<Vec<crate::types::Generation>, sqlx::Error> { Ok(vec![]) }
@@ -603,6 +605,8 @@ models:
             &self, _id: &str, _status: &str, _progress: i32, _result_url: Option<&str>,
             _error: Option<&str>, _completed_at: Option<chrono::DateTime<chrono::Utc>>,
         ) -> Result<(), sqlx::Error> { Ok(()) }
+
+        async fn update_generation_metadata(&self, _id: &str, _metadata: &serde_json::Value) -> Result<(), sqlx::Error> { Ok(()) }
 
         async fn get_generation(&self, _id: &str) -> Result<Option<crate::types::Generation>, sqlx::Error> { Ok(None) }
 

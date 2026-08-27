@@ -118,6 +118,19 @@ impl DatabaseStore for SqliteDatabase {
         Ok(())
     }
 
+    async fn update_generation_metadata(
+        &self,
+        id: &str,
+        metadata: &serde_json::Value,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE generations SET metadata = ? WHERE id = ?")
+            .bind(serde_json::to_string(metadata).unwrap_or_else(|_| "null".into()))
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn get_generation(&self, id: &str) -> Result<Option<Generation>, sqlx::Error> {
         let sql = format!("SELECT {} FROM generations WHERE id = ?", GENERATION_COLS);
         let row = sqlx::query_as::<_, GenerationRow>(&sql)
@@ -2368,6 +2381,7 @@ fn parse_status(s: &str) -> GenerationStatus {
 fn parse_media_type(s: &str) -> MediaType {
     match s {
         "video" => MediaType::Video,
+        "model3d" => MediaType::Model3d,
         _ => MediaType::Image,
     }
 }

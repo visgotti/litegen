@@ -14,6 +14,9 @@ use utoipa::OpenApi;
         crate::api::handlers::generate_video,
         crate::api::handlers::estimate_video_cost,
         crate::api::handlers::get_video_status,
+        crate::api::handlers::generate_3d,
+        crate::api::handlers::estimate_3d_cost,
+        crate::api::handlers::get_3d_status,
         crate::api::handlers::list_models,
         crate::api::handlers::get_model_schema,
         crate::api::handlers::list_providers,
@@ -235,6 +238,7 @@ use utoipa::OpenApi;
     tags(
         (name = "Images", description = "Image generation endpoints"),
         (name = "Videos", description = "Video generation endpoints"),
+        (name = "Models3D", description = "3D (mesh) generation endpoints"),
         (name = "Models", description = "Model discovery"),
         (name = "Providers", description = "Supported provider catalog"),
         (name = "System", description = "Health checks"),
