@@ -174,17 +174,35 @@ mod tests {
         assert!(prim["attributes"]["POSITION"].is_number());
         assert!(prim["indices"].is_number(), "mesh must be indexed");
         assert!(prim["material"].is_number());
+
+        // glTF REQUIRES min/max on a POSITION accessor — a loader rejects the file
+        // without them, so this is a spec obligation, not a nicety.
+        let pos_accessor = prim["attributes"]["POSITION"].as_u64().unwrap() as usize;
+        let pos = &json["accessors"][pos_accessor];
+        assert_eq!(pos["min"].as_array().unwrap().len(), 3, "POSITION min must be VEC3");
+        assert_eq!(pos["max"].as_array().unwrap().len(), 3, "POSITION max must be VEC3");
+        for axis in 0..3 {
+            assert!(
+                pos["min"][axis].as_f64().unwrap() < pos["max"][axis].as_f64().unwrap(),
+                "POSITION bounds must be ordered on axis {axis}"
+            );
+        }
     }
 
     #[test]
     fn distinct_prompts_produce_distinct_bytes() {
         // Parity with the video mock's "keyframe blend must differ from the
-        // prompt-only fallback" assertion: the mock must prove the prompt
-        // actually reached the generator.
+        // prompt-only fallback" assertion: the mock must prove the prompt actually
+        // reached the generator.
         let a = generate_cube_glb("prompt one");
         let b = generate_cube_glb("prompt two");
         assert_ne!(a, b, "prompt must vary the output");
-        assert_eq!(a.len(), b.len(), "variation is in values, not structure");
+        // Deliberately NOT asserting equal lengths. serde_json emits the shortest
+        // round-trippable decimal, so the prompt-seeded floats (and the min/max
+        // arrays derived from `scale`) differ in digit count between prompts —
+        // measured 847-856 bytes unpadded across 30 prompts. Nothing consumes a
+        // fixed mesh size; distinctness, determinism and container validity are
+        // the invariants that matter, and each has its own test.
     }
 
     #[test]
