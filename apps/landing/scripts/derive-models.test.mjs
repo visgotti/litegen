@@ -4,7 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { parse } from 'yaml';
-import { deriveModel, deriveModels } from './derive-models.mjs';
+import { deriveModel, deriveModels, buildProviderModels } from './derive-models.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MODELS_DIR = join(HERE, '..', '..', '..', 'models');
@@ -62,12 +62,50 @@ test('deriveModel maps ref inputs + video capabilities', () => {
   assert.equal(e.refRoles[0].name, 'init');
 });
 
+test('deriveModel maps 3D capability flags', () => {
+  const e = deriveModel({
+    id: 'mock/mesh-3d',
+    provider: 'mock',
+    media_type: 'model3d',
+    display_name: 'Mock Mesh 3D',
+    capabilities: { text_to_3d: true, image_to_3d: true, multiview_to_3d: false },
+    prompt: { required: true, max_length: 4000 },
+    params: {
+      output_format: { kind: 'string', enum_values: ['glb'], default: 'glb' },
+      target_polycount: { kind: 'int', min: 100, max: 300000 },
+    },
+    ref_inputs: { max_total: 1, roles: { init: { required: false, min_count: 0, max_count: 1 } } },
+    tags: ['mock', 'test'],
+  });
+
+  assert.equal(e.mediaType, 'model3d');
+  assert.equal(e.output, 'model3d');
+  assert.equal(e.capabilities.textTo3d, true);
+  assert.equal(e.capabilities.imageTo3d, true);
+  assert.equal(e.capabilities.multiviewTo3d, false);
+  assert.equal(e.capabilities.textToImage, false);
+});
+
 test('deriveModels sorts by id', () => {
   const out = deriveModels([
     { id: 'b/2', provider: 'b', media_type: 'image' },
     { id: 'a/1', provider: 'a', media_type: 'image' },
   ]);
   assert.deepEqual(out.map((m) => m.id), ['a/1', 'b/2']);
+});
+
+test('buildProviderModels buckets model3d output separately from image/video', () => {
+  const models = deriveModels([
+    { id: 'mock/mesh-3d', provider: 'mock', media_type: 'model3d', display_name: 'Mock Mesh 3D' },
+    { id: 'mock/image-gen', provider: 'mock', media_type: 'image', display_name: 'Mock Image' },
+    { id: 'mock/video-gen', provider: 'mock', media_type: 'video', display_name: 'Mock Video' },
+  ]);
+  const out = buildProviderModels(models);
+  assert.deepEqual(out.mock, {
+    image: ['Mock Image'],
+    video: ['Mock Video'],
+    model3d: ['Mock Mesh 3D'],
+  });
 });
 
 test('the real models/ directory derives a sane catalog', () => {

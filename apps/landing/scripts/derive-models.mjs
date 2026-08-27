@@ -89,6 +89,9 @@ export function deriveModel(m) {
       inpainting: caps.inpainting === true,
       textToVideo: caps.text_to_video === true,
       imageToVideo: caps.image_to_video === true,
+      textTo3d: caps.text_to_3d === true,
+      imageTo3d: caps.image_to_3d === true,
+      multiviewTo3d: caps.multiview_to_3d === true,
     },
     sizes,
     aspectRatios,
@@ -138,14 +141,17 @@ export interface ModelEntry {
   provider: string;
   displayName: string;
   description: string;
-  mediaType: 'image' | 'video';
-  output: 'image' | 'video';
+  mediaType: 'image' | 'video' | 'model3d';
+  output: 'image' | 'video' | 'model3d';
   capabilities: {
     textToImage: boolean;
     imageToImage: boolean;
     inpainting: boolean;
     textToVideo: boolean;
     imageToVideo: boolean;
+    textTo3d: boolean;
+    imageTo3d: boolean;
+    multiviewTo3d: boolean;
   };
   sizes: string[];
   aspectRatios: string[];
@@ -176,9 +182,10 @@ export const MODELS: ModelEntry[] = ${JSON.stringify(models, null, 2)};
 export function buildProviderModels(models) {
   const out = {};
   for (const m of models) {
-    const p = (out[m.provider] ??= { image: [], video: [] });
+    const p = (out[m.provider] ??= { image: [], video: [], model3d: [] });
     const name = m.displayName || m.id;
     if (m.output === 'video') p.video.push(name);
+    else if (m.output === 'model3d') p.model3d.push(name);
     else p.image.push(name);
   }
   return out;
@@ -194,6 +201,7 @@ export function renderProviderModelsTs(models) {
 export interface ProviderModels {
   image: string[];
   video: string[];
+  model3d: string[];
 }
 
 export const PROVIDER_MODELS: Record<string, ProviderModels> = {

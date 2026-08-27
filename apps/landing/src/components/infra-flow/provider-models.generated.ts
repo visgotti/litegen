@@ -3,24 +3,25 @@
 export interface ProviderModels {
   image: string[];
   video: string[];
+  model3d: string[];
 }
 
 export const PROVIDER_MODELS: Record<string, ProviderModels> = {
-  "bfl": {"image":["FLUX.2 [klein] 9B","FLUX.2 [max]","FLUX.2 [pro]","FLUX.1 [dev]","FLUX.1 Kontext [max]","FLUX.1 Kontext [pro]","FLUX 1.1 [pro]","FLUX 1.1 [pro] Ultra"],"video":[]},
-  "bytedance": {"image":["Seedream 4.0","Seedream 4.5","Seedream 5.0 Lite"],"video":["Seedance 1.0 Pro","Seedance 2.0 Mini","Seedance 1.0 Pro Fast"]},
-  "fal": {"image":["AuraFlow (Fal)","FLUX.2 [dev] (Fal)","Flux Dev (Fal)","Flux Pro (Fal)","Flux Schnell (Fal)","Recraft V3 (Fal)","SD 3.5 Medium (Fal)","SDXL (Fal)"],"video":["LTX-2.3 (Fal)","Fal Video (generic)"]},
-  "google": {"image":["Gemini 2.5 Flash (image)","Gemini 3 Pro (image)","Gemini 3.1 Flash Image (Nano Banana 2)","Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite)"],"video":["Veo 3.1 Fast (preview)","Veo 3.1 (preview)","Veo 3.1 Lite (preview)"]},
-  "hunyuan": {"image":["Hunyuan Image","Hunyuan Image 3.0"],"video":["Hunyuan Video","Hunyuan Video I2V"]},
-  "ideogram": {"image":["Ideogram 3.0","Ideogram 3.0 Quality","Ideogram 3.0 Turbo","Ideogram 4.0","Ideogram 4.0 Quality","Ideogram 4.0 Turbo"],"video":[]},
-  "kling": {"image":["Kling Image v2.1","Kling Image v3"],"video":["Kling Video v2.5 Turbo","Kling Video v2.6","Kling Video v3"]},
-  "leonardo": {"image":["Leonardo Diffusion XL"],"video":["Leonardo Kling 2.1","Leonardo Kling 2.5 Turbo","Leonardo Motion 2.0","Leonardo Veo 3.1","Leonardo Veo 3.1 Fast"]},
-  "luma": {"image":["Luma Photon","Luma Photon Flash"],"video":["Luma Dream Machine","Luma Ray 2","Luma Ray Flash 2"]},
-  "minimax": {"image":["MiniMax image-01"],"video":["MiniMax H3","MiniMax H3 Max","MiniMax Hailuo 02","MiniMax Hailuo 2.3","MiniMax Hailuo 2.3 Fast","MiniMax S2V-01","MiniMax T2V-01 Director"]},
-  "openai": {"image":["GPT Image 1","GPT Image 2","GPT Image 2.5 Flare","GPT Image 2.5 Sunburst"],"video":[]},
-  "pixverse": {"image":[],"video":["PixVerse C1","PixVerse v3.5","PixVerse v4.5","PixVerse v5","PixVerse V6"]},
-  "recraft": {"image":["Recraft V2","Recraft V2 Vector","Recraft V3","Recraft V3 Vector","Recraft V4.1","Recraft V4.1 Pro","Recraft V4.1 Pro Vector","Recraft V4.1 Vector"],"video":[]},
-  "replicate": {"image":["Flux 1.1 Pro","Flux Dev","Flux Pro","Flux Schnell","SD3 on Replicate","SDXL on Replicate"],"video":["Replicate Video (generic)"]},
-  "runway": {"image":["Runway Gen-4 Image","Runway Gen-4 Image Turbo"],"video":["Runway Gen-4 Turbo","Runway Gen-4.5"]},
-  "stability": {"image":["Stable Image Core","Stable Diffusion 3 Large","Stable Diffusion 3 Turbo","Stable Diffusion 3.5 Medium","Stable Diffusion XL","Stable Image Ultra"],"video":[]},
-  "vidu": {"image":[],"video":["Vidu 2.0","Vidu Q1","Vidu Q2 Pro","Vidu Q2 Pro Fast","Vidu Q3 Pro","Vidu Q3 Turbo"]},
+  "bfl": {"image":["FLUX.2 [klein] 9B","FLUX.2 [max]","FLUX.2 [pro]","FLUX.1 [dev]","FLUX.1 Kontext [max]","FLUX.1 Kontext [pro]","FLUX 1.1 [pro]","FLUX 1.1 [pro] Ultra"],"video":[],"model3d":[]},
+  "bytedance": {"image":["Seedream 4.0","Seedream 4.5","Seedream 5.0 Lite"],"video":["Seedance 1.0 Pro","Seedance 2.0 Mini","Seedance 1.0 Pro Fast"],"model3d":[]},
+  "fal": {"image":["AuraFlow (Fal)","FLUX.2 [dev] (Fal)","Flux Dev (Fal)","Flux Pro (Fal)","Flux Schnell (Fal)","Recraft V3 (Fal)","SD 3.5 Medium (Fal)","SDXL (Fal)"],"video":["LTX-2.3 (Fal)","Fal Video (generic)"],"model3d":["Hunyuan3D v2 (Fal)","Hyper3D Rodin (Fal)","TRELLIS (Fal)"]},
+  "google": {"image":["Gemini 2.5 Flash (image)","Gemini 3 Pro (image)","Gemini 3.1 Flash Image (Nano Banana 2)","Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite)"],"video":["Veo 3.1 Fast (preview)","Veo 3.1 (preview)","Veo 3.1 Lite (preview)"],"model3d":[]},
+  "hunyuan": {"image":["Hunyuan Image","Hunyuan Image 3.0"],"video":["Hunyuan Video","Hunyuan Video I2V"],"model3d":[]},
+  "ideogram": {"image":["Ideogram 3.0","Ideogram 3.0 Quality","Ideogram 3.0 Turbo","Ideogram 4.0","Ideogram 4.0 Quality","Ideogram 4.0 Turbo"],"video":[],"model3d":[]},
+  "kling": {"image":["Kling Image v2.1","Kling Image v3"],"video":["Kling Video v2.5 Turbo","Kling Video v2.6","Kling Video v3"],"model3d":[]},
+  "leonardo": {"image":["Leonardo Diffusion XL"],"video":["Leonardo Kling 2.1","Leonardo Kling 2.5 Turbo","Leonardo Motion 2.0","Leonardo Veo 3.1","Leonardo Veo 3.1 Fast"],"model3d":[]},
+  "luma": {"image":["Luma Photon","Luma Photon Flash"],"video":["Luma Dream Machine","Luma Ray 2","Luma Ray Flash 2"],"model3d":[]},
+  "minimax": {"image":["MiniMax image-01"],"video":["MiniMax H3","MiniMax H3 Max","MiniMax Hailuo 02","MiniMax Hailuo 2.3","MiniMax Hailuo 2.3 Fast","MiniMax S2V-01","MiniMax T2V-01 Director"],"model3d":[]},
+  "openai": {"image":["GPT Image 1","GPT Image 2","GPT Image 2.5 Flare","GPT Image 2.5 Sunburst"],"video":[],"model3d":[]},
+  "pixverse": {"image":[],"video":["PixVerse C1","PixVerse v3.5","PixVerse v4.5","PixVerse v5","PixVerse V6"],"model3d":[]},
+  "recraft": {"image":["Recraft V2","Recraft V2 Vector","Recraft V3","Recraft V3 Vector","Recraft V4.1","Recraft V4.1 Pro","Recraft V4.1 Pro Vector","Recraft V4.1 Vector"],"video":[],"model3d":[]},
+  "replicate": {"image":["Flux 1.1 Pro","Flux Dev","Flux Pro","Flux Schnell","SD3 on Replicate","SDXL on Replicate"],"video":["Replicate Video (generic)"],"model3d":[]},
+  "runway": {"image":["Runway Gen-4 Image","Runway Gen-4 Image Turbo"],"video":["Runway Gen-4 Turbo","Runway Gen-4.5"],"model3d":[]},
+  "stability": {"image":["Stable Image Core","Stable Diffusion 3 Large","Stable Diffusion 3 Turbo","Stable Diffusion 3.5 Medium","Stable Diffusion XL","Stable Image Ultra"],"video":[],"model3d":[]},
+  "vidu": {"image":[],"video":["Vidu 2.0","Vidu Q1","Vidu Q2 Pro","Vidu Q2 Pro Fast","Vidu Q3 Pro","Vidu Q3 Turbo"],"model3d":[]},
 };
