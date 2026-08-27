@@ -232,30 +232,44 @@ pub(crate) async fn poll_once(
                 // degraded success — a paid generation the caller cannot use. This
                 // mirrors `get_3d_status` exactly so the two paths that can observe
                 // completion never disagree about the same job.
-                if poll.status == GenerationStatus::Completed
-                    && !assets
-                        .as_ref()
-                        .is_some_and(|a: &Vec<crate::types::Model3dAsset>| {
-                            a.iter().any(|x| x.kind == crate::types::Model3dAssetKind::Mesh)
-                        })
-                {
-                    warn!(generation_id = %gen.id, "poller: 3d completed without a mesh asset, failing the row");
-                    reap_generation(db, &gen.id, "provider reported success without a mesh asset").await;
-                    continue;
-                }
-
+                //
+                // This is routed through the normal terminal `PollOutcome` tail
+                // (status: Failed) rather than `reap_generation` + `continue`.
+                // `reap_generation` is for rows that are stuck or unreachable —
+                // no provider configured, no job id recorded, over-age with no
+                // terminal status — which genuinely have no provider verdict to
+                // report. A provider that answered `Completed` without a mesh DID
+                // give a verdict; it's just a failed one. Treating it as a normal
+                // terminal `Failed` (rather than a reap) is the more correct
+                // classification on its own, and it has the side effect of
+                // running the same webhook-dispatch path a provider-reported
+                // `Failed` gets — a caller watching webhooks, not polling, must
+                // still learn this generation failed. Do not "simplify" this back
+                // to `reap_generation`; that would silently drop the webhook.
                 let mesh_url = assets.as_ref().and_then(|a| {
                     a.iter()
                         .find(|x| x.kind == crate::types::Model3dAssetKind::Mesh)
                         .map(|m| m.url.clone())
                 });
-                Some(PollOutcome {
-                    status: poll.status,
-                    progress: poll.progress,
-                    result_url: mesh_url,
-                    error: poll.error,
-                    assets: assets.map(|a| serde_json::json!({ "assets": a })),
-                })
+                let mesh_missing = poll.status == GenerationStatus::Completed && mesh_url.is_none();
+                if mesh_missing {
+                    warn!(generation_id = %gen.id, "poller: 3d completed without a mesh asset, failing the row");
+                    Some(PollOutcome {
+                        status: GenerationStatus::Failed,
+                        progress: poll.progress,
+                        result_url: None,
+                        error: Some("provider reported success without a mesh asset".to_string()),
+                        assets: None,
+                    })
+                } else {
+                    Some(PollOutcome {
+                        status: poll.status,
+                        progress: poll.progress,
+                        result_url: mesh_url,
+                        error: poll.error,
+                        assets: assets.map(|a| serde_json::json!({ "assets": a })),
+                    })
+                }
             }
             other => {
                 // Only video and 3D are async today. An `image` row here means
@@ -754,6 +768,69 @@ mod poller_tests {
 
     /// Submit through the mock provider so the row's provider_job_id refers to a
     /// job the provider actually knows about.
+    /// A 3D provider stub that always reports `Completed` with a preview-only
+    /// file list (no `Mesh` kind) — exercises the completed-without-mesh
+    /// contract deterministically, unlike `MockModel3dProvider`, which never
+    /// produces that shape. A preview-only (not merely empty) list also proves
+    /// the guard checks for `kind: Mesh` specifically, not just non-emptiness.
+    struct ScriptedModel3dProvider;
+
+    #[async_trait::async_trait]
+    impl Model3dProvider for ScriptedModel3dProvider {
+        fn name(&self) -> &str { "mock" }
+        fn configure(&mut self, _c: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+
+        async fn generate(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _b: &crate::types::BaseGenerationRequest,
+            _e: &crate::providers::Model3dExtras,
+            _mat: &crate::proxy::materializer::MaterializedRequest,
+        ) -> Result<crate::providers::Model3dGenerationHandle, crate::providers::ProviderError> {
+            unimplemented!("poller tests never call generate")
+        }
+
+        async fn poll_status(
+            &self,
+            _h: &crate::providers::Model3dGenerationHandle,
+        ) -> Result<crate::providers::Model3dGenerationPollResult, crate::providers::ProviderError> {
+            Ok(crate::providers::Model3dGenerationPollResult {
+                status: crate::types::GenerationStatus::Completed,
+                progress: 100,
+                files: vec![crate::providers::Model3dFile {
+                    kind: crate::types::Model3dAssetKind::Preview,
+                    format: "png".into(),
+                    content_type: "image/png".into(),
+                    bytes: b"fake-preview-png".to_vec(),
+                    polycount: None,
+                    width: Some(256),
+                    height: Some(256),
+                }],
+                error: None,
+                metadata: Default::default(),
+            })
+        }
+
+        async fn estimate_cost(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _r: &crate::types::Model3dGenerationRequest,
+        ) -> Result<crate::types::CostEstimate, crate::providers::ProviderError> {
+            unimplemented!("poller tests never estimate cost")
+        }
+
+        async fn health_check(&self) -> crate::providers::HealthCheckResult {
+            unimplemented!("poller tests never health-check")
+        }
+    }
+
+    async fn registry_with_3d_mesh_missing() -> Arc<ProviderRegistry> {
+        let reg = Arc::new(ProviderRegistry::new());
+        reg.register_mock_model3d(Arc::new(ScriptedModel3dProvider)).await;
+        reg
+    }
+
     async fn submit_mock_3d(model: &str, prompt: &str) -> String {
         use crate::capabilities::{MediaType, ModelCapabilityFlags, ModelPricing, PromptSpec};
         let mut p = MockModel3dProvider::new();
@@ -854,6 +931,76 @@ mod poller_tests {
         assert_eq!(row.status, crate::types::GenerationStatus::Failed);
         assert!(row.error_message.is_some_and(|e| !e.is_empty()));
         assert!(row.result_url.is_none(), "a failed generation must not carry a mesh url");
+    }
+
+    #[tokio::test]
+    async fn poll_once_fails_a_completed_3d_row_that_has_no_mesh_asset() {
+        // Finding 1 coverage: `mock/fail-3d` reports `Failed` directly and never
+        // exercises the completed-without-mesh guard. This drives a genuine
+        // `Completed` poll whose only file is a `Preview`, so the guard's
+        // `poll.status == Completed && no Mesh asset` condition is actually hit.
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = registry_with_3d_mesh_missing().await;
+        let store = test_3d_store();
+
+        db.insert_generation(
+            "litegen-3d-no-mesh-1", None, "mock/mesh-3d", "mock", "model3d",
+            Some("job-no-mesh"), 0.0, None, None,
+        ).await.unwrap();
+
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &store).await;
+
+        let row = db.get_generation("litegen-3d-no-mesh-1").await.unwrap().unwrap();
+        assert_eq!(row.status, crate::types::GenerationStatus::Failed);
+        assert_eq!(
+            row.error_message.as_deref(),
+            Some("provider reported success without a mesh asset"),
+            "must match get_3d_status's wording exactly so the two paths never disagree"
+        );
+        assert!(row.result_url.is_none(), "a mesh-less completion must not carry a result url");
+    }
+
+    #[tokio::test]
+    async fn poll_once_dispatches_webhook_when_3d_completes_without_a_mesh() {
+        // Finding 2 coverage: the mesh guard must route through the normal
+        // terminal `PollOutcome` tail (which dispatches webhooks), not bypass it
+        // via `reap_generation`.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/wh-3d-no-mesh"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+
+        let key = db.create_api_key(
+            "wh-3d-no-mesh-key",
+            "wh-3d-no-mesh-hash",
+            "lg-wh3dnm",
+            None, None,
+            "generate,read",
+            Some(&format!("{}/wh-3d-no-mesh", server.uri())),
+        ).await.unwrap();
+
+        let registry = registry_with_3d_mesh_missing().await;
+        let store = test_3d_store();
+
+        db.insert_generation(
+            "litegen-3d-no-mesh-wh-1", Some(&key.id), "mock/mesh-3d", "mock", "model3d",
+            Some("job-no-mesh-wh"), 0.0, None, None,
+        ).await.unwrap();
+
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &store).await;
+
+        // Give the spawned webhook task a moment
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        server.verify().await;
     }
 
     #[tokio::test]
