@@ -36,6 +36,8 @@ use crate::providers::video::mock::MockVideoProvider;
 use crate::providers::video::openai::OpenAiVideoProvider;
 use crate::providers::video::replicate::ReplicateVideoProvider;
 use crate::providers::video::runway::RunwayProvider;
+use crate::providers::model3d::mock::MockModel3dProvider;
+use crate::providers::Model3dProvider;
 use crate::providers::{
     ImageProvider, ProviderCredentials, ProviderInstanceConfig, VideoProvider, parse_api_keys,
 };
@@ -45,6 +47,7 @@ use crate::types::{ApiKeyEntry, ModelInfo, ProviderHealth};
 pub struct ProviderRegistry {
     image_providers: RwLock<HashMap<String, Arc<dyn ImageProvider>>>,
     video_providers: RwLock<HashMap<String, Arc<dyn VideoProvider>>>,
+    model3d_providers: RwLock<HashMap<String, Arc<dyn Model3dProvider>>>,
     /// The `ProviderInstanceConfig` each provider was registered with, keyed by
     /// provider name. Used to build per-request override instances that keep the
     /// non-credential fields (api_base, model_mapping, …) while swapping in a
@@ -63,6 +66,7 @@ impl ProviderRegistry {
         Self {
             image_providers: RwLock::new(HashMap::new()),
             video_providers: RwLock::new(HashMap::new()),
+            model3d_providers: RwLock::new(HashMap::new()),
             provider_configs: RwLock::new(HashMap::new()),
         }
     }
@@ -99,14 +103,16 @@ impl ProviderRegistry {
     async fn register_provider(&self, name: &str, config: ProviderInstanceConfig) {
         let image = build_image_provider(name, &config);
         let video = build_video_provider(name, &config);
+        let model3d = build_model3d_provider(name, &config);
 
-        if image.is_none() && video.is_none() {
+        if image.is_none() && video.is_none() && model3d.is_none() {
             warn!(provider = %name, "Unknown provider, skipping");
             return;
         }
 
         let has_image = image.is_some();
         let has_video = video.is_some();
+        let has_model3d = model3d.is_some();
 
         if let Some(ip) = image {
             self.image_providers
@@ -120,17 +126,28 @@ impl ProviderRegistry {
                 .await
                 .insert(name.to_string(), Arc::from(vp));
         }
+        if let Some(mp) = model3d {
+            self.model3d_providers
+                .write()
+                .await
+                .insert(name.to_string(), Arc::from(mp));
+        }
         self.provider_configs
             .write()
             .await
             .insert(name.to_string(), config);
 
-        match (has_image, has_video) {
-            (true, true) => info!(provider = %name, "Registered image+video provider"),
-            (true, false) => info!(provider = %name, "Registered image provider"),
-            (false, true) => info!(provider = %name, "Registered video provider"),
-            (false, false) => {}
+        let mut kinds: Vec<&str> = Vec::new();
+        if has_image {
+            kinds.push("image");
         }
+        if has_video {
+            kinds.push("video");
+        }
+        if has_model3d {
+            kinds.push("3d");
+        }
+        info!(provider = %name, modalities = %kinds.join("+"), "Registered provider");
     }
 
     /// Build a per-request image provider for `name`, optionally overriding its
@@ -185,6 +202,29 @@ impl ProviderRegistry {
         }
     }
 
+    /// Build a per-request 3D provider for `name`. See
+    /// [`image_provider_for_request`](Self::image_provider_for_request).
+    pub async fn model3d_provider_for_request(
+        &self,
+        name: &str,
+        app_creds: Option<ProviderCredentials>,
+    ) -> Option<Arc<dyn Model3dProvider>> {
+        match app_creds {
+            None => self.model3d_provider_for(name).await,
+            Some(creds) => {
+                let base = self
+                    .provider_configs
+                    .read()
+                    .await
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_default();
+                let cfg = base.with_credentials(creds);
+                build_model3d_provider(name, &cfg).map(Arc::from)
+            }
+        }
+    }
+
     /// Get an image provider by name.
     pub async fn get_image_provider(&self, name: &str) -> Option<Arc<dyn ImageProvider>> {
         self.image_providers.read().await.get(name).cloned()
@@ -195,6 +235,11 @@ impl ProviderRegistry {
         self.video_providers.read().await.get(name).cloned()
     }
 
+    /// Get a 3D provider by name.
+    pub async fn get_model3d_provider(&self, name: &str) -> Option<Arc<dyn Model3dProvider>> {
+        self.model3d_providers.read().await.get(name).cloned()
+    }
+
     /// Get an image provider by provider name (same as get_image_provider, for capability-registry routing).
     pub async fn image_provider_for(&self, name: &str) -> Option<Arc<dyn ImageProvider>> {
         self.image_providers.read().await.get(name).cloned()
@@ -203,6 +248,11 @@ impl ProviderRegistry {
     /// Get a video provider by provider name (same as get_video_provider, for capability-registry routing).
     pub async fn video_provider_for(&self, name: &str) -> Option<Arc<dyn VideoProvider>> {
         self.video_providers.read().await.get(name).cloned()
+    }
+
+    /// Get a 3D provider by provider name (capability-registry routing).
+    pub async fn model3d_provider_for(&self, name: &str) -> Option<Arc<dyn Model3dProvider>> {
+        self.model3d_providers.read().await.get(name).cloned()
     }
 
     /// Find an image provider that supports the given model.
@@ -301,6 +351,15 @@ impl ProviderRegistry {
             .await
             .insert(name.to_string(), provider);
     }
+
+    /// Test helper: directly register a pre-built 3D provider.
+    #[cfg(test)]
+    pub async fn register_mock_model3d(&self, provider: Arc<dyn Model3dProvider>) {
+        self.model3d_providers
+            .write()
+            .await
+            .insert("mock".to_string(), provider);
+    }
 }
 
 /// Pure factory: build the image-provider implementation for `name`, configured
@@ -378,6 +437,26 @@ fn build_video_provider(
     }
 }
 
+/// Pure factory: build the 3D-provider implementation for `name`. Returns
+/// `None` for vendors without a 3D implementation (or an unknown name). Mirror
+/// of [`build_image_provider`].
+fn build_model3d_provider(
+    name: &str,
+    config: &ProviderInstanceConfig,
+) -> Option<Box<dyn Model3dProvider>> {
+    macro_rules! configured {
+        ($ty:ty) => {{
+            let mut p = <$ty>::new();
+            p.configure(config.clone());
+            Some(Box::new(p) as Box<dyn Model3dProvider>)
+        }};
+    }
+    match name {
+        "mock" => configured!(MockModel3dProvider),
+        _ => None,
+    }
+}
+
 /// Canonical list of providers with an image implementation. Keep in sync with
 /// [`build_image_provider`]'s match arms — the `provider_catalog_covers_registry`
 /// test asserts every name here actually builds.
@@ -394,6 +473,11 @@ pub const VIDEO_PROVIDERS: &[&str] = &[
     "hunyuan", "bedrock", "kling", "leonardo", "pixverse", "bytedance", "mock",
 ];
 
+/// Canonical list of providers with a 3D implementation. Mirrors
+/// [`build_model3d_provider`]. Real vendors (Meshy, Tripo3D, Stability, Rodin)
+/// land here in phase 2.
+pub const MODEL3D_PROVIDERS: &[&str] = &["mock"];
+
 /// Build the provider catalog that drives the dashboard credential form. Each
 /// entry says which media a provider serves, which credential fields to collect,
 /// and which JSON array to submit them in — `api_keys` for bearer schemes,
@@ -402,9 +486,13 @@ pub const VIDEO_PROVIDERS: &[&str] = &[
 pub fn provider_catalog() -> Vec<crate::types::ProviderCatalogEntry> {
     use crate::types::{CredentialFieldSpec, ProviderCatalogEntry};
 
-    // Union of image+video names, de-duplicated and stably ordered.
+    // Union of image+video+model3d names, de-duplicated and stably ordered.
     let mut names: Vec<&str> = Vec::new();
-    for n in IMAGE_PROVIDERS.iter().chain(VIDEO_PROVIDERS.iter()) {
+    for n in IMAGE_PROVIDERS
+        .iter()
+        .chain(VIDEO_PROVIDERS.iter())
+        .chain(MODEL3D_PROVIDERS.iter())
+    {
         if !names.contains(n) {
             names.push(n);
         }
@@ -427,6 +515,9 @@ pub fn provider_catalog() -> Vec<crate::types::ProviderCatalogEntry> {
             }
             if VIDEO_PROVIDERS.contains(&name) {
                 modalities.push("video".to_string());
+            }
+            if MODEL3D_PROVIDERS.contains(&name) {
+                modalities.push("model3d".to_string());
             }
             // Only the three signing providers need a credential set; everything
             // else is a single bearer api_key.
@@ -727,7 +818,8 @@ mod tests {
 
         for entry in provider_catalog() {
             let builds = build_image_provider(&entry.name, &default).is_some()
-                || build_video_provider(&entry.name, &default).is_some();
+                || build_video_provider(&entry.name, &default).is_some()
+                || build_model3d_provider(&entry.name, &default).is_some();
             assert!(builds, "catalog provider '{}' does not build in the registry", entry.name);
             assert!(!entry.fields.is_empty(), "{} exposes no credential fields", entry.name);
             assert!(
@@ -741,7 +833,11 @@ mod tests {
         // Every registered provider name appears in the catalog (no drift).
         let catalog: std::collections::BTreeSet<String> =
             provider_catalog().into_iter().map(|e| e.name).collect();
-        for name in IMAGE_PROVIDERS.iter().chain(VIDEO_PROVIDERS.iter()) {
+        for name in IMAGE_PROVIDERS
+            .iter()
+            .chain(VIDEO_PROVIDERS.iter())
+            .chain(MODEL3D_PROVIDERS.iter())
+        {
             assert!(catalog.contains(*name), "registered provider '{name}' missing from catalog");
         }
 
@@ -764,5 +860,40 @@ mod tests {
         assert_eq!(stability.modalities, vec!["image".to_string()]);
         let pixverse = provider_catalog().into_iter().find(|e| e.name == "pixverse").unwrap();
         assert_eq!(pixverse.modalities, vec!["video".to_string()]);
+    }
+
+    #[test]
+    fn model3d_providers_const_matches_the_build_arms() {
+        // Same drift guard IMAGE_PROVIDERS/VIDEO_PROVIDERS get: every name in the
+        // const must actually build, and nothing may build that isn't listed.
+        let default = ProviderInstanceConfig::default();
+        for name in MODEL3D_PROVIDERS {
+            assert!(
+                build_model3d_provider(name, &default).is_some(),
+                "MODEL3D_PROVIDERS lists '{name}' but it does not build"
+            );
+        }
+        assert!(build_model3d_provider("definitely-not-a-vendor", &default).is_none());
+    }
+
+    #[test]
+    fn catalog_reports_the_model3d_modality() {
+        let mock = provider_catalog().into_iter().find(|e| e.name == "mock").unwrap();
+        assert!(
+            mock.modalities.contains(&"model3d".to_string()),
+            "mock serves 3D; the dashboard credential form reads modalities: {:?}",
+            mock.modalities
+        );
+        // A vendor with no 3D implementation must not claim the modality.
+        let stability = provider_catalog().into_iter().find(|e| e.name == "stability").unwrap();
+        assert!(!stability.modalities.contains(&"model3d".to_string()));
+    }
+
+    #[tokio::test]
+    async fn registers_and_resolves_a_model3d_provider() {
+        let reg = ProviderRegistry::new();
+        reg.register_provider("mock", ProviderInstanceConfig::default()).await;
+        assert!(reg.model3d_provider_for("mock").await.is_some());
+        assert!(reg.model3d_provider_for("stability").await.is_none());
     }
 }
