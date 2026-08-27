@@ -12,26 +12,38 @@ T = TypeVar("T", bound="ModelCapabilityFlags")
 class ModelCapabilityFlags:
     """
     Attributes:
+        image_to_3d (Union[Unset, bool]):
         image_to_image (Union[Unset, bool]):
         image_to_video (Union[Unset, bool]):
         inpainting (Union[Unset, bool]):
+        multiview_to_3d (Union[Unset, bool]):
+        text_to_3d (Union[Unset, bool]):
         text_to_image (Union[Unset, bool]):
         text_to_video (Union[Unset, bool]):
     """
 
+    image_to_3d: Union[Unset, bool] = UNSET
     image_to_image: Union[Unset, bool] = UNSET
     image_to_video: Union[Unset, bool] = UNSET
     inpainting: Union[Unset, bool] = UNSET
+    multiview_to_3d: Union[Unset, bool] = UNSET
+    text_to_3d: Union[Unset, bool] = UNSET
     text_to_image: Union[Unset, bool] = UNSET
     text_to_video: Union[Unset, bool] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        image_to_3d = self.image_to_3d
+
         image_to_image = self.image_to_image
 
         image_to_video = self.image_to_video
 
         inpainting = self.inpainting
+
+        multiview_to_3d = self.multiview_to_3d
+
+        text_to_3d = self.text_to_3d
 
         text_to_image = self.text_to_image
 
@@ -40,12 +52,18 @@ class ModelCapabilityFlags:
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
+        if image_to_3d is not UNSET:
+            field_dict["image_to_3d"] = image_to_3d
         if image_to_image is not UNSET:
             field_dict["image_to_image"] = image_to_image
         if image_to_video is not UNSET:
             field_dict["image_to_video"] = image_to_video
         if inpainting is not UNSET:
             field_dict["inpainting"] = inpainting
+        if multiview_to_3d is not UNSET:
+            field_dict["multiview_to_3d"] = multiview_to_3d
+        if text_to_3d is not UNSET:
+            field_dict["text_to_3d"] = text_to_3d
         if text_to_image is not UNSET:
             field_dict["text_to_image"] = text_to_image
         if text_to_video is not UNSET:
@@ -56,20 +74,29 @@ class ModelCapabilityFlags:
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         d = src_dict.copy()
+        image_to_3d = d.pop("image_to_3d", UNSET)
+
         image_to_image = d.pop("image_to_image", UNSET)
 
         image_to_video = d.pop("image_to_video", UNSET)
 
         inpainting = d.pop("inpainting", UNSET)
 
+        multiview_to_3d = d.pop("multiview_to_3d", UNSET)
+
+        text_to_3d = d.pop("text_to_3d", UNSET)
+
         text_to_image = d.pop("text_to_image", UNSET)
 
         text_to_video = d.pop("text_to_video", UNSET)
 
         model_capability_flags = cls(
+            image_to_3d=image_to_3d,
             image_to_image=image_to_image,
             image_to_video=image_to_video,
             inpainting=inpainting,
+            multiview_to_3d=multiview_to_3d,
+            text_to_3d=text_to_3d,
             text_to_image=text_to_image,
             text_to_video=text_to_video,
         )

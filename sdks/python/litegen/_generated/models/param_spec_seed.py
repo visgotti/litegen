@@ -1,7 +1,9 @@
-from typing import Any, Dict, List, Type, TypeVar
+from typing import Any, Dict, List, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+
+from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="ParamSpecSeed")
 
@@ -12,16 +14,32 @@ class ParamSpecSeed:
     Attributes:
         max_ (int):
         min_ (int):
+        description (Union[None, Unset, str]):
+        label (Union[None, Unset, str]):
     """
 
     max_: int
     min_: int
+    description: Union[None, Unset, str] = UNSET
+    label: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         max_ = self.max_
 
         min_ = self.min_
+
+        description: Union[None, Unset, str]
+        if isinstance(self.description, Unset):
+            description = UNSET
+        else:
+            description = self.description
+
+        label: Union[None, Unset, str]
+        if isinstance(self.label, Unset):
+            label = UNSET
+        else:
+            label = self.label
 
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -31,6 +49,10 @@ class ParamSpecSeed:
                 "min": min_,
             }
         )
+        if description is not UNSET:
+            field_dict["description"] = description
+        if label is not UNSET:
+            field_dict["label"] = label
 
         return field_dict
 
@@ -41,9 +63,29 @@ class ParamSpecSeed:
 
         min_ = d.pop("min")
 
+        def _parse_description(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        description = _parse_description(d.pop("description", UNSET))
+
+        def _parse_label(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        label = _parse_label(d.pop("label", UNSET))
+
         param_spec_seed = cls(
             max_=max_,
             min_=min_,
+            description=description,
+            label=label,
         )
 
         param_spec_seed.additional_properties = d

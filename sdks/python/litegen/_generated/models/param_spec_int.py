@@ -13,11 +13,15 @@ class ParamSpecInt:
     """
     Attributes:
         default (Union[None, Unset, int]):
+        description (Union[None, Unset, str]):
+        label (Union[None, Unset, str]):
         max_ (Union[None, Unset, int]):
         min_ (Union[None, Unset, int]):
     """
 
     default: Union[None, Unset, int] = UNSET
+    description: Union[None, Unset, str] = UNSET
+    label: Union[None, Unset, str] = UNSET
     max_: Union[None, Unset, int] = UNSET
     min_: Union[None, Unset, int] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -28,6 +32,18 @@ class ParamSpecInt:
             default = UNSET
         else:
             default = self.default
+
+        description: Union[None, Unset, str]
+        if isinstance(self.description, Unset):
+            description = UNSET
+        else:
+            description = self.description
+
+        label: Union[None, Unset, str]
+        if isinstance(self.label, Unset):
+            label = UNSET
+        else:
+            label = self.label
 
         max_: Union[None, Unset, int]
         if isinstance(self.max_, Unset):
@@ -46,6 +62,10 @@ class ParamSpecInt:
         field_dict.update({})
         if default is not UNSET:
             field_dict["default"] = default
+        if description is not UNSET:
+            field_dict["description"] = description
+        if label is not UNSET:
+            field_dict["label"] = label
         if max_ is not UNSET:
             field_dict["max"] = max_
         if min_ is not UNSET:
@@ -65,6 +85,24 @@ class ParamSpecInt:
             return cast(Union[None, Unset, int], data)
 
         default = _parse_default(d.pop("default", UNSET))
+
+        def _parse_description(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        description = _parse_description(d.pop("description", UNSET))
+
+        def _parse_label(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        label = _parse_label(d.pop("label", UNSET))
 
         def _parse_max_(data: object) -> Union[None, Unset, int]:
             if data is None:
@@ -86,6 +124,8 @@ class ParamSpecInt:
 
         param_spec_int = cls(
             default=default,
+            description=description,
+            label=label,
             max_=max_,
             min_=min_,
         )
