@@ -34,7 +34,7 @@ models:
       size:
         kind: size
         mode: enum
-        values: [[512, 512]]
+        values: [[512, 512], [1024, 1024]]
     extra_allowlist: []
     tags: [mock, test, visual]
 
@@ -285,3 +285,91 @@ models:
       fps: { kind: int, min: 1, max: 60 }
       seed: { kind: seed, min: 0, max: 4294967294 }
     tags: [mock, test, expensive, quota-demo]
+
+  # ─── 3D model (mesh) mocks ───────────────────────────────────────────────────
+
+  - id: mock/mesh-3d
+    provider: mock
+    media_type: model3d
+    display_name: Mock Mesh 3D
+    description: Real glTF 2.0 binary cube, prompt-tinted. Reports progress across three polls so the async path is genuinely exercised.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_3d: true, image_to_3d: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      output_format:
+        kind: string
+        enum_values: [glb]
+        default: glb
+        label: Output format
+        description: Mesh container. The mock only emits glb.
+      texture: { kind: bool, default: true, label: Textures }
+      target_polycount:
+        kind: int
+        min: 100
+        max: 300000
+        label: Target polycount
+        description: Approximate triangle budget.
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [mock, test, visual]
+
+  - id: mock/all-params-3d
+    provider: mock
+    media_type: model3d
+    display_name: Mock All-Params 3D
+    description: Every 3D param kind exposed — output_format, texture, pbr, rig, symmetry, topology, target_polycount, seed. Use to test the full 3D validation surface.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_3d: true, image_to_3d: true, multiview_to_3d: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      output_format:
+        kind: string
+        enum_values: [glb, obj, fbx, usdz]
+        default: glb
+        label: Output format
+      texture: { kind: bool, default: true, label: Textures }
+      pbr: { kind: bool, default: false, label: PBR materials }
+      rig: { kind: bool, default: false, label: Auto-rig }
+      symmetry:
+        kind: string
+        enum_values: [off, auto, on]
+        default: auto
+        label: Symmetry
+      topology:
+        kind: string
+        enum_values: [triangle, quad]
+        default: triangle
+        label: Topology
+      target_polycount: { kind: int, min: 100, max: 300000, label: Target polycount }
+      seed: { kind: seed, min: 0, max: 2147483647 }
+    ref_inputs:
+      max_total: 6
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init:        { required: false, min_count: 0, max_count: 1 }
+        view-front:  { required: false, min_count: 0, max_count: 1 }
+        view-back:   { required: false, min_count: 0, max_count: 1 }
+        view-left:   { required: false, min_count: 0, max_count: 1 }
+        view-right:  { required: false, min_count: 0, max_count: 1 }
+        view-top:    { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [mock, test]
+
+  - id: mock/fail-3d
+    provider: mock
+    media_type: model3d
+    display_name: Mock Failing 3D
+    description: Always terminates in `failed` with an error string. Use to test refund / error-surface handling.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_3d: true }
+    prompt: { required: true, max_length: 1000 }
+    params: {}
+    extra_allowlist: []
+    tags: [mock, test]
