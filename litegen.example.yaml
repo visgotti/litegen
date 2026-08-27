@@ -5,6 +5,9 @@ server:
   host: "0.0.0.0"
   port: 4000
   request_timeout_seconds: 300
+  # Externally reachable origin for client-facing URLs (e.g. 3D asset URLs,
+  # which must be absolute). Defaults to http://{host}:{port} when unset.
+  # public_base_url: "https://app.litegen.ai/api"
 
 # Database (SQLite for dev, Postgres for prod)
 database_url: "sqlite://litegen.db"
