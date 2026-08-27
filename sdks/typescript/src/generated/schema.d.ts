@@ -723,6 +723,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/models3d/cost": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/models3d/cost — Estimate cost for a 3D generation. */
+        post: operations["estimate_3d_cost"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/models3d/generations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/models3d/generations — Start a 3D (mesh) generation. */
+        post: operations["generate_3d"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/models3d/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/models3d/{id} — Poll the status of an in-flight 3D generation. */
+        get: operations["get_3d_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/orgs": {
         parameters: {
             query?: never;
@@ -1274,7 +1325,7 @@ export interface components {
             status: string;
         };
         /** @enum {string} */
-        CapabilityMediaType: "image" | "video";
+        CapabilityMediaType: "image" | "video" | "model3d";
         CapabilityModelPricing: {
             /** Format: double */
             base_cost_usd: number;
@@ -1310,6 +1361,12 @@ export interface components {
         /** @enum {string} */
         CostSource: "dynamic" | "estimated";
         CreateApiKeyRequest: {
+            /**
+             * Format: date-time
+             * @description Optional expiry; after this instant the key is rejected at auth. None =
+             *     never expires. Enforced in auth_middleware and honoured on PATCH too.
+             */
+            expires_at?: string | null;
             name: string;
             /**
              * Format: int32
@@ -1560,7 +1617,7 @@ export interface components {
             password: string;
         };
         /** @enum {string} */
-        MediaType: "image" | "video";
+        MediaType: "image" | "video" | "model3d";
         MemberView: {
             created_at: string;
             email: string;
@@ -1568,24 +1625,102 @@ export interface components {
             role: string;
             user_id: string;
         };
+        /**
+         * @description One file produced by a 3D generation. A completed generation always carries
+         *     exactly one `Mesh` asset; consumers treat its absence as a provider failure.
+         *     `url` is always absolute — a root-relative path is indistinguishable from an
+         *     outage to a client fetching it from a worker.
+         */
+        Model3dAsset: {
+            /** @description "glb" | "obj" | "fbx" | "usdz" | "png" | "jpg". */
+            format: string;
+            /** Format: int32 */
+            height?: number | null;
+            kind: components["schemas"]["Model3dAssetKind"];
+            /**
+             * Format: int32
+             * @description Meshes only.
+             */
+            polycount?: number | null;
+            /** Format: int64 */
+            size_bytes?: number | null;
+            url: string;
+            /**
+             * Format: int32
+             * @description Preview / texture assets only.
+             */
+            width?: number | null;
+        };
+        /** @enum {string} */
+        Model3dAssetKind: "mesh" | "texture" | "preview";
+        Model3dGenerationRequest: components["schemas"]["BaseGenerationRequest"] & {
+            /** @description Desired mesh container: "glb" | "obj" | "fbx" | "usdz". Default "glb". */
+            output_format?: string | null;
+            /** @description PBR materials, where the model supports them. */
+            pbr?: boolean | null;
+            /** @description Auto-rig / emit a skeleton, where supported. */
+            rig?: boolean | null;
+            /** @description "off" | "auto" | "on". */
+            symmetry?: string | null;
+            /** Format: int32 */
+            target_polycount?: number | null;
+            /** @description Generate textures (vs. bare geometry). */
+            texture?: boolean | null;
+            /** @description "triangle" | "quad". */
+            topology?: string | null;
+        };
+        /**
+         * @description 3D generation is always async — this is both the submit response and the
+         *     poll response, mirroring `VideoGenerationResponse` with `video_url` replaced
+         *     by the richer `assets` list.
+         */
+        Model3dGenerationResponse: {
+            /** @description Populated on `completed`. Omitted entirely while the job is in flight. */
+            assets?: components["schemas"]["Model3dAsset"][];
+            /** Format: int64 */
+            created: number;
+            error?: string | null;
+            id: string;
+            model: string;
+            /**
+             * Format: int32
+             * @description Unified 0–100 progress.
+             */
+            progress: number;
+            provider: string;
+            status: components["schemas"]["GenerationStatus"];
+            usage?: null | components["schemas"]["UsageInfo"];
+        };
         ModelCapabilities: {
             /** Format: double */
             max_duration_seconds?: number | null;
             /** Format: int32 */
             max_images?: number;
+            /** Format: int32 */
+            max_polycount?: number | null;
+            output_formats?: string[];
             supported_sizes?: string[];
             supports_first_frame?: boolean;
+            supports_image_to_3d?: boolean;
             supports_image_to_image: boolean;
             supports_image_to_video?: boolean;
             supports_inpainting?: boolean;
             supports_last_frame?: boolean;
+            supports_multiview_to_3d?: boolean;
+            supports_pbr?: boolean;
+            supports_rig?: boolean;
+            supports_text_to_3d?: boolean;
             supports_text_to_image: boolean;
             supports_text_to_video?: boolean;
+            supports_texture?: boolean;
         };
         ModelCapabilityFlags: {
+            image_to_3d?: boolean;
             image_to_image?: boolean;
             image_to_video?: boolean;
             inpainting?: boolean;
+            multiview_to_3d?: boolean;
+            text_to_3d?: boolean;
             text_to_image?: boolean;
             text_to_video?: boolean;
         };
@@ -1853,13 +1988,19 @@ export interface components {
         ParamSpecAspectRatio: {
             allowed: string[];
             default?: string | null;
+            description?: string | null;
+            label?: string | null;
         };
         ParamSpecBool: {
             default?: boolean | null;
+            description?: string | null;
+            label?: string | null;
         };
         ParamSpecFloat: {
             /** Format: double */
             default?: number | null;
+            description?: string | null;
+            label?: string | null;
             /** Format: double */
             max?: number | null;
             /** Format: double */
@@ -1868,12 +2009,16 @@ export interface components {
         ParamSpecInt: {
             /** Format: int64 */
             default?: number | null;
+            description?: string | null;
+            label?: string | null;
             /** Format: int64 */
             max?: number | null;
             /** Format: int64 */
             min?: number | null;
         };
         ParamSpecSeed: {
+            description?: string | null;
+            label?: string | null;
             /** Format: int64 */
             max: number;
             /** Format: int64 */
@@ -1881,7 +2026,9 @@ export interface components {
         };
         ParamSpecString: {
             default?: string | null;
+            description?: string | null;
             enum_values?: string[];
+            label?: string | null;
             max_length?: number | null;
             pattern?: string | null;
         };
@@ -2184,9 +2331,13 @@ export interface components {
             mode: "enum";
         });
         SizeSpecEnum: {
+            description?: string | null;
+            label?: string | null;
             values: number[][];
         };
         SizeSpecFreeform: {
+            description?: string | null;
+            label?: string | null;
             /** Format: int32 */
             max_height: number;
             /** Format: int32 */
@@ -3972,7 +4123,10 @@ export interface operations {
     };
     list_models: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Filter by media type */
+                media_type?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4009,6 +4163,113 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ModelSchema"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    estimate_3d_cost: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Model3dGenerationRequest"];
+            };
+        };
+        responses: {
+            /** @description Cost estimate */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostEstimate"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    generate_3d: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Model3dGenerationRequest"];
+            };
+        };
+        responses: {
+            /** @description 3D generation started */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Model3dGenerationResponse"];
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_3d_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 3D generation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Model3dGenerationResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             /** @description Not found */

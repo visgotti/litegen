@@ -2,6 +2,10 @@ import type { components } from "./generated/schema";
 import { LiteGenPollingTimeoutError } from "./errors";
 
 type VideoResponse = components["schemas"]["VideoGenerationResponse"];
+type Model3dResponse = components["schemas"]["Model3dGenerationResponse"];
+
+/** Any pollable job response. */
+type WithStatus = { status: string };
 
 export interface WaitForCompletionOptions {
   /** Milliseconds between polls. Default 2000. */
@@ -15,59 +19,77 @@ export interface WaitForCompletionOptions {
 const TERMINAL_STATUSES = new Set<string>(["completed", "failed", "cancelled"]);
 
 /**
- * Poll a video job, yielding every status update — including the terminal one —
- * as an async iterable. Drive it with `for await`:
+ * Poll any async job, yielding every status update — including the terminal one
+ * — as an async iterable. `progress` is LiteGen's unified 0–100 value across
+ * every provider and modality, so this loop behaves identically for video and
+ * 3D — providers that don't report fine-grained progress simply step toward
+ * 100. Iteration stops after the first terminal status (`completed` / `failed`
+ * / `cancelled`), which is the final value yielded.
  *
- * ```ts
- * for await (const update of client.videos.poll(job.id)) {
- *   console.log(`${update.status} — ${update.progress}%`);
- * }
- * ```
- *
- * `progress` is LiteGen's unified 0–100 value; providers that don't report
- * fine-grained progress simply step toward 100, so this loop behaves the same
- * across every provider. Iteration stops after the first terminal status
- * (`completed` / `failed` / `cancelled`), which is the final value yielded.
+ * `pollVideo` / `poll3d` are thin instantiations of this generator, not
+ * separate implementations — a new async media family gets polling for free
+ * by wrapping this with its own response type.
  */
-export async function* pollVideo(
+export async function* pollJob<T extends WithStatus>(
   id: string,
-  getStatus: (id: string) => Promise<VideoResponse>,
+  getStatus: (id: string) => Promise<T>,
   opts: WaitForCompletionOptions = {},
-): AsyncGenerator<VideoResponse, VideoResponse, void> {
+): AsyncGenerator<T, T, void> {
   const intervalMs = opts.intervalMs ?? 2000;
   const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
   const deadline = Date.now() + timeoutMs;
 
-  let last: VideoResponse | undefined;
+  let last: T | undefined;
   while (true) {
     if (opts.signal?.aborted) {
       throw new DOMException("Polling aborted", "AbortError");
     }
     if (Date.now() > deadline) {
-      throw new LiteGenPollingTimeoutError(id, last?.status as string | undefined);
+      throw new LiteGenPollingTimeoutError(id, last?.status);
     }
     last = await getStatus(id);
     yield last;
-    if (TERMINAL_STATUSES.has(last.status as string)) {
+    if (TERMINAL_STATUSES.has(last.status)) {
       return last;
     }
     await sleep(intervalMs, opts.signal);
   }
 }
 
-/** Resolve once the video reaches a terminal status, returning the final state. */
-export async function waitForCompletion(
+/** Resolve once any job reaches a terminal status, returning the final state. */
+export async function waitForJob<T extends WithStatus>(
   id: string,
-  getStatus: (id: string) => Promise<VideoResponse>,
+  getStatus: (id: string) => Promise<T>,
   opts: WaitForCompletionOptions = {},
-): Promise<VideoResponse> {
-  let last: VideoResponse | undefined;
-  for await (const update of pollVideo(id, getStatus, opts)) {
+): Promise<T> {
+  let last: T | undefined;
+  for await (const update of pollJob(id, getStatus, opts)) {
     last = update;
   }
-  // pollVideo always yields at least once before completing.
-  return last as VideoResponse;
+  // pollJob always yields at least once before completing.
+  return last as T;
 }
+
+/**
+ * Poll a video job. `for await (const update of client.videos.poll(job.id))`.
+ */
+export const pollVideo = (
+  id: string,
+  getStatus: (id: string) => Promise<VideoResponse>,
+  opts?: WaitForCompletionOptions,
+): AsyncGenerator<VideoResponse, VideoResponse, void> => pollJob<VideoResponse>(id, getStatus, opts);
+
+/**
+ * Poll a 3D generation job. `for await (const update of client.models3d.poll(job.id))`.
+ */
+export const poll3d = (
+  id: string,
+  getStatus: (id: string) => Promise<Model3dResponse>,
+  opts?: WaitForCompletionOptions,
+): AsyncGenerator<Model3dResponse, Model3dResponse, void> => pollJob<Model3dResponse>(id, getStatus, opts);
+
+/** Back-compat alias — `waitForCompletion` predates the generic `pollJob` refactor. */
+export const waitForCompletion = waitForJob;
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {

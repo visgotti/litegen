@@ -13,13 +13,17 @@ class ParamSpecString:
     """
     Attributes:
         default (Union[None, Unset, str]):
+        description (Union[None, Unset, str]):
         enum_values (Union[Unset, List[str]]):
+        label (Union[None, Unset, str]):
         max_length (Union[None, Unset, int]):
         pattern (Union[None, Unset, str]):
     """
 
     default: Union[None, Unset, str] = UNSET
+    description: Union[None, Unset, str] = UNSET
     enum_values: Union[Unset, List[str]] = UNSET
+    label: Union[None, Unset, str] = UNSET
     max_length: Union[None, Unset, int] = UNSET
     pattern: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -31,9 +35,21 @@ class ParamSpecString:
         else:
             default = self.default
 
+        description: Union[None, Unset, str]
+        if isinstance(self.description, Unset):
+            description = UNSET
+        else:
+            description = self.description
+
         enum_values: Union[Unset, List[str]] = UNSET
         if not isinstance(self.enum_values, Unset):
             enum_values = self.enum_values
+
+        label: Union[None, Unset, str]
+        if isinstance(self.label, Unset):
+            label = UNSET
+        else:
+            label = self.label
 
         max_length: Union[None, Unset, int]
         if isinstance(self.max_length, Unset):
@@ -52,8 +68,12 @@ class ParamSpecString:
         field_dict.update({})
         if default is not UNSET:
             field_dict["default"] = default
+        if description is not UNSET:
+            field_dict["description"] = description
         if enum_values is not UNSET:
             field_dict["enum_values"] = enum_values
+        if label is not UNSET:
+            field_dict["label"] = label
         if max_length is not UNSET:
             field_dict["max_length"] = max_length
         if pattern is not UNSET:
@@ -74,7 +94,25 @@ class ParamSpecString:
 
         default = _parse_default(d.pop("default", UNSET))
 
+        def _parse_description(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        description = _parse_description(d.pop("description", UNSET))
+
         enum_values = cast(List[str], d.pop("enum_values", UNSET))
+
+        def _parse_label(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        label = _parse_label(d.pop("label", UNSET))
 
         def _parse_max_length(data: object) -> Union[None, Unset, int]:
             if data is None:
@@ -96,7 +134,9 @@ class ParamSpecString:
 
         param_spec_string = cls(
             default=default,
+            description=description,
             enum_values=enum_values,
+            label=label,
             max_length=max_length,
             pattern=pattern,
         )
