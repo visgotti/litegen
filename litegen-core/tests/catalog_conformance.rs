@@ -277,3 +277,137 @@ fn bedrock_nova_reel_duration_matches_the_text_video_task() {
         other => panic!("nova-reel duration_seconds is {other:?}"),
     }
 }
+
+// ─── 3D family conformance ──────────────────────────────────────────────────
+//
+// No vendor 3D adapters ship yet, so these assert the family's structural
+// contract across every advertised model3d row rather than vendor-specific ids.
+// They gain subjects, not new code, when Meshy/Tripo3D land.
+
+use litegen::capabilities::MediaType;
+
+fn model3d_models(reg: &CapabilityRegistry) -> Vec<&litegen::capabilities::ModelSchema> {
+    reg.all().filter(|m| m.media_type == MediaType::Model3d).collect()
+}
+
+#[test]
+fn every_3d_model_declares_at_least_one_generation_mode() {
+    let reg = registry();
+    let models = model3d_models(&reg);
+    assert!(!models.is_empty(), "the catalog advertises no model3d models");
+    for m in models {
+        let c = &m.capabilities;
+        assert!(
+            c.text_to_3d || c.image_to_3d || c.multiview_to_3d,
+            "{} is media_type model3d but advertises no 3D generation mode — \
+             a client filtering on capabilities would never offer it",
+            m.id
+        );
+    }
+}
+
+#[test]
+fn every_3d_model_advertising_image_modes_declares_the_matching_ref_roles() {
+    // Mode is INFERRED from reference roles, never passed explicitly, so a model
+    // claiming image_to_3d with no `init` role can never actually be driven in
+    // that mode.
+    let reg = registry();
+    for m in model3d_models(&reg) {
+        if m.capabilities.image_to_3d {
+            let roles = m.ref_inputs.as_ref().map(|r| &r.roles);
+            assert!(
+                roles.is_some_and(|r| r.contains_key("init")),
+                "{} advertises image_to_3d but declares no `init` ref role",
+                m.id
+            );
+        }
+        if m.capabilities.multiview_to_3d {
+            let roles = m.ref_inputs.as_ref().expect("multiview model needs ref_inputs");
+            let views = roles.roles.keys().filter(|k| k.starts_with("view-")).count();
+            assert!(
+                views >= 2,
+                "{} advertises multiview_to_3d but declares {} view-* roles; \
+                 multiview needs at least two",
+                m.id, views
+            );
+        }
+    }
+}
+
+#[test]
+fn model3d_enum_vocabularies_match_the_documented_vendor_sets() {
+    // Values transcribed from the design spec §9 vendor tables. If a future
+    // catalog row advertises something outside these, either the vendor moved
+    // or the row is wrong — either way, re-verify before widening this list.
+    let reg = registry();
+    for m in model3d_models(&reg) {
+        if let Some(ParamSpec::String(s)) = m.params.get("topology") {
+            for v in &s.enum_values {
+                assert!(
+                    matches!(v.as_str(), "triangle" | "quad"),
+                    "{}: topology '{}' is outside the documented set {{triangle, quad}}",
+                    m.id, v
+                );
+            }
+        }
+        if let Some(ParamSpec::String(s)) = m.params.get("symmetry") {
+            for v in &s.enum_values {
+                assert!(
+                    matches!(v.as_str(), "off" | "auto" | "on"),
+                    "{}: symmetry '{}' is outside the documented set {{off, auto, on}}",
+                    m.id, v
+                );
+            }
+        }
+        if let Some(ParamSpec::String(s)) = m.params.get("output_format") {
+            assert!(!s.enum_values.is_empty(), "{}: output_format declares no values", m.id);
+            for v in &s.enum_values {
+                assert!(
+                    matches!(v.as_str(), "glb" | "obj" | "fbx" | "usdz" | "stl" | "3mf"),
+                    "{}: output_format '{}' is not a mesh container litegen supports",
+                    m.id, v
+                );
+            }
+            assert!(
+                s.enum_values.iter().any(|v| v == "glb"),
+                "{}: every 3D model must be able to emit glb — it is the only \
+                 self-contained format the dashboard viewer and the SDK assume",
+                m.id
+            );
+        }
+    }
+}
+
+#[test]
+fn no_3d_model_advertises_image_or_video_only_params() {
+    // A 3D row carrying `size`/`fps`/`duration_seconds` would render nonsense
+    // controls in the Playground and in any schema-driven client panel.
+    let reg = registry();
+    for m in model3d_models(&reg) {
+        for forbidden in ["size", "fps", "duration_seconds", "aspect_ratio"] {
+            assert!(
+                !m.params.contains_key(forbidden),
+                "{} is a 3D model but advertises the {} param",
+                m.id, forbidden
+            );
+        }
+    }
+}
+
+#[test]
+fn target_polycount_bounds_are_sane_where_declared() {
+    let reg = registry();
+    for m in model3d_models(&reg) {
+        if let Some(ParamSpec::Int(i)) = m.params.get("target_polycount") {
+            let (min, max) = (i.min.unwrap_or(0), i.max.unwrap_or(i64::MAX));
+            assert!(min > 0, "{}: target_polycount min must be positive, got {}", m.id, min);
+            assert!(max > min, "{}: target_polycount max {} <= min {}", m.id, max, min);
+            assert!(
+                max <= 10_000_000,
+                "{}: target_polycount max {} is implausible; no phase-1 vendor \
+                 accepts anything near it (Meshy tops out at 300k)",
+                m.id, max
+            );
+        }
+    }
+}
