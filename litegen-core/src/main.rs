@@ -192,6 +192,10 @@ async fn main() -> anyhow::Result<()> {
         registry.clone(),
         secrets_key,
         config.mode,
+        // Share the router's store rather than building a second instance: the
+        // local (no-S3) backend keeps bytes in a process-global map that both
+        // the router and poller paths must agree on.
+        router.model3d_store.clone(),
         poller_shutdown,
     );
 
