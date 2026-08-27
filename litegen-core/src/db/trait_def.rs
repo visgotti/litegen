@@ -57,6 +57,15 @@ pub trait DatabaseStore: Send + Sync {
         completed_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<(), sqlx::Error>;
 
+    /// Replace a generation's `metadata` JSON blob. Used by the 3D path to
+    /// persist the re-hosted asset list; `metadata` is already a nullable TEXT
+    /// column in both backends, so this needs no migration.
+    async fn update_generation_metadata(
+        &self,
+        id: &str,
+        metadata: &serde_json::Value,
+    ) -> Result<(), sqlx::Error>;
+
     /// Fetch a generation by its local ID.
     async fn get_generation(&self, id: &str) -> Result<Option<Generation>, sqlx::Error>;
 
