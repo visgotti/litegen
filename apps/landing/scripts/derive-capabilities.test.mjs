@@ -7,7 +7,7 @@ test('text-only model yields text vocab, image output', () => {
     { provider: 'recraft', media_type: 'image', capabilities: { supports_text_to_image: true, supports_image_to_image: false, max_images: 1 } },
   ]);
   assert.deepEqual(caps.recraft.inputs, { text: true, image: false, multi: false });
-  assert.deepEqual(caps.recraft.outputs, { image: true, video: false });
+  assert.deepEqual(caps.recraft.outputs, { image: true, video: false, model3d: false });
 });
 
 test('single-ref model yields text+image', () => {
@@ -30,14 +30,31 @@ test('union is taken across a provider\'s models; a provider with image + video 
     { provider: 'luma', media_type: 'video', capabilities: { supports_text_to_video: true, supports_image_to_video: true, supports_first_frame: true, supports_last_frame: true, max_images: 2 } },
   ]);
   assert.deepEqual(caps.luma.inputs, { text: true, image: true, multi: true });
-  assert.deepEqual(caps.luma.outputs, { image: true, video: true });
+  assert.deepEqual(caps.luma.outputs, { image: true, video: true, model3d: false });
 });
 
 test('a video-only provider outputs video, not image', () => {
   const caps = deriveCapabilities([
     { provider: 'pixverse', media_type: 'video', capabilities: { supports_text_to_video: true, supports_image_to_video: true, max_images: 1 } },
   ]);
-  assert.deepEqual(caps.pixverse.outputs, { image: false, video: true });
+  assert.deepEqual(caps.pixverse.outputs, { image: false, video: true, model3d: false });
+});
+
+test('a model3d model sets the model3d output flag and text vocab', () => {
+  const caps = deriveCapabilities([
+    { provider: 'mock', media_type: 'model3d', capabilities: { supports_text_to_3d: true, supports_image_to_3d: true, max_images: 1 } },
+  ]);
+  assert.deepEqual(caps.mock.outputs, { image: false, video: false, model3d: true });
+  assert.equal(caps.mock.inputs.text, true);
+});
+
+test('union across image, video, and model3d models yields all three outputs', () => {
+  const caps = deriveCapabilities([
+    { provider: 'mock', media_type: 'image', capabilities: { supports_text_to_image: true, max_images: 1 } },
+    { provider: 'mock', media_type: 'video', capabilities: { supports_text_to_video: true, max_images: 1 } },
+    { provider: 'mock', media_type: 'model3d', capabilities: { supports_text_to_3d: true, max_images: 1 } },
+  ]);
+  assert.deepEqual(caps.mock.outputs, { image: true, video: true, model3d: true });
 });
 
 test('first_frame counts as an accepted reference image', () => {

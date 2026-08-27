@@ -21,14 +21,17 @@ export interface ModelEntry {
   provider: string;
   displayName: string;
   description: string;
-  mediaType: 'image' | 'video';
-  output: 'image' | 'video';
+  mediaType: 'image' | 'video' | 'model3d';
+  output: 'image' | 'video' | 'model3d';
   capabilities: {
     textToImage: boolean;
     imageToImage: boolean;
     inpainting: boolean;
     textToVideo: boolean;
     imageToVideo: boolean;
+    textTo3d: boolean;
+    imageTo3d: boolean;
+    multiviewTo3d: boolean;
   };
   sizes: string[];
   aspectRatios: string[];
@@ -55,7 +58,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -120,7 +126,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -149,7 +158,7 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 6,
         "min": 6,
-        "max": 120
+        "max": 6
       },
       {
         "name": "fps",
@@ -187,7 +196,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -233,7 +245,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -271,7 +286,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -326,7 +344,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -381,7 +402,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -426,7 +450,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -472,7 +499,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -540,7 +570,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -609,7 +642,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -647,7 +683,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -693,7 +732,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -745,7 +787,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -797,7 +842,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -849,7 +897,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -895,7 +946,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -937,7 +991,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -993,7 +1050,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -1049,7 +1109,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -1101,7 +1164,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -1149,7 +1215,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -1198,7 +1267,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -1246,7 +1318,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -1295,7 +1370,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -1362,7 +1440,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -1428,7 +1509,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -1494,7 +1578,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -1543,8 +1630,11 @@ export const MODELS: ModelEntry[] = [
       "textToImage": false,
       "imageToImage": false,
       "inpainting": false,
-      "textToVideo": true,
-      "imageToVideo": true
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -1552,8 +1642,8 @@ export const MODELS: ModelEntry[] = [
     "refRoles": [
       {
         "name": "first_frame",
-        "required": false,
-        "min": 0,
+        "required": true,
+        "min": 1,
         "max": 1
       }
     ],
@@ -1575,7 +1665,6 @@ export const MODELS: ModelEntry[] = [
       "baseCostUsd": 0.5
     },
     "tags": [
-      "text-to-video",
       "image-to-video"
     ],
     "referenceUrl": "https://www.tencentcloud.com/document/product/1284/74915"
@@ -1592,7 +1681,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -1673,7 +1765,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -1754,7 +1849,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -1835,7 +1933,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -1879,7 +1980,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -1931,7 +2035,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -1992,7 +2099,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -2053,7 +2163,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -2109,7 +2222,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -2163,7 +2279,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -2218,7 +2337,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -2273,7 +2395,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -2333,7 +2458,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -2398,7 +2526,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -2464,7 +2595,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -2533,7 +2667,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -2603,7 +2740,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -2662,7 +2802,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -2727,7 +2870,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -2775,7 +2921,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -2837,7 +2986,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -2898,7 +3050,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -2945,7 +3100,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -2984,7 +3142,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": true,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [
       "1024x1024",
@@ -3046,7 +3207,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -3089,7 +3253,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -3147,7 +3314,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -3207,7 +3377,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -3282,7 +3455,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -3357,7 +3533,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -3432,7 +3611,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [
       "1024x1024",
@@ -3496,7 +3678,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [
       "1024x1024",
@@ -3564,7 +3749,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [
       "1024x1024",
@@ -3630,7 +3818,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [
       "1024x1024",
@@ -3698,7 +3889,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [
       "1024x1024",
@@ -3766,7 +3960,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -3838,7 +4035,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -3903,7 +4103,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -3961,7 +4164,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -4027,7 +4233,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -4091,7 +4300,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
@@ -4147,7 +4359,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -4200,7 +4415,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -4254,7 +4472,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -4315,7 +4536,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -4376,7 +4600,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -4453,7 +4680,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -4519,7 +4749,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -4564,7 +4797,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": true,
       "inpainting": true,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [
       "512x512",
@@ -4638,7 +4874,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": false
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -4692,7 +4931,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -4766,7 +5008,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [
@@ -4839,7 +5084,10 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": false,
-      "imageToVideo": true
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [

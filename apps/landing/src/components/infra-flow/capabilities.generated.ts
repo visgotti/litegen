@@ -6,26 +6,27 @@ export interface ProviderCapability {
   /** accepted input packet shapes (Core-3) */
   inputs: { text: boolean; image: boolean; multi: boolean };
   /** output modalities this provider can produce (many do both) */
-  outputs: { image: boolean; video: boolean };
+  outputs: { image: boolean; video: boolean; model3d: boolean };
 }
 
 export const PROVIDER_CAPABILITIES: Record<string, ProviderCapability> = {
-  "bedrock": { provider: "bedrock", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true } },
-  "bfl": { provider: "bfl", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: false } },
-  "bytedance": { provider: "bytedance", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
-  "fal": { provider: "fal", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true } },
-  "google": { provider: "google", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
-  "hunyuan": { provider: "hunyuan", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true } },
-  "ideogram": { provider: "ideogram", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: false } },
-  "kling": { provider: "kling", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
-  "leonardo": { provider: "leonardo", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true } },
-  "luma": { provider: "luma", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
-  "minimax": { provider: "minimax", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
-  "openai": { provider: "openai", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
-  "pixverse": { provider: "pixverse", inputs: { text: true, image: true, multi: true }, outputs: { image: false, video: true } },
-  "recraft": { provider: "recraft", inputs: { text: true, image: false, multi: false }, outputs: { image: true, video: false } },
-  "replicate": { provider: "replicate", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true } },
-  "runway": { provider: "runway", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
-  "stability": { provider: "stability", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: false } },
-  "vidu": { provider: "vidu", inputs: { text: true, image: true, multi: true }, outputs: { image: false, video: true } },
+  "bedrock": { provider: "bedrock", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true, model3d: false } },
+  "bfl": { provider: "bfl", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: false, model3d: false } },
+  "bytedance": { provider: "bytedance", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true, model3d: false } },
+  "fal": { provider: "fal", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true, model3d: false } },
+  "google": { provider: "google", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true, model3d: false } },
+  "hunyuan": { provider: "hunyuan", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true, model3d: false } },
+  "ideogram": { provider: "ideogram", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: false, model3d: false } },
+  "kling": { provider: "kling", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true, model3d: false } },
+  "leonardo": { provider: "leonardo", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true, model3d: false } },
+  "luma": { provider: "luma", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true, model3d: false } },
+  "minimax": { provider: "minimax", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true, model3d: false } },
+  "mock": { provider: "mock", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true, model3d: true } },
+  "openai": { provider: "openai", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true, model3d: false } },
+  "pixverse": { provider: "pixverse", inputs: { text: true, image: true, multi: true }, outputs: { image: false, video: true, model3d: false } },
+  "recraft": { provider: "recraft", inputs: { text: true, image: false, multi: false }, outputs: { image: true, video: false, model3d: false } },
+  "replicate": { provider: "replicate", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true, model3d: false } },
+  "runway": { provider: "runway", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true, model3d: false } },
+  "stability": { provider: "stability", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: false, model3d: false } },
+  "vidu": { provider: "vidu", inputs: { text: true, image: true, multi: true }, outputs: { image: false, video: true, model3d: false } },
 };
