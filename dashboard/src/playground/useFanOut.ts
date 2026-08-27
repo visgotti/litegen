@@ -31,11 +31,13 @@ export function useFanOut(): FanOut {
     abortRef.current = ctrl;
     setRunning(true);
 
-    // One tile per (model × n). 3D requests don't carry `n` (one mesh per job),
-    // so the loop naturally yields a single tile for them.
+    // One tile per (model × n). `n` is meaningless for a mesh — the backend
+    // bills a 3D job flat per generation regardless of the field (same
+    // precedent as video) — so clamp to a single tile rather than seeding N
+    // duplicate viewers for one job.
     const initial: ResultTileState[] = [];
     for (const { modelId, mediaType, request } of requests) {
-      const n = (request as { n?: number }).n ?? 1;
+      const n = mediaType === 'model3d' ? 1 : (request as { n?: number }).n ?? 1;
       for (let i = 0; i < n; i++) {
         initial.push({ key: `${modelId}#${i}`, modelId, index: i, status: 'queued', mediaType, request });
       }
@@ -121,7 +123,11 @@ export function useFanOut(): FanOut {
   const cancel = () => {
     abortRef.current?.abort();
     setRunning(false);
-    setTiles(prev => prev.map(t => (t.status === 'queued' || t.status === 'running'
+    // 'polling' is a live-job state introduced for 3D (queued/running never
+    // reach a server job); it must be swept here too or a tile mid-poll when
+    // Cancel is hit shows "generating… X%" forever, since the aborted branch
+    // in the worker itself bare-returns rather than patching status.
+    setTiles(prev => prev.map(t => (t.status === 'queued' || t.status === 'running' || t.status === 'polling'
       ? { ...t, status: 'error', error: 'cancelled' } : t)));
   };
 
