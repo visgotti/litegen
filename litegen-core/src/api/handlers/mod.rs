@@ -744,12 +744,31 @@ pub async fn get_3d_status(
     }
 
     match state.router.get_model3d_status(&id).await {
-        Ok(resp) => {
+        Ok(mut resp) => {
             // Persist the terminal result so `GET /v1/generations/{id}`, the
             // gallery, and any webhook see the same assets the poller would have
             // written — whichever path observed completion first.
-            if resp.status == GenerationStatus::Completed && !resp.assets.is_empty() {
-                persist_model3d_result(&state, &resp).await;
+            if resp.status == GenerationStatus::Completed {
+                if resp.mesh().is_some() {
+                    persist_model3d_result(&state, &resp).await;
+                } else {
+                    // Contract: a completed 3D generation ALWAYS carries exactly
+                    // one mesh asset. A provider that reports success without one
+                    // has produced a generation the caller paid for and cannot
+                    // use, so this is a failure, not a degraded success — the
+                    // caller refunds on `failed`, and would not on `completed`.
+                    // The poller (Task 11) applies the identical rule when it is
+                    // the path that observes completion first.
+                    let err = "provider reported success without a mesh asset";
+                    tracing::warn!(generation_id = %id, "3d completed without a mesh asset, failing");
+                    let _ = state.db.update_generation_status(
+                        &id, "failed", resp.progress as i32, None,
+                        Some(err), Some(chrono::Utc::now()),
+                    ).await;
+                    resp.status = GenerationStatus::Failed;
+                    resp.error = Some(err.to_string());
+                    resp.assets.clear();
+                }
             } else if resp.status == GenerationStatus::Failed {
                 let _ = state.db.update_generation_status(
                     &id, "failed", resp.progress as i32, None,
@@ -4211,5 +4230,179 @@ mod tenant_scoping_tests {
             .body(Body::from(body)).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED, "single-tenant operator may use internal webhook URLs");
+    }
+}
+
+// ─── get_3d_status: completed-without-mesh must fail, never report success ──
+//
+// The consumer contract is absolute: a `completed` 3D generation ALWAYS
+// carries exactly one mesh asset, because the downstream consumer refunds a
+// slot on `failed` and would NOT on `completed`. A provider that reports
+// success with no files is a contract violation the handler must convert to
+// `failed`, not pass through. `MockModel3dProvider` never produces this state
+// (it always returns files on success), so this needs a purpose-built fake
+// provider — registered via `ProviderRegistry::register_mock_model3d`, which
+// is `#[cfg(test)]`-gated and therefore only reachable from an in-crate unit
+// test (an integration test under `tests/` links the lib WITHOUT `--cfg
+// test` and cannot see it — see `litegen-core/tests/harness/mod.rs` for the
+// `init_from_config` workaround used there, which only ever wires up the
+// real `MockModel3dProvider`).
+#[cfg(test)]
+mod model3d_completion_contract_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::middleware;
+    use tower::ServiceExt;
+    use bytes::Bytes;
+    use crate::api::middleware::auth_middleware;
+    use crate::capabilities::CapabilityRegistry;
+    use crate::config::{AppConfig, CacheGlobalConfig};
+    use crate::db::sqlite::SqliteDatabase;
+    use crate::proxy::cache::GenerationCache;
+    use crate::proxy::materializer::{MaterializeError, Materializer, MaterializedRequest, TempStorage};
+    use crate::proxy::registry::ProviderRegistry;
+    use crate::proxy::router::ProxyRouter;
+    use crate::proxy::storage::LocalStore;
+    use crate::providers::{
+        HealthCheckResult, Model3dExtras, Model3dGenerationHandle, Model3dGenerationPollResult,
+        Model3dProvider, ProviderError, ProviderInstanceConfig,
+    };
+
+    struct NoopStorage;
+
+    #[async_trait::async_trait]
+    impl TempStorage for NoopStorage {
+        async fn put(&self, key: &str, _bytes: Bytes, _ct: &str) -> Result<String, MaterializeError> {
+            Ok(format!("local://{}", key))
+        }
+        async fn delete(&self, _key: &str) -> Result<(), MaterializeError> { Ok(()) }
+    }
+
+    /// Always reports `Completed` with zero files — the exact contract
+    /// violation `get_3d_status` must convert to `failed`.
+    struct NoMeshModel3dProvider;
+
+    #[async_trait::async_trait]
+    impl Model3dProvider for NoMeshModel3dProvider {
+        fn name(&self) -> &str { "mock" }
+        fn configure(&mut self, _config: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+
+        async fn generate(
+            &self,
+            _model: &crate::capabilities::ModelSchema,
+            _base: &BaseGenerationRequest,
+            _extras: &Model3dExtras,
+            _materialized: &MaterializedRequest,
+        ) -> Result<Model3dGenerationHandle, ProviderError> {
+            Ok(Model3dGenerationHandle {
+                provider_job_id: "no-mesh-job-1".to_string(),
+                provider: "mock".to_string(),
+                model: "mock/mesh-3d".to_string(),
+                stage_context: None,
+            })
+        }
+
+        async fn poll_status(
+            &self,
+            _handle: &Model3dGenerationHandle,
+        ) -> Result<Model3dGenerationPollResult, ProviderError> {
+            Ok(Model3dGenerationPollResult {
+                status: GenerationStatus::Completed,
+                progress: 100,
+                files: vec![], // contract violation under test
+                error: None,
+                metadata: Default::default(),
+            })
+        }
+
+        async fn estimate_cost(
+            &self,
+            model: &crate::capabilities::ModelSchema,
+            _request: &Model3dGenerationRequest,
+        ) -> Result<CostEstimate, ProviderError> {
+            Ok(crate::providers::build_cost_estimate(
+                model.pricing.base_cost_usd, 0.0, CostSource::Estimated, None,
+            ))
+        }
+
+        async fn health_check(&self) -> HealthCheckResult {
+            HealthCheckResult { healthy: true, message: "ok".into(), latency_ms: Some(0) }
+        }
+    }
+
+    async fn build_state_with_no_mesh_provider() -> Arc<AppState> {
+        let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.expect("in-memory db"));
+        let provider_registry = Arc::new(ProviderRegistry::new());
+        provider_registry.register_mock_model3d(Arc::new(NoMeshModel3dProvider)).await;
+
+        let config = Arc::new(AppConfig::default());
+        let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig::default()));
+        let image_store = Arc::new(LocalStore);
+        let router = Arc::new(ProxyRouter::new(provider_registry, cache, config, image_store));
+        let materializer = Arc::new(Materializer::new(Arc::new(NoopStorage), reqwest::Client::new()));
+
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.pop(); p.push("models");
+        let cap_registry = Arc::new(CapabilityRegistry::from_dir(&p).expect("load shipped models"));
+
+        Arc::new(AppState {
+            router, db, master_key: None, registry: cap_registry, materializer,
+            rate_limiter: Arc::new(crate::api::middleware::rate_limit::RateLimiter::new()),
+            in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(64)),
+            oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::SingleTenant,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
+            allow_password: true,
+        })
+    }
+
+    fn build_3d_router(state: Arc<AppState>) -> axum::Router {
+        use axum::routing::{get, post};
+        let auth_state = state.clone();
+        axum::Router::new()
+            .route("/v1/models3d/generations", post(generate_3d))
+            .route("/v1/models3d/{id}", get(get_3d_status))
+            .layer(middleware::from_fn(move |req: axum::extract::Request, next: middleware::Next| {
+                let s = auth_state.clone();
+                async move {
+                    let headers = req.headers().clone();
+                    auth_middleware(headers, s, req, next).await
+                }
+            }))
+            .with_state(state)
+    }
+
+    #[tokio::test]
+    async fn completed_without_mesh_is_reported_as_failed_not_completed() {
+        let state = build_state_with_no_mesh_provider().await;
+        let app = build_3d_router(state);
+
+        let resp = app.clone().oneshot(
+            Request::post("/v1/models3d/generations")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"mock/mesh-3d","prompt":"a fox"}"#))
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let submitted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let id = submitted["id"].as_str().unwrap().to_string();
+
+        let resp = app.oneshot(
+            Request::get(format!("/v1/models3d/{id}")).body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let polled: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(polled["status"], "failed", "completed-without-mesh must be reported as failed: {polled}");
+        assert!(
+            polled["error"].as_str().is_some_and(|e| !e.is_empty()),
+            "failed response must carry a non-empty error: {polled}"
+        );
+        assert!(polled.get("assets").is_none(), "a failed generation carries no assets: {polled}");
     }
 }
