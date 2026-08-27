@@ -13,6 +13,7 @@
     "test:e2e:mt": "playwright test --config playwright.multitenant.config.ts"
   },
   "dependencies": {
+    "@google/model-viewer": "^4.3.1",
     "@litegen/sdk": "file:../sdks/typescript",
     "lucide-react": "^1.8.0",
     "react": "^19.2.4",

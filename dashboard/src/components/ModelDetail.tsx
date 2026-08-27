@@ -4,11 +4,13 @@ import type { ModelInfo, ModelSchema } from '@litegen/sdk';
 import { showToast } from './toast-store';
 
 function buildCurl(model: ModelInfo): string {
-  const isVideo = model.media_type === 'video';
-  const endpoint = isVideo ? '/v1/videos/generations' : '/v1/images/generations';
-  const body = isVideo
-    ? { model: model.id, prompt: 'a photo of a cat' }
-    : { model: model.id, prompt: 'a photo of a cat', n: 1 };
+  const endpoint =
+    model.media_type === 'model3d' ? '/v1/models3d/generations'
+    : model.media_type === 'video' ? '/v1/videos/generations'
+    : '/v1/images/generations';
+  const body = model.media_type === 'image'
+    ? { model: model.id, prompt: 'a photo of a cat', n: 1 }
+    : { model: model.id, prompt: 'a photo of a cat' };
   return [
     `curl -X POST $LITEGEN_BASE${endpoint} \\`,
     `  -H "Authorization: Bearer $LITEGEN_KEY" \\`,
