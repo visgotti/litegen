@@ -3,6 +3,7 @@ from enum import Enum
 
 class MediaType(str, Enum):
     IMAGE = "image"
+    MODEL3D = "model3d"
     VIDEO = "video"
 
     def __str__(self) -> str:
