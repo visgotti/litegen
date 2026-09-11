@@ -233,6 +233,21 @@ pub enum GenerationStatus {
     Cancelled,
 }
 
+impl GenerationStatus {
+    /// Whether this status is final: the generation will never change again.
+    ///
+    /// Callers use this to decide whether polling the provider is still
+    /// meaningful. It must stay exhaustive-matched (no `_` arm) so a new status
+    /// forces an explicit decision here rather than silently counting as
+    /// in-flight.
+    pub fn is_terminal(&self) -> bool {
+        match self {
+            Self::Completed | Self::Failed | Self::Cancelled => true,
+            Self::Pending | Self::Processing => false,
+        }
+    }
+}
+
 impl std::fmt::Display for GenerationStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
