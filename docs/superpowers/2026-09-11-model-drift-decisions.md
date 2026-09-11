@@ -96,13 +96,47 @@ vendor's published prices on 2026-09-11.
 | minimax | `MiniMax-H3`, `MiniMax-H3-Max` | MiniMax's current video models; Hailuo is now "legacy" | n (V2 API) | $0.05–0.13/s | - [ ] add later |
 | recraft | `recraftv4_1_vector`, `recraftv4_1_pro_vector`, `recraftv2_vector` | V4.1 SVG output (we only carry V4.1 raster) | y (no `size`) | $0.08 / $0.30 / $0.044 | - [x] added ✅ 2026-09-11 |
 | bytedance | `seedance-1-0-pro-fast-251015`, `dreamina-seedance-2-0-mini-260615`, `seedream-4-5-251128`, `seedream-5-0-lite-260128` | the successors, plus Seedance 2.0 mini | y / partial (2.0 reference roles) | $1 per 1M tokens; $3.5 per 1M; $0.04; $0.035 per image | - [x] added ✅ 2026-09-11 |
-| google | `gemini-omni-1.1-flash` | Google's default video model (GA 2026-08-27) | n (Interactions API) | ≈$0.10/s at 720p | - [ ] add later |
+| google | `gemini-omni-1.1-flash` | Google's default video model (GA 2026-08-27) | n (Interactions API) | ≈$0.10/s at 720p | - [ ] deferred 2026-09-11: needs a core change (see note below) |
 | hunyuan | aiart `SubmitTextToImageJob` | Hunyuan Image 3.0: newer, and 0.2 CNY vs 0.5 CNY | n (aiart service) | 0.2 CNY/image | - [ ] add or replace hunyuan-image |
 | bfl | `flux-2-max`, `flux-2-klein-9b` | FLUX.2 top tier and fast tier | y (same schema as flux-2-pro) | from $0.07/MP; from $0.015 | - [x] added ✅ 2026-09-11 |
 | stability | `sd3.5-medium` | SD 3.5 Medium on the sd3 route | y (`resolve_model` already routes it) | $0.035 | - [x] added ✅ 2026-09-11 |
 | replicate | `black-forest-labs/flux-1.1-pro` | replaces `replicate/flux-pro`: BFL retired FLUX.1 [pro] on its own API | n (one `resolve_model_version` line) | $0.04/image | - [x] added ✅ 2026-09-11 (flux-pro kept) |
 | fal | `fal-ai/flux-2` (FLUX.2 [dev]) | half the price of `fal/flux-dev`; BFL hosts no [dev] | n (one `resolve_endpoint` line; unknown ids fall back to flux/dev) | $0.012/MP | - [x] added ✅ 2026-09-11 |
 | fal | `ltx-2.3/{text,image}-to-video` or `ltx-video-13b-distilled` | successors for `fal/video`'s LTX endpoints | n (new endpoint specs; LTX-2.3 takes 6/8/10 s) | $0.08/s at 1080p; $0.04/video | - [ ] replace fal/video |
+
+**Why Gemini Omni is deferred (investigated 2026-09-11).** Auth is not the
+problem: the Interactions API takes our `x-goog-api-key`. Neither way it
+returns the video fits the proxy today.
+
+1. **The synchronous call** (Google's documented path) blocks until the
+   video is done, which can take minutes, and 4K takes longer.
+   - The router wraps every video `generate()` in a hard 120 s timeout and
+     retries a timeout twice (`proxy/router.rs` ~L476-503). Each retry is a
+     new generation that Google bills.
+   - With `delivery: "uri"` the result is a gated Files link, which would
+     still need re-hosting.
+2. **Background mode plus polling** returns the video as inline base64 on
+   every GET, but the router (`get_video_status`) and poller forward only
+   `video_url`. `VideoGenerationPollResult.video_data` is silently dropped;
+   Sora's bytes are dropped the same way today. Google's background-execution
+   page doesn't list Omni either, and inline delivery above about 4 MB
+   (>720p) may hit payload limits.
+
+The unblock is one of two core changes:
+
+- **Option A:** re-host `video_data` through `ImageStore` in
+  `get_video_status` and the poller, the way `build_image_results` stores
+  images. This also fixes Sora.
+- **Option B:** give video submits a longer, non-retrying timeout per model.
+
+Request shape, for whoever builds it:
+- `model`, and `input` as a string or `{type: image | text}` parts.
+- `response_format` of `{type: video}` with `aspect_ratio` (16:9 or 9:16),
+  `resolution` (360p, 720p, 1080p or 4k), `duration` (`"Ns"`, 3–10) and
+  `delivery`.
+- Status lives in `in_progress | queued | completed | failed | …`.
+- Sources: https://ai.google.dev/gemini-api/docs/omni and
+  https://ai.google.dev/static/api/interactions.openapi.json.
 
 ## 4. Price drift on carried models
 
@@ -211,3 +245,10 @@ given here.
   are priced per megapixel, so a 4 MP image costs us 4× its catalog price.
 - **Dead code:** the `sd-1.6` arm in `image/stability.rs` targets an API
   discontinued 2025-07-24.
+- **Inline video bytes are dropped.** `VideoGenerationPollResult.video_data`
+  is never read by `router.rs get_video_status` or the poller, which forward
+  only `video_url`. Found 2026-09-11; it affects Sora today.
+- **A timed-out video submit is retried as a new billed generation.** The
+  router's hard 120 s timeout plus up to 2 retries is harmless for fast
+  async submits, but double-bills any submit that runs long. Found
+  2026-09-11.
