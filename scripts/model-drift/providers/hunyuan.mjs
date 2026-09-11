@@ -12,11 +12,18 @@
 //   vclm-hunyuan-video  index: the SubmitHunyuanToVideoJob request struct and
 //                   the DescribeHunyuanToVideoJob response struct (our video
 //                   action's contract)
+//   vclm-image-to-video-general  index: the SubmitImageToVideoGeneralJob request
+//                   struct and the DescribeImageToVideoGeneralJob response
+//                   struct (hunyuan-video-i2v's contract)
 //   hunyuan-models  index: the SubmitHunyuanImageJob request struct
+//   aiart-hunyuan-image-3  index: the SubmitTextToImageJob request struct and
+//                   the QueryTextToImageJob response struct (Hunyuan Image 3.0)
 // Mapping mirrors litegen-core/src/providers/image/hunyuan.rs (action
-// SubmitHunyuanImageJob, no model field) and video/hunyuan.rs (action
-// SubmitHunyuanToVideoJob, Tencent's native Hunyuan video model, no model
-// field). Until 2026-09-11 hunyuan-video called SubmitImageToVideoJob with
+// SubmitHunyuanImageJob on hunyuan, or SubmitTextToImageJob on aiart for
+// hunyuan-image-3; no model field) and video/hunyuan.rs (action
+// SubmitHunyuanToVideoJob, Tencent's native Hunyuan video model, or
+// SubmitImageToVideoGeneralJob for hunyuan-video-i2v; no model field). Until
+// 2026-09-11 hunyuan-video called SubmitImageToVideoJob with
 // `Model: "Kling-V1-6"`, i.e. Kling 1.6 resold through Tencent Cloud.
 
 const SDK = 'https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud';
@@ -46,7 +53,9 @@ export default {
   provider: 'hunyuan',
   models: {
     'hunyuan/hunyuan-image': 'SubmitHunyuanImageJob',
+    'hunyuan/hunyuan-image-3': 'SubmitTextToImageJob',
     'hunyuan/hunyuan-video': 'SubmitHunyuanToVideoJob',
+    'hunyuan/hunyuan-video-i2v': 'SubmitImageToVideoGeneralJob',
   },
   sources: [
     { key: 'hunyuan-client', url: `${SDK}/hunyuan/v20230901/client.go`, expect: 'text', extract: submitJobs },
@@ -69,6 +78,15 @@ export default {
         goStruct(go, 'SubmitHunyuanToVideoJobRequestParams') + '\n' + goStruct(go, 'DescribeHunyuanToVideoJobResponseParams'),
     },
     {
+      key: 'vclm-image-to-video-general',
+      index: true,
+      url: `${SDK}/vclm/v20240523/models.go`,
+      expect: 'text',
+      extract: (go) => [...goStruct(go, 'SubmitImageToVideoGeneralJobRequestParams').matchAll(/^\t(\w+) /gm)].map((m) => m[1]),
+      snapshot: (go) =>
+        goStruct(go, 'SubmitImageToVideoGeneralJobRequestParams') + '\n' + goStruct(go, 'DescribeImageToVideoGeneralJobResponseParams'),
+    },
+    {
       key: 'hunyuan-models',
       index: true,
       url: `${SDK}/hunyuan/v20230901/models.go`,
@@ -76,9 +94,15 @@ export default {
       extract: (go) => [...goStruct(go, 'SubmitHunyuanImageJobRequestParams').matchAll(/^\t(\w+) /gm)].map((m) => m[1]),
       snapshot: (go) => goStruct(go, 'SubmitHunyuanImageJobRequestParams'),
     },
+    {
+      key: 'aiart-hunyuan-image-3',
+      index: true,
+      url: `${SDK}/aiart/v20221229/models.go`,
+      expect: 'text',
+      extract: (go) => [...goStruct(go, 'SubmitTextToImageJobRequestParams').matchAll(/^\t(\w+) /gm)].map((m) => m[1]),
+      snapshot: (go) => goStruct(go, 'SubmitTextToImageJobRequestParams') + '\n' + goStruct(go, 'QueryTextToImageJobResponseParams'),
+    },
   ],
-  // Left visible on purpose (add later): SubmitTextToImageJob (aiart, Hunyuan
-  // Image 3.0) and SubmitImageToVideoGeneralJob.
   acknowledged: [
     ...skip('Kling/Vidu resale action on vclm; we integrate Kling and Vidu directly', [
       'SubmitImageToVideoJob',

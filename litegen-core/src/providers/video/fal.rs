@@ -1,7 +1,7 @@
 // Fal.ai video generation provider
 // API Reference: https://docs.fal.ai/model-apis/model-endpoints/queue
 // Queue API: POST https://queue.fal.run/{endpoint} → poll status → fetch result
-// Supported models: Kling, MiniMax/Hailuo, AnimateDiff, SVD, LTX Video
+// Supported models: Kling, MiniMax/Hailuo, AnimateDiff, SVD, LTX Video, LTX-2.3
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -19,7 +19,7 @@ use crate::types::*;
 /// Fal.ai video generation provider.
 ///
 /// Routes to model-specific Fal endpoints for Kling, MiniMax, AnimateDiff,
-/// Stable Video Diffusion, and LTX Video.
+/// Stable Video Diffusion, LTX Video and LTX-2.3.
 ///
 /// @see <https://docs.fal.ai/model-apis/model-endpoints/queue> — asynchronous queue API (submit → status → result)
 /// @see <https://fal.ai/models> — per-model API pages documenting each endpoint's input schema
@@ -33,8 +33,8 @@ pub struct FalVideoProvider {
 ///
 /// fal endpoints are per-model, and their schemas differ sharply — sending a
 /// field the schema does not define is not harmless. `fal-ai/stable-video` has
-/// no `prompt` at all; only the Kling endpoints take `duration`; none of the
-/// endpoints we map take `aspect_ratio`.
+/// no `prompt` at all; only the Kling and LTX-2.3 endpoints take `duration`;
+/// only LTX-2.3 takes `aspect_ratio`, `resolution` and `fps`.
 ///
 /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id={id}>
 ///   — each endpoint publishes its own OpenAPI document.
@@ -47,6 +47,22 @@ struct EndpointSpec {
     supports_prompt: bool,
     supports_duration: bool,
     supports_aspect_ratio: bool,
+    /// The discrete `duration` values (seconds) the endpoint accepts, sent as
+    /// an integer; any other value is rejected before submitting. Empty =
+    /// forward `duration_seconds` unchanged (when `supports_duration`).
+    duration_values: &'static [u32],
+    /// Whether the endpoint takes `resolution` (forwarded as given).
+    supports_resolution: bool,
+    /// The `fps` values the endpoint accepts; any other value is rejected
+    /// before submitting. Empty = the endpoint takes no `fps`.
+    fps_values: &'static [u32],
+    /// fal reports a failed request as `COMPLETED` with an `error` message
+    /// ("present only if the request failed (only when `COMPLETED`)"; there
+    /// is no FAILED status). When set, such a job — and a `COMPLETED` result
+    /// without a video URL — is reported as failed, not completed without
+    /// output. Off for the older arms, whose behavior is unchanged.
+    /// @see <https://docs.fal.ai/model-apis/model-endpoints/queue.md> (status response fields)
+    strict_completion: bool,
 }
 
 impl FalVideoProvider {
@@ -89,6 +105,10 @@ impl FalVideoProvider {
                 supports_prompt: true,
                 supports_duration: true,
                 supports_aspect_ratio: false,
+                duration_values: &[],
+                supports_resolution: false,
+                fps_values: &[],
+                strict_completion: false,
             },
             // Kling Video v1.5 pro — higher quality, longer duration.
             "fal/kling-pro" | "fal-kling-pro" => EndpointSpec {
@@ -97,6 +117,10 @@ impl FalVideoProvider {
                 supports_prompt: true,
                 supports_duration: true,
                 supports_aspect_ratio: false,
+                duration_values: &[],
+                supports_resolution: false,
+                fps_values: &[],
+                strict_completion: false,
             },
             // MiniMax Video — image-to-video.
             "fal/minimax" | "fal-minimax" => EndpointSpec {
@@ -105,6 +129,10 @@ impl FalVideoProvider {
                 supports_prompt: true,
                 supports_duration: false,
                 supports_aspect_ratio: false,
+                duration_values: &[],
+                supports_resolution: false,
+                fps_values: &[],
+                strict_completion: false,
             },
             // MiniMax Hailuo (Video-01-Live) — image-to-video.
             "fal/minimax-hailuo" | "fal-minimax-hailuo" => EndpointSpec {
@@ -113,6 +141,10 @@ impl FalVideoProvider {
                 supports_prompt: true,
                 supports_duration: false,
                 supports_aspect_ratio: false,
+                duration_values: &[],
+                supports_resolution: false,
+                fps_values: &[],
+                strict_completion: false,
             },
             // AnimateDiff Turbo — text-to-video; takes num_frames/fps/video_size,
             // none of which map onto our unified extras.
@@ -122,6 +154,10 @@ impl FalVideoProvider {
                 supports_prompt: true,
                 supports_duration: false,
                 supports_aspect_ratio: false,
+                duration_values: &[],
+                supports_resolution: false,
+                fps_values: &[],
+                strict_completion: false,
             },
             // Stable Video Diffusion — image-only; its schema is
             // [cond_aug, fps, seed, motion_bucket_id, image_url] with no prompt.
@@ -131,6 +167,28 @@ impl FalVideoProvider {
                 supports_prompt: false,
                 supports_duration: false,
                 supports_aspect_ratio: false,
+                duration_values: &[],
+                supports_resolution: false,
+                fps_values: &[],
+                strict_completion: false,
+            },
+            // LTX-2.3 (Pro). Text-to-video, or image-to-video (which requires
+            // `image_url`) when a start frame is supplied. Both take prompt,
+            // duration (integer enum 6 | 8 | 10), resolution (1080p | 1440p |
+            // 2160p), aspect_ratio (16:9 | 9:16; i2v also `auto`), fps (24 |
+            // 25 | 48 | 50) and generate_audio — no seed. Output: `video.url`.
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-2.3/text-to-video>
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-2.3/image-to-video>
+            "fal/ltx-2.3" => EndpointSpec {
+                text_to_video: "fal-ai/ltx-2.3/text-to-video",
+                image_to_video: "fal-ai/ltx-2.3/image-to-video",
+                supports_prompt: true,
+                supports_duration: true,
+                supports_aspect_ratio: true,
+                duration_values: &[6, 8, 10],
+                supports_resolution: true,
+                fps_values: &[24, 25, 48, 50],
+                strict_completion: true,
             },
             // LTX Video — the base endpoint is text-to-video only and has no
             // `image_url`; image-to-video is a separate endpoint.
@@ -140,8 +198,27 @@ impl FalVideoProvider {
                 supports_prompt: true,
                 supports_duration: false,
                 supports_aspect_ratio: false,
+                duration_values: &[],
+                supports_resolution: false,
+                fps_values: &[],
+                strict_completion: false,
             },
         }
+    }
+
+    /// `value` as one of an endpoint's discrete integer values, or an
+    /// InvalidRequest naming the accepted set (the catalog can only express a
+    /// range, so e.g. 7 s passes validation for a 6 | 8 | 10 endpoint).
+    fn one_of(model: &str, param: &str, value: f64, allowed: &[u32]) -> Result<u32, ProviderError> {
+        allowed
+            .iter()
+            .copied()
+            .find(|&v| f64::from(v) == value)
+            .ok_or_else(|| {
+                ProviderError::InvalidRequest(format!(
+                    "{model} takes {param} one of {allowed:?}; got {value}"
+                ))
+            })
     }
 }
 
@@ -206,7 +283,23 @@ impl VideoProvider for FalVideoProvider {
         }
 
         if spec.supports_duration && extras.duration_seconds > 0.0 {
-            body["duration"] = json!(extras.duration_seconds);
+            body["duration"] = if spec.duration_values.is_empty() {
+                json!(extras.duration_seconds)
+            } else {
+                json!(Self::one_of(&model.id, "duration", extras.duration_seconds, spec.duration_values)?)
+            };
+        }
+
+        if spec.supports_resolution {
+            if let Some(r) = extras.resolution.as_deref() {
+                body["resolution"] = Value::String(r.to_string());
+            }
+        }
+
+        if !spec.fps_values.is_empty() {
+            if let Some(fps) = extras.fps {
+                body["fps"] = json!(Self::one_of(&model.id, "fps", f64::from(fps), spec.fps_values)?);
+            }
         }
 
         if spec.supports_aspect_ratio {
@@ -349,6 +442,24 @@ impl VideoProvider for FalVideoProvider {
             _ => GenerationStatus::Pending,
         };
 
+        let strict = Self::resolve_spec(&handle.model).strict_completion;
+        if strict && status == GenerationStatus::Completed {
+            if let Some(err) = data["error"].as_str() {
+                return Ok(VideoGenerationPollResult {
+                    status: GenerationStatus::Failed,
+                    progress: 0,
+                    video_url: None,
+                    video_data: None,
+                    content_type: None,
+                    error: Some(match data["error_type"].as_str() {
+                        Some(kind) => format!("{err} ({kind})"),
+                        None => err.to_string(),
+                    }),
+                    metadata: HashMap::new(),
+                });
+            }
+        }
+
         // If completed, fetch the result
         if status == GenerationStatus::Completed {
             let response_url = if let Some(url) = job_data["response_url"].as_str() {
@@ -391,6 +502,18 @@ impl VideoProvider for FalVideoProvider {
                 })
                 .or_else(|| result["output"]["url"].as_str())
                 .map(String::from);
+
+            if video_url.is_none() && strict {
+                return Ok(VideoGenerationPollResult {
+                    status: GenerationStatus::Failed,
+                    progress: 0,
+                    video_url: None,
+                    video_data: None,
+                    content_type: None,
+                    error: Some(format!("fal reported COMPLETED but the result has no video URL: {result}")),
+                    metadata: HashMap::new(),
+                });
+            }
 
             return Ok(VideoGenerationPollResult {
                 status: GenerationStatus::Completed,
@@ -696,5 +819,195 @@ mod tests {
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
         assert!(body.get("prompt").is_none(), "stable-video has no prompt field: {body}");
         assert_eq!(body["image_url"], "https://example.com/frame.png");
+    }
+
+    // ─── LTX-2.3: fal-ai/ltx-2.3/{text,image}-to-video ─────────────────────
+    // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-2.3/text-to-video>
+    // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-2.3/image-to-video>
+
+    const LTX23: &str = "fal/ltx-2.3";
+
+    fn ltx23_extras() -> VideoExtras {
+        VideoExtras {
+            duration_seconds: 8.0,
+            aspect_ratio: Some("9:16".to_string()),
+            resolution: Some("1440p".to_string()),
+            fps: Some(24),
+            extra: Some(json!({ "generate_audio": false })),
+        }
+    }
+
+    fn start_frame() -> crate::proxy::materializer::MaterializedRequest {
+        crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".to_string(),
+                form: crate::proxy::materializer::MaterializedRefForm::Url(
+                    "https://example.com/frame.png".to_string(),
+                ),
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        }
+    }
+
+    /// Mount a submit response for `endpoint` whose status/response URLs point
+    /// back at the mock server, so a later poll stays local.
+    async fn mount_ltx23_submit(server: &MockServer, endpoint: &str) {
+        let base = server.uri();
+        Mock::given(method("POST"))
+            .and(path(format!("/{endpoint}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "request_id": "ltx-1",
+                "status": "IN_QUEUE",
+                "status_url": format!("{base}/{endpoint}/requests/ltx-1/status"),
+                "response_url": format!("{base}/{endpoint}/requests/ltx-1"),
+            })))
+            .mount(server)
+            .await;
+    }
+
+    /// Text-only submit: the t2v endpoint, `Key` auth, and the fields its
+    /// schema defines — duration and fps as integers from their enums.
+    #[tokio::test]
+    async fn ltx_2_3_text_only_submits_to_the_text_to_video_endpoint() {
+        let server = MockServer::start().await;
+        mount_ltx23_submit(&server, "fal-ai/ltx-2.3/text-to-video").await;
+
+        let provider = make_provider(&server.uri());
+        let handle = provider
+            .generate(&ref_schema(LTX23), &make_base("a lighthouse in a storm", LTX23), &ltx23_extras(), &empty_materialized())
+            .await
+            .expect("generate");
+        assert_eq!(handle.model, LTX23);
+        let job: Value = serde_json::from_str(&handle.provider_job_id).unwrap();
+        assert_eq!(job["endpoint"], "fal-ai/ltx-2.3/text-to-video");
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].url.path(), "/fal-ai/ltx-2.3/text-to-video");
+        assert_eq!(received[0].headers.get("authorization").unwrap(), "Key test-key");
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["prompt"], "a lighthouse in a storm");
+        assert_eq!(body["duration"], json!(8));
+        assert!(body["duration"].is_u64(), "duration is an integer enum: {body}");
+        assert_eq!(body["resolution"], "1440p");
+        assert_eq!(body["aspect_ratio"], "9:16");
+        assert_eq!(body["fps"], json!(24));
+        assert_eq!(body["generate_audio"], json!(false));
+        assert!(body.get("image_url").is_none(), "t2v has no image_url: {body}");
+        assert!(body.get("seed").is_none(), "ltx-2.3 has no seed: {body}");
+    }
+
+    /// A start frame routes to the i2v endpoint as `image_url` (required there).
+    #[tokio::test]
+    async fn ltx_2_3_start_frame_submits_to_the_image_to_video_endpoint() {
+        let server = MockServer::start().await;
+        mount_ltx23_submit(&server, "fal-ai/ltx-2.3/image-to-video").await;
+
+        let provider = make_provider(&server.uri());
+        provider
+            .generate(&ref_schema(LTX23), &make_base("the waves rise", LTX23), &ltx23_extras(), &start_frame())
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].url.path(), "/fal-ai/ltx-2.3/image-to-video");
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["image_url"], "https://example.com/frame.png");
+        assert_eq!(body["prompt"], "the waves rise");
+        assert_eq!(body["duration"], json!(8));
+    }
+
+    /// duration is 6 | 8 | 10 and fps 24 | 25 | 48 | 50; the catalog can only
+    /// express ranges, so the adapter rejects the gaps without calling fal.
+    #[tokio::test]
+    async fn ltx_2_3_rejects_duration_and_fps_outside_their_enums() {
+        let server = MockServer::start().await;
+        mount_ltx23_submit(&server, "fal-ai/ltx-2.3/text-to-video").await;
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema(LTX23);
+
+        let mut odd_duration = ltx23_extras();
+        odd_duration.duration_seconds = 7.0;
+        let mut odd_fps = ltx23_extras();
+        odd_fps.fps = Some(30);
+        for (extras, what) in [(odd_duration, "duration"), (odd_fps, "fps")] {
+            match provider.generate(&schema, &make_base("x", LTX23), &extras, &empty_materialized()).await {
+                Err(ProviderError::InvalidRequest(msg)) => assert!(msg.contains(what), "{msg}"),
+                other => panic!("{what}: expected InvalidRequest, got {other:?}"),
+            }
+        }
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing may be submitted");
+    }
+
+    /// Submit through the ltx-2.3 arm, then mount the given status (and,
+    /// optionally, result) responses for the poll.
+    async fn ltx23_poll(status: Value, result: Option<Value>) -> VideoGenerationPollResult {
+        let server = MockServer::start().await;
+        let endpoint = "fal-ai/ltx-2.3/text-to-video";
+        mount_ltx23_submit(&server, endpoint).await;
+        Mock::given(method("GET"))
+            .and(path(format!("/{endpoint}/requests/ltx-1/status")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(status))
+            .mount(&server)
+            .await;
+        if let Some(result) = result {
+            Mock::given(method("GET"))
+                .and(path(format!("/{endpoint}/requests/ltx-1")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(result))
+                .mount(&server)
+                .await;
+        }
+        let provider = make_provider(&server.uri());
+        let handle = provider
+            .generate(&ref_schema(LTX23), &make_base("x", LTX23), &ltx23_extras(), &empty_materialized())
+            .await
+            .expect("generate");
+        provider.poll_status(&handle).await.expect("poll")
+    }
+
+    #[tokio::test]
+    async fn ltx_2_3_queue_states_map_to_pending_and_processing() {
+        let queued = ltx23_poll(json!({ "status": "IN_QUEUE", "queue_position": 2 }), None).await;
+        assert_eq!(queued.status, GenerationStatus::Pending);
+        let running = ltx23_poll(json!({ "status": "IN_PROGRESS" }), None).await;
+        assert_eq!(running.status, GenerationStatus::Processing);
+        assert!(running.video_url.is_none());
+    }
+
+    /// Success: COMPLETED, then the result's `video.url` (LTXV23…Response).
+    #[tokio::test]
+    async fn ltx_2_3_completed_returns_the_result_video_url() {
+        let done = ltx23_poll(
+            json!({ "status": "COMPLETED" }),
+            Some(json!({ "video": { "url": "https://v3b.fal.media/files/out.mp4", "content_type": "video/mp4" } })),
+        )
+        .await;
+        assert_eq!(done.status, GenerationStatus::Completed);
+        assert_eq!(done.video_url.as_deref(), Some("https://v3b.fal.media/files/out.mp4"));
+    }
+
+    /// fal has no FAILED status: a failed request is COMPLETED with `error`
+    /// (and `error_type`). That must surface as failed with fal's message.
+    #[tokio::test]
+    async fn ltx_2_3_completed_with_an_error_is_failed_with_the_vendor_message() {
+        let failed = ltx23_poll(
+            json!({ "status": "COMPLETED", "error": "Image could not be downloaded", "error_type": "image_load_error" }),
+            None,
+        )
+        .await;
+        assert_eq!(failed.status, GenerationStatus::Failed);
+        let err = failed.error.expect("error message");
+        assert!(err.contains("Image could not be downloaded"), "{err}");
+        assert!(err.contains("image_load_error"), "{err}");
+    }
+
+    /// A COMPLETED result without a video URL is a failure, not an empty success.
+    #[tokio::test]
+    async fn ltx_2_3_completed_without_a_video_url_is_failed() {
+        let empty = ltx23_poll(json!({ "status": "COMPLETED" }), Some(json!({ "video": {} }))).await;
+        assert_eq!(empty.status, GenerationStatus::Failed);
+        assert!(empty.video_url.is_none());
+        assert!(empty.error.expect("error").contains("no video URL"));
     }
 }
