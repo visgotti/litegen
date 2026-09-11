@@ -5,6 +5,7 @@ import GenerationOutput from './GenerationOutput';
 import {
   POLL_INTERVAL_MS,
   httpStatusOf,
+  nextTransientStreak,
   resolvesViaGeneration,
   shouldKeepPolling,
   type PollResult,
@@ -266,6 +267,12 @@ function VisualTab({ artifact }: { artifact: RequestArtifact | null }) {
  * reaches a terminal status. Keyed by id at the call site, so a different
  * artifact mounts fresh state instead of flashing the previous result.
  *
+ * A short streak (`MAX_TRANSIENT_ERROR_STREAK`) of transient errors — 5xx,
+ * timeout, or network error — does not clear `generation` or set `error`: it
+ * only flips `reconnecting`, so the panel keeps showing the last known
+ * result with a muted note instead of discarding minutes of progress over
+ * one hiccup. A 404 keeps its own separate bounded retry.
+ *
  * All setState calls happen after an await and behind an abort check, so
  * nothing updates after unmount; cleanup aborts the in-flight request and
  * clears the pending timer.
@@ -274,11 +281,13 @@ function ResolvedGeneration({ generationId }: { generationId: string }) {
   const [generation, setGeneration] = useState<Generation | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [reconnecting, setReconnecting] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let notFoundStreak = 0;
+    let transientStreak = 0;
 
     const poll = async () => {
       let result: PollResult;
@@ -286,21 +295,26 @@ function ResolvedGeneration({ generationId }: { generationId: string }) {
         const g = await client.generations.get(generationId, controller.signal);
         if (controller.signal.aborted) return;
         notFoundStreak = 0;
+        transientStreak = 0;
         result = { kind: 'generation', status: g.status };
         setGeneration(g);
+        setReconnecting(false);
       } catch (e) {
         if (controller.signal.aborted) return;
         const httpStatus = httpStatusOf(e);
         notFoundStreak = httpStatus === 404 ? notFoundStreak + 1 : 0;
+        transientStreak = nextTransientStreak({ kind: 'error', httpStatus }, transientStreak);
         result = { kind: 'error', httpStatus };
-        if (!shouldKeepPolling(result, notFoundStreak)) {
+        const keepPolling = shouldKeepPolling(result, notFoundStreak, transientStreak);
+        setReconnecting(keepPolling && transientStreak > 0);
+        if (!keepPolling) {
           setError(httpStatus === 404
             ? `No generation record found for ${generationId}.`
             : e instanceof Error ? e.message : String(e));
         }
       }
       setLoading(false);
-      if (shouldKeepPolling(result, notFoundStreak)) {
+      if (shouldKeepPolling(result, notFoundStreak, transientStreak)) {
         timer = setTimeout(poll, POLL_INTERVAL_MS);
       }
     };
@@ -312,7 +326,7 @@ function ResolvedGeneration({ generationId }: { generationId: string }) {
     };
   }, [generationId]);
 
-  return <GenerationOutput generation={generation} loading={loading} error={error} />;
+  return <GenerationOutput generation={generation} loading={loading} error={error} reconnecting={reconnecting} />;
 }
 
 function PromptTab({ artifact }: { artifact: RequestArtifact | null }) {
