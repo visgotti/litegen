@@ -5549,7 +5549,11 @@ verifiable with the dashboard's vitest/build/lint and the landing script tests.
 
 ### Task 17B: Fixes found by the first real-browser run (Storybook pass)
 
-**Status:** ✅ DONE (2026-09-11, 6ae3ade) — corrupt-vs-missing classified via
+**Status:** ✅ DONE (2026-09-11, 6ae3ade + review fixes d3e70c1, d6844f5 — task review
+clean after 2 fix rounds: the timing status is now captured by a
+`PerformanceObserver` created in a layout effect per load, because the global
+resource-timing buffer fills from the dashboard's polling and could also hand
+back a stale 200 from an earlier load) — corrupt-vs-missing classified via
 `PerformanceResourceTiming.responseStatus` (the `error` event's `detail` is
 identical for both in the installed model-viewer, verified in a real
 browser — see `model3d-assets.ts`'s `classifyViewerError`); `ResultTile3D`
