@@ -100,6 +100,41 @@ models:
     extra_allowlist: [imageId, imageType, isPublic]
     tags: [image-to-video, premium]
 
+  # Veo 3.1 Fast: the v1 Veo 3.1 guide covers it with the same request —
+  # "model ... Set to VEO3_1, VEO3_1FAST"; "duration ... Set to 4, 6, or 8"
+  # (range 4-8 advertised; 5 and 7 s will be refused); "resolution ... Set to
+  # RESOLUTION_720 and RESOLUTION_1080". Listed under Video Model IDs but not
+  # yet in the v1 reference's `model` enum.
+  # @see https://docs.leonardo.ai/v1.0/docs/veo-31 (2026-09-11)
+  # @see https://docs.leonardo.ai/v1.0/docs/commonly-used-api-values (2026-09-11)
+  - id: leonardo/veo3.1-fast
+    provider: leonardo
+    media_type: video
+    display_name: Leonardo Veo 3.1 Fast
+    description: Google Veo 3.1 Fast served through Leonardo's first-party API (start-frame image-to-video).
+    pricing: { base_cost_usd: 2.50 }  # price unverified: Leonardo publishes API prices only in its logged-in calculator
+    capabilities: { image_to_video: true }
+    # Veo 3.1 Fast prompt maxLength 9999, duration enum [4, 6, 8] default 8
+    # (Leonardo's model schema, Veo3_1FastGenerate001GenerationRequest).
+    # @see https://docs.leonardo.ai/reference/creategeneration (2026-09-11)
+    prompt: { required: true, max_length: 9999 }
+    params:
+      duration_seconds: { kind: float, min: 4.0, max: 8.0, default: 8.0 }
+      resolution:
+        kind: string
+        enum_values: [720p, 1080p]
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format:
+        form: multipart
+        field_map:
+          first_frame: file
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [imageId, imageType, isPublic]
+    tags: [image-to-video, fast]
+
   - id: leonardo/kling2.1
     provider: leonardo
     media_type: video

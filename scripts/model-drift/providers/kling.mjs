@@ -101,6 +101,9 @@ export default {
     'kling/video-kling-v1-6': 'kling-v1-6',
     'kling/video-kling-v2-5-turbo': 'kling-v2-5-turbo',
     'kling/video-kling-v2-6': 'kling-v2-6',
+    // Image 3.0 and Video 3.0 share the vendor id kling-v3 (different endpoints).
+    'kling/kling-v3': 'kling-v3',
+    'kling/video-kling-v3': 'kling-v3',
   },
   sources: [
     apiPage('images', 'image/2-1/image-generation', 'POST /v1/images/generations'),
@@ -116,7 +119,6 @@ export default {
       extract: /\/document-api\/api\/((?:video|image)\/[\w./-]+?)\.md/g,
     },
   ],
-  // kling-v3 is left unacknowledged on purpose (add later).
   acknowledged: [
     { id: 'kling-v1', reason: 'skipped 2026-09-11: retires upstream 2026-09-15' },
     { id: 'kling-v2-master', reason: 'skipped 2026-09-11: retires upstream 2026-09-15' },

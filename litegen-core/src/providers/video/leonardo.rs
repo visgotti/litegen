@@ -75,6 +75,7 @@ impl LeonardoVideoProvider {
             "motion2" | "motion-2" => "MOTION2",
             "motion2-fast" => "MOTION2FAST",
             "veo3.1" | "veo3-1" => "VEO3_1",
+            "veo3.1-fast" | "veo3-1-fast" => "VEO3_1FAST",
             // Retired 2026-06-29 and gone from the catalog; kept so a stale
             // model_mapping fails at the vendor instead of billing as MOTION2.
             "veo3" => "VEO3",
@@ -345,6 +346,46 @@ mod tests {
         assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/kling2.5"), "KLING2_5");
         assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/kling2.1"), "KLING2_1");
         assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/motion2"), "MOTION2");
+    }
+
+    /// Veo 3.1 Fast is `VEO3_1FAST` ("model ... Set to VEO3_1, VEO3_1FAST");
+    /// without its arm the id fell through to MOTION2 and billed as a
+    /// different model.
+    /// @see <https://docs.leonardo.ai/v1.0/docs/veo-31> (2026-09-11)
+    #[test]
+    fn veo3_1_fast_resolves_to_veo3_1fast() {
+        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/veo3.1-fast"), "VEO3_1FAST");
+    }
+
+    /// The Veo 3.1 Fast submit carries its own model and a duration (Motion
+    /// 2.0, the fallback, would have dropped the duration).
+    /// @see <https://docs.leonardo.ai/v1.0/docs/veo-31> (2026-09-11)
+    #[tokio::test]
+    async fn veo3_1_fast_submits_veo3_1fast_with_duration() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/generations-image-to-video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "motionVideoGenerationJob": { "generationId": "leo-vid-5" }
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("leonardo/veo3.1-fast");
+        let base = make_base("a hummingbird hovering over a flower", "leonardo/veo3.1-fast");
+        let mut extras = extras_with_image_id();
+        extras.duration_seconds = 6.0;
+        let materialized = MaterializedRequest { refs: vec![] as Vec<MaterializedRef>, cleanup: Cleanup::empty() };
+
+        let handle = provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
+        assert_eq!(handle.provider_job_id, "leo-vid-5");
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["model"], "VEO3_1FAST");
+        assert_eq!(body["resolution"], "RESOLUTION_720");
+        assert_eq!(body["duration"], 6);
     }
 
     #[tokio::test]

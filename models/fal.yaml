@@ -197,3 +197,52 @@ models:
         init: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: []
     tags: [text-to-video, image-to-video]
+
+  # LTX-2.3 (Pro) on fal's queue. The adapter (video/fal.rs `resolve_spec`)
+  # submits to fal-ai/ltx-2.3/text-to-video, or to fal-ai/ltx-2.3/image-to-video
+  # when a start frame is supplied (that endpoint requires `image_url`). Both
+  # take prompt, duration, resolution, aspect_ratio, fps and generate_audio; no
+  # seed or negative prompt. Image-to-video also takes `end_image_url`, which
+  # this row does not offer (the adapter sends one reference, as image_url).
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-2.3/text-to-video
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-2.3/image-to-video
+  - id: fal/ltx-2.3
+    provider: fal
+    media_type: video
+    display_name: LTX-2.3 (Fal)
+    description: Lightricks LTX-2.3 Pro text- and image-to-video with native audio, 1080p to 4K.
+    # "$0.08 per second for 1080p, $0.16 per second for 1440p or $0.32 per
+    # second for 2160p" on both endpoints; the default request (1080p, 6 s) is
+    # $0.48, read 2026-09-11.
+    # @see https://fal.ai/models/fal-ai/ltx-2.3/text-to-video/llms.txt
+    # @see https://fal.ai/models/fal-ai/ltx-2.3/image-to-video/llms.txt
+    pricing: { base_cost_usd: 0.48 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    # prompt: minLength 1, maxLength 5000 on both endpoints.
+    prompt: { required: true, max_length: 5000 }
+    params:
+      # duration is the integer enum [6, 8, 10], default 6. The schema has no
+      # discrete sets, so this is the 6-10 range and the adapter rejects 7 and 9.
+      duration_seconds: { kind: float, min: 6.0, max: 10.0, default: 6.0 }
+      resolution:
+        kind: string
+        enum_values: [1080p, 1440p, 2160p]
+        default: 1080p
+      # Text-to-video: 16:9 | 9:16 (default 16:9). Image-to-video adds `auto`
+      # (its default: follow the input image), so no default is advertised —
+      # an omitted aspect_ratio lets each endpoint apply its own.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16"]
+      # fps is the integer enum [24, 25, 48, 50], default 25; the adapter
+      # rejects 26-47 and 49.
+      fps: { kind: int, min: 24, max: 50, default: 25 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    # generate_audio: boolean, default true (same price either way).
+    extra_allowlist: [generate_audio]
+    tags: [text-to-video, image-to-video]

@@ -15,7 +15,8 @@
 //    and counts as absent.
 // Vendor id = the endpoint id in the URL path. Mapping mirrors
 // litegen-core/src/providers/image/fal.rs `resolve_endpoint` and
-// video/fal.rs `resolve_spec` (fal/video is its LTX Video default arm).
+// video/fal.rs `resolve_spec` (fal/video is its LTX Video default arm;
+// fal/ltx-2.3 has its own arm).
 import { openapiExcerpt } from '../extract.mjs';
 
 const MODELS = {
@@ -29,6 +30,7 @@ const MODELS = {
   'fal/recraft-v3': 'fal-ai/recraft/v3/text-to-image',
   'fal/auraflow': 'fal-ai/aura-flow',
   'fal/video': ['fal-ai/ltx-video', 'fal-ai/ltx-video/image-to-video'],
+  'fal/ltx-2.3': ['fal-ai/ltx-2.3/text-to-video', 'fal-ai/ltx-2.3/image-to-video'],
 };
 
 const API = 'https://api.fal.ai/v1/models';
@@ -47,6 +49,13 @@ const CATALOG_NOTE =
   "# ids from this page are compared as a union with the other catalog page; the page split follows fal's popularity order, so it is not snapshotted\n";
 
 const carriedIds = Object.values(MODELS).flat();
+
+// At most 8 ids per find-mode call (the API caps at 10 and drops the excess).
+const CARRIED_CHUNK = 8;
+const carriedChunks = Array.from(
+  { length: Math.ceil(carriedIds.length / CARRIED_CHUNK) },
+  (_, i) => carriedIds.slice(i * CARRIED_CHUNK, (i + 1) * CARRIED_CHUNK),
+);
 
 // Carried endpoints whose Platform API spec is written for an alias id. For
 // fal-ai/flux-2 the registry entry is active with model_url
@@ -88,24 +97,30 @@ export default {
       extract: (page) => catalogIds(page, { last: true }),
       snapshot: () => CATALOG_NOTE,
     },
-    {
-      key: 'carried',
-      url: `${API}?${carriedIds.map((id) => `endpoint_id=${encodeURIComponent(id)}`).join('&')}&expand=openapi-3.0`,
+    // find mode, in chunks: fal's Platform API answers at most 10 endpoint_id
+    // params per call and silently drops the rest (12 requested returned 10 on
+    // 2026-09-11), which would quietly shrink this source's schema coverage as
+    // models are added. One source per chunk keeps every carried endpoint's
+    // input schema snapshotted; a dropped endpoint then shows up as its section
+    // disappearing from the snapshot diff.
+    ...carriedChunks.map((ids, i) => ({
+      key: carriedChunks.length > 1 ? `carried-${i + 1}` : 'carried',
+      url: `${API}?${ids.map((id) => `endpoint_id=${encodeURIComponent(id)}`).join('&')}&expand=openapi-3.0`,
       expect: 'json',
       extract: (res) => {
         if (!Array.isArray(res.models)) throw new Error('response has no `models` array');
         return res.models.filter((m) => m.metadata?.status === 'active').map((m) => m.endpoint_id);
       },
       snapshot: (res, _body, { ours }) => carriedSnapshot(res, ours),
-    },
+    })),
   ],
   acknowledged: [
     { pattern: /\/stream$/, reason: 'streaming transport of the parent endpoint (same model and input schema), not a separate model' },
     // Skips decided 2026-09-11 (docs/superpowers/2026-09-11-model-drift-decisions.md).
-    // Deliberately NOT acknowledged, so the weekly report keeps showing them:
-    // fal-ai/ltx-2.3/{text,image}-to-video and fal-ai/ltx-video-13b-distilled
-    // (+ its /image-to-video), the candidate successors for fal/video's LTX
-    // endpoints ("add later").
+    {
+      pattern: /^fal-ai\/ltx-video-13b-distilled(?:\/image-to-video)?$/,
+      reason: 'skipped 2026-09-11: superseded by fal/ltx-2.3; fal/video is kept for existing callers',
+    },
     {
       pattern: /^blackforestlabs\/flux-3\//,
       reason: "skipped 2026-09-11: FLUX 3 video — decide together with BFL's own flux-3-video",
@@ -147,7 +162,7 @@ export default {
     {
       pattern:
         /^fal-ai\/ltx-2-19b\/|^fal-ai\/ltx-2\.3-(?:22b|quality)\/|^fal-ai\/ltx-2\.3\/(?:audio-to-video|extend-video|reframe|retake-video|(?:text|image)-to-video\/fast)$|^fal-ai\/ltx-video-13b-distilled\/(?:extend|multiconditioning)$|^fal-ai\/ltx-video-v095(?:\/|$)|^fal-ai\/ltxv-13b-098-distilled(?:\/|$)|^lightricks\/ltx-2\.5\//,
-      reason: 'skipped 2026-09-11: the other LTX endpoints (fal/video successors are chosen among ltx-2.3 and ltx-video-13b-distilled)',
+      reason: 'skipped 2026-09-11: the other LTX endpoints (fal/ltx-2.3 carries the LTX-2.3 Pro text/image-to-video pair)',
     },
   ],
 };

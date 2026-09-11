@@ -78,6 +78,44 @@ models:
     extra_allowlist: [image_reference, resolution]
     tags: [text-to-image, image-to-image]
 
+  # Kling Image 3.0: the same POST /v1/images/generations endpoint, sent as
+  # model_name `kling-v3` (`kling/` is stripped, so the id reaches Kling unchanged).
+  # @see https://kling.ai/document-api/api/image/3-0-omni/image-generation.md (2026-09-11)
+  # @see https://kling.ai/document-api/guides/capability-map/image.md (2026-09-11):
+  #   text + image input, 8 ratios incl. 21:9, 1K/2K (4K is Image 3.0 Omni
+  #   only), single-image image-to-image. Character and face feature
+  #   reference are "Not Supported", so the reference is a plain init image.
+  - id: kling/kling-v3
+    provider: kling
+    media_type: image
+    display_name: Kling Image v3
+    description: Kling Image 3.0 text-to-image and image-to-image.
+    # Text-to-image and image-to-image at 1K or 2K: 8 units ($0.028) per image.
+    # @see https://kling.ai/document-api/pricing/base/image.md (2026-09-11)
+    pricing: { base_cost_usd: 0.028 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 2500 }
+    params:
+      # "In the Image-to-Image scenario (when the "image" field is not empty),
+      # negative prompts are not supported."
+      negative_prompt: { kind: string, max_length: 2500 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1","4:3","3:4","3:2","2:3","21:9"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    # resolution: 1k (default) | 2k, same price. image_reference (subject |
+    # face) is feature reference, "Not Supported" on Image 3.0; image_fidelity
+    # / human_fidelity are kling-v1/v1-5 only; element_list needs element ids
+    # from the Element Management API, which we do not wrap.
+    extra_allowlist: [resolution]
+    tags: [text-to-image, image-to-image]
+
   # ─── Video ────────────────────────────────────────────────────────────────
   - id: kling/video-kling-v2-1
     provider: kling
@@ -206,4 +244,56 @@ models:
     # "720P supports silent videos only"), and first + last frame is 1080p
     # silent only.
     extra_allowlist: [mode, sound]
+    tags: [text-to-video, image-to-video]
+
+  # Kling 3.0 on the same legacy /v1/videos/text2video and
+  # /v1/videos/image2video endpoints: both `model_name` enums list kling-v3,
+  # and `video-` and `kling/` are stripped, so the id reaches Kling unchanged.
+  # (Kling 3.0's own docs page describes the newer /text-to-video/kling-3.0
+  # API; the legacy endpoints are the ones the adapter speaks.)
+  # @see https://kling.ai/document-api/api/video/1-6/text-to-video.md (2026-09-11)
+  # @see https://kling.ai/document-api/api/video/2-1/image-to-video.md (2026-09-11)
+  # @see https://kling.ai/document-api/api/video/3-0-omni/text-to-video.md (2026-09-11)
+  # @see https://kling.ai/document-api/guides/capability-map/video.md (2026-09-11)
+  #   - duration: 3~15 s (the `duration` enum is every whole second 3-15).
+  #   - mode: std = 720p, pro = 1080p, 4k = 4K; Kling 3.0 lists all three.
+  #   - first + last frame: "Supported" at every resolution; last-frame-only
+  #     is not supported, so last_frame needs a first_frame.
+  #   - native audio and multi-shot: "Supported"; camera control, motion
+  #     brush and voice control: "Not Supported".
+  - id: kling/video-kling-v3
+    provider: kling
+    media_type: video
+    display_name: Kling Video v3
+    description: Kling 3.0 text/image-to-video with native audio, multi-shot and up to 4K.
+    # Default request (mode std = 720p, 5 s, sound off): 0.6 units ($0.084)/s
+    # x 5 s = $0.42. 1080p is $0.112/s silent, $0.168/s with native audio;
+    # 720p with audio is $0.126/s; 4K is $0.42/s either way.
+    # @see https://kling.ai/document-api/pricing/base/video.md (2026-09-11)
+    pricing: { base_cost_usd: 0.42 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2500 }
+    params:
+      negative_prompt: { kind: string, max_length: 2500 }
+      duration_seconds: { kind: float, min: 3.0, max: 15.0, default: 5.0 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    # mode: std | pro | 4k. sound: on | off (default off). multi_shot (bool),
+    # shot_type (customize | intelligence) and multi_prompt (up to 6 shots,
+    # 512 characters each, durations summing to the total) drive multi-shot;
+    # shot_type customize takes multi_prompt in place of the prompt,
+    # intelligence still needs the prompt. cfg_scale is not documented for
+    # Kling 3.0 (its own API has no such setting), so it is not allowlisted;
+    # voice_list is voice control ("Not Supported"); element_list needs
+    # Element Management ids, which we do not wrap.
+    extra_allowlist: [mode, sound, multi_shot, shot_type, multi_prompt]
     tags: [text-to-video, image-to-video]
