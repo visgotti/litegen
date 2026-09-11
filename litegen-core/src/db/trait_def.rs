@@ -100,8 +100,24 @@ pub trait DatabaseStore: Send + Sync {
     ) -> Result<(), sqlx::Error>;
 
     /// Advance a generation that is still IN FLIGHT, in one guarded UPDATE.
-    /// Returns whether the row was actually written (`false` = it had already
-    /// left `pending`/`processing`, which is not an error).
+    /// Returns which of the three [`GenerationWrite`] cases happened — none of
+    /// them is an error:
+    ///
+    /// - [`GenerationWrite::Written`]: the row was `pending`/`processing` and
+    ///   this caller wrote it, so it owns the request-log update and the
+    ///   terminal webhook.
+    /// - [`GenerationWrite::AlreadyTerminal`]: another observer decided this
+    ///   generation first. Nothing was written, and the caller must skip BOTH
+    ///   the log update and the webhook — they belong to the winner.
+    /// - [`GenerationWrite::Missing`]: the row does not exist yet, because the
+    ///   async submit handler inserts it from a spawned task a fast first poll
+    ///   can outrun. Nothing was written and there is no competing observer, so
+    ///   the caller keeps its request-log update (that row IS already there,
+    ///   written `pending` at submit) and skips only the webhook; the poller
+    ///   drives the generation once the insert lands.
+    ///
+    /// [`GenerationWrite::owns_outcome`] collapses the first and third cases
+    /// for callers that only need "may I still touch the request log?".
     ///
     /// Two things the split `update_generation_status` +
     /// `update_generation_metadata` pair cannot give the async families:

@@ -37,11 +37,19 @@ export class LiteGenTimeoutError extends LiteGenError {
 
 export class LiteGenPollingTimeoutError extends LiteGenError {
   readonly lastStatus?: string;
-  constructor(id: string, lastStatus?: string) {
+  /**
+   * What timed out, as it reads in the message: "video", "3D generation", or
+   * the neutral "job" when the caller polls a family this SDK has no name for.
+   * `kind` is a trailing optional argument so the two-argument form this class
+   * shipped with keeps working — it just reports the neutral word.
+   */
+  readonly kind: string;
+  constructor(id: string, lastStatus?: string, kind = "job") {
     super(
-      `Polling for video '${id}' timed out${lastStatus ? ` (last status: ${lastStatus})` : ""}`,
+      `Polling for ${kind} '${id}' timed out${lastStatus ? ` (last status: ${lastStatus})` : ""}`,
     );
     this.name = "LiteGenPollingTimeoutError";
     this.lastStatus = lastStatus;
+    this.kind = kind;
   }
 }
