@@ -2,7 +2,8 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { client } from '../sdk-client';
 import type { Generation, PaginatedResponse } from '@litegen/sdk';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
-import ModelViewer, { meshUrl, previewUrl } from '../components/ModelViewer';
+import ModelPreview from '../components/ModelPreview';
+import { assetsOf, previewOf } from '../components/model3d-assets';
 
 const ACTIVE_STATUSES = new Set(['pending', 'processing']);
 
@@ -17,28 +18,33 @@ function StatusBadge({ id, status }: { id: string; status: string }) {
   );
 }
 
-/** Inline media for a generation: <img> for images, <video> for video,
- *  <model-viewer> for meshes. `thumb` renders the small in-row preview —
+/** Inline media for a generation: <img> for images, <video> for video, the
+ *  full 3D inspector for meshes. `thumb` renders the small in-row preview —
  *  always a flat 2D image, never a GL canvas per row. */
 export function MediaPreview({ g, thumb }: { g: Generation; thumb?: boolean }) {
-  if (g.status !== 'completed' || !g.result_url) {
-    return thumb ? <span style={{ color: '#8b949e' }}>—</span> : null;
-  }
-  const style = { maxWidth: '100%', maxHeight: 480, marginBottom: 12, display: 'block', borderRadius: 6 } as const;
-
-  if (g.media_type === 'model3d') {
-    const mesh = meshUrl(g);
-    const poster = previewUrl(g);
+  // A 3D row is checked before the result_url guard: its media lives in
+  // metadata.assets, and a completed row with no mesh at all must reach the
+  // inspector's contract-violation state rather than render nothing.
+  if (g.media_type === 'model3d' && g.status === 'completed') {
+    const assets = assetsOf(g);
     if (thumb) {
+      const poster = previewOf(assets)?.url;
       return poster
         ? <img src={poster} alt="" loading="lazy" data-testid={`gen-thumb-${g.id}`}
                style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 4, display: 'block' }} />
         : <span title="3D result" aria-label="3d">🧊</span>;
     }
-    return mesh
-      ? <ModelViewer src={mesh} poster={poster} testId={`gen-media-${g.id}`} style={style} />
-      : null;
+    return (
+      <div style={{ marginBottom: 12 }}>
+        <ModelPreview assets={assets} testId={`gen-media-${g.id}`} />
+      </div>
+    );
   }
+
+  if (g.status !== 'completed' || !g.result_url) {
+    return thumb ? <span style={{ color: '#8b949e' }}>—</span> : null;
+  }
+  const style = { maxWidth: '100%', maxHeight: 480, marginBottom: 12, display: 'block', borderRadius: 6 } as const;
 
   const isVideo = g.media_type === 'video';
   if (thumb) {
