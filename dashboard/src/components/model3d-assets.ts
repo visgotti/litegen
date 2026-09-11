@@ -215,9 +215,18 @@ export interface ResourceStatusEntry { name: string; responseStatus?: number }
  * read of the global buffer would silently stop seeing new mesh requests at
  * all. Matching is on the FULL resolved URL, fragment included — Chromium
  * retains `retrySrc`'s `#retry-N` cache-buster in a resource-timing entry's
- * `name` (verified empirically, see the Task 17B report), so a stale entry
- * from an earlier attempt at the same mesh can never match a later one; each
- * retry gets its own fragment and thus its own entry.
+ * `name` (verified empirically, see the Task 17B report), so each retry
+ * gets its own entry and cannot be confused with an earlier attempt WITHIN
+ * the same mount.
+ *
+ * That is the only staleness the fragment rules out. Across mounts it rules
+ * out nothing: a fresh viewer's first attempt uses the bare `src` again — the
+ * same URL the previous mount's first attempt used. Freshness there is the
+ * caller's job, and depends on the observer being created per load with
+ * `buffered: false` so it only ever sees entries for the load in flight.
+ * Reading a buffered observer (or the global buffer) here would bring back
+ * the R47 bug: a real 404 matched against the previous mount's 200 and
+ * reported as a parse failure, with Retry withheld.
  */
 export function matchResourceStatus(entries: ResourceStatusEntry[], resolvedSrc: string): number | null {
   let status: number | null = null;
