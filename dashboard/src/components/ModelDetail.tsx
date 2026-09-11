@@ -19,6 +19,10 @@ function buildCurl(model: ModelInfo): string {
   ].join('\n');
 }
 
+/** Display name for every `ModelCapabilities` boolean flag, in the order the
+ *  chips are rendered. Keep this in step with the schema: a flag with no entry
+ *  here is invisible in the UI, and a model whose flags are ALL missing renders
+ *  as '—', which reads as "no capabilities" rather than "not labelled yet". */
 const CAP_LABELS: Record<string, string> = {
   supports_text_to_image: 'Text → image',
   supports_image_to_image: 'Image → image',
@@ -27,7 +31,20 @@ const CAP_LABELS: Record<string, string> = {
   supports_image_to_video: 'Image → video',
   supports_first_frame: 'First-frame ref',
   supports_last_frame: 'Last-frame ref',
+  supports_text_to_3d: 'Text → 3D',
+  supports_image_to_3d: 'Image → 3D',
+  supports_multiview_to_3d: 'Multiview → 3D',
+  supports_texture: 'Textures',
+  supports_pbr: 'PBR materials',
+  supports_rig: 'Auto-rigging',
 };
+
+/** Labels for the capability flags a model reports as true, CAP_LABELS order. */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper, exported for its unit test
+export function capabilityLabels(capabilities: unknown): string[] {
+  const flags = (capabilities ?? {}) as Record<string, unknown>;
+  return Object.entries(CAP_LABELS).filter(([k]) => flags[k]).map(([, label]) => label);
+}
 
 export default function ModelDetail({ model, onClose }: { model: ModelInfo; onClose: () => void }) {
   const [schema, setSchema] = useState<ModelSchema | null>(null);
@@ -42,10 +59,11 @@ export default function ModelDetail({ model, onClose }: { model: ModelInfo; onCl
     return () => { cancelled = true; };
   }, [model.id]);
 
-  // ModelInfo.capabilities is ModelCapabilities (required), cast to index by string key
-  const caps = Object.entries(CAP_LABELS).filter(([k]) => (model.capabilities as Record<string, unknown>)?.[k]);
+  const caps = capabilityLabels(model.capabilities);
   // ModelCapabilities.supported_sizes is string[] | undefined
   const sizes: string[] = (model.capabilities?.supported_sizes as string[] | undefined) ?? [];
+  // A 3D model has no supported_sizes; output_formats is the analogous fact.
+  const formats: string[] = (model.capabilities?.output_formats as string[] | undefined) ?? [];
   // ModelSchema.params is { [key: string]: unknown } | undefined; cast for describeSpec
   const params = (schema?.params ?? {}) as Record<string, { kind?: string; [k: string]: unknown }>;
 
@@ -71,7 +89,7 @@ export default function ModelDetail({ model, onClose }: { model: ModelInfo; onCl
       <div style={card}>
         <div style={h4}>Capabilities</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {caps.map(([, label]) => (
+          {caps.map(label => (
             <span key={label} style={{ fontSize: 12, color: '#3fb950', background: '#3fb95022', padding: '3px 8px', borderRadius: 999 }}>{label}</span>
           ))}
           {caps.length === 0 && <span style={{ color: '#6e7681', fontSize: 13 }}>—</span>}
@@ -79,6 +97,11 @@ export default function ModelDetail({ model, onClose }: { model: ModelInfo; onCl
         {sizes.length > 0 && (
           <div style={{ marginTop: 10, color: '#8b949e', fontSize: 13 }}>
             Sizes: <span style={{ color: '#e6edf3' }}>{sizes.join(', ')}</span>
+          </div>
+        )}
+        {formats.length > 0 && (
+          <div data-testid="model-detail-formats" style={{ marginTop: 10, color: '#8b949e', fontSize: 13 }}>
+            Formats: <span style={{ color: '#e6edf3' }}>{formats.join(', ')}</span>
           </div>
         )}
       </div>

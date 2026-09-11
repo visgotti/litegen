@@ -9,6 +9,7 @@ import {
 import type { PlaygroundHistoryEntry } from '../playground-history';
 import type { ModelInfo, Model3dGenerationRequest, Model3dGenerationResponse, Model3dAsset } from '@litegen/sdk';
 import ModelPreview from '../components/ModelPreview';
+import { MODEL3D_POLL_TIMEOUT_MS } from './useFanOut';
 
 type Tab = 'image' | 'request' | 'response';
 
@@ -28,11 +29,14 @@ async function generateModel3dJob(
   body: Record<string, unknown>,
   onProgress: (p: number) => void,
 ): Promise<Model3dGenerationResponse> {
-  const job = client.models3d.generate(body as Model3dGenerationRequest, { intervalMs: 1500 });
+  // An explicit budget, not the SDK's 5-minute default: a queued vendor job
+  // can outlive that while the server job completes and is billed.
+  const pollOpts = { intervalMs: 1500, timeoutMs: MODEL3D_POLL_TIMEOUT_MS };
+  const job = client.models3d.generate(body as Model3dGenerationRequest, pollOpts);
   const submitted = await job.submitted;
   onProgress(submitted.progress ?? 0);
   let final = submitted;
-  for await (const update of client.models3d.poll(submitted.id, { intervalMs: 1500 })) {
+  for await (const update of client.models3d.poll(submitted.id, pollOpts)) {
     final = update;
     onProgress(update.progress ?? 0);
   }
@@ -45,7 +49,7 @@ async function generateModel3dJob(
   return final;
 }
 
-interface FormState {
+export interface FormState {
   model: string;
   prompt: string;
   negativePrompt: string;
@@ -53,6 +57,44 @@ interface FormState {
   size: string;
   n: number;
   strict: boolean;
+}
+
+/**
+ * Build the request body for one generation, sending only the fields the
+ * selected media type actually accepts.
+ *
+ * `size` and `n` are image-only: `Model3dGenerationRequest` has no `size` at
+ * all and a 3D job is billed flat per generation regardless of `n`. Serde
+ * drops an unknown `size` silently — including under `strict: true`, where the
+ * checkbox promises the request would be rejected — so sending them would tell
+ * the user their 4 meshes at 1024x1024 were accepted when one default mesh is
+ * what comes back. The form disables both controls for a 3D model for the
+ * same reason.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper, exported for its unit test
+export function buildGenerationBody(
+  form: FormState,
+  mediaType: 'image' | 'model3d',
+): Record<string, unknown> {
+  const isModel3d = mediaType === 'model3d';
+  const body: Record<string, unknown> = { model: form.model, prompt: form.prompt };
+  if (!isModel3d) body.n = form.n;
+  body.strict = form.strict;
+  if (form.negativePrompt) body.negative_prompt = form.negativePrompt;
+  if (form.seed) body.seed = parseInt(form.seed, 10);
+  if (!isModel3d && form.size) body.size = form.size;
+  return body;
+}
+
+/** Same rule as `buildGenerationBody`, applied to a stored history body: an
+ *  entry recorded against an image model (or before 3D dropped these fields)
+ *  must not resubmit `size`/`n` to the 3D endpoint, which ignores them. */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper, exported for its unit test
+export function omitImageOnlyParams(body: Record<string, unknown>): Record<string, unknown> {
+  const rest = { ...body };
+  delete rest.size;
+  delete rest.n;
+  return rest;
 }
 
 const DEFAULT_FORM: FormState = {
@@ -134,6 +176,9 @@ export default function SingleMode() {
     setHistory(getPlaygroundHistory());
   }, []);
 
+  // Size and N are image-only controls; see buildGenerationBody.
+  const isModel3dSelected = models.find(m => m.id === form.model)?.media_type === 'model3d';
+
   const handleGenerate = async () => {
     if (!form.prompt.trim()) return;
     setLoading(true);
@@ -144,15 +189,7 @@ export default function SingleMode() {
     setResultMediaType(isModel3d ? 'model3d' : 'image');
     if (isModel3d) setMeshAssets([]); else setImageData(null);
 
-    const body: Record<string, unknown> = {
-      model: form.model,
-      prompt: form.prompt,
-      n: form.n,
-      strict: form.strict,
-    };
-    if (form.negativePrompt) body.negative_prompt = form.negativePrompt;
-    if (form.seed) body.seed = parseInt(form.seed, 10);
-    if (form.size) body.size = form.size;
+    const body = buildGenerationBody(form, isModel3d ? 'model3d' : 'image');
 
     setRequestJson(JSON.stringify(body, null, 2));
 
@@ -232,8 +269,8 @@ export default function SingleMode() {
     handleHistoryClick(entry);
     // Small delay to let state settle before firing
     await new Promise(r => setTimeout(r, 0));
-    const body = entry.requestBody;
     const isModel3d = models.find(m => m.id === entry.model)?.media_type === 'model3d';
+    const body = isModel3d ? omitImageOnlyParams(entry.requestBody) : entry.requestBody;
     setLoading(true);
     setError('');
     setProgress(null);
@@ -366,6 +403,7 @@ export default function SingleMode() {
                   className="input"
                   style={{ width: '100%' }}
                   value={form.size}
+                  disabled={isModel3dSelected}
                   onChange={e => setForm(prev => ({ ...prev, size: e.target.value }))}
                 >
                   {sizeOptions.map(s => (
@@ -379,6 +417,7 @@ export default function SingleMode() {
                   className="input"
                   style={{ width: '100%', boxSizing: 'border-box' }}
                   value={form.size}
+                  disabled={isModel3dSelected}
                   onChange={e => setForm(prev => ({ ...prev, size: e.target.value }))}
                   placeholder="e.g. 1024x1024"
                 />
@@ -394,10 +433,22 @@ export default function SingleMode() {
                 min={1}
                 max={4}
                 value={form.n}
+                disabled={isModel3dSelected}
                 onChange={e => setForm(prev => ({ ...prev, n: parseInt(e.target.value, 10) || 1 }))}
               />
             </div>
           </div>
+
+          {/* Disabled rather than removed so the controls stay in place as the
+              model changes; the body omits them entirely for 3D. */}
+          {isModel3dSelected && (
+            <p
+              data-testid="playground-3d-param-note"
+              style={{ margin: '-4px 0 12px', fontSize: 12, color: 'var(--text-muted, #8b949e)' }}
+            >
+              Size and N don’t apply to 3D models — one job returns one mesh.
+            </p>
+          )}
 
           <div className="playground-form-group">
             <div className="toggle-row">
