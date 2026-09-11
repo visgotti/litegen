@@ -5499,3 +5499,42 @@ expanded row, the `ModelPreview` stats strip shows the mock's polycount (12)
 and the asset list lists the mesh and the preview; and in Logs, opening the
 trace panel for a completed 3D request renders the mesh (the `model-viewer`
 element reaches `loaded`) rather than "Output URL not yet available".
+
+---
+
+### Task 17A: Carried review follow-ups (no dependency install, no Rust build)
+
+Split out of Task 17 on 2026-09-11 because free disk (~0.4 GB, driven by system
+swap from many concurrent sessions) cannot fit the Storybook install or the
+multi-GB Rust build that Task 17's final gates need. Everything here is a small,
+review-identified defect in files already touched by this plan, and each is
+verifiable with the dashboard's vitest/build/lint and the landing script tests.
+
+- [ ] **Param-mapping matrix:** annotate the `rig` row's Tripo3D cell
+  `(unconfirmed)` — it names a literal `rig` field that appears nowhere in the
+  design spec §9, contradicting the doc's claim that every vendor column is
+  transcribed from §9 (Task 18/19 review).
+- [ ] **`apps/landing/scripts/derive-capabilities.mjs`:** update the top
+  docstring and the fallback-table comment, which still describe outputs as
+  image/video only (Task 16 review). Keep `npm run test:scripts` green.
+- [ ] **`dashboard/src/components/generation-output.ts`:** correct the 404-retry
+  rationale (comment at :19-24 and the test name at `generation-output.test.ts:34`).
+  The artifact is inserted only AFTER `insert_generation` is awaited in the same
+  spawned task (verified at `handlers/mod.rs` generate_video :437-455 and
+  generate_3d :683-692), so a lasting 404 means a failed insert; the retry is a
+  safety margin, not "the insert races the response" (Task 22 review).
+- [ ] **Transient-error tolerance in the trace-panel poll:** a single 5xx /
+  timeout / network error during a minutes-long 3D job currently ends the live
+  view and discards the last known progress. Tolerate a short streak (3
+  consecutive) of transient errors — keep showing the last generation with a
+  subtle "reconnecting" note — and only end on the streak or a non-transient
+  error. Extend `shouldKeepPolling`'s unit tests (Task 22 review).
+- [ ] **`GenerationOutput` video fallback:** `GenerationOutput.tsx:66` turns ANY
+  `<video>` load failure into a broken `<img>`. Only fall back to `<img>` when
+  the result is plausibly an image (GIF/`image/*`); otherwise show the failure
+  and an open link (Task 22 review).
+- [ ] **Playground Single Mode:** disable the model `<select>` while a
+  generation is in flight. The exposure grew from a sub-second image request to
+  a multi-second 3D poll (Task 13/14 review).
+- [ ] **Gates:** `cd dashboard && npm test && npm run build && npm run lint`;
+  `cd apps/landing && npm run test:scripts`. Commit, ticking this section.
