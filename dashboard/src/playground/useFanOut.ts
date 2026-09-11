@@ -5,6 +5,49 @@ import type { ResultTileState } from './types';
 
 const MAX_CONCURRENCY = 4;
 
+/**
+ * Wall-clock budget for one Playground 3D job, passed explicitly to every
+ * `models3d` call. The SDK's default is 5 minutes, which a real vendor job
+ * that queues and then refines can outlive: polling would abort with a
+ * timeout while the server job runs on to completion and is billed. 30
+ * minutes covers that without polling into the backend's 2-hour reap age
+ * (MAX_ACTIVE_AGE_SECS), past which the row is failed server-side anyway.
+ */
+export const MODEL3D_POLL_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * Tracks which run owns the tiles.
+ *
+ * A rerun (Compare mode's per-tile rerun button is never disabled) starts a
+ * second run over the same tile keys. Without this, the superseded run keeps
+ * polling for the whole timeout and keeps patching keys it no longer owns:
+ * progress alternates between two jobs, its `Promise.all` clears `running`
+ * (so Cancel disappears), and after a Cancel it patches the tile back to
+ * 'done'. `begin` aborts the run it replaces, and `owns` lets the loop drop
+ * anything that arrives from a run that is no longer current.
+ */
+export function createRunEpoch() {
+  let current: AbortController | null = null;
+  return {
+    /** Aborts the run in flight, if any, and becomes the current run. */
+    begin(): AbortController {
+      current?.abort();
+      current = new AbortController();
+      return current;
+    },
+    /** True while `ctrl` is still the current run's controller. */
+    owns(ctrl: AbortController): boolean {
+      return current === ctrl;
+    },
+    /** Cancels the current run but leaves it current, so it still settles the UI. */
+    abort(): void {
+      current?.abort();
+    },
+  };
+}
+
+export type RunEpoch = ReturnType<typeof createRunEpoch>;
+
 type FanOutRequest = {
   modelId: string;
   mediaType: 'image' | 'model3d';
@@ -21,15 +64,22 @@ interface FanOut {
 export function useFanOut(): FanOut {
   const [tiles, setTiles] = useState<ResultTileState[]>([]);
   const [running, setRunning] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
+  const epochRef = useRef<RunEpoch | null>(null);
+  const epoch = (epochRef.current ??= createRunEpoch());
 
-  const patch = (key: string, p: Partial<ResultTileState>) =>
+  const setTile = (key: string, p: Partial<ResultTileState>) =>
     setTiles(prev => prev.map(t => (t.key === key ? { ...t, ...p } : t)));
 
   const run: FanOut['run'] = async (requests) => {
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
+    // Supersede whatever is in flight: abort it so its polling stops, and
+    // ignore anything it still reports (`patch` below is a no-op once this
+    // run is no longer the current one).
+    const ctrl = epoch.begin();
     setRunning(true);
+
+    const patch = (key: string, p: Partial<ResultTileState>) => {
+      if (epoch.owns(ctrl)) setTile(key, p);
+    };
 
     // One tile per (model × n). `n` is meaningless for a mesh — the backend
     // bills a 3D job flat per generation regardless of the field (same
@@ -58,6 +108,7 @@ export function useFanOut(): FanOut {
             const job = client.models3d.generate(request as Model3dGenerationRequest, {
               signal: ctrl.signal,
               intervalMs: 1500,
+              timeoutMs: MODEL3D_POLL_TIMEOUT_MS,
             });
             const submitted = await job.submitted;
             keys.forEach(k => patch(k, { status: 'polling', progress: submitted.progress ?? 0 }));
@@ -66,6 +117,7 @@ export function useFanOut(): FanOut {
             for await (const update of client.models3d.poll(submitted.id, {
               signal: ctrl.signal,
               intervalMs: 1500,
+              timeoutMs: MODEL3D_POLL_TIMEOUT_MS,
             })) {
               final = update;
               keys.forEach(k => patch(k, { progress: update.progress ?? 0 }));
@@ -117,11 +169,13 @@ export function useFanOut(): FanOut {
       }
     };
     await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENCY, requests.length) }, worker));
-    setRunning(false);
+    // A superseded run must not clear `running` — the run that replaced it is
+    // still going, and hiding Cancel would strand it.
+    if (epoch.owns(ctrl)) setRunning(false);
   };
 
   const cancel = () => {
-    abortRef.current?.abort();
+    epoch.abort();
     setRunning(false);
     // 'polling' is a live-job state introduced for 3D (queued/running never
     // reach a server job); it must be swept here too or a tile mid-poll when
