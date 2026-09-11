@@ -8,7 +8,9 @@ models:
     description: Runway Gen-4 text-to-image with @tag reference images.
     pricing: { base_cost_usd: 0.08 }
     capabilities: { text_to_image: true, image_to_image: true }
-    prompt: { required: true, max_length: 5500 }
+    # promptText: "A non-empty string up to 1000 characters".
+    # @see https://docs.dev.runwayml.com/openapi.json (POST /v1/text_to_image)
+    prompt: { required: true, max_length: 1000 }
     params:
       seed: { kind: seed, min: 0, max: 4294967295 }
       aspect_ratio:
@@ -31,8 +33,13 @@ models:
     display_name: Runway Gen-4 Image Turbo
     description: Faster, cheaper Gen-4 image (requires at least one reference image).
     pricing: { base_cost_usd: 0.02 }
-    capabilities: { text_to_image: true, image_to_image: true }
-    prompt: { required: true, max_length: 5500 }
+    # Not text_to_image: a prompt-only request cannot succeed (Runway lists the
+    # input as "Text+Image (References)").
+    # @see https://docs.dev.runwayml.com/guides/models.md
+    capabilities: { image_to_image: true }
+    # promptText: "A non-empty string up to 1000 characters".
+    # @see https://docs.dev.runwayml.com/openapi.json (POST /v1/text_to_image)
+    prompt: { required: true, max_length: 1000 }
     params:
       seed: { kind: seed, min: 0, max: 4294967295 }
       aspect_ratio:
@@ -45,9 +52,12 @@ models:
       default_role: init
       provider_format: { form: url }
       roles:
-        init: { required: false, min_count: 1, max_count: 3 }
+        # referenceImages is required for gen4_image_turbo ("An array of one to
+        # three images"); required: false let a zero-ref request through to a 400.
+        # @see https://docs.dev.runwayml.com/openapi.json (POST /v1/text_to_image)
+        init: { required: true, min_count: 1, max_count: 3 }
     extra_allowlist: [contentModeration]
-    tags: [text-to-image, image-to-image, fast]
+    tags: [image-to-image, fast]
 
   # gen3a_turbo was removed from the Runway API on 2026-07-30 ("Requests that
   # use these model identifiers will fail"). gen4_turbo is the fast tier and
@@ -57,9 +67,14 @@ models:
     provider: runway
     media_type: video
     display_name: Runway Gen-4 Turbo
-    description: Runway Gen-4 Turbo image-to-video and text-to-video.
+    description: Runway Gen-4 Turbo image-to-video (requires a first-frame image).
     pricing: { base_cost_usd: 0.25 }
-    capabilities: { text_to_video: true, image_to_video: true }
+    # gen4_turbo is only in the POST /v1/image_to_video model union (promptImage
+    # required); /v1/text_to_video has no gen4_turbo branch, and the model
+    # guide lists its input as "Image".
+    # @see https://docs.dev.runwayml.com/openapi.json
+    # @see https://docs.dev.runwayml.com/guides/models.md
+    capabilities: { image_to_video: true }
     prompt: { required: true, max_length: 1000 }
     params:
       duration_seconds: { kind: int, min: 2, max: 10, default: 5 }
@@ -75,9 +90,10 @@ models:
       default_role: init
       provider_format: { form: url }
       roles:
-        init: { required: false, min_count: 0, max_count: 1 }
+        # promptImage is required by gen4_turbo's /v1/image_to_video branch.
+        init: { required: true, min_count: 1, max_count: 1 }
     extra_allowlist: [contentModeration]
-    tags: [text-to-video, image-to-video, fast]
+    tags: [image-to-video, fast]
 
   - id: runway/gen4.5
     provider: runway
@@ -90,9 +106,13 @@ models:
     params:
       duration_seconds: { kind: int, min: 2, max: 10, default: 5 }
       seed: { kind: seed, min: 0, max: 4294967295 }
+      # gen4.5 on /v1/text_to_video takes only 1280:720 | 720:1280 (the six-value
+      # enum is /v1/image_to_video's). One list serves both modes, so it is the
+      # text-to-video one; the four i2v-only ratios stay on gen4-turbo.
+      # @see https://docs.dev.runwayml.com/openapi.json (POST /v1/text_to_video)
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["1280:720","720:1280","1104:832","832:1104","960:960","1584:672"]
+        allowed: ["1280:720","720:1280"]
         default: "1280:720"
     ref_inputs:
       max_total: 1
@@ -100,5 +120,8 @@ models:
       provider_format: { form: url }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [contentModeration, outputFormat]
+    # proresProfile is outputFormat's companion ("Only valid when outputFormat
+    # is prores or hdr_prores") on both gen4.5 endpoints.
+    # @see https://docs.dev.runwayml.com/guides/models.md#professional-and-hdr-output-formats
+    extra_allowlist: [contentModeration, outputFormat, proresProfile]
     tags: [text-to-video, image-to-video, premium]

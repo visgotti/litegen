@@ -133,7 +133,7 @@ curl -X POST http://localhost:4000/v1/videos/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "a timelapse of clouds over a city",
-    "model": "runway/gen4-turbo",
+    "model": "runway/gen4.5",
     "duration_seconds": 5
   }'
 ```

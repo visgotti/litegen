@@ -17,7 +17,8 @@ models:
         enum_values: [1080p]
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["16:9","9:16","1:1","3:4","4:3"]
+        # "3:4 & 4:3 only support q2 & q3 model": https://platform.vidu.com/docs/text-to-video.md
+        allowed: ["16:9","9:16","1:1"]
     ref_inputs:
       max_total: 7
       default_role: first_frame
@@ -45,7 +46,9 @@ models:
         enum_values: [360p, 720p, 1080p]
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["16:9","9:16","1:1","3:4","4:3"]
+        # Only reference2video takes aspect_ratio for vidu2.0; "3:4&4:3 only support q2 model":
+        # https://platform.vidu.com/docs/reference-to-video.md
+        allowed: ["16:9","9:16","1:1"]
     ref_inputs:
       max_total: 7
       default_role: first_frame
@@ -54,7 +57,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
         reference:   { required: false, min_count: 0, max_count: 7 }
-    extra_allowlist: [movement_amplitude, style, bgm, off_peak, callback_url]
+    # No `style`: it is a text2video-only field and vidu2.0 has no text2video.
+    # https://platform.vidu.com/docs/text-to-video.md
+    extra_allowlist: [movement_amplitude, bgm, off_peak, callback_url]
     tags: [image-to-video, reference-to-video]
 
   - id: vidu/viduq2-pro
@@ -67,10 +72,13 @@ models:
     capabilities: { image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
-      duration_seconds: { kind: float, min: 4.0, max: 8.0, default: 5.0 }
+      # 1s floor and 540p hold on img2video, start-end2video and reference2video; the
+      # 8s ceiling is start-end2video's (img2video/reference2video go to 10):
+      # https://platform.vidu.com/docs/start-end-to-video.md
+      duration_seconds: { kind: float, min: 1.0, max: 8.0, default: 5.0 }
       resolution:
         kind: string
-        enum_values: [720p, 1080p]
+        enum_values: [540p, 720p, 1080p]
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9","9:16","1:1","3:4","4:3"]

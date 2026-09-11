@@ -17,6 +17,10 @@ models:
         kind: string
         enum_values: [standard, premium]
         default: standard
+      # "Each side must be between 320-4096 pixels, inclusive. Each side must be
+      # evenly divisible by 16." (Aspect ratio 1:4..4:1 and < 4,194,304 total
+      # pixels are not expressible here.)
+      # @see https://docs.aws.amazon.com/nova/latest/userguide/image-gen-access.html#image-gen-resolutions
       size:
         kind: size
         mode: freeform
@@ -24,6 +28,7 @@ models:
         max_width: 4096
         min_height: 320
         max_height: 4096
+        multiple_of: 16
     ref_inputs:
       max_total: 1
       default_role: init
@@ -43,7 +48,10 @@ models:
     description: Amazon Nova Reel text-to-video / image-to-video (async; output to S3).
     pricing: { base_cost_usd: 0.48 }
     capabilities: { text_to_video: true, image_to_video: true }
-    prompt: { required: true, max_length: 4000 }
+    # TEXT_VIDEO `text`: "Must be 1-512 characters in length." (4000 is the
+    # MULTI_SHOT_AUTOMATED limit, a task type this adapter never emits.)
+    # @see https://docs.aws.amazon.com/nova/latest/userguide/video-gen-access.html
+    prompt: { required: true, max_length: 512 }
     params:
       seed: { kind: seed, min: 0, max: 2147483646 }
       # TEXT_VIDEO supports durationSeconds: 6 only. 12-120s (multiples of 6)

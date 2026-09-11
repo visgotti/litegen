@@ -2,16 +2,21 @@ models:
   # DALL-E 2 and DALL-E 3 were shut down on 2026-05-12. OpenAI's stated
   # replacements are "gpt-image-2, gpt-image-1, or gpt-image-1-mini".
   # gpt-image-1-mini / gpt-image-1.5 / chatgpt-image-latest are themselves
-  # scheduled for shutdown on 2026-12-01, so only the two below are safe.
+  # scheduled for shutdown on 2026-12-01, and gpt-image-1 on 2026-10-23
+  # (replacement gpt-image-2), so gpt-image-2 is the only long-lived id here.
   # @see https://developers.openai.com/api/docs/deprecations
   - id: openai/gpt-image-2
     provider: openai
     media_type: image
     display_name: GPT Image 2
-    description: OpenAI's current flagship image model. Arbitrary resolutions
+    description: OpenAI GPT Image 2. Text-to-image plus prompt-driven editing
+      and inpainting via the images/edits endpoint. Arbitrary resolutions
       (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1).
     pricing: { base_cost_usd: 0.04 }
-    capabilities: { text_to_image: true }
+    # The model page lists images/edits as "Supported" and inpainting as a
+    # supported feature; the adapter routes a reference image to images/edits.
+    # @see https://developers.openai.com/api/docs/models/gpt-image-2
+    capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
     prompt: { required: true, max_length: 32000 }
     params:
       # gpt-image-2 accepts arbitrary WIDTHxHEIGHT; resolutions above 2560x1440
@@ -28,15 +33,25 @@ models:
         kind: string
         enum_values: [auto, low, medium, high]
         default: auto
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image, mask: mask } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [background, output_format, output_compression, moderation, user]
-    tags: [text-to-image]
+    tags: [text-to-image, image-to-image, inpainting]
 
   - id: openai/gpt-image-1
     provider: openai
     media_type: image
     display_name: GPT Image 1
-    description: OpenAI GPT Image 1. Text-to-image plus prompt-driven editing
-      and inpainting via the images/edits endpoint.
+    # Shutdown announced for 2026-10-23, replacement gpt-image-2.
+    # @see https://developers.openai.com/api/docs/deprecations
+    description: "DEPRECATED: OpenAI shuts gpt-image-1 down on 2026-10-23
+      (replacement gpt-image-2). OpenAI GPT Image 1. Text-to-image plus
+      prompt-driven editing and inpainting via the images/edits endpoint."
     pricing: { base_cost_usd: 0.04 }
     capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
     prompt: { required: true, max_length: 32000 }

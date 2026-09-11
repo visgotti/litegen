@@ -1,8 +1,19 @@
 models:
-  # Imagen 3 (imagen-3.0-generate-002) was shut down 2025-11-10, and the whole
-  # Imagen surface (Imagen 4) shuts down 2026-08-17. Google's stated migration
+  # Imagen 3 (imagen-3.0-generate-002) was shut down 2025-11-10. Imagen 4 is
+  # deprecated with an announced 2026-08-17 shutdown (not yet marked shut down
+  # on the deprecations page as of 2026-09-11). Google's stated migration
   # target is Nano Banana — gemini-3.1-flash-image.
   # @see https://ai.google.dev/gemini-api/docs/deprecations
+  #
+  # Nano Banana (generateContent) typings, verified 2026-09-11:
+  # - aspect ratios: the per-model tables under "Aspect ratios and image size"
+  #   @see https://ai.google.dev/gemini-api/docs/generate-content/image-generation#aspect_ratios_and_image_size
+  # - reference images: "Gemini 3 image models let you mix up to 14 reference images"
+  #   @see https://ai.google.dev/gemini-api/docs/generate-content/image-generation#use-14-images
+  # - personGeneration is not allowlisted: the Developer API's ImageConfig has
+  #   only aspectRatio + imageSize, and python-genai rejects person_generation
+  #   "in Gemini Developer API mode" (it is a Gemini Enterprise/Vertex field).
+  #   @see https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta (schemas.ImageConfig)
   - id: google/gemini-3.1-flash-image
     provider: google
     media_type: image
@@ -14,14 +25,15 @@ models:
     params:
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["1:1","2:3","3:2","3:4","4:3","9:16","16:9","21:9"]
+        # "3.1 Flash Image" table: 14 ratios (1:4, 4:1, 1:8, 8:1 are new in 3.1)
+        allowed: ["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9","1:4","4:1","1:8","8:1"]
     ref_inputs:
-      max_total: 3
+      max_total: 14   # up to 10 object + 4 character references
       default_role: init
       provider_format: { form: base64 }
       roles:
-        init: { required: false, min_count: 0, max_count: 3 }
-    extra_allowlist: [imageSize, personGeneration]
+        init: { required: false, min_count: 0, max_count: 14 }
+    extra_allowlist: [imageSize]
     tags: [text-to-image, image-to-image]
 
   - id: google/gemini-3.1-flash-lite-image
@@ -35,14 +47,15 @@ models:
     params:
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["1:1","2:3","3:2","3:4","4:3","9:16","16:9","21:9"]
+        # "3.1 Flash Lite Image" table: the same 14 ratios as 3.1 Flash
+        allowed: ["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9","1:4","4:1","1:8","8:1"]
     ref_inputs:
-      max_total: 3
+      max_total: 14   # up to 14 object references
       default_role: init
       provider_format: { form: base64 }
       roles:
-        init: { required: false, min_count: 0, max_count: 3 }
-    extra_allowlist: [imageSize, personGeneration]
+        init: { required: false, min_count: 0, max_count: 14 }
+    extra_allowlist: [imageSize]
     tags: [text-to-image, image-to-image, fast]
 
   - id: google/gemini-2.5-flash-image
@@ -78,21 +91,25 @@ models:
     params:
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["1:1","2:3","3:2","3:4","4:3","9:16","16:9","21:9"]
+        # the Pro table (headed "3.1 Pro Image"; its 1K/2K/4K sizes and
+        # 1120/2000 tokens are gemini-3-pro-image's): 10 ratios, no 1:4/4:1/1:8/8:1
+        allowed: ["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"]
     ref_inputs:
-      max_total: 3
+      max_total: 14   # up to 6 object + 5 character + 3 style references
       default_role: init
       provider_format: { form: base64 }
       roles:
-        init: { required: false, min_count: 0, max_count: 3 }
-    extra_allowlist: [imageSize, personGeneration]
+        init: { required: false, min_count: 0, max_count: 14 }
+    extra_allowlist: [imageSize]
     tags: [text-to-image, image-to-image, multi-ref]
 
   # ─── Veo (video) ──────────────────────────────────────────────────────────
   # Gemini Developer API. Async: :predictLongRunning -> poll operation.
   # Refs are base64 inline only (the Developer API does not accept input URLs).
-  # veo-2.0-generate-001, veo-3.0-generate-001 and veo-3.0-fast-generate-001
-  # were shut down 2026-06-30; Google's replacements are the veo-3.1 line below.
+  # veo-2.0-generate-001 was shut down 2026-06-30. veo-3.0-generate-001 and
+  # veo-3.0-fast-generate-001 are deprecated (earliest shutdown 2026-06-30) but
+  # not yet marked shut down as of 2026-09-11. Google's replacements are the
+  # veo-3.1 line below.
   # @see https://ai.google.dev/gemini-api/docs/deprecations
 
   - id: google/veo-3.1-generate-preview
