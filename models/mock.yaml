@@ -346,7 +346,12 @@ models:
         enum_values: [triangle, quad]
         default: triangle
         label: Topology
-      target_polycount: { kind: int, min: 100, max: 300000, label: Target polycount }
+      target_polycount:
+        kind: int
+        min: 100
+        max: 300000
+        label: Target polycount
+        description: Approximate triangle budget for the generated mesh.
       seed: { kind: seed, min: 0, max: 2147483647 }
     ref_inputs:
       max_total: 6
