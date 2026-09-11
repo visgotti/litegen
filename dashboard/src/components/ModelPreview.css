@@ -1,0 +1,358 @@
+/* ModelPreview — the full 3D inspector.
+   Co-located with the component (the rest of the app styles live in App.css)
+   so the inspector renders correctly anywhere it is mounted on its own, e.g.
+   Storybook. Uses the App.css theme tokens with the palette values as
+   fallbacks for the same reason. Selectors are scoped under `.mp` and
+   one class deeper than the page rules they sit inside (`.gen-detail-row td`,
+   `.playground-image-area img`), so import order never decides the outcome. */
+
+.mp {
+  --mp-bg: var(--bg-deep, #0d1117);
+  --mp-surface: var(--surface, #161b22);
+  --mp-surface-2: var(--surface-2, #1c2128);
+  --mp-border: var(--border, #30363d);
+  --mp-border-2: var(--border-2, #21262d);
+  --mp-text: var(--text, #e1e4e8);
+  --mp-muted: var(--muted, #8b949e);
+  --mp-link: #58a6ff;
+  --mp-danger: var(--danger, #f85149);
+
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--mp-text);
+  font-size: 13px;
+  text-align: left;
+}
+
+.mp *,
+.mp *::before,
+.mp *::after {
+  box-sizing: border-box;
+}
+
+.mp button:focus-visible,
+.mp a:focus-visible,
+.mp input:focus-visible {
+  outline: 2px solid var(--mp-link);
+  outline-offset: 2px;
+}
+
+/* ─── Toolbar ─────────────────────────────────────────────────────── */
+.mp .mp-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+.mp .mp-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.mp .mp-btn[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--mp-link) 18%, transparent);
+  border-color: var(--mp-link);
+  color: #fff;
+}
+
+.mp .mp-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mp .mp-exposure {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--mp-border);
+  border-radius: 6px;
+  background: var(--mp-border-2);
+  color: var(--mp-muted);
+  font-size: 12px;
+  /* Playground form labels are uppercased; this one is a toolbar control. */
+  text-transform: none;
+  letter-spacing: normal;
+  margin: 0;
+}
+
+.mp .mp-exposure input[type='range'] {
+  width: 96px;
+  margin: 0;
+  accent-color: var(--mp-link);
+}
+
+.mp .mp-exposure output {
+  min-width: 2.6em;
+  color: var(--mp-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.mp .mp-seg {
+  display: inline-flex;
+}
+
+.mp .mp-seg .mp-btn {
+  border-radius: 0;
+  margin-left: -1px;
+}
+
+.mp .mp-seg .mp-btn:first-child {
+  border-radius: 6px 0 0 6px;
+  margin-left: 0;
+}
+
+.mp .mp-seg .mp-btn:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+/* Pressed segment draws above its neighbours so its border isn't clipped. */
+.mp .mp-seg .mp-btn[aria-pressed='true'] {
+  position: relative;
+  z-index: 1;
+}
+
+.mp .mp-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid var(--mp-border);
+  flex: none;
+}
+
+.mp .mp-swatch--dark { background: #0d1117; }
+.mp .mp-swatch--light { background: #f0f3f6; }
+.mp .mp-swatch--checker {
+  background: repeating-conic-gradient(#8b949e 0% 25%, #30363d 0% 50%) 50% / 6px 6px;
+}
+
+.mp .mp-spacer {
+  flex: 1 1 auto;
+}
+
+/* ─── Stage ───────────────────────────────────────────────────────── */
+.mp .mp-stage {
+  position: relative;
+  border: 1px solid var(--mp-border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--mp-bg);
+}
+
+/* ─── Stats strip ─────────────────────────────────────────────────── */
+.mp .mp-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 1px;
+  margin: 0;
+  border: 1px solid var(--mp-border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--mp-border);
+}
+
+.mp .mp-stats > div {
+  padding: 8px 12px;
+  background: var(--mp-surface);
+}
+
+.mp .mp-stats dt {
+  color: var(--mp-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.mp .mp-stats dd {
+  margin: 2px 0 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mp .mp-stats .mp-pending {
+  color: var(--mp-muted);
+  font-family: inherit;
+}
+
+/* ─── Thumbnails ──────────────────────────────────────────────────── */
+.mp .mp-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mp .mp-thumbs a {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: var(--mp-muted);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.mp .mp-thumbs a:hover {
+  color: var(--mp-link);
+}
+
+.mp .mp-thumbs img {
+  display: block;
+  width: 72px;
+  height: 72px;
+  max-width: none;
+  max-height: none;
+  object-fit: cover;
+  border: 1px solid var(--mp-border);
+  border-radius: 4px;
+  background: var(--mp-bg);
+}
+
+/* ─── Asset list ──────────────────────────────────────────────────── */
+.mp .mp-section-title {
+  margin: 0;
+  color: var(--mp-muted);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.mp .mp-assets-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--mp-border);
+  border-radius: 6px;
+}
+
+.mp .mp-assets {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.mp .mp-assets th,
+.mp .mp-assets td {
+  padding: 6px 10px;
+  background: var(--mp-surface);
+  border-bottom: 1px solid var(--mp-border-2);
+  white-space: nowrap;
+}
+
+.mp .mp-assets th {
+  background: var(--mp-surface-2);
+  font-size: 11px;
+}
+
+.mp .mp-assets tr:last-child td {
+  border-bottom: none;
+}
+
+.mp .mp-assets .mp-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.mp .mp-links {
+  text-align: right;
+}
+
+.mp .mp-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 12px;
+  color: var(--mp-link);
+  text-decoration: none;
+}
+
+.mp .mp-links a:hover {
+  text-decoration: underline;
+}
+
+.mp .mp-kind {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.mp .mp-kind--mesh { background: #1c2a3d; color: var(--mp-link); }
+.mp .mp-kind--texture { background: #2d1f3d; color: #bc8cff; }
+.mp .mp-kind--preview { background: var(--mp-surface-2); color: var(--mp-muted); }
+
+/* ─── Error state ─────────────────────────────────────────────────── */
+.mp .mp-error {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid var(--danger-border, #da3633);
+  border-radius: 6px;
+  background: var(--danger-bg, #3d1f20);
+  color: var(--mp-danger);
+}
+
+.mp .mp-error svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.mp .mp-error strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.mp .mp-error p {
+  margin: 0;
+  color: var(--mp-text);
+  line-height: 1.45;
+}
+
+/* ─── Fullscreen ──────────────────────────────────────────────────── */
+/* Driven by a data attribute mirrored from `fullscreenchange`, not the
+   :fullscreen pseudo-class, so styling and the button's pressed state can
+   never disagree. The stage takes the height; the lists are for the page. */
+.mp[data-fullscreen='true'] {
+  height: 100%;
+  padding: 12px;
+  background: var(--mp-surface);
+}
+
+.mp[data-fullscreen='true'] .mp-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.mp[data-fullscreen='true'] .model-viewer-wrap {
+  height: 100%;
+}
+
+.mp[data-fullscreen='true'] .mp-thumbs,
+.mp[data-fullscreen='true'] .mp-section-title,
+.mp[data-fullscreen='true'] .mp-assets-wrap {
+  display: none;
+}
+
+.mp .mp-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

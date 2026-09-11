@@ -8,7 +8,7 @@ import {
 } from '../playground-history';
 import type { PlaygroundHistoryEntry } from '../playground-history';
 import type { ModelInfo, Model3dGenerationRequest, Model3dGenerationResponse, Model3dAsset } from '@litegen/sdk';
-import ModelViewer from '../components/ModelViewer';
+import ModelPreview from '../components/ModelPreview';
 
 type Tab = 'image' | 'request' | 'response';
 
@@ -454,12 +454,9 @@ export default function SingleMode() {
             <div className="playground-image-area">
               {resultMediaType === 'model3d' ? (
                 meshAssets.length > 0 ? (
-                  <ModelViewer
-                    src={meshAssets.find(a => a.kind === 'mesh')?.url ?? ''}
-                    poster={meshAssets.find(a => a.kind === 'preview')?.url}
-                    testId="playground-mesh"
-                    style={{ maxHeight: 480 }}
-                  />
+                  // The single result has the user's full attention, so it
+                  // gets the inspector; Compare-mode tiles stay compact.
+                  <ModelPreview assets={meshAssets} testId="playground-mesh" />
                 ) : (
                   <span style={{ color: '#8b949e' }}>
                     {progress != null ? `generating… ${progress}%` : 'No mesh yet'}

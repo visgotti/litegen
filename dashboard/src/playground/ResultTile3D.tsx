@@ -1,11 +1,15 @@
 import ModelViewer from '../components/ModelViewer';
+import { meshOf, previewOf } from '../components/model3d-assets';
 import type { ResultTileState } from './types';
 
 interface Props { tile: ResultTileState; onRerun: (modelId: string) => void; }
 
+/** Compare-mode grid tile. Deliberately the compact `ModelViewer`, not the
+ *  `ModelPreview` inspector: several live canvases each with a full toolbar
+ *  would crowd the grid, and the single-mode panel is where inspection lives. */
 export default function ResultTile3D({ tile, onRerun }: Props) {
-  const mesh = tile.assets?.find(a => a.kind === 'mesh')?.url ?? tile.url ?? undefined;
-  const poster = tile.assets?.find(a => a.kind === 'preview')?.url ?? undefined;
+  const mesh = meshOf(tile.assets ?? [], tile.url)?.url;
+  const poster = previewOf(tile.assets ?? [])?.url;
   return (
     <div className="pg-tile" data-testid={`pg-tile-${tile.modelId}`}>
       <div className="pg-tile-head">
