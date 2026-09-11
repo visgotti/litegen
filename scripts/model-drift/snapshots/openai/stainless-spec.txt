@@ -1,0 +1,12 @@
+dall-e-2
+dall-e-3
+gpt-image-1
+gpt-image-1-mini
+gpt-image-1.5
+gpt-image-2
+gpt-image-2-2026-04-21
+sora-2
+sora-2-2025-10-06
+sora-2-2025-12-08
+sora-2-pro
+sora-2-pro-2025-10-06

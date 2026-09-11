@@ -1,0 +1,712 @@
+{
+  "POST /images/edits (application/json)": {
+    "properties": {
+      "background": {
+        "anyOf": [
+          {
+            "enum": [
+              "transparent",
+              "opaque",
+              "auto"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": "auto"
+      },
+      "images": {
+        "items": {
+          "additionalProperties": false,
+          "anyOf": [
+            {
+              "required": [
+                "image_url"
+              ]
+            },
+            {
+              "required": [
+                "file_id"
+              ]
+            }
+          ],
+          "not": {
+            "required": [
+              "image_url",
+              "file_id"
+            ]
+          },
+          "properties": {
+            "file_id": {
+              "type": "string"
+            },
+            "image_url": {
+              "format": "uri",
+              "maxLength": 20971520,
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "maxItems": 16,
+        "minItems": 1,
+        "type": "array"
+      },
+      "input_fidelity": {
+        "anyOf": [
+          {
+            "enum": [
+              "high",
+              "low"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "mask": {
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "required": [
+              "image_url"
+            ]
+          },
+          {
+            "required": [
+              "file_id"
+            ]
+          }
+        ],
+        "not": {
+          "required": [
+            "image_url",
+            "file_id"
+          ]
+        },
+        "properties": {
+          "file_id": {
+            "type": "string"
+          },
+          "image_url": {
+            "format": "uri",
+            "maxLength": 20971520,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "model": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "enum": [
+              "gpt-image-1.5",
+              "gpt-image-2",
+              "gpt-image-2-2026-04-21",
+              "gpt-image-2.5-sunburst",
+              "gpt-image-2.5-sunburst-2026-09-08",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-flare-2026-09-08",
+              "gpt-image-1",
+              "gpt-image-1-mini",
+              "chatgpt-image-latest"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": "gpt-image-1.5"
+      },
+      "moderation": {
+        "anyOf": [
+          {
+            "enum": [
+              "low",
+              "auto"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": "auto"
+      },
+      "n": {
+        "anyOf": [
+          {
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": 1
+      },
+      "output_compression": {
+        "anyOf": [
+          {
+            "maximum": 100,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "output_format": {
+        "anyOf": [
+          {
+            "enum": [
+              "png",
+              "jpeg",
+              "webp"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": "png"
+      },
+      "partial_images": {
+        "anyOf": [
+          {
+            "default": 0,
+            "maximum": 3,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "prompt": {
+        "maxLength": 32000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "quality": {
+        "anyOf": [
+          {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "auto"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": "auto"
+      },
+      "size": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "enum": [
+              "auto",
+              "1024x1024",
+              "1536x1024",
+              "1024x1536"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": "auto"
+      },
+      "stream": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": false
+      },
+      "user": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "images",
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /images/edits (multipart/form-data)": {
+    "properties": {
+      "background": {
+        "default": "auto",
+        "enum": [
+          "transparent",
+          "opaque",
+          "auto"
+        ],
+        "nullable": true,
+        "type": "string"
+      },
+      "image": {
+        "anyOf": [
+          {
+            "format": "binary",
+            "type": "string"
+          },
+          {
+            "items": {
+              "format": "binary",
+              "type": "string"
+            },
+            "maxItems": 16,
+            "type": "array"
+          }
+        ]
+      },
+      "input_fidelity": {
+        "anyOf": [
+          {
+            "enum": [
+              "high",
+              "low"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "mask": {
+        "format": "binary",
+        "type": "string"
+      },
+      "model": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "enum": [
+              "gpt-image-1.5",
+              "gpt-image-2",
+              "gpt-image-2-2026-04-21",
+              "gpt-image-2.5-sunburst",
+              "gpt-image-2.5-sunburst-2026-09-08",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-flare-2026-09-08",
+              "dall-e-2",
+              "gpt-image-1",
+              "gpt-image-1-mini",
+              "chatgpt-image-latest"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "gpt-image-1.5",
+        "nullable": true
+      },
+      "n": {
+        "default": 1,
+        "maximum": 10,
+        "minimum": 1,
+        "nullable": true,
+        "type": "integer"
+      },
+      "output_compression": {
+        "default": 100,
+        "nullable": true,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "png",
+          "jpeg",
+          "webp"
+        ],
+        "nullable": true,
+        "type": "string"
+      },
+      "partial_images": {
+        "anyOf": [
+          {
+            "default": 0,
+            "maximum": 3,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "quality": {
+        "default": "auto",
+        "enum": [
+          "standard",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "auto"
+        ],
+        "nullable": true,
+        "type": "string"
+      },
+      "response_format": {
+        "enum": [
+          "url",
+          "b64_json"
+        ],
+        "nullable": true,
+        "type": "string"
+      },
+      "size": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "enum": [
+              "256x256",
+              "512x512",
+              "1024x1024",
+              "1536x1024",
+              "1024x1536",
+              "auto"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "1024x1024",
+        "nullable": true
+      },
+      "stream": {
+        "default": false,
+        "nullable": true,
+        "type": "boolean"
+      },
+      "user": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt",
+      "image"
+    ],
+    "type": "object"
+  },
+  "POST /images/generations (application/json)": {
+    "properties": {
+      "background": {
+        "default": "auto",
+        "enum": [
+          "transparent",
+          "opaque",
+          "auto"
+        ],
+        "nullable": true,
+        "type": "string"
+      },
+      "model": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "enum": [
+              "gpt-image-1.5",
+              "gpt-image-2",
+              "gpt-image-2-2026-04-21",
+              "gpt-image-2.5-sunburst",
+              "gpt-image-2.5-sunburst-2026-09-08",
+              "gpt-image-2.5-flare",
+              "gpt-image-2.5-flare-2026-09-08",
+              "dall-e-2",
+              "dall-e-3",
+              "gpt-image-1",
+              "gpt-image-1-mini"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "dall-e-2",
+        "nullable": true
+      },
+      "moderation": {
+        "default": "auto",
+        "enum": [
+          "low",
+          "auto"
+        ],
+        "nullable": true,
+        "type": "string"
+      },
+      "n": {
+        "default": 1,
+        "maximum": 10,
+        "minimum": 1,
+        "nullable": true,
+        "type": "integer"
+      },
+      "output_compression": {
+        "default": 100,
+        "nullable": true,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "png",
+          "jpeg",
+          "webp"
+        ],
+        "nullable": true,
+        "type": "string"
+      },
+      "partial_images": {
+        "anyOf": [
+          {
+            "default": 0,
+            "maximum": 3,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "quality": {
+        "default": "auto",
+        "enum": [
+          "standard",
+          "hd",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "auto"
+        ],
+        "nullable": true,
+        "type": "string"
+      },
+      "response_format": {
+        "default": "url",
+        "enum": [
+          "url",
+          "b64_json"
+        ],
+        "nullable": true,
+        "type": "string"
+      },
+      "size": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "enum": [
+              "auto",
+              "1024x1024",
+              "1536x1024",
+              "1024x1536",
+              "256x256",
+              "512x512",
+              "1792x1024",
+              "1024x1792"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "auto",
+        "nullable": true
+      },
+      "stream": {
+        "default": false,
+        "nullable": true,
+        "type": "boolean"
+      },
+      "style": {
+        "default": "vivid",
+        "enum": [
+          "vivid",
+          "natural"
+        ],
+        "nullable": true,
+        "type": "string"
+      },
+      "user": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /videos (application/json)": {
+    "properties": {
+      "input_reference": {
+        "properties": {
+          "file_id": {
+            "type": "string"
+          },
+          "image_url": {
+            "format": "uri",
+            "maxLength": 20971520,
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "model": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "enum": [
+              "sora-2",
+              "sora-2-pro",
+              "sora-2-2025-10-06",
+              "sora-2-pro-2025-10-06",
+              "sora-2-2025-12-08"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "prompt": {
+        "maxLength": 32000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "seconds": {
+        "enum": [
+          "4",
+          "8",
+          "12"
+        ],
+        "type": "string"
+      },
+      "size": {
+        "enum": [
+          "720x1280",
+          "1280x720",
+          "1024x1792",
+          "1792x1024"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /videos (multipart/form-data)": {
+    "properties": {
+      "input_reference": {
+        "oneOf": [
+          {
+            "format": "binary",
+            "type": "string"
+          },
+          {
+            "properties": {
+              "file_id": {
+                "type": "string"
+              },
+              "image_url": {
+                "format": "uri",
+                "maxLength": 20971520,
+                "type": "string"
+              }
+            },
+            "required": [],
+            "type": "object"
+          }
+        ]
+      },
+      "model": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "enum": [
+              "sora-2",
+              "sora-2-pro",
+              "sora-2-2025-10-06",
+              "sora-2-pro-2025-10-06",
+              "sora-2-2025-12-08"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "prompt": {
+        "maxLength": 32000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "seconds": {
+        "enum": [
+          "4",
+          "8",
+          "12"
+        ],
+        "type": "string"
+      },
+      "size": {
+        "enum": [
+          "720x1280",
+          "1280x720",
+          "1024x1792",
+          "1792x1024"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}

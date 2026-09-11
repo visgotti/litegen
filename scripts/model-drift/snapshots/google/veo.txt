@@ -1,0 +1,13 @@
+| Parameter | Veo 3.1 \& Veo 3.1 Fast | Veo 3.1 Lite | Veo 3 \& Veo 3 Fast |
+| --- | --- | --- | --- |
+| Instances |  |  |  |
+| prompt | `string` | `string` | `string` |
+| image | `Image` object | `Image` object | `Image` object |
+| lastFrame | `Image` object | `Image` object | `Image` object |
+| referenceImages | `VideoGenerationReferenceImage` object | `n/a` object | n/a |
+| video | `Video` object from a previous generation | n/a | n/a |
+| Parameters |  |  |  |
+| aspectRatio | `"16:9"` (default), `"9:16"` | `"16:9"` (default), `"9:16"` | `"16:9"` (default), `"9:16"` |
+| durationSeconds | `"4"`, `"6"`, `"8"`. * Must be "8" when using extension, reference images or with 1080p and 4k resolutions* | `"4"`, `"6"`, `"8"`. * Must be "8" when using reference images or with 1080p* | `"4"`, `"6"`, `"8"`. * Must be "8" when using extension, reference images or with 1080p and 4k resolutions* |
+| personGeneration | Text-to-video \& Extension: `"allow_all"` only Image-to-video, Interpolation, \& Reference images: `"allow_adult"` only | Text-to-video: `"allow_all"` only Image-to-video, Interpolation, \& Reference images: `"allow_adult"` only | Text-to-video: `"allow_all"` only Image-to-video: `"allow_adult"` only |
+| resolution | `"720p"` (default), `"1080p"` (only supports 8s duration), `"4k"` (only supports 8s duration) * `"720p"` only for extension* | `"720p"` (default), `"1080p"` (only supports 8s duration) | `"720p"` (default), `"1080p"` (only supports 8s duration), `"4k"` (only supports 8s duration) * `"720p"` only for extension* |

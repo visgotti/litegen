@@ -1,0 +1,268 @@
+# stable-image endpoints
+/v2beta/stable-image/control/sketch
+/v2beta/stable-image/control/structure
+/v2beta/stable-image/control/style
+/v2beta/stable-image/control/style-transfer
+/v2beta/stable-image/edit/erase
+/v2beta/stable-image/edit/inpaint
+/v2beta/stable-image/edit/outpaint
+/v2beta/stable-image/edit/remove-background
+/v2beta/stable-image/edit/replace-background-and-relight
+/v2beta/stable-image/edit/search-and-recolor
+/v2beta/stable-image/edit/search-and-replace
+/v2beta/stable-image/generate/core
+/v2beta/stable-image/generate/sd3
+/v2beta/stable-image/generate/ultra
+/v2beta/stable-image/upscale/conservative
+/v2beta/stable-image/upscale/creative
+/v2beta/stable-image/upscale/fast
+
+{
+  "POST /v2beta/stable-image/generate/core (multipart/form-data)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "1:1",
+        "enum": [
+          "21:9",
+          "16:9",
+          "3:2",
+          "5:4",
+          "1:1",
+          "4:5",
+          "2:3",
+          "9:16",
+          "9:21"
+        ],
+        "type": "string"
+      },
+      "negative_prompt": {
+        "maxLength": 10000,
+        "type": "string"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "png",
+          "jpeg",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "seed": {
+        "default": 0,
+        "maximum": 4294967294,
+        "minimum": 0,
+        "type": "number"
+      },
+      "style_preset": {
+        "enum": [
+          "enhance",
+          "anime",
+          "photographic",
+          "digital-art",
+          "comic-book",
+          "fantasy-art",
+          "line-art",
+          "analog-film",
+          "neon-punk",
+          "isometric",
+          "low-poly",
+          "origami",
+          "modeling-compound",
+          "cinematic",
+          "3d-model",
+          "pixel-art",
+          "tile-texture"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2beta/stable-image/generate/sd3 (multipart/form-data)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "1:1",
+        "enum": [
+          "21:9",
+          "16:9",
+          "3:2",
+          "5:4",
+          "1:1",
+          "4:5",
+          "2:3",
+          "9:16",
+          "9:21"
+        ],
+        "type": "string"
+      },
+      "cfg_scale": {
+        "maximum": 10,
+        "minimum": 1,
+        "type": "number"
+      },
+      "image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "mode": {
+        "default": "text-to-image",
+        "enum": [
+          "text-to-image",
+          "image-to-image"
+        ],
+        "type": "string"
+      },
+      "model": {
+        "default": "sd3.5-large",
+        "enum": [
+          "sd3.5-large",
+          "sd3.5-large-turbo",
+          "sd3.5-medium"
+        ],
+        "type": "string"
+      },
+      "negative_prompt": {
+        "maxLength": 10000,
+        "type": "string"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "png",
+          "jpeg",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "seed": {
+        "default": 0,
+        "maximum": 4294967294,
+        "minimum": 0,
+        "type": "number"
+      },
+      "strength": {
+        "maximum": 1,
+        "minimum": 0,
+        "type": "number"
+      },
+      "style_preset": {
+        "enum": [
+          "enhance",
+          "anime",
+          "photographic",
+          "digital-art",
+          "comic-book",
+          "fantasy-art",
+          "line-art",
+          "analog-film",
+          "neon-punk",
+          "isometric",
+          "low-poly",
+          "origami",
+          "modeling-compound",
+          "cinematic",
+          "3d-model",
+          "pixel-art",
+          "tile-texture"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2beta/stable-image/generate/ultra (multipart/form-data)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "1:1",
+        "enum": [
+          "21:9",
+          "16:9",
+          "3:2",
+          "5:4",
+          "1:1",
+          "4:5",
+          "2:3",
+          "9:16",
+          "9:21"
+        ],
+        "type": "string"
+      },
+      "image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "negative_prompt": {
+        "maxLength": 10000,
+        "type": "string"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "seed": {
+        "default": 0,
+        "maximum": 4294967294,
+        "minimum": 0,
+        "type": "number"
+      },
+      "strength": {
+        "maximum": 1,
+        "minimum": 0,
+        "type": "number"
+      },
+      "style_preset": {
+        "enum": [
+          "enhance",
+          "anime",
+          "photographic",
+          "digital-art",
+          "comic-book",
+          "fantasy-art",
+          "line-art",
+          "analog-film",
+          "neon-punk",
+          "isometric",
+          "low-poly",
+          "origami",
+          "modeling-compound",
+          "cinematic",
+          "3d-model",
+          "pixel-art",
+          "tile-texture"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}

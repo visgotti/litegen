@@ -1,0 +1,884 @@
+## fal-ai/aura-flow — active text-to-image
+{
+  "POST /fal-ai/aura-flow (application/json)": {
+    "properties": {
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "expand_prompt": {
+        "default": true,
+        "type": "boolean"
+      },
+      "guidance_scale": {
+        "default": 3.5,
+        "maximum": 20,
+        "minimum": 0,
+        "type": "number"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 2,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "num_inference_steps": {
+        "default": 50,
+        "maximum": 50,
+        "minimum": 20,
+        "type": "integer"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/fast-sdxl — active text-to-image
+{
+  "POST /fal-ai/fast-sdxl (application/json)": {
+    "properties": {
+      "embeddings": {
+        "default": [],
+        "items": {
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "tokens": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "expand_prompt": {
+        "default": false,
+        "type": "boolean"
+      },
+      "format": {
+        "default": "jpeg",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "type": "string"
+      },
+      "guidance_scale": {
+        "default": 7.5,
+        "maximum": 20,
+        "minimum": 0,
+        "type": "number"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "square_hd"
+      },
+      "loras": {
+        "default": [],
+        "items": {
+          "properties": {
+            "force": {
+              "default": false,
+              "type": "boolean"
+            },
+            "path": {
+              "type": "string"
+            },
+            "scale": {
+              "default": 1,
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "negative_prompt": {
+        "default": "",
+        "type": "string"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 8,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "num_inference_steps": {
+        "default": 25,
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "request_id": {
+        "default": "",
+        "type": "string"
+      },
+      "safety_checker_version": {
+        "default": "v1",
+        "enum": [
+          "v1",
+          "v2"
+        ],
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/flux-pro/v1.1 — active text-to-image
+{
+  "POST /fal-ai/flux-pro/v1.1 (application/json)": {
+    "properties": {
+      "enhance_prompt": {
+        "default": false,
+        "type": "boolean"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "landscape_4_3"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "jpeg",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "safety_tolerance": {
+        "default": "2",
+        "enum": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/flux/dev — active text-to-image
+{
+  "POST /fal-ai/flux/dev (application/json)": {
+    "properties": {
+      "acceleration": {
+        "default": "none",
+        "enum": [
+          "none",
+          "regular",
+          "high"
+        ],
+        "type": "string"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "guidance_scale": {
+        "default": 3.5,
+        "maximum": 20,
+        "minimum": 1,
+        "type": "number"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "landscape_4_3"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "num_inference_steps": {
+        "default": 28,
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "jpeg",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/flux/schnell — active text-to-image
+{
+  "POST /fal-ai/flux/schnell (application/json)": {
+    "properties": {
+      "acceleration": {
+        "default": "none",
+        "enum": [
+          "none",
+          "regular",
+          "high"
+        ],
+        "type": "string"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "guidance_scale": {
+        "default": 3.5,
+        "maximum": 20,
+        "minimum": 1,
+        "type": "number"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "landscape_4_3"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "num_inference_steps": {
+        "default": 4,
+        "maximum": 12,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "jpeg",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/ltx-video — active text-to-video
+{
+  "POST /fal-ai/ltx-video (application/json)": {
+    "properties": {
+      "guidance_scale": {
+        "default": 3,
+        "exclusiveMinimum": 1,
+        "maximum": 10,
+        "type": "number"
+      },
+      "negative_prompt": {
+        "default": "low quality, worst quality, deformed, distorted, disfigured, motion smear, motion artifacts, fused fingers, bad anatomy, weird hand, ugly",
+        "type": "string"
+      },
+      "num_inference_steps": {
+        "default": 30,
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/ltx-video/image-to-video — active image-to-video
+{
+  "POST /fal-ai/ltx-video/image-to-video (application/json)": {
+    "properties": {
+      "guidance_scale": {
+        "default": 3,
+        "exclusiveMinimum": 1,
+        "maximum": 10,
+        "type": "number"
+      },
+      "image_url": {
+        "type": "string"
+      },
+      "negative_prompt": {
+        "default": "low quality, worst quality, deformed, distorted, disfigured, motion smear, motion artifacts, fused fingers, bad anatomy, weird hand, ugly",
+        "type": "string"
+      },
+      "num_inference_steps": {
+        "default": 30,
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "prompt",
+      "image_url"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/recraft/v3/text-to-image — active text-to-image
+{
+  "POST /fal-ai/recraft/v3/text-to-image (application/json)": {
+    "properties": {
+      "colors": {
+        "default": [],
+        "items": {
+          "properties": {
+            "b": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "g": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "r": {
+              "default": 0,
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "enable_safety_checker": {
+        "default": false,
+        "type": "boolean"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "square_hd"
+      },
+      "prompt": {
+        "maxLength": 1000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "style": {
+        "default": "realistic_image",
+        "enum": [
+          "any",
+          "realistic_image",
+          "digital_illustration",
+          "vector_illustration",
+          "realistic_image/b_and_w",
+          "realistic_image/hard_flash",
+          "realistic_image/hdr",
+          "realistic_image/natural_light",
+          "realistic_image/studio_portrait",
+          "realistic_image/enterprise",
+          "realistic_image/motion_blur",
+          "realistic_image/evening_light",
+          "realistic_image/faded_nostalgia",
+          "realistic_image/forest_life",
+          "realistic_image/mystic_naturalism",
+          "realistic_image/natural_tones",
+          "realistic_image/organic_calm",
+          "realistic_image/real_life_glow",
+          "realistic_image/retro_realism",
+          "realistic_image/retro_snapshot",
+          "realistic_image/urban_drama",
+          "realistic_image/village_realism",
+          "realistic_image/warm_folk",
+          "digital_illustration/pixel_art",
+          "digital_illustration/hand_drawn",
+          "digital_illustration/grain",
+          "digital_illustration/infantile_sketch",
+          "digital_illustration/2d_art_poster",
+          "digital_illustration/handmade_3d",
+          "digital_illustration/hand_drawn_outline",
+          "digital_illustration/engraving_color",
+          "digital_illustration/2d_art_poster_2",
+          "digital_illustration/antiquarian",
+          "digital_illustration/bold_fantasy",
+          "digital_illustration/child_book",
+          "digital_illustration/child_books",
+          "digital_illustration/cover",
+          "digital_illustration/crosshatch",
+          "digital_illustration/digital_engraving",
+          "digital_illustration/expressionism",
+          "digital_illustration/freehand_details",
+          "digital_illustration/grain_20",
+          "digital_illustration/graphic_intensity",
+          "digital_illustration/hard_comics",
+          "digital_illustration/long_shadow",
+          "digital_illustration/modern_folk",
+          "digital_illustration/multicolor",
+          "digital_illustration/neon_calm",
+          "digital_illustration/noir",
+          "digital_illustration/nostalgic_pastel",
+          "digital_illustration/outline_details",
+          "digital_illustration/pastel_gradient",
+          "digital_illustration/pastel_sketch",
+          "digital_illustration/pop_art",
+          "digital_illustration/pop_renaissance",
+          "digital_illustration/street_art",
+          "digital_illustration/tablet_sketch",
+          "digital_illustration/urban_glow",
+          "digital_illustration/urban_sketching",
+          "digital_illustration/vanilla_dreams",
+          "digital_illustration/young_adult_book",
+          "digital_illustration/young_adult_book_2",
+          "vector_illustration/bold_stroke",
+          "vector_illustration/chemistry",
+          "vector_illustration/colored_stencil",
+          "vector_illustration/contour_pop_art",
+          "vector_illustration/cosmics",
+          "vector_illustration/cutout",
+          "vector_illustration/depressive",
+          "vector_illustration/editorial",
+          "vector_illustration/emotional_flat",
+          "vector_illustration/infographical",
+          "vector_illustration/marker_outline",
+          "vector_illustration/mosaic",
+          "vector_illustration/naivector",
+          "vector_illustration/roundish_flat",
+          "vector_illustration/segmented_colors",
+          "vector_illustration/sharp_contrast",
+          "vector_illustration/thin",
+          "vector_illustration/vector_photo",
+          "vector_illustration/vivid_shapes",
+          "vector_illustration/engraving",
+          "vector_illustration/line_art",
+          "vector_illustration/line_circuit",
+          "vector_illustration/linocut"
+        ],
+        "type": "string"
+      },
+      "style_id": {
+        "anyOf": [
+          {
+            "format": "uuid4",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/stable-diffusion-v35-medium — active text-to-image
+{
+  "POST /fal-ai/stable-diffusion-v35-medium (application/json)": {
+    "properties": {
+      "auto_fix": {
+        "default": true,
+        "type": "boolean"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "guidance_scale": {
+        "default": 4.5,
+        "maximum": 20,
+        "minimum": 0,
+        "type": "number"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "landscape_4_3"
+      },
+      "negative_prompt": {
+        "default": "",
+        "type": "string"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "num_inference_steps": {
+        "default": 40,
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "jpeg",
+        "enum": [
+          "jpeg",
+          "png"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}

@@ -1,0 +1,6 @@
+/docs/api-reference/models/overview.md
+/docs/api-reference/models/recraft-v2.md
+/docs/api-reference/models/recraft-v3.md
+/docs/api-reference/models/recraft-v4-1.md
+/docs/api-reference/models/recraft-v4-styles.md
+/docs/api-reference/models/recraft-v4.md

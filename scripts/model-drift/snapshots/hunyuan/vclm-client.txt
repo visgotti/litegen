@@ -1,0 +1,14 @@
+submithumanactorjob
+submithunyuantovideojob
+submitimagetovideogeneraljob
+submitimagetovideojob
+submitimagetovideovidujob
+submitmotioncontrolklingjob
+submitportraitsingjob
+submitreferencetovideovidujob
+submittemplatetovideojob
+submittexttovideojob
+submittexttovideovidujob
+submitvideoeditklingjob
+submitvideoextendklingjob
+submitvideofacefusionjob

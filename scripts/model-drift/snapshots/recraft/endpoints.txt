@@ -1,0 +1,14 @@
+prompt (required) | string | Maximum prompt length depends on model, refer to [Appendix](/docs/api-reference/appendix#maximum-prompt-length)
+n | integer or null, default is 1 | All models
+model | string or null, default is `recraftv4_1` | Must be one of:<br />`recraftv4_1`<br />`recraftv4_1_vector`<br />`recraftv4_1_pro`<br />`recraftv4_1_pro_vector`<br />`recraftv4_1_utility`<br />`recraftv4_1_utility_vector`<br />`recraftv4_1_utility_pro`<br />`recraftv4_1_utility_pro_vector`<br />`recraftv4`<br />`recraftv4_vector`<br />`recraftv4_pro`<br />`recraftv4_pro_vector`<br />`recraftv4_styles`<br />`recraftv4_styles_vector`<br />`recraftv4_styles_pro`<br />`recraftv4_styles_pro_vector`<br />`recraftv3`<br />`recraftv3_vector`<br />`recraftv2`<br />`recraftv2_vector`
+size | string or null | Depends on model, supported values are published in [Appendix](/docs/api-reference/appendix#list-of-supported-image-sizes)
+style | string or null | All models
+style\_id | UUID or null | All models
+style\_match | string or null | `regular` — V2 / V3 models;<br />`precise`, `flexible` — V4 / V4.1 models
+style\_references | files | All models
+style\_reference\_urls | array of strings or null | All models
+negative\_prompt | string or null | V2 / V3 models
+random\_seed | integer or null | All models
+response\_format | string or null, default is `url` | All models
+text\_layout | Array of objects or null | V3 models only
+controls | object or null | All models, partially supported for V4 / V4.1

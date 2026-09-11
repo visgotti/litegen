@@ -1,0 +1,16 @@
+model-card-amazon-nova-canvas
+model-card-amazon-nova-reel
+model-card-amazon-titan-image-generator-g1-v2
+model-card-stability-ai-stable-image-conservative-upscale
+model-card-stability-ai-stable-image-control-sketch
+model-card-stability-ai-stable-image-control-structure
+model-card-stability-ai-stable-image-creative-upscale
+model-card-stability-ai-stable-image-erase-object
+model-card-stability-ai-stable-image-fast-upscale
+model-card-stability-ai-stable-image-inpaint
+model-card-stability-ai-stable-image-outpaint
+model-card-stability-ai-stable-image-remove-background
+model-card-stability-ai-stable-image-search-and-recolor
+model-card-stability-ai-stable-image-search-and-replace
+model-card-stability-ai-stable-image-style-guide
+model-card-stability-ai-stable-image-style-transfer

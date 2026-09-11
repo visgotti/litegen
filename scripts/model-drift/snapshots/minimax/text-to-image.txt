@@ -1,0 +1,122 @@
+openapi: 3.1.0
+info:
+  license:
+    name: MIT
+  version: 1.0.0
+servers:
+  - url: https://api.minimax.io
+security:
+  - bearerAuth: []
+paths:
+  /v1/image_generation:
+    post:
+      tags:
+        - Image
+      operationId: imageGeneration
+      parameters:
+        - name: Content-Type
+          in: header
+          required: true
+          schema:
+            type: string
+            enum:
+              - application/json
+            default: application/json
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageGenerationReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGenerationResp'
+components:
+  schemas:
+    ImageGenerationReq:
+      type: object
+      required:
+        - prompt
+        - model
+      properties:
+        model:
+          type: string
+          enum:
+            - image-01
+        prompt:
+          type: string
+        aspect_ratio:
+          type: string
+          enum:
+            - '1:1'
+            - '16:9'
+            - '4:3'
+            - '3:2'
+            - '2:3'
+            - '3:4'
+            - '9:16'
+            - '21:9'
+        width:
+          type: integer
+        height:
+          type: integer
+        response_format:
+          type: string
+          enum:
+            - url
+            - base64
+          default: url
+        seed:
+          type: integer
+          format: int64
+        'n':
+          type: integer
+          default: 1
+          minimum: 1
+          maximum: 9
+          description: 'Number of images to generate per request. Range [1, 9]. Default: 1.'
+        prompt_optimizer:
+          type: boolean
+          default: false
+    ImageGenerationResp:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/DataObject'
+        metadata:
+          type: object
+          properties:
+            success_count:
+              type: integer
+            failed_count:
+              type: integer
+        id:
+          type: string
+        base_resp:
+          $ref: '#/components/schemas/BaseResp'
+    DataObject:
+      type: object
+      properties:
+        image_urls:
+          type: array
+          items:
+            type: string
+        image_base64:
+          type: array
+          items:
+            type: string
+    BaseResp:
+      type: object
+      properties:
+        status_code:
+          type: integer
+        status_msg:
+          type: string
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

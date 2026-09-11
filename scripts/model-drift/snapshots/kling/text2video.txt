@@ -1,0 +1,29 @@
+# notice
+> This model or capability will be retired on September 15, 2026. Please migrate to a currently supported Kling AI model or service before this date.
+
+# POST /v1/videos/text2video request body
+| Field Path | Type | Required | Default | Enum |
+| --- | --- | ---: | --- | --- |
+| `model_name` | string | No | `kling-v1` | `kling-v1`, `kling-v1-6`, `kling-v2-master`, `kling-v2-1-master`, `kling-v2-5-turbo`, `kling-v2-6`, `kling-v3` |
+| `multi_shot` | boolean | No | `false` | - |
+| `shot_type` | string | No | - | `customize`, `intelligence` |
+| `prompt` | string | No | - | - |
+| `multi_prompt` | array | No | - | - |
+| `negative_prompt` | string | No | - | - |
+| `sound` | string | No | `off` | `on`, `off` |
+| `cfg_scale` | float | No | `0.5` | - |
+| `mode` | string | No | `std` | `std`, `pro`, `4k` |
+| `camera_control` | object | No | - | - |
+| `camera_control.type` | string | No | - | `simple`, `down_back`, `forward_up`, `right_turn_forward`, `left_turn_forward` |
+| `camera_control.config` | object | No | - | - |
+| `camera_control.config.horizontal` | float | No | - | - |
+| `camera_control.config.vertical` | float | No | - | - |
+| `camera_control.config.pan` | float | No | - | - |
+| `camera_control.config.tilt` | float | No | - | - |
+| `camera_control.config.roll` | float | No | - | - |
+| `camera_control.config.zoom` | float | No | - | - |
+| `aspect_ratio` | string | No | `16:9` | `16:9`, `9:16`, `1:1` |
+| `duration` | string | No | `5` | `3`, `4`, `5`, `6`, `7`, `8`, `9`, `10`, `11`, `12`, `13`, `14`, `15` |
+| `watermark_info` | object | No | - | - |
+| `callback_url` | string | No | - | - |
+| `external_task_id` | string | No | - | - |

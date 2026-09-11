@@ -1,0 +1,308 @@
+{
+  "POST /v1/ideogram-v3/generate (multipart/form-data)": {
+    "properties": {
+      "aspect_ratio": {
+        "enum": [
+          "1x3",
+          "3x1",
+          "1x2",
+          "2x1",
+          "9x16",
+          "16x9",
+          "10x16",
+          "16x10",
+          "2x3",
+          "3x2",
+          "3x4",
+          "4x3",
+          "4x5",
+          "5x4",
+          "1x1"
+        ],
+        "type": "string"
+      },
+      "character_reference_images": {
+        "items": {
+          "format": "binary",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "character_reference_images_mask": {
+        "items": {
+          "format": "binary",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "color_palette": {
+        "oneOf": [
+          {
+            "properties": {
+              "name": {
+                "enum": [
+                  "EMBER",
+                  "FRESH",
+                  "JUNGLE",
+                  "MAGIC",
+                  "MELON",
+                  "MOSAIC",
+                  "PASTEL",
+                  "ULTRAMARINE"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "members": {
+                "items": {
+                  "properties": {
+                    "color_hex": {
+                      "pattern": "^#(?:[0-9a-fA-F]{3}){1,2}$",
+                      "type": "string"
+                    },
+                    "color_weight": {
+                      "format": "double",
+                      "maximum": 1,
+                      "minimum": 0.05,
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "color_hex"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "members"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "custom_model_uri": {
+        "type": "string"
+      },
+      "enable_copyright_detection": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "magic_prompt": {
+        "enum": [
+          "AUTO",
+          "ON",
+          "OFF"
+        ],
+        "type": "string"
+      },
+      "negative_prompt": {
+        "type": "string"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 8,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "rendering_speed": {
+        "default": "DEFAULT",
+        "enum": [
+          "FLASH",
+          "TURBO",
+          "DEFAULT",
+          "QUALITY"
+        ],
+        "type": "string"
+      },
+      "resolution": {
+        "enum": [
+          "512x1536",
+          "576x1408",
+          "576x1472",
+          "576x1536",
+          "640x1344",
+          "640x1408",
+          "640x1472",
+          "640x1536",
+          "704x1152",
+          "704x1216",
+          "704x1280",
+          "704x1344",
+          "704x1408",
+          "704x1472",
+          "736x1312",
+          "768x1088",
+          "768x1216",
+          "768x1280",
+          "768x1344",
+          "800x1280",
+          "832x960",
+          "832x1024",
+          "832x1088",
+          "832x1152",
+          "832x1216",
+          "832x1248",
+          "864x1152",
+          "896x960",
+          "896x1024",
+          "896x1088",
+          "896x1120",
+          "896x1152",
+          "960x832",
+          "960x896",
+          "960x1024",
+          "960x1088",
+          "1024x832",
+          "1024x896",
+          "1024x960",
+          "1024x1024",
+          "1088x768",
+          "1088x832",
+          "1088x896",
+          "1088x960",
+          "1120x896",
+          "1152x704",
+          "1152x832",
+          "1152x864",
+          "1152x896",
+          "1216x704",
+          "1216x768",
+          "1216x832",
+          "1248x832",
+          "1280x704",
+          "1280x768",
+          "1280x800",
+          "1312x736",
+          "1344x640",
+          "1344x704",
+          "1344x768",
+          "1408x576",
+          "1408x640",
+          "1408x704",
+          "1472x576",
+          "1472x640",
+          "1472x704",
+          "1536x512",
+          "1536x576",
+          "1536x640"
+        ],
+        "type": "string"
+      },
+      "seed": {
+        "maximum": 2147483647,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "style_codes": {
+        "items": {
+          "pattern": "^[0-9a-fA-F]{8}$",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "style_preset": {
+        "enum": [
+          "80S_ILLUSTRATION",
+          "90S_NOSTALGIA",
+          "ABSTRACT_ORGANIC",
+          "ANALOG_NOSTALGIA",
+          "ART_BRUT",
+          "ART_DECO",
+          "ART_POSTER",
+          "AURA",
+          "AVANT_GARDE",
+          "BAUHAUS",
+          "BLUEPRINT",
+          "BLURRY_MOTION",
+          "BRIGHT_ART",
+          "C4D_CARTOON",
+          "CHILDRENS_BOOK",
+          "COLLAGE",
+          "COLORING_BOOK_I",
+          "COLORING_BOOK_II",
+          "CUBISM",
+          "DARK_AURA",
+          "DOODLE",
+          "DOUBLE_EXPOSURE",
+          "DRAMATIC_CINEMA",
+          "EDITORIAL",
+          "EMOTIONAL_MINIMAL",
+          "ETHEREAL_PARTY",
+          "EXPIRED_FILM",
+          "FLAT_ART",
+          "FLAT_VECTOR",
+          "FOREST_REVERIE",
+          "GEO_MINIMALIST",
+          "GLASS_PRISM",
+          "GOLDEN_HOUR",
+          "GRAFFITI_I",
+          "GRAFFITI_II",
+          "HALFTONE_PRINT",
+          "HIGH_CONTRAST",
+          "HIPPIE_ERA",
+          "ICONIC",
+          "JAPANDI_FUSION",
+          "JAZZY",
+          "LONG_EXPOSURE",
+          "MAGAZINE_EDITORIAL",
+          "MINIMAL_ILLUSTRATION",
+          "MIXED_MEDIA",
+          "MONOCHROME",
+          "NIGHTLIFE",
+          "OIL_PAINTING",
+          "OLD_CARTOONS",
+          "PAINT_GESTURE",
+          "POP_ART",
+          "RETRO_ETCHING",
+          "RIVIERA_POP",
+          "SPOTLIGHT_80S",
+          "STYLIZED_RED",
+          "SURREAL_COLLAGE",
+          "TRAVEL_POSTER",
+          "VINTAGE_GEO",
+          "VINTAGE_POSTER",
+          "WATERCOLOR",
+          "WEIRD",
+          "WOODBLOCK_PRINT"
+        ],
+        "type": "string"
+      },
+      "style_reference_images": {
+        "items": {
+          "format": "binary",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "style_type": {
+        "default": "GENERAL",
+        "enum": [
+          "AUTO",
+          "GENERAL",
+          "REALISTIC",
+          "DESIGN",
+          "FICTION"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
