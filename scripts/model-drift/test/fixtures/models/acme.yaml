@@ -1,0 +1,10 @@
+models:
+  # A comment line that mentions - id: fake/not-a-model must be ignored.
+  - id: acme/alpha-1
+    provider: acme
+    media_type: image
+    display_name: Alpha
+  - id: acme/beta_2
+    provider: acme
+    media_type: video
+    display_name: Beta
