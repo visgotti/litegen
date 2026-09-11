@@ -5367,7 +5367,7 @@ Sequencing: **21 → 22 → 20 (expanded) → clean + release build → 15 → 1
 
 ### Task 21: `ModelPreview` — the full 3D inspector
 
-**Status:** ✅ DONE (2026-09-11, e7c8943)
+**Status:** ✅ DONE (2026-09-11, e7c8943 + fixes 0575ffb, 4ced9f4) — task review clean after 2 fix rounds (import/no-WebGL stuck states, malformed-asset crash, stale-load race, non-glTF message, public-API retry)
 
 **Files:**
 - Create: `dashboard/src/components/model3d-assets.ts` (pure helpers)
