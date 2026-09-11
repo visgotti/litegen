@@ -43,8 +43,12 @@ pub struct ImageGenerationRequest {
 pub struct VideoGenerationRequest {
     #[serde(flatten)]
     pub base: BaseGenerationRequest,
-    #[serde(default = "default_duration")]
-    pub duration_seconds: f64,
+    /// Absent means the model's own `duration_seconds` default (resolved by
+    /// `resolve_duration_seconds`), not a fixed 5s: models whose minimum is
+    /// higher (fal/ltx-2.3, bedrock nova-reel) rejected every request that
+    /// omitted it.
+    #[serde(default)]
+    pub duration_seconds: Option<f64>,
     #[serde(default)] pub aspect_ratio: Option<String>,
     #[serde(default)] pub resolution: Option<String>,
     #[serde(default)] pub fps: Option<u32>,
@@ -69,7 +73,6 @@ pub enum RefImageKind {
 
 fn default_n() -> u32 { 1 }
 fn default_response_format() -> String { "url".to_string() }
-fn default_duration() -> f64 { 5.0 }
 fn default_true() -> bool { true }
 
 /// A single generated image in the response.

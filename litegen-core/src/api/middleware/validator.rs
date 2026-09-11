@@ -159,6 +159,21 @@ pub fn validate_image(
     Ok(ImageValidationOutput { request: req, dropped })
 }
 
+/// The duration to send a provider: what the caller asked for, else the model's
+/// own declared default, else the legacy 5s for models that declare no duration
+/// param. An omitted duration must not become a fixed 5s — models whose minimum
+/// is higher (fal/ltx-2.3 and bedrock nova-reel at 6s) reject that.
+pub fn resolve_duration_seconds(schema: &ModelSchema, requested: Option<f64>) -> f64 {
+    if let Some(v) = requested {
+        return v;
+    }
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Float(s)) => s.default.unwrap_or(5.0),
+        Some(ParamSpec::Int(s)) => s.default.map(|d| d as f64).unwrap_or(5.0),
+        _ => 5.0,
+    }
+}
+
 #[tracing::instrument(skip(schema, req), fields(model = %schema.id))]
 pub fn validate_video(
     schema: &ModelSchema,
@@ -225,10 +240,10 @@ pub fn validate_video(
     }
 
     // duration_seconds is special — float typically; an Int spec is also accepted.
-    if req.duration_seconds > 0.0 {
+    if let Some(requested) = req.duration_seconds.filter(|v| *v > 0.0) {
         match schema.params.get("duration_seconds") {
             Some(ParamSpec::Float(s)) => {
-                let v = req.duration_seconds;
+                let v = requested;
                 if s.min.map(|m| v < m).unwrap_or(false) || s.max.map(|m| v > m).unwrap_or(false) {
                     return Err(ValidationError::new(
                         "param_out_of_range",
@@ -238,7 +253,7 @@ pub fn validate_video(
                 }
             }
             Some(ParamSpec::Int(s)) => {
-                let v = req.duration_seconds.round() as i64;
+                let v = requested.round() as i64;
                 if s.min.map(|m| v < m).unwrap_or(false) || s.max.map(|m| v > m).unwrap_or(false) {
                     return Err(ValidationError::new(
                         "param_out_of_range",

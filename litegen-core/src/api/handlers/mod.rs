@@ -362,7 +362,10 @@ pub async fn generate_video(
     };
 
     let extras = VideoExtras {
-        duration_seconds: validated.request.duration_seconds,
+        duration_seconds: crate::api::middleware::validator::resolve_duration_seconds(
+            &validated.schema,
+            validated.request.duration_seconds,
+        ),
         aspect_ratio: validated.request.aspect_ratio.clone(),
         resolution: validated.request.resolution.clone(),
         fps: validated.request.fps,
