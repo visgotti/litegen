@@ -3,7 +3,7 @@ import React, { useEffect, useEffectEvent, useImperativeHandle, useRef, useState
 // below, but it makes tsc check every element API used here (getDimensions,
 // resetTurntableRotation, cameraOrbit, …) against the installed version.
 import type { ModelViewerElement } from '@google/model-viewer';
-import { canPreviewMesh, describeViewerError, loadEventMatches, type Dimensions } from './model3d-assets';
+import { canPreviewMesh, describeViewerError, loadEventMatches, retrySrc, type Dimensions } from './model3d-assets';
 
 export type ViewerBackground = 'dark' | 'light' | 'checker';
 
@@ -66,23 +66,6 @@ function hasWebGL2(): boolean {
     }
   }
   return webgl2Support;
-}
-
-/**
- * model-viewer caches a FAILED load under its URL as an empty placeholder
- * (4.3.1 CachingGLTFLoader.preload's `.catch`), and no public API evicts it —
- * so remounting for the same src would fail again instantly. Retry evicts it
- * first. `delete()` is a public static on that class (typed, so an upgrade
- * that removes it fails the build); it drops the entry synchronously, then
- * rejects disposing the empty placeholder, which is swallowed.
- */
-async function evictCachedLoad(url: string): Promise<void> {
-  try {
-    const { CachingGLTFLoader } = await import('@google/model-viewer/lib/three-components/CachingGLTFLoader.js');
-    CachingGLTFLoader.delete(url).catch(() => {});
-  } catch {
-    // Retry still remounts; at worst it fails the same way again.
-  }
 }
 
 type FallbackReason = 'import' | 'webgl' | 'format' | 'load';
@@ -187,12 +170,20 @@ export default function ModelViewer({
   // as "loading" immediately without a reset effect.
   const [load, setLoad] = useState<LoadState>(() => loadingState(src));
   const current = load.src === src ? load : loadingState(src);
+  // Retry attempt, keyed by src like the load state so a new mesh starts at 0.
+  const [attempt, setAttempt] = useState({ src, n: 0 });
+  const attemptN = attempt.src === src ? attempt.n : 0;
+  // What the element is given: the raw src, or a fragment-busted copy after a
+  // retry (see retrySrc). Only the element ever sees it — the download link
+  // and everything the caller exposes keep the raw URL.
+  const viewSrc = retrySrc(src, attemptN);
 
   // Conditions known before anything is fetched. Either one means the element
   // is never mounted and the ~1MB bundle is never imported.
+  const formatLabel = typeof format === 'string' && format !== '' ? `${format.toUpperCase()} files` : 'this mesh format';
   const blocker: { reason: 'format' | 'webgl'; message: string } | null =
     !canPreviewMesh(format ?? '')
-      ? { reason: 'format', message: `3D preview isn't available for ${(format ?? '').toUpperCase()} files — download the mesh.` }
+      ? { reason: 'format', message: `3D preview isn't available for ${formatLabel} — download the mesh.` }
       : !hasWebGL2()
         ? { reason: 'webgl', message: WEBGL_MESSAGE }
         : null;
@@ -204,8 +195,9 @@ export default function ModelViewer({
 
   const handleLoad = useEffectEvent((el: ModelViewerElement, detail: unknown) => {
     // A load for a src that has since been replaced (see loadEventMatches)
-    // must not mark the new one loaded with the old one's dimensions.
-    if (!loadEventMatches(detail, src)) return;
+    // must not mark the new one loaded with the old one's dimensions. Compared
+    // with viewSrc: model-viewer reports the string it was given, fragment and all.
+    if (!loadEventMatches(detail, viewSrc)) return;
     let dimensions: Dimensions | null = null;
     try {
       const d = el.getDimensions();
@@ -275,24 +267,30 @@ export default function ModelViewer({
     let cancelled = false;
     import('@google/model-viewer')
       .then(() => { if (!cancelled) setReady(true); })
-      .catch(() => {
-        // Most often a stale chunk hash after a redeploy. Reported, not just
-        // rendered, so an enclosing inspector leaves its "loading" state.
-        if (cancelled) return;
-        setFailed(true);
-        reportError(IMPORT_FAILED_MESSAGE);
-      });
+      // Most often a stale chunk hash after a redeploy. The bundle stays
+      // broken for this instance, so `failed` is not keyed by src.
+      .catch(() => { if (!cancelled) setFailed(true); });
     return () => { cancelled = true; };
   }, [ready, blocked]);
 
+  // Page-level failures (no bundle, no WebGL 2) are reported, not just
+  // rendered, so an enclosing inspector leaves "loading" — and re-reported per
+  // src, because a caller keying its state by mesh URL (an unkeyed
+  // ModelPreview replaying Playground history) needs it for each new mesh.
   useEffect(() => {
-    // Re-reported per src so a caller keying its state by mesh URL sees the
-    // failure for each new mesh too.
+    if (failed) reportError(IMPORT_FAILED_MESSAGE);
+  }, [failed, src]);
+
+  useEffect(() => {
     if (webglBlocked) reportError(WEBGL_MESSAGE);
   }, [webglBlocked, src]);
 
-  const retry = async () => {
-    await evictCachedLoad(src);
+  const retry = () => {
+    // A failed load is cached by model-viewer under the exact src string, so
+    // the next attempt gets a new string via a URL FRAGMENT — never a query
+    // param, which would invalidate presigned/signed-CDN URLs (fragments are
+    // not sent on the wire). Rationale in full on retrySrc.
+    setAttempt({ src, n: attemptN + 1 });
     setLoad(loadingState(src));
     onRetry?.();
   };
@@ -317,7 +315,7 @@ export default function ModelViewer({
         'model-viewer',
         {
           ref: elRef,
-          src,
+          src: viewSrc,
           poster: poster ?? undefined,
           alt: '3D model preview',
           'camera-controls': true,

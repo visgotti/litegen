@@ -31,8 +31,28 @@ const GLTF_FORMATS = new Set(['glb', 'gltf']);
 /** Whether `<model-viewer>` can render a mesh of this format. It is glTF-only,
  *  so an OBJ/FBX/USDZ mesh would be fetched in full and then fail as if it were
  *  corrupt. An empty (unknown) format is attempted and left to the viewer. */
-export function canPreviewMesh(format: string): boolean {
+export function canPreviewMesh(format: unknown): boolean {
+  // Guarded, not trusted: callers forward `format` from unvalidated poll
+  // responses, and a throw in render unmounts the page (no error boundary).
+  if (typeof format !== 'string') return false;
   return format === '' || GLTF_FORMATS.has(format.toLowerCase());
+}
+
+/**
+ * The URL to hand `<model-viewer>` on retry attempt `n` (0 = first try).
+ * model-viewer 4.3.1 caches a FAILED load as an empty placeholder keyed by the
+ * exact src string, with no public way to evict it, so retrying the same
+ * string fails instantly. A new string forces a fresh load.
+ *
+ * A FRAGMENT, deliberately — do not "simplify" this to a query param:
+ * fragments are never sent on the wire (three's FileLoader does
+ * `fetch(new Request(url))`), so presigned / signed-CDN URLs stay valid, where
+ * an extra query param would break their signature. It contains no '/', so
+ * LoaderUtils.extractUrlBase (lastIndexOf('/')) still resolves a .gltf's
+ * relative buffers against the real directory.
+ */
+export function retrySrc(src: string, n: number): string {
+  return n > 0 ? `${src}#retry-${n}` : src;
 }
 
 /**
