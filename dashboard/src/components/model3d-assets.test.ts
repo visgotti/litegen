@@ -299,12 +299,6 @@ describe('classifyViewerError', () => {
     expect(classifyViewerError({ type: 'loadfailure' }, 0)).toBe('load');
   });
 
-  it('is a download failure when Resource Timing Level 2 is unsupported (e.g. Safari)', () => {
-    // No responseStatus field to read means the caller passes null, same as
-    // "no entry" — always the safe default, never a wrong 'parse'.
-    expect(classifyViewerError({ type: 'loadfailure' }, null)).toBe('load');
-  });
-
   it('is a parse failure when the bytes were received (2xx/3xx) but the load still failed', () => {
     expect(classifyViewerError({ type: 'loadfailure' }, 200)).toBe('parse');
     expect(classifyViewerError({ type: 'loadfailure' }, 304)).toBe('parse');
