@@ -729,12 +729,26 @@ pub async fn get_3d_status(
         Some(o) => o,
         None => return forbidden_no_org(),
     };
-    if let Ok(Some(gen)) = state.db.get_generation(&id).await {
+    // Read the row ONCE, and treat a DB error as an error. The old
+    // `if let Ok(Some(gen))` skipped the tenant check on a transient `Err` and
+    // the fallback at the bottom then returned the row unchecked, so a caller in
+    // org B holding an org-A generation id could read A's mesh URLs.
+    let row = match state.db.get_generation(&id).await {
+        Ok(r) => r,
+        Err(e) => {
+            error!(generation_id = %id, error = %e, "failed to load 3d generation row");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_response("Failed to load generation", 500)),
+            ).into_response();
+        }
+    };
+    if let Some(gen) = row.as_ref() {
         if gen.org_id.as_deref() != Some(ctx_org) {
             return (StatusCode::NOT_FOUND, Json(error_response("Not found", 404))).into_response();
         }
         if let Err(resp) = authorize_generation_for_session(
-            &state, key_ctx.as_ref(), &gen,
+            &state, key_ctx.as_ref(), gen,
             crate::auth::permissions::Permission::GenerationReadAny,
             crate::auth::permissions::Permission::GenerationReadOwn,
             "generation:read:own",
@@ -750,18 +764,35 @@ pub async fn get_3d_status(
         // other half, covering a row terminalised by the poller, by a restart,
         // or by a cancel that raced an in-flight poll.)
         if gen.status.is_terminal() {
-            return (StatusCode::OK, Json(serde_json::to_value(model3d_response_from_row(&gen)).unwrap())).into_response();
+            return (StatusCode::OK, Json(serde_json::to_value(model3d_response_from_row(gen)).unwrap())).into_response();
         }
     }
 
-    match state.router.get_model3d_status(&id).await {
+    // Re-host into the tenant's OWN bucket, exactly as the poller does. Which of
+    // the two observers wins the race must not decide whose bucket a mesh lands
+    // in. `app_id` comes from the row when we have it (the poller's source of
+    // truth) and from the caller's key context otherwise — the row insert is
+    // spawned at submit, so an early poll can legitimately outrun it.
+    let app_id = row.as_ref()
+        .and_then(|g| g.app_id.clone())
+        .or_else(|| key_ctx.as_ref().and_then(|c| c.app_id.clone()));
+    let (app_store, app_prefix) = match app_id.as_deref() {
+        Some(app_id) => resolve_app_model3d_store(&state.db, state.secrets_key, app_id)
+            .await
+            .map_or((None, None), |(s, p)| (Some(s), p)),
+        None => (None, None),
+    };
+
+    match state.router.get_model3d_status(&id, app_store, app_prefix.as_deref()).await {
         Ok(mut resp) => {
             // Persist the terminal result so `GET /v1/generations/{id}`, the
             // gallery, and any webhook see the same assets the poller would have
             // written — whichever path observed completion first.
             if resp.status == GenerationStatus::Completed {
                 if resp.mesh().is_some() {
-                    persist_model3d_result(&state, &resp).await;
+                    if persist_model3d_result(&state, &resp).await {
+                        dispatch_3d_webhook(&state, row.as_ref(), &resp).await;
+                    }
                 } else {
                     // Contract: a completed 3D generation ALWAYS carries exactly
                     // one mesh asset. A provider that reports success without one
@@ -772,38 +803,92 @@ pub async fn get_3d_status(
                     // the path that observes completion first.
                     let err = "provider reported success without a mesh asset";
                     tracing::warn!(generation_id = %id, "3d completed without a mesh asset, failing");
-                    let _ = state.db.update_generation_status(
-                        &id, "failed", resp.progress as i32, None,
-                        Some(err), Some(chrono::Utc::now()),
-                    ).await;
-                    if let Err(e) = state.db.update_request_log_status(&id, "failed", Some(err)).await {
-                        tracing::warn!(generation_id = %id, error = %e, "failed to mark the 3d request log failed");
-                    }
                     resp.status = GenerationStatus::Failed;
                     resp.error = Some(err.to_string());
                     resp.assets.clear();
+                    if fail_model3d_row(&state, &id, resp.progress as i32, err).await {
+                        dispatch_3d_webhook(&state, row.as_ref(), &resp).await;
+                    }
                 }
             } else if resp.status == GenerationStatus::Failed {
-                let _ = state.db.update_generation_status(
-                    &id, "failed", resp.progress as i32, None,
-                    resp.error.as_deref(), Some(chrono::Utc::now()),
-                ).await;
-                if let Err(e) = state.db.update_request_log_status(&id, "failed", resp.error.as_deref()).await {
-                    tracing::warn!(generation_id = %id, error = %e, "failed to mark the 3d request log failed");
+                let err = resp.error.clone().unwrap_or_else(|| "3d generation failed".to_string());
+                if fail_model3d_row(&state, &id, resp.progress as i32, &err).await {
+                    dispatch_3d_webhook(&state, row.as_ref(), &resp).await;
                 }
             }
             (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response()
         }
         Err(e) => {
-            // Fall through to the DB row: once the poller has terminalised a
-            // job the router no longer tracks it.
-            if let Ok(Some(gen)) = state.db.get_generation(&id).await {
+            // Fall through to the row we ALREADY tenant-checked above — never a
+            // second, unchecked read. Once the poller has terminalised a job the
+            // router no longer tracks it, which is the common way to get here.
+            if let Some(gen) = row {
                 return (StatusCode::OK, Json(serde_json::to_value(model3d_response_from_row(&gen)).unwrap())).into_response();
             }
             let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
         }
     }
+}
+
+/// Terminalise a 3D row as `failed`, guarded. Returns whether THIS call wrote
+/// it (so the caller knows whether to dispatch the webhook).
+async fn fail_model3d_row(state: &AppState, id: &str, progress: i32, error: &str) -> bool {
+    match state.db.update_generation_if_active(
+        id, "failed", progress, None, Some(error), Some(chrono::Utc::now()), None,
+    ).await {
+        Ok(w) if w.owns_outcome() => {}
+        Ok(_) => return false, // the poller (or a cancel) got there first
+        Err(e) => {
+            tracing::warn!(generation_id = %id, error = %e, "failed to persist the 3d failure");
+            return false;
+        }
+    }
+    if let Err(e) = state.db.update_request_log_status(id, "failed", Some(error)).await {
+        tracing::warn!(generation_id = %id, error = %e, "failed to mark the 3d request log failed");
+    }
+    true
+}
+
+/// Fire the terminal webhook for a 3D generation this handler terminalised.
+///
+/// The poller is normally the only dispatch site, but it only ever sees rows
+/// that are still `pending`/`processing`: when the client's GET terminalises
+/// first (the SDK polls every 2s, the poller ticks every 5s) the row never
+/// appears in its window again and the caller got NO delivery at all. Called
+/// only when the guarded UPDATE reported this observer as the writer, so the
+/// webhook still fires at most once per generation.
+async fn dispatch_3d_webhook(
+    state: &AppState,
+    row: Option<&crate::types::Generation>,
+    resp: &Model3dGenerationResponse,
+) {
+    // No row means the submit handler's spawned insert has not landed; there is
+    // no key_id to look a webhook_url up on, and the poller will drive the row
+    // once it exists.
+    let Some(row) = row else { return };
+    if row.key_id.is_none() {
+        return;
+    }
+    let gen = crate::types::Generation {
+        status: resp.status,
+        progress: resp.progress as i32,
+        result_url: resp.mesh().map(|m| m.url.clone()),
+        error_message: resp.error.clone(),
+        completed_at: Some(chrono::Utc::now()),
+        metadata: if resp.assets.is_empty() {
+            row.metadata.clone()
+        } else {
+            Some(serde_json::json!({ "assets": resp.assets }))
+        },
+        ..row.clone()
+    };
+    crate::proxy::poller::dispatch_terminal_webhook(
+        &state.db,
+        &crate::util::ssrf::no_redirect_client(),
+        state.mode,
+        gen,
+    ).await;
 }
 
 /// POST /v1/models3d/cost — Estimate cost for a 3D generation.
@@ -819,9 +904,22 @@ pub async fn get_3d_status(
 )]
 pub async fn estimate_3d_cost(
     State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
     validated: ValidatedModel3d,
 ) -> impl IntoResponse {
-    match state.router.estimate_model3d_cost(&validated.schema, &validated.request).await {
+    // Same credential resolution as `generate_3d` (and `estimate_video_cost`).
+    // A single-tenant install commonly stores its 3D vendor key as an ORG
+    // credential with no platform default: generations worked while this
+    // endpoint answered 424 for the very same model, and aipix calls it before
+    // every non-mock generation.
+    let app_creds = match resolve_org_provider_credential(&state, &key_ctx, &validated.schema.provider).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if app_creds.is_none() && !state.router.has_model3d_provider(&validated.schema.provider).await {
+        return provider_not_configured_response(&validated.schema.provider);
+    }
+    match state.router.estimate_model3d_cost(&validated.schema, &validated.request, app_creds).await {
         Ok(est) => (StatusCode::OK, Json(serde_json::to_value(est).unwrap())).into_response(),
         Err(e) => {
             let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -833,23 +931,36 @@ pub async fn estimate_3d_cost(
 /// Write a completed 3D result to its generation row: `result_url` is the
 /// primary mesh (so every existing cross-modal consumer keeps working), and the
 /// full asset list rides `metadata.assets`.
-pub(crate) async fn persist_model3d_result(state: &AppState, resp: &Model3dGenerationResponse) {
+/// Returns whether THIS call terminalised the row. `false` means the row was
+/// already terminal (the poller, or a cancel, got there first) or the write
+/// failed — in both cases the caller must not dispatch a webhook.
+pub(crate) async fn persist_model3d_result(state: &AppState, resp: &Model3dGenerationResponse) -> bool {
     let mesh_url = resp.mesh().map(|m| m.url.clone());
-    if let Err(e) = state.db.update_generation_status(
-        &resp.id, "completed", resp.progress as i32,
-        mesh_url.as_deref(), None, Some(chrono::Utc::now()),
-    ).await {
-        tracing::warn!(generation_id = %resp.id, error = %e, "failed to persist 3d status");
-        return;
-    }
     let meta = serde_json::json!({ "assets": resp.assets });
-    if let Err(e) = state.db.update_generation_metadata(&resp.id, &meta).await {
-        tracing::warn!(generation_id = %resp.id, error = %e, "failed to persist 3d assets");
+    // ONE guarded, atomic UPDATE. Split across two statements, a transient
+    // failure of the second left the row permanently `completed` with metadata
+    // NULL — out of the poller's window, with the router job dropped — so every
+    // later read reported `completed` with no assets: the state Ruling R21
+    // forbids, where the consumer refunds and litegen billed.
+    match state.db.update_generation_if_active(
+        &resp.id, "completed", resp.progress as i32,
+        mesh_url.as_deref(), None, Some(chrono::Utc::now()), Some(&meta),
+    ).await {
+        Ok(w) if w.owns_outcome() => {}
+        Ok(_) => {
+            tracing::info!(generation_id = %resp.id, "3d row was already terminal, leaving it untouched");
+            return false;
+        }
+        Err(e) => {
+            tracing::warn!(generation_id = %resp.id, error = %e, "failed to persist 3d status");
+            return false;
+        }
     }
     // The submit handler logged the request `pending` under this same id.
     if let Err(e) = state.db.update_request_log_status(&resp.id, "completed", None).await {
         tracing::warn!(generation_id = %resp.id, error = %e, "failed to mark the 3d request log completed");
     }
+    true
 }
 
 /// USD per internal token, matching `ProxyRouter::USD_PER_TOKEN`. A generation
@@ -878,14 +989,32 @@ pub(crate) fn model3d_response_from_row(gen: &crate::types::Generation) -> Model
         .and_then(|m| m.get("assets"))
         .and_then(|a| serde_json::from_value::<Vec<Model3dAsset>>(a.clone()).ok())
         .unwrap_or_default();
+    // A `completed` row with no mesh is not a usable generation — it is the
+    // failure `get_3d_status` and the poller both refuse to report as success,
+    // and a row can only reach this state if a terminal write was lost. Report
+    // it the same way here, or the one path that answers a generation AFTER it
+    // has left the poller's window would be the one path that reports a paid
+    // generation the caller cannot use as `completed` (Ruling R21).
+    let has_mesh = assets.iter().any(|a| a.kind == Model3dAssetKind::Mesh);
+    let (status, error, assets) = if gen.status == GenerationStatus::Completed && !has_mesh {
+        (
+            GenerationStatus::Failed,
+            Some(gen.error_message.clone().unwrap_or_else(
+                || "provider reported success without a mesh asset".to_string(),
+            )),
+            Vec::new(),
+        )
+    } else {
+        (gen.status, gen.error_message.clone(), assets)
+    };
     Model3dGenerationResponse {
         id: gen.id.clone(),
-        status: gen.status,
+        status,
         model: gen.model.clone(),
         provider: gen.provider.clone(),
         assets,
         progress: gen.progress.clamp(0, 100) as u8,
-        error: gen.error_message.clone(),
+        error,
         // The consumer contract reads cost off this response, so a row-answered
         // poll carries the same triple a router-answered one does.
         usage: Some(usage_from_row_cost(gen.cost_usd)),

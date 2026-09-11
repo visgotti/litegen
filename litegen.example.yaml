@@ -6,7 +6,15 @@ server:
   port: 4000
   request_timeout_seconds: 300
   # Externally reachable origin for client-facing URLs (e.g. 3D asset URLs,
-  # which must be absolute). Defaults to http://{host}:{port} when unset.
+  # which MUST be absolute — a client fetching one from a worker cannot resolve
+  # a relative path). Env: LITEGEN__SERVER__PUBLIC_BASE_URL.
+  #
+  # SET THIS on anything but a local machine. `host` above is a bind address,
+  # not an origin: with the default 0.0.0.0 this falls back to
+  # http://127.0.0.1:{port}, which is right for local dev and CI and wrong for
+  # every remote client (and for a dashboard viewer's browser). Behind a proxy
+  # it must be the public origin the API is served from, including any path
+  # prefix:
   # public_base_url: "https://app.litegen.ai/api"
 
 # Database (SQLite for dev, Postgres for prod)
