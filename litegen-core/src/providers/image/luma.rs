@@ -192,14 +192,13 @@ impl ImageProvider for LumaImageProvider {
         // Reference images (CDN URLs only). Map roles to Luma's ref fields.
         let mut image_ref: Vec<Value> = Vec::new();
         let mut style_ref: Vec<Value> = Vec::new();
+        let mut character_images: Vec<Value> = Vec::new();
         for r in &materialized.refs {
             if let MaterializedRefForm::Url(u) = &r.form {
                 match r.role.as_str() {
                     "style" | "style_ref" => style_ref.push(json!({ "url": u })),
                     "modify" | "modify_image_ref" => body["modify_image_ref"] = json!({ "url": u }),
-                    "character" | "character_ref" => {
-                        body["character_ref"] = json!({ "identity0": { "images": [u] } })
-                    }
+                    "character" | "character_ref" => character_images.push(Value::String(u.clone())),
                     _ => image_ref.push(json!({ "url": u })),
                 }
             }
@@ -209,6 +208,12 @@ impl ImageProvider for LumaImageProvider {
         }
         if !style_ref.is_empty() {
             body["style_ref"] = Value::Array(style_ref);
+        }
+        // "you can use up to 4 images of the same person to build one
+        // identity" — every character ref goes into the one identity.
+        // @see <https://docs.lumalabs.ai/docs/image-generation>
+        if !character_images.is_empty() {
+            body["character_ref"] = json!({ "identity0": { "images": character_images } });
         }
 
         if let Some(Value::Object(extra_map)) = &extras.extra {
@@ -433,5 +438,56 @@ mod tests {
         assert_eq!(body["prompt"], "a serene alpine lake");
         assert_eq!(body["aspect_ratio"], "16:9");
         assert_eq!(body["image_ref"][0]["url"], "https://cdn/x.jpg");
+    }
+
+    /// The catalog allows up to 4 `character` refs and Luma builds one identity
+    /// from "up to 4 images of the same person" — but each ref used to
+    /// overwrite `character_ref`, so only the last image was ever sent.
+    /// @see <https://docs.lumalabs.ai/docs/image-generation>
+    #[tokio::test]
+    async fn all_character_refs_go_into_one_identity() {
+        let server = MockServer::start().await;
+        let image_server = MockServer::start().await;
+        let image_url = format!("{}/img.jpg", image_server.uri());
+
+        Mock::given(method("POST"))
+            .and(path("/generations/image"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "id": "luma_img_2", "state": "queued"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"/generations/luma_img_2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "luma_img_2", "state": "completed", "assets": { "image": image_url.clone() }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"LUMAJPEG".to_vec()))
+            .mount(&image_server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("luma/photon-1");
+        let base = make_base("the same man as a knight", "luma/photon-1");
+        let materialized = MaterializedRequest {
+            refs: vec![
+                MaterializedRef { role: "character".into(), form: MaterializedRefForm::Url("https://cdn/face1.jpg".into()) },
+                MaterializedRef { role: "character".into(), form: MaterializedRefForm::Url("https://cdn/face2.jpg".into()) },
+            ],
+            cleanup: Cleanup::empty(),
+        };
+
+        provider.generate(&schema, &base, &make_extras(), &materialized).await.unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        let post = received.iter().find(|r| r.method == wiremock::http::Method::POST).unwrap();
+        let body: Value = serde_json::from_slice(&post.body).unwrap();
+        assert_eq!(
+            body["character_ref"]["identity0"]["images"],
+            json!(["https://cdn/face1.jpg", "https://cdn/face2.jpg"])
+        );
     }
 }

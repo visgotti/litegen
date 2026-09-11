@@ -9,13 +9,13 @@
 //                 (both snapshot parameter signatures, plus the per-model
 //                 value notes for our models)
 //   deprecations  index: deprecation batches that include our models
-// Mapping mirrors litegen-core/src/providers/image/bytedance.rs and
-// video/bytedance.rs `resolve_model` (strip `bytedance/`; sent as body `model`).
+// Mapping mirrors litegen-core/src/providers/image/bytedance.rs `ark_model_id`
+// (shared by video/bytedance.rs) for the default BytePlus host: strip
+// `bytedance/` and any `doubao-` prefix; sent as body `model`.
 //
-// BytePlus documents Seedance without the `doubao-` prefix our video ids carry
-// (seedance-1-0-pro-250528); `doubao-seedance-…` is the Volcengine (China) id
-// form, yet the adapter posts to the BytePlus base URL. The video models map
-// to [id we send, id BytePlus documents] until the adapter settles on one.
+// BytePlus documents Seedance without the `doubao-` prefix our video catalog
+// ids carry (seedance-1-0-pro-250528); `doubao-…` is the Volcengine (China) id
+// form, which the adapter now sends only to a *.volces.com api_base.
 
 const DOCS = 'https://docs.byteplus.com/en/docs/ModelArk';
 
@@ -97,8 +97,8 @@ export default {
   models: {
     'bytedance/seedream-4-0-250828': 'seedream-4-0-250828',
     'bytedance/seedream-3-0-t2i-250415': 'seedream-3-0-t2i-250415',
-    'bytedance/doubao-seedance-1-0-pro-250528': ['doubao-seedance-1-0-pro-250528', 'seedance-1-0-pro-250528'],
-    'bytedance/doubao-seedance-1-0-lite-i2v-250428': ['doubao-seedance-1-0-lite-i2v-250428', 'seedance-1-0-lite-i2v-250428'],
+    'bytedance/doubao-seedance-1-0-pro-250528': 'seedance-1-0-pro-250528',
+    'bytedance/doubao-seedance-1-0-lite-i2v-250428': 'seedance-1-0-lite-i2v-250428',
   },
   sources: [
     {

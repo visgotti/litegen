@@ -56,7 +56,8 @@ const v1Endpoint = (key, slug, path, extract) => ({
 export default {
   provider: 'leonardo',
   models: {
-    'leonardo/diffusion-xl': 'b24e16ff-06e3-43eb-8d33-4416c2d75876',
+    // Leonardo Diffusion XL (b24e16ff-… is Lightning XL, the API's modelId default).
+    'leonardo/diffusion-xl': '1e60896f-3c26-4296-8ecc-53e2afecc132',
     'leonardo/motion2': 'MOTION2',
     'leonardo/veo3': 'VEO3',
     'leonardo/kling2.1': 'KLING2_1',

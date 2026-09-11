@@ -187,7 +187,9 @@ impl ImageProvider for HunyuanImageProvider {
             submit["NegativePrompt"] = Value::String(np.to_string());
         }
         if let Some(size) = extras.size.as_deref() {
-            submit["Resolution"] = Value::String(size.replace('x', ":"));
+            // Resolution takes `W:H`. The validator accepts a size spelled
+            // `WxH` or `WXH` (`parse_size`), so convert either separator.
+            submit["Resolution"] = Value::String(size.replace(['x', 'X'], ":"));
         }
         if let Some(seed) = base.seed {
             submit["Seed"] = Value::Number(seed.max(0).into());
@@ -380,5 +382,40 @@ mod tests {
         let body: Value = serde_json::from_slice(&submit.body).unwrap();
         assert_eq!(body["Prompt"], "a tranquil zen garden");
         assert_eq!(body["Resolution"], "1024:1024");
+    }
+
+    /// `SubmitHunyuanImageJob.Resolution` takes `W:H`. The request validator
+    /// accepts `WXH` as well as `WxH`, and the uppercase form used to reach
+    /// Tencent verbatim (`768X1024`), which is not a Resolution value.
+    /// @see <https://cloud.tencent.com/document/product/1729/105969>
+    #[tokio::test]
+    async fn resolution_converts_an_uppercase_size_separator() {
+        let server = MockServer::start().await;
+        // Fail the submit so generate() returns without polling; only the
+        // outbound body matters here.
+        Mock::given(method("POST"))
+            .and(header("x-tc-action", "SubmitHunyuanImageJob"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Response": { "Error": { "Code": "InvalidParameterValue", "Message": "stop" }, "RequestId": "r1" }
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("hunyuan/hunyuan-image");
+        let base = make_base("a paper crane", "hunyuan/hunyuan-image");
+        let mut extras = make_extras();
+        extras.size = Some("768X1024".to_string());
+        let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+
+        let _ = provider.generate(&schema, &base, &extras, &materialized).await;
+
+        let received = server.received_requests().await.unwrap();
+        let submit = received
+            .iter()
+            .find(|r| r.headers.get("x-tc-action").map(|v| v == "SubmitHunyuanImageJob").unwrap_or(false))
+            .expect("submit request");
+        let body: Value = serde_json::from_slice(&submit.body).unwrap();
+        assert_eq!(body["Resolution"], "768:1024");
     }
 }

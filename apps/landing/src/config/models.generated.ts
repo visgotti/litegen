@@ -608,8 +608,14 @@ export const MODELS: ModelEntry[] = [
         "name": "duration_seconds",
         "kind": "float",
         "default": 5,
-        "min": 3,
+        "min": 2,
         "max": 12
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
       },
       {
         "name": "resolution",
@@ -690,27 +696,20 @@ export const MODELS: ModelEntry[] = [
     },
     "sizes": [],
     "aspectRatios": [],
-    "maxRefImages": 6,
+    "maxRefImages": 14,
     "refRoles": [
       {
         "name": "init",
         "required": false,
         "min": 0,
-        "max": 6
+        "max": 14
       }
     ],
     "promptLimits": {
       "required": true,
       "maxLength": 3000
     },
-    "params": [
-      {
-        "name": "seed",
-        "kind": "seed",
-        "min": 0,
-        "max": 2147483647
-      }
-    ],
+    "params": [],
     "pricing": {
       "baseCostUsd": 0.03
     },
@@ -755,8 +754,8 @@ export const MODELS: ModelEntry[] = [
       {
         "name": "steps",
         "kind": "int",
-        "default": 25,
-        "min": 10,
+        "default": 50,
+        "min": 20,
         "max": 50
       },
       {
@@ -811,7 +810,7 @@ export const MODELS: ModelEntry[] = [
         "name": "guidance_scale",
         "kind": "float",
         "default": 3.5,
-        "min": 0,
+        "min": 1,
         "max": 10
       },
       {
@@ -861,20 +860,6 @@ export const MODELS: ModelEntry[] = [
         "kind": "seed",
         "min": 0,
         "max": 4294967294
-      },
-      {
-        "name": "guidance_scale",
-        "kind": "float",
-        "default": 3,
-        "min": 1.5,
-        "max": 5
-      },
-      {
-        "name": "steps",
-        "kind": "int",
-        "default": 25,
-        "min": 1,
-        "max": 50
       }
     ],
     "pricing": {
@@ -957,7 +942,7 @@ export const MODELS: ModelEntry[] = [
     "refRoles": [],
     "promptLimits": {
       "required": true,
-      "maxLength": 5000
+      "maxLength": 1000
     },
     "params": [
       {
@@ -1018,7 +1003,7 @@ export const MODELS: ModelEntry[] = [
       {
         "name": "steps",
         "kind": "int",
-        "default": 28,
+        "default": 40,
         "min": 10,
         "max": 50
       },
@@ -1077,9 +1062,9 @@ export const MODELS: ModelEntry[] = [
       {
         "name": "steps",
         "kind": "int",
-        "default": 50,
+        "default": 25,
         "min": 10,
-        "max": 100
+        "max": 50
       },
       {
         "name": "guidance_scale",
@@ -1130,12 +1115,6 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 2000
     },
     "params": [
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "min": 2,
-        "max": 10
-      },
       {
         "name": "seed",
         "kind": "seed",
@@ -2259,7 +2238,7 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 4000
+      "maxLength": 2500
     },
     "params": [
       {
@@ -2273,7 +2252,6 @@ export const MODELS: ModelEntry[] = [
         "name": "resolution",
         "kind": "string",
         "enum": [
-          "720p",
           "1080p"
         ]
       }
@@ -2320,19 +2298,11 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
-        "name": "duration_seconds",
-        "kind": "float",
-        "default": 5,
-        "min": 4,
-        "max": 10
-      },
-      {
         "name": "resolution",
         "kind": "string",
         "enum": [
           "480p",
-          "720p",
-          "1080p"
+          "720p"
         ]
       }
     ],
@@ -4072,13 +4042,11 @@ export const MODELS: ModelEntry[] = [
     "aspectRatios": [
       "1:1",
       "16:9",
-      "21:9",
       "2:3",
       "3:2",
       "4:5",
       "5:4",
       "9:16",
-      "9:21",
       "3:4",
       "4:3"
     ],
@@ -4099,15 +4067,8 @@ export const MODELS: ModelEntry[] = [
         "name": "guidance_scale",
         "kind": "float",
         "default": 3,
-        "min": 1.5,
+        "min": 2,
         "max": 5
-      },
-      {
-        "name": "steps",
-        "kind": "int",
-        "default": 25,
-        "min": 1,
-        "max": 50
       }
     ],
     "pricing": {
@@ -4231,12 +4192,12 @@ export const MODELS: ModelEntry[] = [
         "kind": "int",
         "default": 28,
         "min": 10,
-        "max": 50
+        "max": 28
       },
       {
         "name": "guidance_scale",
         "kind": "float",
-        "default": 4.5,
+        "default": 3.5,
         "min": 0,
         "max": 10
       }
@@ -4328,22 +4289,15 @@ export const MODELS: ModelEntry[] = [
       "imageToImage": false,
       "inpainting": false,
       "textToVideo": true,
-      "imageToVideo": true,
+      "imageToVideo": false,
       "textTo3d": false,
       "imageTo3d": false,
       "multiviewTo3d": false
     },
     "sizes": [],
     "aspectRatios": [],
-    "maxRefImages": 1,
-    "refRoles": [
-      {
-        "name": "init",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
+    "maxRefImages": 0,
+    "refRoles": [],
     "promptLimits": {
       "required": true,
       "maxLength": 2000
@@ -4352,12 +4306,6 @@ export const MODELS: ModelEntry[] = [
       {
         "name": "negative_prompt",
         "kind": "string"
-      },
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "min": 2,
-        "max": 10
       },
       {
         "name": "seed",
@@ -4370,8 +4318,7 @@ export const MODELS: ModelEntry[] = [
       "baseCostUsd": 0.3
     },
     "tags": [
-      "text-to-video",
-      "image-to-video"
+      "text-to-video"
     ],
     "referenceUrl": "https://replicate.com/docs/reference/http"
   },
@@ -4778,7 +4725,15 @@ export const MODELS: ModelEntry[] = [
     },
     "sizes": [],
     "aspectRatios": [
-      "1:1"
+      "1:1",
+      "16:9",
+      "9:16",
+      "3:2",
+      "2:3",
+      "4:5",
+      "5:4",
+      "21:9",
+      "9:21"
     ],
     "maxRefImages": 0,
     "refRoles": [],
@@ -4825,8 +4780,14 @@ export const MODELS: ModelEntry[] = [
       "multiviewTo3d": false
     },
     "sizes": [
-      "512x512",
-      "1024x1024"
+      "1024x1024",
+      "1152x896",
+      "896x1152",
+      "1216x832",
+      "1344x768",
+      "768x1344",
+      "1536x640",
+      "640x1536"
     ],
     "aspectRatios": [],
     "maxRefImages": 2,

@@ -115,7 +115,14 @@ pub struct LeonardoImageProvider {
     client: Client,
 }
 
-const DEFAULT_MODEL_ID: &str = "b24e16ff-06e3-43eb-8d33-4416c2d75876"; // Leonardo Diffusion XL
+/// Leonardo Lightning XL — the `modelId` default of the v1 `POST /generations`
+/// reference, used only when a model id resolves to nothing we know.
+/// @see <https://docs.leonardo.ai/v1.0/reference/creategeneration>
+const DEFAULT_MODEL_ID: &str = "b24e16ff-06e3-43eb-8d33-4416c2d75876";
+
+/// Leonardo Diffusion XL, the model `leonardo/diffusion-xl` advertises.
+/// @see <https://docs.leonardo.ai/v1.0/docs/commonly-used-api-values> — "Leonardo Diffusion XL | 1e60896f-3c26-4296-8ecc-53e2afecc132"
+const DIFFUSION_XL_MODEL_ID: &str = "1e60896f-3c26-4296-8ecc-53e2afecc132";
 
 impl LeonardoImageProvider {
     pub fn new() -> Self {
@@ -158,7 +165,7 @@ impl LeonardoImageProvider {
             }
         }
         match model_id.strip_prefix("leonardo/").unwrap_or(model_id) {
-            "diffusion-xl" => DEFAULT_MODEL_ID.to_string(),
+            "diffusion-xl" => DIFFUSION_XL_MODEL_ID.to_string(),
             // Anything that already looks like a UUID is passed through.
             other if other.contains('-') && other.len() >= 32 => other.to_string(),
             _ => DEFAULT_MODEL_ID.to_string(),
@@ -386,6 +393,7 @@ impl ImageProvider for LeonardoImageProvider {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,7 +496,19 @@ mod tests {
         assert_eq!(post.headers.get("authorization").unwrap(), "Bearer leo-key");
         let body: Value = serde_json::from_slice(&post.body).unwrap();
         assert_eq!(body["prompt"], "an enchanted forest");
-        assert_eq!(body["modelId"], DEFAULT_MODEL_ID);
+        assert_eq!(body["modelId"], DIFFUSION_XL_MODEL_ID);
         assert_eq!(body["width"], 1024);
+    }
+
+    /// Leonardo's own table: Diffusion XL is 1e60896f-…; b24e16ff-… (what
+    /// `leonardo/diffusion-xl` used to send) is Leonardo Lightning XL.
+    /// @see <https://docs.leonardo.ai/v1.0/docs/commonly-used-api-values>
+    #[test]
+    fn diffusion_xl_resolves_to_the_diffusion_xl_uuid() {
+        let p = make_provider("http://unused.invalid");
+        assert_eq!(
+            p.resolve_model_id("leonardo/diffusion-xl"),
+            "1e60896f-3c26-4296-8ecc-53e2afecc132"
+        );
     }
 }

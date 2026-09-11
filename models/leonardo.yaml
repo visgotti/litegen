@@ -42,11 +42,15 @@ models:
     pricing: { base_cost_usd: 0.30 }
     capabilities: { image_to_video: true }
     prompt: { required: true, max_length: 4000 }
+    # No duration_seconds: Motion 2.0 has no duration parameter (the v1
+    # image-to-video `duration` lists values only for VEO3/VEO3FAST/KLING2_5),
+    # and its resolutions are 480p and 720p only.
+    # @see https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration
+    # @see https://docs.leonardo.ai/docs/motion-20
     params:
-      duration_seconds: { kind: float, min: 4.0, max: 10.0, default: 5.0 }
       resolution:
         kind: string
-        enum_values: [480p, 720p, 1080p]
+        enum_values: [480p, 720p]
     ref_inputs:
       max_total: 1
       default_role: first_frame
@@ -91,12 +95,16 @@ models:
     description: Kling 2.1 served through Leonardo's first-party API.
     pricing: { base_cost_usd: 1.00 }
     capabilities: { image_to_video: true }
-    prompt: { required: true, max_length: 4000 }
+    # Kling 2.1 Pro prompt maxLength 2500 (Leonardo's model schema).
+    # @see https://docs.leonardo.ai/reference/creategeneration
+    prompt: { required: true, max_length: 2500 }
     params:
       duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0 }
+      # "resolution ... Set to RESOLUTION_1080." — 1080p is the only value.
+      # @see https://docs.leonardo.ai/v1.0/docs/kling-2-1-pro
       resolution:
         kind: string
-        enum_values: [720p, 1080p]
+        enum_values: [1080p]
     ref_inputs:
       max_total: 1
       default_role: first_frame

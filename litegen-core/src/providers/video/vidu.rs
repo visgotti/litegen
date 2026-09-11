@@ -75,6 +75,31 @@ impl ViduProvider {
             _ => None,
         }
     }
+
+    fn is_last_frame(role: &str) -> bool {
+        role == "last_frame" || role == "end_frame"
+    }
+
+    /// The `duration` to send. vidu2.0 renders 4s or 8s clips only (4s only on
+    /// reference2video), while the gateway defaults an omitted duration to 5s,
+    /// so snap to the nearest length the endpoint accepts (ties go to the
+    /// shorter clip, like the OpenAI adapter's `resolve_seconds`) rather than
+    /// forward a value Vidu rejects. Other models pass through; the catalog's
+    /// `duration_seconds` bounds already hold them to what Vidu accepts.
+    /// @see <https://platform.vidu.com/docs/image-to-video.md>
+    ///   Verbatim: "vidu2.0: default 4s, available: 4, 8"
+    /// @see <https://platform.vidu.com/docs/reference-to-video.md>
+    ///   Verbatim: "vidu2.0: Default is 4 seconds, available option: 4"
+    fn resolve_duration(native: &str, endpoint: &str, requested: f64) -> i64 {
+        if native != "vidu2.0" {
+            return requested as i64;
+        }
+        if endpoint == "reference2video" || requested <= 6.0 {
+            4
+        } else {
+            8
+        }
+    }
 }
 
 impl Default for ViduProvider {
@@ -114,8 +139,13 @@ impl VideoProvider for ViduProvider {
 
         // Choose the endpoint + image set by ref roles.
         let has_reference = materialized.refs.iter().any(|r| r.role == "reference");
-        let has_last = materialized.refs.iter().any(|r| r.role == "last_frame" || r.role == "end_frame");
-        let images: Vec<String> = materialized.refs.iter().filter_map(|r| Self::ref_image(&r.form)).collect();
+        let has_last = materialized.refs.iter().any(|r| Self::is_last_frame(&r.role));
+        // start-end2video reads `images` positionally (start frame, then end
+        // frame), so order last-frame refs after the rest instead of trusting
+        // the order the caller listed them in. The sort is stable.
+        let mut refs: Vec<_> = materialized.refs.iter().collect();
+        refs.sort_by_key(|r| Self::is_last_frame(&r.role));
+        let images: Vec<String> = refs.iter().filter_map(|r| Self::ref_image(&r.form)).collect();
 
         let endpoint = if has_reference {
             "reference2video"
@@ -123,8 +153,19 @@ impl VideoProvider for ViduProvider {
             "start-end2video"
         } else if !images.is_empty() {
             "img2video"
-        } else {
+        } else if model.capabilities.text_to_video {
             "text2video"
+        } else {
+            // text2video only accepts the models the catalog marks
+            // `text_to_video` (viduq1 among ours), and nothing before the
+            // adapter checks capability flags — refuse instead of sending a
+            // request Vidu rejects.
+            // @see <https://platform.vidu.com/docs/text-to-video.md>
+            //   Verbatim: "Accepted values:`viduq3-turbo`, `viduq3-pro` , `viduq2` , `viduq1`"
+            return Err(ProviderError::InvalidRequest(format!(
+                "{} has no text-to-video mode; attach a first_frame or reference image",
+                model.id
+            )));
         };
         let url = format!("{}/ent/v2/{endpoint}", self.api_base());
 
@@ -133,7 +174,8 @@ impl VideoProvider for ViduProvider {
             body["images"] = Value::Array(images.into_iter().map(Value::String).collect());
         }
         if extras.duration_seconds > 0.0 {
-            body["duration"] = Value::Number((extras.duration_seconds as i64).into());
+            let duration = Self::resolve_duration(native, endpoint, extras.duration_seconds);
+            body["duration"] = Value::Number(duration.into());
         }
         if let Some(res) = extras.resolution.as_deref() {
             body["resolution"] = Value::String(res.to_string());
@@ -261,7 +303,7 @@ impl VideoProvider for ViduProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::materializer::Cleanup;
+    use crate::proxy::materializer::{Cleanup, MaterializedRef};
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -325,5 +367,99 @@ mod tests {
         let poll = provider.poll_status(&handle).await.unwrap();
         assert_eq!(poll.status, GenerationStatus::Completed);
         assert_eq!(poll.video_url.unwrap(), "https://cdn.vidu/v.mp4");
+    }
+
+    fn url_ref(role: &str, url: &str) -> MaterializedRef {
+        MaterializedRef { role: role.to_string(), form: MaterializedRefForm::Url(url.to_string()) }
+    }
+
+    async fn mount_submit(server: &MockServer, endpoint: &str) {
+        Mock::given(method("POST"))
+            .and(path(format!("/ent/v2/{endpoint}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "task_id": "vd-2", "state": "created" })))
+            .mount(server)
+            .await;
+    }
+
+    /// text2video accepts viduq3-turbo, viduq3-pro, viduq2 and viduq1 only, and
+    /// nothing upstream of the adapter checks `capabilities.text_to_video`, so a
+    /// prompt-only request for an image-only model must never reach text2video.
+    /// @see <https://platform.vidu.com/docs/text-to-video.md>
+    #[tokio::test]
+    async fn refuses_prompt_only_requests_for_image_only_models() {
+        let server = MockServer::start().await;
+        mount_submit(&server, "text2video").await;
+
+        let provider = make_provider(&server.uri());
+        for id in ["vidu/vidu2.0", "vidu/viduq2-pro"] {
+            let schema = ref_schema(id);
+            let base = make_base("a hummingbird in slow motion", id);
+            let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+            let res = provider.generate(&schema, &base, &make_extras(), &materialized).await;
+            assert!(matches!(res, Err(ProviderError::InvalidRequest(_))), "{id}: {res:?}");
+        }
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "no request may be sent to text2video for an image-only model"
+        );
+    }
+
+    /// start-end2video reads `images` as [start frame, end frame]; the order the
+    /// caller listed its refs in must not swap them.
+    /// @see <https://platform.vidu.com/docs/start-end-to-video.md>
+    #[tokio::test]
+    async fn start_end_images_are_ordered_by_role() {
+        let server = MockServer::start().await;
+        mount_submit(&server, "start-end2video").await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("vidu/viduq1");
+        let base = make_base("a flower opening", "vidu/viduq1");
+        let materialized = MaterializedRequest {
+            refs: vec![
+                url_ref("last_frame", "https://img.test/end.png"),
+                url_ref("first_frame", "https://img.test/start.png"),
+            ],
+            cleanup: Cleanup::empty(),
+        };
+        provider.generate(&schema, &base, &make_extras(), &materialized).await.expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["images"], json!(["https://img.test/start.png", "https://img.test/end.png"]));
+    }
+
+    /// vidu2.0 takes 4s or 8s (4s only on reference2video); the gateway's
+    /// default duration of 5s is not one of them.
+    /// @see <https://platform.vidu.com/docs/image-to-video.md>
+    /// @see <https://platform.vidu.com/docs/reference-to-video.md>
+    #[tokio::test]
+    async fn vidu2_duration_snaps_to_a_length_the_endpoint_accepts() {
+        let server = MockServer::start().await;
+        mount_submit(&server, "img2video").await;
+        mount_submit(&server, "reference2video").await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("vidu/vidu2.0");
+        let base = make_base("a hummingbird in slow motion", "vidu/vidu2.0");
+        // (ref role → endpoint, requested seconds, seconds Vidu must receive)
+        let cases: [(&str, f64, i64); 3] = [("first_frame", 5.0, 4), ("first_frame", 7.0, 8), ("reference", 8.0, 4)];
+        for &(role, requested, _) in &cases {
+            let mut extras = make_extras();
+            extras.duration_seconds = requested;
+            let materialized = MaterializedRequest {
+                refs: vec![url_ref(role, "https://img.test/a.png")],
+                cleanup: Cleanup::empty(),
+            };
+            provider.generate(&schema, &base, &extras, &materialized).await.expect("generate");
+        }
+
+        let received = server.received_requests().await.unwrap();
+        let sent: Vec<i64> = received
+            .iter()
+            .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["duration"].as_i64().unwrap())
+            .collect();
+        let expected: Vec<i64> = cases.iter().map(|c| c.2).collect();
+        assert_eq!(sent, expected);
     }
 }

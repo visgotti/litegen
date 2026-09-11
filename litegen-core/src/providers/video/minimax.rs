@@ -145,8 +145,12 @@ impl VideoProvider for MiniMaxVideoProvider {
             if let Some(f) = img {
                 match r.role.as_str() {
                     "last_frame" => body["last_frame_image"] = Value::String(f),
+                    // The video `SubjectReference` is `{type, image: [..]}`, both
+                    // required. `image_file` is the *image* API's field; the
+                    // video schema has no such property.
+                    // @see <https://platform.minimax.io/docs/api-reference/video-generation-s2v.md>
                     "subject" | "reference" => {
-                        body["subject_reference"] = json!([{ "type": "character", "image_file": f }])
+                        body["subject_reference"] = json!([{ "type": "character", "image": [f] }])
                     }
                     _ => body["first_frame_image"] = Value::String(f),
                 }
@@ -349,5 +353,42 @@ mod tests {
         let poll = provider.poll_status(&handle).await.unwrap();
         assert_eq!(poll.status, GenerationStatus::Completed);
         assert_eq!(poll.video_url.unwrap(), "https://cdn.minimax/video.mp4");
+    }
+
+    /// S2V-01's `subject_reference` items are `SubjectReference`
+    /// `{type, image: [string]}` with both fields required; `image_file` is the
+    /// image API's `ImageSubjectReference` field, not the video one.
+    /// @see <https://platform.minimax.io/docs/api-reference/video-generation-s2v.md> (2026-09-11)
+    #[tokio::test]
+    async fn s2v_sends_subject_reference_as_an_image_array() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/video_generation"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "task_id": "mm-task-2", "base_resp": { "status_code": 0, "status_msg": "success" }
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("minimax/S2V-01");
+        let base = make_base("the same character waves", "minimax/S2V-01");
+        let extras = VideoExtras { duration_seconds: 6.0, aspect_ratio: None, resolution: None, fps: None, extra: None };
+        let materialized = MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "subject".to_string(),
+                form: MaterializedRefForm::Url("https://example.test/face.png".to_string()),
+            }],
+            cleanup: Cleanup::empty(),
+        };
+
+        provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        let subject = &body["subject_reference"][0];
+        assert_eq!(subject["type"], "character");
+        assert_eq!(subject["image"], json!(["https://example.test/face.png"]));
+        assert!(subject.get("image_file").is_none(), "image_file is the image API's field");
     }
 }

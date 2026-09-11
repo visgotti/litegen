@@ -19,15 +19,19 @@ models:
     capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
     prompt: { required: true, max_length: 32000 }
     params:
-      # gpt-image-2 accepts arbitrary WIDTHxHEIGHT; resolutions above 2560x1440
-      # are experimental and 3840x2160 is the ceiling.
+      # gpt-image-2 size constraints: max edge <= 3840, both edges multiples of
+      # 16, long:short <= 3:1, 655,360..=8,294,400 total pixels; 2160x3840 (4K
+      # portrait) is a listed size. Per-edge bounds cannot hold the pixel rule,
+      # so they hold its implication: no edge under 480 reaches 655,360 px
+      # within 3:1. Resolutions above 2560x1440 are experimental.
+      # @see https://developers.openai.com/api/docs/guides/image-generation (GPT Image 2 settings)
       size:
         kind: size
         mode: freeform
-        min_width: 256
+        min_width: 480
         max_width: 3840
-        min_height: 256
-        max_height: 2160
+        min_height: 480
+        max_height: 3840
         multiple_of: 16
       quality:
         kind: string

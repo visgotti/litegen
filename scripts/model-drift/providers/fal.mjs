@@ -24,7 +24,8 @@ const MODELS = {
   'fal/flux-schnell': 'fal-ai/flux/schnell',
   'fal/sdxl': 'fal-ai/fast-sdxl',
   'fal/sd35-medium': 'fal-ai/stable-diffusion-v35-medium',
-  'fal/recraft-v3': 'fal-ai/recraft-v3',
+  // Renamed from fal-ai/recraft-v3 (no longer in the model registry; its page 308-redirects here).
+  'fal/recraft-v3': 'fal-ai/recraft/v3/text-to-image',
   'fal/auraflow': 'fal-ai/aura-flow',
   'fal/video': ['fal-ai/ltx-video', 'fal-ai/ltx-video/image-to-video'],
 };
