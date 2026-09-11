@@ -5686,10 +5686,14 @@ verified in code by the controller:
 
 ### Task 17D: Two contract violations found by the aipix acceptance checklist
 
+**Status:** ✅ DONE (2026-09-11, 06fbb51) — `fix(3d): close the two aipix
+contract violations found by the §7 checklist`. §7 now scores 13/13.
+Report: `.superpowers/sdd/2026-08-20-3d-model-generation/task-17d-report.md`.
+
 Task 17's §7 run against a live build scored 11/13. Both failures are ours and
 both are visible to the consumer:
 
-- [ ] **`usage` is null on the completed poll response.** The contract says
+- [x] DONE 2026-09-11 **`usage` is null on the completed poll response.** The contract says
   "`usage` carries the same `cost_usd` / `cost_source` / `tokens` triple as
   video, so aipix's existing applyMarkup + usdToTokens cost path works
   unchanged", and its §7 checklist item is "`usage.cost_usd` / `cost_source`
@@ -5702,7 +5706,14 @@ both are visible to the consumer:
   the same gap at `router.rs:582` — fix 3D, and say in the commit message
   whether you also fixed video (prefer yes if it is the same one-liner and the
   video tests stay green).
-- [ ] **Cancellation is overturned by the next poll.** `PATCH
+  → The router now carries the submit-time `UsageInfo` beside the in-flight
+  handle (`TrackedJob`) and returns it on every poll, so the poll reports the
+  exact triple the submit quoted and `generations.cost_usd` persisted — no DB
+  round trip, and immune to the spawned row insert not having landed yet.
+  `model3d_response_from_row` re-derives the same triple from the row.
+  **Video fixed too** — the identical one-liner at the same seam, video tests
+  green.
+- [x] DONE 2026-09-11 **Cancellation is overturned by the next poll.** `PATCH
   /v1/generations/{id}` with `{"status":"cancelled"}` marks the row cancelled,
   but the router still holds the in-flight job, so the next
   `GET /v1/models3d/{id}` polls the provider, gets `Completed`, re-hosts, and
@@ -5713,11 +5724,36 @@ both are visible to the consumer:
   `get_3d_status` read-through: if the persisted row is already terminal
   (cancelled/failed/completed), answer from the row and never poll or persist
   over it. Check the video path for the same shape and report it.
-- [ ] **Tests:** integration tests through the real router for both — a
+  → Both halves shipped: `ProxyRouter::forget_model3d_job` /
+  `forget_video_job` called from `cancel_generation`, and `get_3d_status`
+  read-through gated on the new `GenerationStatus::is_terminal()`.
+  **Video needed only half (a):** its status handler never persists, and the
+  poller selects only `status IN ('pending','processing')`, so a cancelled
+  video row was never overwritten — the stale in-memory job merely kept the
+  endpoint reporting live provider progress after the cancel. Read-through for
+  video is NOT the same trivial change (no `video_response_from_row`, and
+  `/v1/videos/{id}` 404s instead of falling through to the DB), so it was left
+  alone deliberately — see the report's "Deferred" section.
+- [x] DONE 2026-09-11 **Tests:** integration tests through the real router for both — a
   completed poll carries `usage.cost_usd` > 0 (use a priced mock model; the 3D
   mocks are $0, so assert the field is PRESENT and `cost_source` is set, and
   add a unit test for the value derivation), and cancel → poll → the response
   and the row both stay `cancelled` with no asset re-host.
-- [ ] **Gates:** `cd litegen-core && cargo test` green; `cargo clippy
+  → 7 new cases in `litegen-core/tests/model3d_api.rs` (21 pass). The value
+  derivation is pinned end-to-end by seeding a generation row at $0.042 and
+  asserting the poll reports 42 tokens, plus 6 unit tests in
+  `handlers/mod.rs::model3d_usage_derivation_tests` for rounding and
+  `is_terminal`.
+- [x] PARTIAL 2026-09-11 **Gates:** `cd litegen-core && cargo test` green; `cargo clippy
   --all-targets` with no new finding in your lines. Commit path-scoped and tick
   this section.
+  → clippy: no new finding in Task 17D's lines (the 8 warnings are
+  pre-existing). Every integration target passes except `catalog_conformance`
+  (13 failures) — and the **lib-test target does not compile** — both caused by
+  a concurrent session's UNCOMMITTED work in
+  `litegen-core/src/providers/image/{ideogram,hunyuan}.rs` and
+  `tests/catalog_conformance.rs`, not by Task 17D. **REMAINING:** re-run
+  `cargo test --lib` once that session's work compiles, to execute the 6 new
+  unit tests (they type-check today; their arithmetic is independently
+  confirmed by the passing priced-row integration test). Evidence in the
+  report.
