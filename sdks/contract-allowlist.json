@@ -4,8 +4,7 @@
   "known_uncovered": {
     "_comment": "METHOD path operations the OpenAPI spec declares but the hand-written SDK facade does NOT yet surface a method for. Per language. Adding a method for one of these must be accompanied by removing it here (the 'no now-covered entries' check enforces that). A brand-new spec operation with no method and no entry here fails the suite.",
     "typescript": [
-      "GET /auth/redirect",
-      "GET /v1/generations/{}"
+      "GET /auth/redirect"
     ],
     "python": [
       "DELETE /v1/apps/{}/storage",
