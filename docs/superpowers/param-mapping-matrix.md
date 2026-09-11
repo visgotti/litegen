@@ -152,7 +152,7 @@ mistake this document exists to prevent.
 | `target_polycount` | Int 100–300000 | range | `target_polycount` | `face_limit` | `vertex_count` | `quality` | ⬜ |
 | `symmetry` | String enum | enum off/auto/on | `symmetry_mode` | — | — | — | ⬜ |
 | `topology` | String enum | enum triangle/quad | `topology` | `quad` (bool) | `remesh` | `mesh_mode` | ⬜ |
-| `rig` | Bool | supported-or-drop | (separate endpoint) | `rig` | — | — | ⬜ |
+| `rig` | Bool | supported-or-drop | (separate endpoint) | `rig` (unconfirmed) | — | — | ⬜ |
 | `seed` | Seed | range | — | `model_seed` | `seed` | — | ⬜ |
 | ref role `init` | RefInputSpec | role declared | `image_url` (b64 ok) | `file_token`\|url | multipart `image` | multipart `images` | ⬜ |
 | ref roles `view-*` | RefInputSpec | role declared | multi-image-to-3d | multiview-to-model | — | `condition_mode` | ⬜ |

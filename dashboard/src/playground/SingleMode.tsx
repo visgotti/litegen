@@ -302,6 +302,7 @@ export default function SingleMode() {
               className="input"
               style={{ width: '100%' }}
               value={form.model}
+              disabled={loading}
               onChange={e => setForm(prev => ({ ...prev, model: e.target.value }))}
             >
               {models.map(m => (
