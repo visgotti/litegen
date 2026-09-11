@@ -132,7 +132,8 @@ impl ImageProvider for BedrockImageProvider {
         if let Some(np) = base.negative_prompt.as_deref() {
             text_params["negativeText"] = Value::String(np.to_string());
         }
-        // Optional conditioning image (base64), controlMode via extra.
+        // Optional conditioning image (base64); controlMode and controlStrength
+        // (both allowlisted extras) apply only alongside it.
         for r in &materialized.refs {
             if let MaterializedRefForm::Base64(b64) = &r.form {
                 text_params["conditionImage"] = Value::String(b64.clone());
@@ -143,6 +144,11 @@ impl ImageProvider for BedrockImageProvider {
                     .and_then(|v| v.as_str())
                     .unwrap_or("CANNY_EDGE");
                 text_params["controlMode"] = Value::String(mode.to_string());
+                // "controlStrength (Optional) – ... The range is 0 to 1.0 ... default 0.7."
+                // @see <https://docs.aws.amazon.com/nova/latest/userguide/image-gen-req-resp-structure.html>
+                if let Some(strength) = extras.extra.as_ref().and_then(|e| e.get("controlStrength")) {
+                    text_params["controlStrength"] = strength.clone();
+                }
                 break;
             }
         }
@@ -352,5 +358,38 @@ mod tests {
         assert_eq!(body["textToImageParams"]["negativeText"], "blurry");
         assert_eq!(body["imageGenerationConfig"]["width"], 1024);
         assert_eq!(body["imageGenerationConfig"]["cfgScale"], 6.5);
+    }
+
+    /// `controlStrength` is in the catalog's extra_allowlist, so a caller can
+    /// send it — but the adapter used to drop it on the floor.
+    /// @see <https://docs.aws.amazon.com/nova/latest/userguide/image-gen-req-resp-structure.html>
+    #[tokio::test]
+    async fn conditioning_image_forwards_control_mode_and_strength() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/model/amazon.nova-canvas-v1:0/invoke"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "images": [B64.encode(b"NOVAPNG")] })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("bedrock/amazon.nova-canvas-v1:0");
+        let base = make_base("a cabin in the woods", "bedrock/amazon.nova-canvas-v1:0");
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "controlMode": "SEGMENTATION", "controlStrength": 0.4 }));
+        let materialized = MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".into(),
+                form: MaterializedRefForm::Base64(B64.encode(b"CONDITION")),
+            }],
+            cleanup: Cleanup::empty(),
+        };
+
+        provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["textToImageParams"]["controlMode"], "SEGMENTATION");
+        assert_eq!(body["textToImageParams"]["controlStrength"], 0.4);
     }
 }

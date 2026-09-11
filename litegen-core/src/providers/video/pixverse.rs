@@ -123,6 +123,22 @@ impl Default for PixverseProvider {
     }
 }
 
+/// `quality` sent when the request leaves `resolution` unset. All three
+/// generate endpoints require it and PixVerse has no server-side default;
+/// 540p is the spec's example value and, with 360p, the cheapest v3.5–v5 tier
+/// (45 credits per 5s clip) — the price `base_cost_usd` assumes for v4.5/v5.
+/// @see <https://docs.platform.pixverse.ai/text-to-video-generation-13016634e0.md>
+///   (`required: [aspect_ratio, duration, model, prompt, quality]`)
+/// @see <https://docs.platform.pixverse.ai/pricing-796039m0.md>
+const DEFAULT_QUALITY: &str = "540p";
+
+/// `aspect_ratio` sent to text/generate, which requires it, when the request
+/// leaves it unset. img/ and transition/ take their shape from the image and
+/// have no such field.
+const DEFAULT_ASPECT_RATIO: &str = "16:9";
+
+const TEXT_TO_VIDEO_PATH: &str = "/openapi/v2/video/text/generate";
+
 #[async_trait]
 impl VideoProvider for PixverseProvider {
     fn name(&self) -> &str {
@@ -175,18 +191,19 @@ impl VideoProvider for PixverseProvider {
         } else if let Some(id) = first_img {
             ("/openapi/v2/video/img/generate", json!({ "img_id": id }))
         } else {
-            ("/openapi/v2/video/text/generate", json!({}))
+            (TEXT_TO_VIDEO_PATH, json!({}))
         };
         body["model"] = Value::String(native.to_string());
         body["prompt"] = Value::String(base.prompt.clone());
-        if let Some(res) = extras.resolution.as_deref() {
-            body["quality"] = Value::String(res.to_string());
-        }
+        let quality = extras.resolution.as_deref().unwrap_or(DEFAULT_QUALITY);
+        body["quality"] = Value::String(quality.to_string());
         if extras.duration_seconds > 0.0 {
             body["duration"] = Value::Number((extras.duration_seconds as i64).into());
         }
         if let Some(ar) = extras.aspect_ratio.as_deref() {
             body["aspect_ratio"] = Value::String(ar.to_string());
+        } else if path == TEXT_TO_VIDEO_PATH {
+            body["aspect_ratio"] = Value::String(DEFAULT_ASPECT_RATIO.to_string());
         }
         if let Some(seed) = base.seed {
             body["seed"] = Value::Number(seed.into());
@@ -312,7 +329,7 @@ impl VideoProvider for PixverseProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::materializer::Cleanup;
+    use crate::proxy::materializer::{Cleanup, MaterializedRef};
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -381,5 +398,82 @@ mod tests {
         let poll = provider.poll_status(&handle).await.unwrap();
         assert_eq!(poll.status, GenerationStatus::Completed);
         assert_eq!(poll.video_url.unwrap(), "https://cdn.pixverse/v.mp4");
+    }
+
+    fn extras_without_quality_or_ratio() -> VideoExtras {
+        VideoExtras { duration_seconds: 5.0, aspect_ratio: None, resolution: None, fps: None, extra: None }
+    }
+
+    async fn mount_ok(server: &MockServer, endpoint: &str, resp: Value) {
+        Mock::given(method("POST"))
+            .and(path(endpoint))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ErrCode": 0, "ErrMsg": "success", "Resp": resp
+            })))
+            .mount(server)
+            .await;
+    }
+
+    /// text/generate requires `aspect_ratio` and `quality`, with no server-side
+    /// default, so a request that leaves resolution/aspect_ratio unset must still
+    /// carry both.
+    /// @see <https://docs.platform.pixverse.ai/text-to-video-generation-13016634e0.md>
+    #[tokio::test]
+    async fn text_to_video_fills_required_quality_and_aspect_ratio() {
+        let server = MockServer::start().await;
+        mount_ok(&server, "/openapi/v2/video/text/generate", json!({ "video_id": 7 })).await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("pixverse/v5");
+        let base = make_base("a paper airplane gliding", "pixverse/v5");
+        let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+        provider
+            .generate(&schema, &base, &extras_without_quality_or_ratio(), &materialized)
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["quality"], "540p");
+        assert_eq!(body["aspect_ratio"], "16:9");
+    }
+
+    /// img/generate requires `quality` too, but has no `aspect_ratio` field (the
+    /// image sets the shape), so none is invented for it.
+    /// @see <https://docs.platform.pixverse.ai/image-to-video-generation-13016633e0.md>
+    #[tokio::test]
+    async fn image_to_video_fills_quality_but_invents_no_aspect_ratio() {
+        let server = MockServer::start().await;
+        mount_ok(&server, "/openapi/v2/image/upload", json!({ "img_id": 99 })).await;
+        mount_ok(&server, "/openapi/v2/video/img/generate", json!({ "video_id": 8 })).await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("pixverse/v4.5");
+        let base = make_base("the kite lifts off", "pixverse/v4.5");
+        let materialized = MaterializedRequest {
+            refs: vec![MaterializedRef {
+                role: "first_frame".to_string(),
+                form: MaterializedRefForm::MultipartField {
+                    field_name: "image".to_string(),
+                    bytes: bytes::Bytes::from_static(b"PNG"),
+                    content_type: "image/png".to_string(),
+                },
+            }],
+            cleanup: Cleanup::empty(),
+        };
+        provider
+            .generate(&schema, &base, &extras_without_quality_or_ratio(), &materialized)
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        let submit = received
+            .iter()
+            .find(|r| r.url.path() == "/openapi/v2/video/img/generate")
+            .expect("img/generate was called");
+        let body: Value = serde_json::from_slice(&submit.body).unwrap();
+        assert_eq!(body["img_id"], 99);
+        assert_eq!(body["quality"], "540p");
+        assert!(body.get("aspect_ratio").is_none(), "img/generate has no aspect_ratio field");
     }
 }

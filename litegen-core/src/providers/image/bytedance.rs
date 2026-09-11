@@ -13,6 +13,33 @@ use crate::providers::{
 };
 use crate::types::*;
 
+/// The `model` value an Ark host documents for one of our catalog ids.
+///
+/// The two Ark hosts list the same models under different ids: BytePlus
+/// ModelArk (international — the default `api_base`) documents
+/// `seedream-4-0-250828` and `seedance-1-0-pro-250528`, while Volcengine Ark
+/// (China, `*.volces.com`) documents `doubao-seedream-4-0-250828` and
+/// `doubao-seedance-1-0-pro-250528`. Catalog ids keep whichever form they were
+/// published with (the public id never changes), so the id sent is derived
+/// from the host instead of copied from the catalog. Shared with the video
+/// provider.
+///
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1330310> — BytePlus model list (no `doubao-` ids)
+/// @see <https://www.volcengine.com/docs/82379/1330310> — Volcengine model list (`doubao-` ids)
+pub(crate) fn ark_model_id(model_id: &str, api_base: &str) -> String {
+    let bare = model_id.strip_prefix("bytedance/").unwrap_or(model_id);
+    let bare = bare.strip_prefix("doubao-").unwrap_or(bare);
+    let volcengine = reqwest::Url::parse(api_base)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h == "volces.com" || h.ends_with(".volces.com")))
+        .unwrap_or(false);
+    if volcengine {
+        format!("doubao-{bare}")
+    } else {
+        bare.to_string()
+    }
+}
+
 /// ByteDance Seedream image provider (Volcengine Ark / BytePlus ModelArk).
 ///
 /// Synchronous, OpenAI-compatible: `POST /api/v3/images/generations` returns
@@ -62,10 +89,6 @@ impl ByteDanceImageProvider {
         }
         Ok(base)
     }
-
-    fn resolve_model(model_id: &str) -> &str {
-        model_id.strip_prefix("bytedance/").unwrap_or(model_id)
-    }
 }
 
 impl Default for ByteDanceImageProvider {
@@ -101,7 +124,7 @@ impl ImageProvider for ByteDanceImageProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let creds = self.creds()?;
-        let native = Self::resolve_model(&model.id);
+        let native = ark_model_id(&model.id, self.api_base());
         let url = format!("{}/images/generations", self.api_base());
 
         let mut body = json!({
@@ -204,7 +227,7 @@ impl ImageProvider for ByteDanceImageProvider {
         };
 
         let mut metadata = HashMap::new();
-        metadata.insert("model".to_string(), Value::String(native.to_string()));
+        metadata.insert("model".to_string(), Value::String(native));
 
         Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata })
     }
@@ -233,6 +256,7 @@ impl ImageProvider for ByteDanceImageProvider {
         HealthCheckResult { healthy: true, message: "ByteDance provider configured".into(), latency_ms: None }
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -301,5 +325,26 @@ mod tests {
         assert_eq!(body["model"], "seedream-4-0-250828");
         assert_eq!(body["size"], "2048x2048");
         assert_eq!(body["response_format"], "b64_json");
+    }
+
+    /// BytePlus lists `seedream-4-0-250828` / `seedance-1-0-pro-250528`;
+    /// Volcengine lists the same models with a `doubao-` prefix. Each host
+    /// must get its own documented id, whatever form the catalog id has.
+    /// @see <https://docs.byteplus.com/en/docs/ModelArk/1330310>
+    /// @see <https://www.volcengine.com/docs/82379/1330310>
+    #[test]
+    fn ark_model_id_sends_each_hosts_documented_id() {
+        let byteplus = "https://ark.ap-southeast.bytepluses.com/api/v3";
+        let volcengine = "https://ark.cn-beijing.volces.com/api/v3";
+        assert_eq!(ark_model_id("bytedance/seedream-4-0-250828", byteplus), "seedream-4-0-250828");
+        assert_eq!(ark_model_id("bytedance/seedream-4-0-250828", volcengine), "doubao-seedream-4-0-250828");
+        assert_eq!(
+            ark_model_id("bytedance/doubao-seedance-1-0-pro-250528", byteplus),
+            "seedance-1-0-pro-250528"
+        );
+        assert_eq!(
+            ark_model_id("bytedance/doubao-seedance-1-0-pro-250528", volcengine),
+            "doubao-seedance-1-0-pro-250528"
+        );
     }
 }

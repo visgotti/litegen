@@ -74,7 +74,11 @@ impl FalProvider {
             "flux-pro" => "fal-ai/flux-pro/v1.1",
             "sdxl" | "sdxl-lightning" => "fal-ai/fast-sdxl",
             "sd35-medium" | "sd3.5-medium" => "fal-ai/stable-diffusion-v35-medium",
-            "recraft-v3" => "fal-ai/recraft-v3",
+            // fal renamed `fal-ai/recraft-v3`: its model page 308-redirects to
+            // this id and the model registry no longer lists the old one. The
+            // input schema is identical, so only the path moves.
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v3/text-to-image>
+            "recraft-v3" => "fal-ai/recraft/v3/text-to-image",
             "auraflow" | "aura-flow" => "fal-ai/aura-flow",
             _ => "fal-ai/flux/dev", // fallback
         }
@@ -497,5 +501,57 @@ mod tests {
         assert_eq!(body["seed"], 42);
         assert_eq!(body["guidance_scale"], 3.5);
         assert_eq!(body["num_inference_steps"], 28);
+    }
+
+    /// fal renamed `fal-ai/recraft-v3` to `fal-ai/recraft/v3/text-to-image`:
+    /// <https://fal.ai/models/fal-ai/recraft-v3> 308-redirects there, and the
+    /// model registry (`api.fal.ai/v1/models`) returns the old id without
+    /// metadata. Both ids publish the same input schema (`prompt` of at most
+    /// 1000 chars, `style`, `image_size`, `colors`, `style_id`), so the catalog
+    /// id `fal/recraft-v3` keeps working by moving only the endpoint path.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v3/text-to-image>
+    #[tokio::test]
+    async fn recraft_v3_posts_to_the_renamed_endpoint() {
+        let server = MockServer::start().await;
+        let image_server = MockServer::start().await;
+        let image_url = format!("{}/output.webp", image_server.uri());
+
+        Mock::given(method("POST"))
+            .and(path("/fal-ai/recraft/v3/text-to-image"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "images": [{ "url": image_url, "content_type": "image/webp" }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"FAKEWEBP".to_vec()))
+            .mount(&image_server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("fal/recraft-v3");
+        let mut base = make_base("a minimalist fox logo", "fal/recraft-v3");
+        base.seed = None;
+        // Only what the catalog lets through for this model: prompt + style.
+        let extras = ImageExtras {
+            size: None,
+            steps: None,
+            guidance_scale: None,
+            style: Some("vector_illustration".to_string()),
+            ..make_extras()
+        };
+
+        let output = provider
+            .generate(&schema, &base, &extras, &empty_materialized())
+            .await
+            .expect("generate");
+        assert_eq!(output.data, b"FAKEWEBP");
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].url.path(), "/fal-ai/recraft/v3/text-to-image");
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["prompt"], "a minimalist fox logo");
+        assert_eq!(body["style"], "vector_illustration");
     }
 }
