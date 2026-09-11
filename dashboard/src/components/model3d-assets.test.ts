@@ -5,6 +5,7 @@ import {
   canPreviewMesh,
   copyToClipboard,
   loadEventMatches,
+  retrySrc,
   validAssets,
   describeViewerError,
   formatBytes,
@@ -114,6 +115,31 @@ describe('canPreviewMesh', () => {
 
   it('attempts an unknown (empty) format and lets the viewer decide', () => {
     expect(canPreviewMesh('')).toBe(true);
+  });
+
+  it.each([7, null, { ext: 'glb' }])('rejects a non-string format (%s) instead of throwing', f => {
+    expect(() => canPreviewMesh(f)).not.toThrow();
+    expect(canPreviewMesh(f)).toBe(false);
+  });
+});
+
+describe('retrySrc', () => {
+  const SRC = 'https://cdn.example/out/mesh.glb?X-Amz-Signature=abc';
+
+  it('is the raw src before any retry', () => {
+    expect(retrySrc(SRC, 0)).toBe(SRC);
+  });
+
+  it('adds a slash-free fragment per attempt, leaving path and query untouched', () => {
+    expect(retrySrc(SRC, 1)).toBe(`${SRC}#retry-1`);
+    expect(retrySrc(SRC, 2)).toBe(`${SRC}#retry-2`);
+    const busted = new URL(retrySrc(SRC, 3));
+    expect(busted.search).toBe('?X-Amz-Signature=abc');
+    expect(busted.hash).not.toContain('/');
+  });
+
+  it('still produces a distinct string when the src already has a fragment', () => {
+    expect(retrySrc('https://x/m.glb#v2', 1)).not.toBe('https://x/m.glb#v2');
   });
 });
 

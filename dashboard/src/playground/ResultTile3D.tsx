@@ -1,5 +1,5 @@
 import ModelViewer from '../components/ModelViewer';
-import { meshOf, previewOf } from '../components/model3d-assets';
+import { meshOf, previewOf, validAssets } from '../components/model3d-assets';
 import type { ResultTileState } from './types';
 
 interface Props { tile: ResultTileState; onRerun: (modelId: string) => void; }
@@ -8,9 +8,12 @@ interface Props { tile: ResultTileState; onRerun: (modelId: string) => void; }
  *  `ModelPreview` inspector: several live canvases each with a full toolbar
  *  would crowd the grid, and the single-mode panel is where inspection lives. */
 export default function ResultTile3D({ tile, onRerun }: Props) {
-  const meshAsset = meshOf(tile.assets ?? [], tile.url);
+  // tile.assets comes straight from the poll response (useFanOut) and is not
+  // validated there; a malformed entry must not throw in render.
+  const assets = validAssets(tile.assets);
+  const meshAsset = meshOf(assets, tile.url);
   const mesh = meshAsset?.url;
-  const poster = previewOf(tile.assets ?? [])?.url;
+  const poster = previewOf(assets)?.url;
   return (
     <div className="pg-tile" data-testid={`pg-tile-${tile.modelId}`}>
       <div className="pg-tile-head">
