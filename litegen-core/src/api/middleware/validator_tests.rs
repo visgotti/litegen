@@ -313,4 +313,81 @@ models:
             assert!(require_media_type(r.get(model).unwrap(), served).is_ok(), "{model} on {served:?}");
         }
     }
+
+    // ─── duration_seconds: omitted means the model's own default ─────────────
+
+    fn video_registry() -> CapabilityRegistry {
+        CapabilityRegistry::from_yaml_strs(&[("v.yaml", r#"
+models:
+  - id: v/six
+    provider: v
+    media_type: video
+    display_name: Six
+    pricing: { base_cost_usd: 0.5 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 100 }
+    params:
+      duration_seconds: { kind: float, min: 6.0, max: 10.0, default: 6.0 }
+  - id: v/eight
+    provider: v
+    media_type: video
+    display_name: Eight
+    pricing: { base_cost_usd: 0.5 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 100 }
+    params:
+      duration_seconds: { kind: int, min: 8, max: 8, default: 8 }
+  - id: v/none
+    provider: v
+    media_type: video
+    display_name: NoDuration
+    pricing: { base_cost_usd: 0.5 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 100 }
+    params: {}
+"#)]).unwrap()
+    }
+
+    /// A request body carrying no duration at all, as a caller would send it.
+    fn vid_json(model: &str) -> VideoGenerationRequest {
+        serde_json::from_value(serde_json::json!({ "model": model, "prompt": "a cat" }))
+            .expect("video request without duration_seconds should deserialize")
+    }
+
+    /// A model whose minimum is above the legacy 5s fallback must still accept a
+    /// request that omits duration: the omission means "use the model's default",
+    /// not "5 seconds". Before this, every such request was rejected
+    /// (fal/ltx-2.3 at 6s and bedrock nova-reel at 6s could not be called
+    /// without passing duration explicitly).
+    #[test]
+    fn omitted_duration_is_accepted_by_a_model_whose_minimum_is_above_five() {
+        let r = video_registry();
+        for model in ["v/six", "v/eight"] {
+            let out = validate_video(r.get(model).unwrap(), vid_json(model));
+            assert!(out.is_ok(), "{model}: omitted duration was rejected: {:?}", out.err());
+        }
+    }
+
+    /// Omitted resolves to the model's declared default; an explicit value wins.
+    #[test]
+    fn resolved_duration_prefers_the_request_then_the_models_default() {
+        let r = video_registry();
+        let six = r.get("v/six").unwrap();
+        assert_eq!(resolve_duration_seconds(six, None), 6.0);
+        assert_eq!(resolve_duration_seconds(six, Some(9.5)), 9.5);
+        assert_eq!(resolve_duration_seconds(r.get("v/eight").unwrap(), None), 8.0);
+        // No duration param at all: the legacy 5s fallback still applies.
+        assert_eq!(resolve_duration_seconds(r.get("v/none").unwrap(), None), 5.0);
+    }
+
+    /// The range check still applies to a value the caller actually sent.
+    #[test]
+    fn an_explicit_duration_outside_the_range_is_still_rejected() {
+        let r = video_registry();
+        let mut req = vid_json("v/six");
+        req.duration_seconds = Some(3.0);
+        let err = validate_video(r.get("v/six").unwrap(), req).unwrap_err();
+        assert_eq!(err.code, "param_out_of_range");
+        assert_eq!(err.param.as_deref(), Some("duration_seconds"));
+    }
 }

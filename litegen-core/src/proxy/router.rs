@@ -1008,7 +1008,7 @@ impl ProxyRouter {
     ) -> Result<(String, VideoGenerationHandle), ProxyError> {
         let dummy_req = VideoGenerationRequest {
             base: base.clone(),
-            duration_seconds: extras.duration_seconds,
+            duration_seconds: Some(extras.duration_seconds),
             aspect_ratio: extras.aspect_ratio.clone(),
             resolution: extras.resolution.clone(),
             fps: extras.fps,
