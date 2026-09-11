@@ -236,3 +236,19 @@ SMTP delivery is out of scope for this version. The password-reset token is surf
 2. Construct the reset URL: `https://your-host/reset-password/<token>`.
 3. Send the URL to the user out-of-band (Slack, email client, etc.).
 4. The token expires after 1 hour. If it has expired, delete the row from `password_resets` and trigger a new reset request.
+
+---
+
+## Weekly: provider model drift
+
+**Signals:** A vendor shipped a model we don't offer, retired or renamed one we do, or changed a request parameter (sizes, durations, ratios) so our `models/*.yaml` typings no longer match. None of this raises an error until a user hits it.
+
+Run the drift check once a week. See `scripts/model-drift/README.md` for details.
+
+1. In Claude Code, run `/model-drift`. It runs the check, investigates and repairs any broken source (a vendor moved or restructured its docs), then brings back the new, missing and changed items for a decision. Without Claude, run `node scripts/model-drift/check.mjs`.
+2. **Exit 2:** a source or definition is broken. The provider's definition in `scripts/model-drift/providers/` needs updating before its results mean anything.
+3. **Exit 1:** there is drift.
+   - **New:** add the model to `models/<provider>.yaml` with typings verified against the vendor docs, or acknowledge it in the definition with the reason we skip it.
+   - **Missing:** confirm against the vendor changelog, then remove or replace the model.
+   - **Changed:** `git diff scripts/model-drift/snapshots/` and align the yaml typings.
+4. Commit the refreshed snapshots, since they are the baseline for next week's diff.

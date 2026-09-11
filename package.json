@@ -11,7 +11,9 @@
     "deploy": "node deploy.js",
     "deploy:provision": "node deploy.js provision",
     "deploy:proxy": "node deploy.js proxy",
-    "deploy:landing": "node deploy.js landing"
+    "deploy:landing": "node deploy.js landing",
+    "model-drift": "node scripts/model-drift/check.mjs",
+    "test:model-drift": "node --test 'scripts/model-drift/test/*.test.mjs'"
   },
   "devDependencies": {
     "node-ssh": "^13.2.1",
