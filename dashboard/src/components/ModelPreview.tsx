@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import ModelViewer, { type ModelViewerHandle, type ViewerBackground } from './ModelViewer';
 import {
+  canPreviewMesh,
   copyToClipboard,
   formatBytes,
   formatDimensions,
@@ -12,6 +13,7 @@ import {
   meshOf,
   previewOf,
   texturesOf,
+  validAssets,
   type Dimensions,
 } from './model3d-assets';
 import './ModelPreview.css';
@@ -110,7 +112,7 @@ function AssetList({ assets, testId }: { assets: Model3dAsset[]; testId: string 
  * a page (multiple expanded Generations rows).
  */
 export default function ModelPreview({
-  assets,
+  assets: rawAssets,
   error,
   testId = 'model-preview',
 }: {
@@ -130,6 +132,10 @@ export default function ModelPreview({
   const [copyState, setCopyState] = useState<CopyState>('idle');
   const [viewer, setViewer] = useState<ViewerState>({ url: '', status: 'loading', dimensions: null });
 
+  // The prop is untrusted too: Playground history replays response bodies from
+  // localStorage without going through assetsOf, and a malformed entry must
+  // not throw in render (there is no error boundary above this).
+  const assets = validAssets(rawAssets);
   const mesh = meshOf(assets);
   const preview = previewOf(assets);
   const thumbs = [preview, ...texturesOf(assets)].filter(
@@ -140,7 +146,14 @@ export default function ModelPreview({
   const view: ViewerState = mesh && viewer.url === mesh.url
     ? viewer
     : { url: mesh?.url ?? '', status: 'loading', dimensions: null };
-  const viewerFailed = view.status === 'error';
+  // A non-glTF mesh is known up front not to render; the viewer shows a
+  // download fallback and the stats and asset list stay useful.
+  const status: ViewerState['status'] | 'unsupported' = mesh && !canPreviewMesh(mesh.format)
+    ? 'unsupported'
+    : view.status;
+  // Viewer-only controls act on nothing once there is no rendered mesh; copy
+  // URL and the download links stay enabled, since that is when they matter.
+  const viewerFailed = status === 'error' || status === 'unsupported';
 
   // Hidden entirely (not disabled) where the Fullscreen API is unavailable,
   // e.g. iPhone Safari, since there is nothing the user could do to enable it.
@@ -204,7 +217,7 @@ export default function ModelPreview({
       ref={rootRef}
       className="mp"
       data-testid={testId}
-      data-state={view.status}
+      data-state={status}
       data-fullscreen={isFullscreen ? 'true' : undefined}
       aria-label="3D model inspector"
     >
@@ -304,8 +317,10 @@ export default function ModelPreview({
           background={background}
           testId={`${testId}-viewer`}
           style={{ height: isFullscreen ? '100%' : 420, borderRadius: 0 }}
+          format={mesh.format}
           onLoad={({ dimensions }) => setViewer({ url: meshUrl, status: 'loaded', dimensions })}
           onError={() => setViewer({ url: meshUrl, status: 'error', dimensions: null })}
+          onRetry={() => setViewer({ url: meshUrl, status: 'loading', dimensions: null })}
         />
       </div>
 
@@ -325,7 +340,7 @@ export default function ModelPreview({
         <div data-testid={`${testId}-stat-dimensions`}>
           <dt>Dimensions</dt>
           <dd>
-            {view.status === 'loading'
+            {status === 'loading'
               ? <span className="mp-pending">measuring…</span>
               : formatDimensions(view.dimensions)}
           </dd>
