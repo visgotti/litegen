@@ -387,14 +387,34 @@ mod model3d_storage_tests {
 
     #[test]
     fn build_model3d_store_falls_back_to_local_when_s3_is_unconfigured() {
-        let cfg = crate::config::ImageStorageConfig { backend: "local".into(), path_prefix: None, s3: None };
-        // Must not panic and must not be an S3 store; the smoke test is that a
-        // put against it yields an absolute URL rather than an error.
+        // backend "s3" with no `s3` block is the branch that matters:
+        // `S3Storage::from_config` returns `NotConfigured` and the error arm
+        // must still hand back a store minting ABSOLUTE urls. A "local" config
+        // takes the `_ =>` arm instead and never executes it, so this test used
+        // to pass while that arm returned anything at all.
+        let cfg = crate::config::ImageStorageConfig { backend: "s3".into(), path_prefix: None, s3: None };
+        assert!(
+            matches!(S3Storage::from_config(&cfg), Err(ImageStoreError::NotConfigured)),
+            "precondition: this config must drive the S3 error arm",
+        );
+
         let store = build_model3d_store(&cfg, "http://localhost:8080");
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let url = rt
             .block_on(store.put("litegen/3d/y/model.glb", &bytes::Bytes::from_static(b"y"), "model/gltf-binary"))
             .unwrap();
-        assert!(url.starts_with("http://localhost:8080/"));
+        assert!(url.starts_with("http://localhost:8080/"), "must be absolute, got {url}");
+        assert!(!url.starts_with("local://"), "a local:// url is unfetchable by a client: {url}");
+    }
+
+    #[test]
+    fn build_model3d_store_is_local_when_the_backend_is_local() {
+        let cfg = crate::config::ImageStorageConfig { backend: "local".into(), path_prefix: None, s3: None };
+        let store = build_model3d_store(&cfg, "http://localhost:8080");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let url = rt
+            .block_on(store.put("litegen/3d/z/model.glb", &bytes::Bytes::from_static(b"z"), "model/gltf-binary"))
+            .unwrap();
+        assert_eq!(url, "http://localhost:8080/v1/models3d/assets/litegen/3d/z/model.glb");
     }
 }

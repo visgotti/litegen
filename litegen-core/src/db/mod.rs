@@ -6,7 +6,7 @@ mod trait_def;
 
 pub use postgres::PostgresDatabase;
 pub use sqlite::SqliteDatabase;
-pub use trait_def::{DatabaseStore, RequestLogFilter, TenantAuditFilter};
+pub use trait_def::{DatabaseStore, GenerationWrite, RequestLogFilter, TenantAuditFilter};
 
 /// Connect to the appropriate database backend based on the URL scheme.
 ///
