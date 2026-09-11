@@ -3,8 +3,108 @@ models:
   # replacements are "gpt-image-2, gpt-image-1, or gpt-image-1-mini".
   # gpt-image-1-mini / gpt-image-1.5 / chatgpt-image-latest are themselves
   # scheduled for shutdown on 2026-12-01, and gpt-image-1 on 2026-10-23
-  # (replacement gpt-image-2), so gpt-image-2 is the only long-lived id here.
+  # (replacement gpt-image-2). GPT Image 2.5 (Sunburst, Flare; released
+  # 2026-09-08) is what OpenAI recommends for new integrations.
   # @see https://developers.openai.com/api/docs/deprecations
+  # @see https://developers.openai.com/api/docs/guides/image-generation
+  #
+  # GPT Image 2.5 is token-priced like GPT Image 2 ($8 in / $30 out per 1M
+  # image tokens), and both 2.5 models share one entry in OpenAI's token
+  # calculator. base_cost_usd is that calculator's image-output cost for
+  # 1024x1024 at `medium` (the explicit-quality anchor gpt-image-2 uses; the
+  # default `auto` depends on the generated image): 439 output tokens x $30/1M
+  # = $0.01317, re-read 2026-09-11. The adapter scales it by quality
+  # (image/openai.rs `estimate_cost`).
+  # @see https://developers.openai.com/api/docs/guides/image-generation (GPT Image 2.5 and GPT Image 2 output tokens)
+  # @see https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst (image tokens: $8 input, $30 output per 1M)
+  - id: openai/gpt-image-2.5-sunburst
+    provider: openai
+    media_type: image
+    display_name: GPT Image 2.5 Sunburst
+    description: OpenAI GPT Image 2.5 Sunburst, OpenAI's most capable image
+      model, for workflows where editing precision matters most. Text-to-image
+      plus prompt-driven editing and inpainting via the images/edits endpoint.
+      Arbitrary resolutions (both dimensions divisible by 16, aspect ratio
+      between 1:3 and 3:1); adds the `xhigh` and `max` quality settings.
+    pricing: { base_cost_usd: 0.0132 }
+    # images/generations and images/edits "Supported"; inpainting is a
+    # supported feature.
+    # @see https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst
+    capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
+    # "The maximum length is 32000 characters for the GPT image models"
+    # (CreateImageRequest.prompt / CreateImageEditRequest.prompt).
+    prompt: { required: true, max_length: 32000 }
+    params:
+      # Same custom-size rules as gpt-image-2 ("Both models also support custom
+      # dimensions ... multiples of 16, the aspect ratio must be between 1:3
+      # and 3:1, and neither edge may exceed 3840 pixels. The total pixel count
+      # must be between 655,360 and 8,294,400"); the adapter applies them to
+      # every `gpt-image-2*` id. No edge under 480 reaches 655,360 px within 3:1.
+      # @see https://developers.openai.com/api/docs/guides/image-generation (Size and quality options)
+      size:
+        kind: size
+        mode: freeform
+        min_width: 480
+        max_width: 3840
+        min_height: 480
+        max_height: 3840
+        multiple_of: 16
+      # "It supports low, medium, high, xhigh, max, and auto quality settings";
+      # default auto.
+      quality:
+        kind: string
+        enum_values: [auto, low, medium, high, xhigh, max]
+        default: auto
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image, mask: mask } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1 }
+    # background supports opaque and transparent for both 2.5 models;
+    # output_format png|jpeg|webp; output_compression 0-100 (CreateImageRequest).
+    extra_allowlist: [background, output_format, output_compression, moderation, user]
+    tags: [text-to-image, image-to-image, inpainting, premium]
+
+  - id: openai/gpt-image-2.5-flare
+    provider: openai
+    media_type: image
+    display_name: GPT Image 2.5 Flare
+    description: OpenAI GPT Image 2.5 Flare, OpenAI's fastest model for
+      high-quality everyday image generation. Text-to-image plus prompt-driven
+      editing and inpainting via the images/edits endpoint. Arbitrary
+      resolutions (both dimensions divisible by 16, aspect ratio between 1:3
+      and 3:1); adds the `xhigh` and `max` quality settings.
+    # Same token rates and calculator entry as Sunburst (see above).
+    pricing: { base_cost_usd: 0.0132 }
+    # @see https://developers.openai.com/api/docs/models/gpt-image-2.5-flare
+    capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
+    prompt: { required: true, max_length: 32000 }
+    params:
+      # Same size rules as Sunburst and gpt-image-2 (see above).
+      size:
+        kind: size
+        mode: freeform
+        min_width: 480
+        max_width: 3840
+        min_height: 480
+        max_height: 3840
+        multiple_of: 16
+      quality:
+        kind: string
+        enum_values: [auto, low, medium, high, xhigh, max]
+        default: auto
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image, mask: mask } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [background, output_format, output_compression, moderation, user]
+    tags: [text-to-image, image-to-image, inpainting, fast]
+
   - id: openai/gpt-image-2
     provider: openai
     media_type: image
@@ -12,7 +112,10 @@ models:
     description: OpenAI GPT Image 2. Text-to-image plus prompt-driven editing
       and inpainting via the images/edits endpoint. Arbitrary resolutions
       (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1).
-    pricing: { base_cost_usd: 0.04 }
+    # $0.053 per image at medium quality, 1024x1024 (the guide's "Calculating
+    # costs" table, GPT Image 2 row), re-read 2026-09-11.
+    # @see https://developers.openai.com/api/docs/guides/image-generation (Calculating costs)
+    pricing: { base_cost_usd: 0.053 }
     # The model page lists images/edits as "Supported" and inpainting as a
     # supported feature; the adapter routes a reference image to images/edits.
     # @see https://developers.openai.com/api/docs/models/gpt-image-2

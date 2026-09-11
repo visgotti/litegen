@@ -160,5 +160,13 @@ export default {
       id: 'imagen-4.0-generate',
       reason: 'the models overview abbreviates the Imagen 4 family; the imagen source carries the real ids (imagen-4.0-*generate-001)',
     },
+    // Deprecated upstream; Google's migration targets are carried (gemini-3.1-flash-image, veo-3.1-*).
+    // @see https://ai.google.dev/gemini-api/docs/deprecations
+    // gemini-omni-1.1-flash stays unacknowledged on purpose: add later (it needs the Interactions API).
+    { id: 'imagen-4.0-generate-001', reason: 'skipped 2026-09-11: Imagen 4 is deprecated and its announced shutdown (2026-08-17) has passed' },
+    { id: 'imagen-4.0-ultra-generate-001', reason: 'skipped 2026-09-11: Imagen 4 is deprecated and its announced shutdown (2026-08-17) has passed' },
+    { id: 'imagen-4.0-fast-generate-001', reason: 'skipped 2026-09-11: Imagen 4 is deprecated and its announced shutdown (2026-08-17) has passed' },
+    { id: 'veo-3.0-generate-001', reason: 'skipped 2026-09-11: Veo 3.0 is deprecated (earliest shutdown 2026-06-30); the veo-3.1 line is carried' },
+    { id: 'veo-3.0-fast-generate-001', reason: 'skipped 2026-09-11: Veo 3.0 is deprecated (earliest shutdown 2026-06-30); the veo-3.1 line is carried' },
   ],
 };

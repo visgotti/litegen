@@ -77,7 +77,8 @@ models:
     media_type: image
     display_name: Recraft V4.1
     description: Recraft V4.1 raster image generation (current default).
-    pricing: { base_cost_usd: 0.04 }
+    # "$0.035 per image": https://www.recraft.ai/docs/api-reference/pricing.md (2026-09-11)
+    pricing: { base_cost_usd: 0.035 }
     capabilities: { text_to_image: true }
     # V4 / V4.1 prompts go to 10000 chars: https://www.recraft.ai/docs/api-reference/appendix.md
     prompt: { required: true, max_length: 10000 }
@@ -100,7 +101,8 @@ models:
     media_type: image
     display_name: Recraft V4.1 Pro
     description: Recraft V4.1 Pro raster image generation.
-    pricing: { base_cost_usd: 0.25 }
+    # "$0.21 per image": https://www.recraft.ai/docs/api-reference/pricing.md (2026-09-11)
+    pricing: { base_cost_usd: 0.21 }
     capabilities: { text_to_image: true }
     # V4 / V4.1 prompts go to 10000 chars: https://www.recraft.ai/docs/api-reference/appendix.md
     prompt: { required: true, max_length: 10000 }
@@ -117,3 +119,70 @@ models:
         values: [[2048,2048],[3072,1536],[1536,3072],[2560,1664],[1664,2560],[2432,1792],[1792,2432],[2304,1792],[1792,2304],[1664,2688],[2560,1792],[1792,2560],[2688,1536],[1536,2688]]
     extra_allowlist: [style_id, controls]
     tags: [text-to-image]
+
+  # ─── Vector (SVG) models (added 2026-09-11, model-drift) ───────────────────
+  # Vector models take `size` as an aspect ratio only ("1:1", "16:9", ...; the
+  # Appendix gives them no WxH sizes), which the enumerated WxH `size` param
+  # cannot express, so they declare no `size`: Recraft then "auto-selects"
+  # the size from the prompt.
+  # https://www.recraft.ai/docs/api-reference/appendix.md ("List of supported image sizes")
+  - id: recraft/recraftv4_1_vector
+    provider: recraft
+    media_type: image
+    display_name: Recraft V4.1 Vector
+    description: Recraft V4.1 vector (SVG) image generation.
+    # "$0.08 per image": https://www.recraft.ai/docs/api-reference/pricing.md (2026-09-11)
+    pricing: { base_cost_usd: 0.08 }
+    capabilities: { text_to_image: true }
+    # V4 / V4.1 prompts go to 10000 chars: https://www.recraft.ai/docs/api-reference/appendix.md
+    prompt: { required: true, max_length: 10000 }
+    # No negative_prompt ("V2 / V3 models"), text_layout ("V3 models only") or
+    # curated `style` (V4.1 styles come via style_id); controls are partial
+    # ("colors and background_color"):
+    # https://www.recraft.ai/docs/api-reference/endpoints.md,
+    # https://www.recraft.ai/docs/api-reference/models/recraft-v4-1.md
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+    extra_allowlist: [style_id, controls]
+    tags: [text-to-image, vector]
+
+  - id: recraft/recraftv4_1_pro_vector
+    provider: recraft
+    media_type: image
+    display_name: Recraft V4.1 Pro Vector
+    description: Recraft V4.1 Pro vector (SVG) image generation.
+    # "$0.30 per image": https://www.recraft.ai/docs/api-reference/pricing.md (2026-09-11)
+    pricing: { base_cost_usd: 0.30 }
+    capabilities: { text_to_image: true }
+    # V4 / V4.1 prompts go to 10000 chars: https://www.recraft.ai/docs/api-reference/appendix.md
+    prompt: { required: true, max_length: 10000 }
+    # Same V4.1 parameter rules as recraftv4_1_vector.
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+    extra_allowlist: [style_id, controls]
+    tags: [text-to-image, vector]
+
+  - id: recraft/recraftv2_vector
+    provider: recraft
+    media_type: image
+    display_name: Recraft V2 Vector
+    description: Recraft V2 vector (SVG) image generation (the cheapest vector model).
+    # "$0.044 per image": https://www.recraft.ai/docs/api-reference/pricing.md (2026-09-11)
+    pricing: { base_cost_usd: 0.044 }
+    capabilities: { text_to_image: true }
+    # V2 prompts go to 1000 chars: https://www.recraft.ai/docs/api-reference/appendix.md
+    prompt: { required: true, max_length: 1000 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      # negative_prompt: "V2 / V3 models": https://www.recraft.ai/docs/api-reference/endpoints.md
+      negative_prompt: { kind: string, max_length: 1000 }
+      style:
+        kind: string
+        # The Recraft V2 Vector curated styles (vector and icon groups); the
+        # default when neither style nor style_id is sent is `Vector art`.
+        # https://www.recraft.ai/docs/api-reference/styles.md ("List of curated styles")
+        enum_values: ["Vector art", "Line art", "Linocut", "Cartoon", "Flat 2.0", "Color blobs", "Vector Kawaii", "Doodle Line art", "Seamless Vector", "Engraving", "Icon", "Outline", "Pictogram", "Colored outline", "Doodle", "Colored shape", "Gradient outline", "Offset doodle", "Gradient shape", "Broken line", "Offset fill"]
+        default: "Vector art"
+    # No text_layout ("V3 models only").
+    extra_allowlist: [style_id, controls]
+    tags: [text-to-image, vector]

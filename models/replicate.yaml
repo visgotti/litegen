@@ -20,6 +20,36 @@ models:
     extra_allowlist: [safety_tolerance, output_format, output_quality]
     tags: [text-to-image, premium]
 
+  # black-forest-labs/flux-1.1-pro, an official model (POST
+  # /v1/models/black-forest-labs/flux-1.1-pro/predictions, no version). Its
+  # input is {prompt, aspect_ratio, width, height, image_prompt, seed,
+  # safety_tolerance 1-6, output_format, output_quality, prompt_upsampling}:
+  # no guidance or steps input, and no negative prompt.
+  # @see https://replicate.com/black-forest-labs/flux-1.1-pro/api/schema (re-read 2026-09-11)
+  - id: replicate/flux-1.1-pro
+    provider: replicate
+    media_type: image
+    display_name: Flux 1.1 Pro
+    description: Black Forest Labs FLUX1.1 [pro] via Replicate.
+    # "$0.04 per output image" (re-read 2026-09-11).
+    # @see https://replicate.com/black-forest-labs/flux-1.1-pro
+    pricing: { base_cost_usd: 0.04 }
+    # Text-to-image only: the model's image input is `image_prompt` (Redux),
+    # but the adapter sends reference images as `image`, which this model does
+    # not declare.
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      aspect_ratio:
+        kind: aspect_ratio
+        # The enum minus `custom`: width/height apply only with
+        # aspect_ratio=custom, which the adapter never sends, so no `size`.
+        allowed: ["1:1","16:9","3:2","2:3","4:5","5:4","9:16","3:4","4:3"]
+        default: "1:1"
+    extra_allowlist: [safety_tolerance, output_format, output_quality, prompt_upsampling]
+    tags: [text-to-image, premium]
+
   - id: replicate/flux-dev
     provider: replicate
     media_type: image
@@ -68,7 +98,11 @@ models:
     media_type: image
     display_name: SDXL on Replicate
     description: SDXL hosted on Replicate.
-    pricing: { base_cost_usd: 0.012 }
+    # Replicate bills this community model by GPU time: "costs approximately
+    # $0.0019 to run" at default inputs (re-read 2026-09-11). $0.005 covers
+    # our 100-step max.
+    # @see https://replicate.com/stability-ai/sdxl
+    pricing: { base_cost_usd: 0.005 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 2000 }
     params:
@@ -119,7 +153,10 @@ models:
     media_type: video
     display_name: Replicate Video (generic)
     description: Generic Replicate video endpoint.
-    pricing: { base_cost_usd: 0.30 }
+    # Billed by GPU time: "costs approximately $0.10 to run" (re-read
+    # 2026-09-11).
+    # @see https://replicate.com/lucataco/animate-diff
+    pricing: { base_cost_usd: 0.10 }
     # The pinned AnimateDiff version's input is exactly {prompt, n_prompt, seed,
     # steps, guidance_scale, motion_module, path}: no image input, so no
     # image_to_video and no ref_inputs; no duration/frame input, so no

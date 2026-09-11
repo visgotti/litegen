@@ -30,6 +30,27 @@ const lifecycleBullets = (md) => {
 /** Rows of the card's Programmatic Access table (endpoint, model id, inference ids). */
 const programmaticRows = (md) => md.split('\n').filter((l) => /^\|\s*bedrock-(runtime|mantle)\s*\|/.test(l)).map((l) => l.trim());
 
+// Bedrock's Stable Image services: edit/upscale tools that each need an input
+// image (and some a mask), not text-to-image. Exact ids, so a new Stability
+// text-to-image model on Bedrock still surfaces as new.
+// @see https://docs.aws.amazon.com/bedrock/latest/userguide/stable-image-services.md
+const STABILITY_TOOLS = 'skipped 2026-09-11: Stable Image service — an edit/upscale tool needing an input image; not adapter-ready';
+const STABILITY_TOOL_IDS = [
+  'stability.stable-conservative-upscale-v1:0',
+  'stability.stable-creative-upscale-v1:0',
+  'stability.stable-fast-upscale-v1:0',
+  'stability.stable-image-control-sketch-v1:0',
+  'stability.stable-image-control-structure-v1:0',
+  'stability.stable-image-erase-object-v1:0',
+  'stability.stable-image-inpaint-v1:0',
+  'stability.stable-image-remove-background-v1:0',
+  'stability.stable-image-search-recolor-v1:0',
+  'stability.stable-image-search-replace-v1:0',
+  'stability.stable-image-style-guide-v1:0',
+  'stability.stable-outpaint-v1:0',
+  'stability.stable-style-transfer-v1:0',
+];
+
 export default {
   provider: 'bedrock',
   models: {
@@ -101,5 +122,8 @@ export default {
       extract: /\((model-card-(?:amazon-[\w-]*(?:canvas|reel|image|video|omni)[\w-]*|stability-ai-[\w-]+|luma-[\w-]+))\.md\)/g,
     },
   ],
-  acknowledged: [],
+  acknowledged: [
+    { id: 'luma.ray-v2:0', reason: 'skipped 2026-09-11: Luma Ray 2 is carried direct from Luma (models/luma.yaml)' },
+    ...STABILITY_TOOL_IDS.map((id) => ({ id, reason: STABILITY_TOOLS })),
+  ],
 };
