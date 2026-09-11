@@ -1,0 +1,89 @@
+openapi: 3.1.0
+info:
+  license:
+    name: MIT
+  version: 1.0.0
+servers:
+  - url: https://api.minimax.io
+security:
+  - bearerAuth: []
+paths:
+  /v1/video_generation:
+    post:
+      tags:
+        - Video
+      operationId: videoGeneration
+      parameters:
+        - name: Content-Type
+          in: header
+          required: true
+          schema:
+            type: string
+            enum:
+              - application/json
+            default: application/json
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoGenerationReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoGenerationResp'
+components:
+  schemas:
+    VideoGenerationReq:
+      type: object
+      required:
+        - model
+        - subject_reference
+      properties:
+        model:
+          type: string
+          enum:
+            - S2V-01
+        prompt:
+          type: string
+        prompt_optimizer:
+          type: boolean
+        subject_reference:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubjectReference'
+        callback_url:
+          type: string
+    VideoGenerationResp:
+      type: object
+      properties:
+        task_id:
+          type: string
+        base_resp:
+          $ref: '#/components/schemas/BaseResp'
+    SubjectReference:
+      type: object
+      required:
+        - type
+        - image
+      properties:
+        type:
+          type: string
+        image:
+          type: array
+          items:
+            type: string
+    BaseResp:
+      type: object
+      properties:
+        status_code:
+          type: integer
+        status_msg:
+          type: string
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

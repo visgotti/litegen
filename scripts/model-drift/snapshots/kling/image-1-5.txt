@@ -1,0 +1,1 @@
+> This model or capability will be retired on September 15, 2026. Please migrate to a currently supported Kling AI model or service before this date.

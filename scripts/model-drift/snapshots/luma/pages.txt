@@ -1,0 +1,16 @@
+/reference/addaudiotogeneration.md
+/reference/creategeneration.md
+/reference/credits.md
+/reference/deletegeneration.md
+/reference/generateimage.md
+/reference/generations.md
+/reference/getconcepts.md
+/reference/getcredits.md
+/reference/getgeneration.md
+/reference/listgenerations.md
+/reference/modifyvideo.md
+/reference/ping-1.md
+/reference/ping.md
+/reference/reframeimage.md
+/reference/reframevideo.md
+/reference/upscalegeneration.md

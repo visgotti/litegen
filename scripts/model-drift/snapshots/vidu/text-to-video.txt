@@ -1,0 +1,13 @@
+model | String | Required | viduq3-turbo viduq3-pro viduq2 viduq1
+style | String | Optional | general general anime
+prompt | String | Required | 
+duration | Int | Optional | viduq3-pro viduq3-turbo viduq2 viduq1
+seed | Int | Optional | 
+aspect_ratio | String | Optional | 16:9 16:9 9:16 3:4 Note:
+resolution | String | Optional | viduq3-pro viduq3-turbo viduq2 viduq1
+movement_amplitude | String | Optional | auto auto small medium large
+bgm | Bool | Optional | 
+audio | Bool | Optional | 
+payload | String | Optional | 
+off_peak | Bool | Optional | false true false true false
+callback_url | String | Optional | callback_url

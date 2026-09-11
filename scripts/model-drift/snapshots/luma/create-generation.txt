@@ -1,0 +1,199 @@
+{
+  "POST /generations/video (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "16:9",
+        "enum": [
+          "1:1",
+          "16:9",
+          "9:16",
+          "4:3",
+          "3:4",
+          "21:9",
+          "9:21"
+        ],
+        "type": "string"
+      },
+      "callback_url": {
+        "format": "uri",
+        "type": "string"
+      },
+      "concepts": {
+        "items": {
+          "properties": {
+            "key": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "duration": {
+        "anyOf": [
+          {
+            "enum": [
+              "5s",
+              "9s"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "generation_type": {
+        "default": "video",
+        "enum": [
+          "video"
+        ],
+        "type": "string"
+      },
+      "keyframes": {
+        "properties": {
+          "frame0": {
+            "discriminator": {
+              "mapping": {
+                "generation": "#/components/schemas/GenerationReference",
+                "image": "#/components/schemas/ImageReference"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "properties": {
+                  "id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "type": {
+                    "default": "generation",
+                    "enum": [
+                      "generation"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "default": "image",
+                    "enum": [
+                      "image"
+                    ],
+                    "type": "string"
+                  },
+                  "url": {
+                    "format": "uri",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "frame1": {
+            "discriminator": {
+              "mapping": {
+                "generation": "#/components/schemas/GenerationReference",
+                "image": "#/components/schemas/ImageReference"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "properties": {
+                  "id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "type": {
+                    "default": "generation",
+                    "enum": [
+                      "generation"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "type": {
+                    "default": "image",
+                    "enum": [
+                      "image"
+                    ],
+                    "type": "string"
+                  },
+                  "url": {
+                    "format": "uri",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "loop": {
+        "type": "boolean"
+      },
+      "model": {
+        "default": "ray-2",
+        "enum": [
+          "ray-2",
+          "ray-flash-2"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "resolution": {
+        "anyOf": [
+          {
+            "enum": [
+              "540p",
+              "720p",
+              "1080p",
+              "4k"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "required": [
+      "model"
+    ],
+    "type": "object"
+  }
+}

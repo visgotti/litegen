@@ -1,0 +1,21 @@
+# notice
+(no retirement notice)
+
+# POST /v1/images/generations request body
+| Field Path | Type | Required | Default | Enum |
+| --- | --- | ---: | --- | --- |
+| `model_name` | string | No | `kling-v1` | `kling-v1`, `kling-v1-5`, `kling-v2`, `kling-v2-new`, `kling-v2-1`, `kling-v3` |
+| `prompt` | string | Yes | - | - |
+| `negative_prompt` | string | No | - | - |
+| `image` | string | No | - | - |
+| `image_reference` | string | No | - | `subject`, `face` |
+| `image_fidelity` | float | No | `0.5` | - |
+| `human_fidelity` | float | No | `0.45` | - |
+| `element_list` | array | No | - | - |
+| `element_list[].element_id` | long | Yes | - | - |
+| `resolution` | string | No | `1k` | `1k`, `2k` |
+| `n` | int | No | `1` | - |
+| `aspect_ratio` | string | No | `16:9` | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`, `3:2`, `2:3`, `21:9` |
+| `watermark_info` | object | No | - | - |
+| `callback_url` | string | No | - | - |
+| `external_task_id` | string | No | - | - |
