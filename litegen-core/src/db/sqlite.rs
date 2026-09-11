@@ -258,6 +258,21 @@ impl DatabaseStore for SqliteDatabase {
         Ok(())
     }
 
+    async fn update_request_log_status(
+        &self,
+        id: &str,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE request_logs SET status = ?, error = ? WHERE id = ?")
+            .bind(status)
+            .bind(error)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn get_request_logs(
         &self,
         page: u32,

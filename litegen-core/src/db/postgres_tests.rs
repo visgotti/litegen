@@ -184,3 +184,40 @@ async fn org_provider_credentials_list_decodes_created_at_against_postgres() {
         "the stored fal credential should be listed"
     );
 }
+
+/// `update_request_log_status` is the only UPDATE on `request_logs`, with its
+/// own `$n` placeholder list — a Postgres-only mistake there is invisible to
+/// the SQLite suite, and would leave every async request `pending` again.
+#[tokio::test]
+async fn request_log_status_update_round_trips_against_postgres() {
+    let Ok(url) = std::env::var("LITEGEN_PG_TEST_URL") else {
+        eprintln!(
+            "skipping request_log_status_update_round_trips_against_postgres: \
+             set LITEGEN_PG_TEST_URL to a throwaway Postgres database to run"
+        );
+        return;
+    };
+
+    let db = PostgresDatabase::connect(&url)
+        .await
+        .expect("connect + migrate against the test Postgres");
+
+    let id = Uuid::new_v4().to_string();
+    db.log_request(&id, "test-model", "test-provider", "pending", "model3d", 0.0, 40, None, None, None, None)
+        .await
+        .expect("insert request_log");
+
+    db.update_request_log_status(&id, "failed", Some("provider error"))
+        .await
+        .expect("update_request_log_status");
+
+    let filters = crate::types::LogFilters { status: Some("failed".to_string()), ..Default::default() };
+    let (logs, _) = db
+        .get_request_logs_filtered(&filters, 1, 1000)
+        .await
+        .expect("get_request_logs_filtered");
+    let row = logs.iter().find(|l| l.id == id).expect("the updated row is listed as failed");
+    assert_eq!(row.status, crate::types::GenerationStatus::Failed);
+    assert_eq!(row.error.as_deref(), Some("provider error"));
+    assert_eq!(row.latency_ms, 40, "only status/error change");
+}

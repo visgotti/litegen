@@ -765,6 +765,9 @@ pub async fn get_3d_status(
                         &id, "failed", resp.progress as i32, None,
                         Some(err), Some(chrono::Utc::now()),
                     ).await;
+                    if let Err(e) = state.db.update_request_log_status(&id, "failed", Some(err)).await {
+                        tracing::warn!(generation_id = %id, error = %e, "failed to mark the 3d request log failed");
+                    }
                     resp.status = GenerationStatus::Failed;
                     resp.error = Some(err.to_string());
                     resp.assets.clear();
@@ -774,6 +777,9 @@ pub async fn get_3d_status(
                     &id, "failed", resp.progress as i32, None,
                     resp.error.as_deref(), Some(chrono::Utc::now()),
                 ).await;
+                if let Err(e) = state.db.update_request_log_status(&id, "failed", resp.error.as_deref()).await {
+                    tracing::warn!(generation_id = %id, error = %e, "failed to mark the 3d request log failed");
+                }
             }
             (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response()
         }
@@ -828,6 +834,10 @@ pub(crate) async fn persist_model3d_result(state: &AppState, resp: &Model3dGener
     let meta = serde_json::json!({ "assets": resp.assets });
     if let Err(e) = state.db.update_generation_metadata(&resp.id, &meta).await {
         tracing::warn!(generation_id = %resp.id, error = %e, "failed to persist 3d assets");
+    }
+    // The submit handler logged the request `pending` under this same id.
+    if let Err(e) = state.db.update_request_log_status(&resp.id, "completed", None).await {
+        tracing::warn!(generation_id = %resp.id, error = %e, "failed to mark the 3d request log completed");
     }
 }
 
@@ -1751,6 +1761,11 @@ pub async fn cancel_generation(
     // Attempt the cancel — returns None if status wasn't pending/processing.
     match state.db.cancel_generation(&id).await {
         Ok(Some(updated)) => {
+            // A cancelled job leaves the poller's active window, so this is the
+            // only terminal update its `pending` request log (same id) will get.
+            if let Err(e) = state.db.update_request_log_status(&id, "cancelled", None).await {
+                tracing::warn!(generation_id = %id, error = %e, "failed to mark the request log cancelled");
+            }
             log_audit(
                 state.db.clone(),
                 Some(&ctx),
@@ -3378,6 +3393,29 @@ mod new_endpoint_tests {
         assert_eq!(resp.status(), StatusCode::CONFLICT);
     }
 
+    #[tokio::test]
+    async fn cancel_generation_marks_the_request_log_cancelled() {
+        // A cancelled job leaves the poller's active window, so the cancel is
+        // the only terminal transition its `pending` log row will ever see.
+        let state = build_state().await;
+        state.db.log_request("lg-cancel-log-1", "mock/v", "mock", "pending", "video", 0.0, 5, None, None, None, None).await.unwrap();
+        state.db.insert_generation("lg-cancel-log-1", None, "mock/v", "mock", "video", None, 0.0, None, None).await.unwrap();
+        let db = state.db.clone();
+
+        let app = build_test_router(state);
+        let body = serde_json::to_vec(&serde_json::json!({"status": "cancelled"})).unwrap();
+        let req = Request::builder()
+            .method("PATCH").uri("/v1/generations/lg-cancel-log-1")
+            .header("content-type", "application/json")
+            .body(Body::from(body)).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let (logs, _) = db.get_request_logs(1, 50).await.unwrap();
+        let log = logs.iter().find(|l| l.id == "lg-cancel-log-1").unwrap();
+        assert_eq!(log.status, GenerationStatus::Cancelled);
+    }
+
     // ── POST /v1/keys/{id}/rotate ───────────────────────────────────────────
 
     #[tokio::test]
@@ -4403,5 +4441,43 @@ mod model3d_completion_contract_tests {
             "failed response must carry a non-empty error: {polled}"
         );
         assert!(polled.get("assets").is_none(), "a failed generation carries no assets: {polled}");
+    }
+
+    #[tokio::test]
+    async fn completed_without_mesh_marks_the_request_log_failed() {
+        let state = build_state_with_no_mesh_provider().await;
+        let db = state.db.clone();
+        let app = build_3d_router(state);
+
+        let resp = app.clone().oneshot(
+            Request::post("/v1/models3d/generations")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"mock/mesh-3d","prompt":"a fox"}"#))
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let submitted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let id = submitted["id"].as_str().unwrap().to_string();
+
+        // The submit handler writes the `pending` log row from a spawned task;
+        // wait for it so this test is about the terminal update alone.
+        let mut logged = false;
+        for _ in 0..200 {
+            let (logs, _) = db.get_request_logs(1, 100).await.unwrap();
+            if logs.iter().any(|l| l.id == id) { logged = true; break; }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(logged, "the submit handler never wrote a request log for {id}");
+
+        let resp = app.oneshot(
+            Request::get(format!("/v1/models3d/{id}")).body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let (logs, _) = db.get_request_logs(1, 100).await.unwrap();
+        let log = logs.iter().find(|l| l.id == id).unwrap();
+        assert_eq!(log.status, GenerationStatus::Failed);
+        assert_eq!(log.error.as_deref(), Some("provider reported success without a mesh asset"));
     }
 }

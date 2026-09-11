@@ -348,6 +348,29 @@ mod tests {
         assert_eq!(logs[0].id, "s2");
     }
 
+    // ─── update_request_log_status ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn update_request_log_status_moves_a_pending_row_to_its_terminal_status() {
+        let db = in_memory_db().await;
+        db.log_request("rl-fail", "mock/video-gen", "mock", "pending", "video", 0.25, 12, None, None, None, None).await.unwrap();
+        db.log_request("rl-done", "mock/mesh-3d", "mock", "pending", "model3d", 0.0, 30, None, None, None, None).await.unwrap();
+
+        db.update_request_log_status("rl-fail", "failed", Some("provider error")).await.unwrap();
+        db.update_request_log_status("rl-done", "completed", None).await.unwrap();
+
+        let (logs, _) = db.get_request_logs(1, 50).await.unwrap();
+        let failed = logs.iter().find(|l| l.id == "rl-fail").unwrap();
+        assert_eq!(failed.status, GenerationStatus::Failed);
+        assert_eq!(failed.error.as_deref(), Some("provider error"));
+        let done = logs.iter().find(|l| l.id == "rl-done").unwrap();
+        assert_eq!(done.status, GenerationStatus::Completed);
+        assert_eq!(done.error, None);
+        // Only status/error change; the submit-time facts stay as logged.
+        assert_eq!(failed.latency_ms, 12);
+        assert!((failed.cost_usd - 0.25).abs() < 1e-9);
+    }
+
     // ─── Audit Log ──────────────────────────────────────────────────────────
 
     #[tokio::test]

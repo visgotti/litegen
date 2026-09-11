@@ -239,4 +239,78 @@ models:
         let out = validate_image(m, req).unwrap();
         assert!(out.request.base.extra.is_some());
     }
+
+    // ─── Endpoint ↔ media-type family ───────────────────────────────────────
+    //
+    // Each Validated* extractor serves one family and runs `require_media_type`
+    // right after the schema lookup, before any param validation.
+
+    use crate::capabilities::MediaType;
+    use axum::http::StatusCode;
+
+    fn family_registry() -> CapabilityRegistry {
+        CapabilityRegistry::from_yaml_strs(&[("families.yaml", r#"
+models:
+  - id: f/image
+    provider: f
+    media_type: image
+    display_name: Image
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true }
+  - id: f/video
+    provider: f
+    media_type: video
+    display_name: Video
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true }
+  - id: f/mesh
+    provider: f
+    media_type: model3d
+    display_name: Mesh
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_3d: true }
+    prompt: { required: true }
+"#)]).unwrap()
+    }
+
+    #[test]
+    fn a_model_from_another_family_is_rejected_naming_the_endpoint_that_serves_it() {
+        let r = family_registry();
+        // (family the endpoint serves, model sent, endpoint the error must name)
+        let cases = [
+            (MediaType::Image, "f/video", "/v1/videos/generations"),
+            (MediaType::Image, "f/mesh", "/v1/models3d/generations"),
+            (MediaType::Video, "f/image", "/v1/images/generations"),
+            (MediaType::Video, "f/mesh", "/v1/models3d/generations"),
+            (MediaType::Model3d, "f/image", "/v1/images/generations"),
+            (MediaType::Model3d, "f/video", "/v1/videos/generations"),
+        ];
+        for (served, model, endpoint) in cases {
+            let Err(ValidationRejection(status, body)) = require_media_type(r.get(model).unwrap(), served) else {
+                panic!("{model} on the {served:?} endpoint must be rejected");
+            };
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{model} on {served:?}");
+            assert_eq!(body["error"]["type"], "validation_error", "{model} on {served:?}");
+            assert_eq!(body["error"]["code"], "model_media_type_mismatch", "{model} on {served:?}");
+            assert_eq!(body["error"]["param"], "model", "{model} on {served:?}");
+            assert_eq!(body["error"]["model"], model, "{model} on {served:?}");
+            let msg = body["error"]["message"].as_str().unwrap();
+            assert!(msg.contains(model), "{model} on {served:?}: {msg}");
+            assert!(msg.contains(endpoint), "{model} on {served:?}: {msg}");
+        }
+    }
+
+    #[test]
+    fn a_model_from_the_served_family_passes() {
+        let r = family_registry();
+        for (served, model) in [
+            (MediaType::Image, "f/image"),
+            (MediaType::Video, "f/video"),
+            (MediaType::Model3d, "f/mesh"),
+        ] {
+            assert!(require_media_type(r.get(model).unwrap(), served).is_ok(), "{model} on {served:?}");
+        }
+    }
 }

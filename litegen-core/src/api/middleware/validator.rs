@@ -713,6 +713,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 
 use crate::api::middleware::AppState;
+// Named explicitly: the `crate::types` glob above exports a `MediaType` too.
+use crate::capabilities::MediaType;
 use crate::proxy::materializer::MaterializeContext;
 
 pub struct ValidatedImage {
@@ -771,6 +773,32 @@ pub fn err_body(code: &str, msg: &str, param: Option<&str>, model: &str) -> serd
             "model": model,
         }
     })
+}
+
+/// Reject a model from another media family — e.g. a mesh model posted to
+/// `/v1/images/cost` — naming the endpoint that does serve it. Every
+/// `Validated*` extractor runs this right after the schema lookup and BEFORE
+/// `validate_*`: without it the request is dispatched to the wrong family's
+/// provider (params permitting), or rejected for some param the other family
+/// happens to lack, which hides the actual mistake.
+pub(crate) fn require_media_type(schema: &ModelSchema, served: MediaType) -> Result<(), ValidationRejection> {
+    if schema.media_type == served {
+        return Ok(());
+    }
+    let (family, endpoint) = match schema.media_type {
+        MediaType::Image => ("an image", "/v1/images/generations"),
+        MediaType::Video => ("a video", "/v1/videos/generations"),
+        MediaType::Model3d => ("a model3d", "/v1/models3d/generations"),
+    };
+    Err(ValidationRejection(
+        StatusCode::BAD_REQUEST,
+        err_body(
+            "model_media_type_mismatch",
+            &format!("model '{}' is {} model; use {}", schema.id, family, endpoint),
+            Some("model"),
+            &schema.id,
+        ),
+    ))
 }
 
 async fn parse_request_and_context(
@@ -839,6 +867,7 @@ impl FromRequest<Arc<AppState>> for ValidatedImage {
             .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.base.model), None, &req.base.model)))?
             .clone();
         let schema = Arc::new(schema);
+        require_media_type(&schema, MediaType::Image)?;
         match validate_image(&schema, req) {
             Ok(out) => Ok(ValidatedImage { schema, request: out.request, dropped: out.dropped, ctx, _permit: permit }),
             Err(e) => Err(ValidationRejection(
@@ -867,6 +896,7 @@ impl FromRequest<Arc<AppState>> for ValidatedVideo {
             .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.base.model), None, &req.base.model)))?
             .clone();
         let schema = Arc::new(schema);
+        require_media_type(&schema, MediaType::Video)?;
         match validate_video(&schema, req) {
             Ok(out) => Ok(ValidatedVideo { schema, request: out.request, dropped: out.dropped, ctx, _permit: permit }),
             Err(e) => Err(ValidationRejection(
@@ -903,6 +933,7 @@ impl FromRequest<Arc<AppState>> for ValidatedModel3d {
             .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.base.model), None, &req.base.model)))?
             .clone();
         let schema = Arc::new(schema);
+        require_media_type(&schema, MediaType::Model3d)?;
         match validate_model3d(&schema, req) {
             Ok(out) => Ok(ValidatedModel3d { schema, request: out.request, dropped: out.dropped, ctx, _permit: permit }),
             Err(e) => Err(ValidationRejection(
