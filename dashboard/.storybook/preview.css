@@ -1,0 +1,6 @@
+/* The app sets its font and text colour on `.app` (App.css), which a story is
+   never mounted inside, so the preview body takes the same values. */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: var(--text, #e1e4e8);
+}
