@@ -16,6 +16,26 @@ use crate::types::*;
 /// Maximum number of latency samples retained per provider.
 const LATENCY_HISTORY_CAP: usize = 16;
 
+/// USD per internal token. Kept next to the async job maps because every
+/// `UsageInfo` the router mints — submit and poll alike — must convert at the
+/// same rate, or the same generation would quote two different token counts.
+const USD_PER_TOKEN: f64 = 0.001;
+
+/// An in-flight async job plus the `usage` triple quoted when it was submitted.
+///
+/// The consumer contract reads `usage` off the POLL response, not the submit
+/// response (a client that submits and polls from different processes only ever
+/// sees the poll). Carrying the submit-time triple alongside the handle lets
+/// every poll report the identical `cost_usd` / `tokens` / `cost_source` the
+/// submit quoted and the generations row persisted, with no DB round trip and
+/// no dependence on the row insert (which the submit handler spawns) having
+/// landed yet.
+#[derive(Clone)]
+struct TrackedJob<H> {
+    handle: H,
+    usage: Option<UsageInfo>,
+}
+
 /// The main proxy router that resolves model routes, applies routing
 /// strategies (fallback, weighted, lowest-cost, lowest-latency), caching, and retries.
 pub struct ProxyRouter {
@@ -26,9 +46,9 @@ pub struct ProxyRouter {
     /// Per-provider latency history (recent samples in ms), capped at LATENCY_HISTORY_CAP.
     latency_history: Arc<tokio::sync::RwLock<HashMap<String, VecDeque<u64>>>>,
     /// In-flight video generation jobs, keyed by the locally-generated `litegen-vid-...` ID.
-    video_jobs: Arc<tokio::sync::RwLock<HashMap<String, VideoGenerationHandle>>>,
+    video_jobs: Arc<tokio::sync::RwLock<HashMap<String, TrackedJob<VideoGenerationHandle>>>>,
     /// In-flight 3D generation jobs, keyed by the local `litegen-3d-...` ID.
-    model3d_jobs: Arc<tokio::sync::RwLock<HashMap<String, Model3dGenerationHandle>>>,
+    model3d_jobs: Arc<tokio::sync::RwLock<HashMap<String, TrackedJob<Model3dGenerationHandle>>>>,
     /// Storage for re-hosted 3D assets (S3 when configured, local otherwise).
     pub model3d_store: Arc<dyn crate::proxy::storage::ImageStorage>,
     /// Circuit breaker tracking consecutive failures per provider.
@@ -199,7 +219,7 @@ impl ProxyRouter {
         let _ = markup;
         let usage = Some(UsageInfo {
             cost_usd: total,
-            tokens: crate::providers::usd_to_tokens(total, 0.001),
+            tokens: crate::providers::usd_to_tokens(total, USD_PER_TOKEN),
             cost_source: CostSource::Estimated,
         });
 
@@ -524,12 +544,15 @@ impl ProxyRouter {
         let (_, total) = apply_markup(base_cost, self.config.cost_markup_percent);
         let usage_info = Some(UsageInfo {
             cost_usd: total,
-            tokens: crate::providers::usd_to_tokens(total, 0.001),
+            tokens: crate::providers::usd_to_tokens(total, USD_PER_TOKEN),
             cost_source: CostSource::Estimated,
         });
 
         let local_id = format!("litegen-vid-{}", uuid::Uuid::new_v4());
-        self.video_jobs.write().await.insert(local_id.clone(), handle);
+        self.video_jobs.write().await.insert(
+            local_id.clone(),
+            TrackedJob { handle, usage: usage_info.clone() },
+        );
 
         Ok(VideoGenerationResponse {
             id: local_id,
@@ -547,11 +570,12 @@ impl ProxyRouter {
     /// Look up an in-flight video generation by local ID and poll its provider.
     #[tracing::instrument(skip(self), fields(id = %id))]
     pub async fn get_video_status(&self, id: &str) -> Result<VideoGenerationResponse, ProxyError> {
-        let handle = {
+        let job = {
             let jobs = self.video_jobs.read().await;
             jobs.get(id).cloned()
         };
-        let handle = handle.ok_or_else(|| ProxyError::NotFound(format!("video job '{}' not found", id)))?;
+        let TrackedJob { handle, usage } =
+            job.ok_or_else(|| ProxyError::NotFound(format!("video job '{}' not found", id)))?;
 
         let provider = self.registry
             .video_provider_for(&handle.provider)
@@ -579,7 +603,9 @@ impl ProxyRouter {
             video_url: poll.video_url,
             progress: poll.progress,
             error: poll.error,
-            usage: None,
+            // The triple quoted at submit, not `None`: the consumer's cost path
+            // reads `usage` off the poll response it actually waits for.
+            usage,
             created: chrono::Utc::now().timestamp(),
         })
     }
@@ -646,12 +672,15 @@ impl ProxyRouter {
         let (_, total) = apply_markup(base_cost, self.config.cost_markup_percent);
         let usage_info = Some(UsageInfo {
             cost_usd: total,
-            tokens: crate::providers::usd_to_tokens(total, 0.001),
+            tokens: crate::providers::usd_to_tokens(total, USD_PER_TOKEN),
             cost_source: CostSource::Estimated,
         });
 
         let local_id = format!("litegen-3d-{}", uuid::Uuid::new_v4());
-        self.model3d_jobs.write().await.insert(local_id.clone(), handle);
+        self.model3d_jobs.write().await.insert(
+            local_id.clone(),
+            TrackedJob { handle, usage: usage_info.clone() },
+        );
 
         Ok(Model3dGenerationResponse {
             id: local_id,
@@ -670,11 +699,12 @@ impl ProxyRouter {
     /// provider reports completion on this call.
     #[tracing::instrument(skip(self), fields(id = %id))]
     pub async fn get_model3d_status(&self, id: &str) -> Result<Model3dGenerationResponse, ProxyError> {
-        let handle = {
+        let job = {
             let jobs = self.model3d_jobs.read().await;
             jobs.get(id).cloned()
         };
-        let handle = handle.ok_or_else(|| ProxyError::NotFound(format!("3d job '{}' not found", id)))?;
+        let TrackedJob { handle, usage } =
+            job.ok_or_else(|| ProxyError::NotFound(format!("3d job '{}' not found", id)))?;
 
         let provider = self
             .registry
@@ -718,14 +748,33 @@ impl ProxyRouter {
             assets,
             progress: poll.progress,
             error: poll.error,
-            usage: None,
+            // The triple quoted at submit, not `None` — see `get_video_status`.
+            usage,
             created: chrono::Utc::now().timestamp(),
         })
     }
 
+    /// Drop an in-flight 3D job WITHOUT polling it.
+    ///
+    /// Called when the generation is cancelled. The persisted row is terminal at
+    /// that point, but the router still held the job, so the next
+    /// `GET /v1/models3d/{id}` polled the provider anyway, saw `Completed`,
+    /// re-hosted the assets and wrote `completed` over the cancelled row —
+    /// i.e. cancellation did not stop the job, it just delayed it by one poll.
+    /// Returns whether a job was actually tracked (false for an already-terminal
+    /// or poller-owned generation, which is not an error).
+    pub async fn forget_model3d_job(&self, id: &str) -> bool {
+        self.model3d_jobs.write().await.remove(id).is_some()
+    }
+
+    /// Video's counterpart to [`forget_model3d_job`](Self::forget_model3d_job).
+    pub async fn forget_video_job(&self, id: &str) -> bool {
+        self.video_jobs.write().await.remove(id).is_some()
+    }
+
     /// Provider job id for a submitted 3D generation (for the DB row).
     pub async fn get_model3d_provider_job_id(&self, local_id: &str) -> Option<String> {
-        self.model3d_jobs.read().await.get(local_id).map(|h| h.provider_job_id.clone())
+        self.model3d_jobs.read().await.get(local_id).map(|j| j.handle.provider_job_id.clone())
     }
 
     pub async fn has_model3d_provider(&self, name: &str) -> bool {
@@ -980,7 +1029,7 @@ impl ProxyRouter {
             let (m, total) = apply_markup(est.base_cost_usd, markup);
             est.markup_usd = m;
             est.total_cost_usd = total;
-            est.tokens_required = crate::providers::usd_to_tokens(total, 0.001);
+            est.tokens_required = crate::providers::usd_to_tokens(total, USD_PER_TOKEN);
         }
         Ok(est)
     }
@@ -1012,7 +1061,7 @@ impl ProxyRouter {
             let (m, total) = apply_markup(est.base_cost_usd, markup);
             est.markup_usd = m;
             est.total_cost_usd = total;
-            est.tokens_required = crate::providers::usd_to_tokens(total, 0.001);
+            est.tokens_required = crate::providers::usd_to_tokens(total, USD_PER_TOKEN);
         }
         Ok(est)
     }
@@ -1026,7 +1075,7 @@ impl ProxyRouter {
             .read()
             .await
             .get(local_id)
-            .map(|h| h.provider_job_id.clone())
+            .map(|j| j.handle.provider_job_id.clone())
     }
 
     /// Whether a global image provider instance is registered for `name`.

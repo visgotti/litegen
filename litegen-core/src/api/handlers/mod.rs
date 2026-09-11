@@ -741,6 +741,17 @@ pub async fn get_3d_status(
         ).await {
             return resp;
         }
+        // Read-through once the row is terminal: answer FROM the row and never
+        // poll the provider again. A terminal row is the decided outcome — for
+        // `cancelled` especially, polling on would see the provider job run to
+        // `Completed`, re-host the assets and persist `completed` over the
+        // cancel, i.e. cancellation would only ever delay a job by one poll.
+        // (`forget_model3d_job` drops the in-memory job on cancel; this is the
+        // other half, covering a row terminalised by the poller, by a restart,
+        // or by a cancel that raced an in-flight poll.)
+        if gen.status.is_terminal() {
+            return (StatusCode::OK, Json(serde_json::to_value(model3d_response_from_row(&gen)).unwrap())).into_response();
+        }
     }
 
     match state.router.get_model3d_status(&id).await {
@@ -841,6 +852,25 @@ pub(crate) async fn persist_model3d_result(state: &AppState, resp: &Model3dGener
     }
 }
 
+/// USD per internal token, matching `ProxyRouter::USD_PER_TOKEN`. A generation
+/// answered from its row must quote the same token count the submit response
+/// did, so both paths convert at this one rate.
+pub(crate) const USD_PER_TOKEN: f64 = 0.001;
+
+/// The `usage` triple for a generation answered out of the database.
+///
+/// `generations.cost_usd` is written at submit time from the very `UsageInfo`
+/// the submit response carried, so re-deriving the triple from it reproduces
+/// that response exactly. `Estimated` because that is what the router quoted:
+/// nothing in the async path ever replaces it with a provider-reported cost.
+pub(crate) fn usage_from_row_cost(cost_usd: f64) -> UsageInfo {
+    UsageInfo {
+        cost_usd,
+        tokens: crate::providers::usd_to_tokens(cost_usd, USD_PER_TOKEN),
+        cost_source: CostSource::Estimated,
+    }
+}
+
 /// Rebuild a `Model3dGenerationResponse` from a persisted row (used once the
 /// poller has terminalised a job and the router no longer tracks it).
 pub(crate) fn model3d_response_from_row(gen: &crate::types::Generation) -> Model3dGenerationResponse {
@@ -856,7 +886,9 @@ pub(crate) fn model3d_response_from_row(gen: &crate::types::Generation) -> Model
         assets,
         progress: gen.progress.clamp(0, 100) as u8,
         error: gen.error_message.clone(),
-        usage: None,
+        // The consumer contract reads cost off this response, so a row-answered
+        // poll carries the same triple a router-answered one does.
+        usage: Some(usage_from_row_cost(gen.cost_usd)),
         created: gen.created_at.timestamp(),
     }
 }
@@ -1761,6 +1793,15 @@ pub async fn cancel_generation(
     // Attempt the cancel — returns None if status wasn't pending/processing.
     match state.db.cancel_generation(&id).await {
         Ok(Some(updated)) => {
+            // Stop the job, don't just relabel the row. The router held the
+            // in-flight handle, so the next GET /v1/models3d/{id} (or /videos/)
+            // polled the provider anyway, saw `Completed`, re-hosted the assets
+            // and persisted `completed` OVER this cancel. Dropping the handle
+            // here is what makes cancellation actually stop an in-flight job;
+            // `get_3d_status`'s terminal-row read-through covers the poller-owned
+            // and racing-poll cases. Both are no-ops when nothing is tracked.
+            state.router.forget_model3d_job(&id).await;
+            state.router.forget_video_job(&id).await;
             // A cancelled job leaves the poller's active window, so this is the
             // only terminal update its `pending` request log (same id) will get.
             if let Err(e) = state.db.update_request_log_status(&id, "cancelled", None).await {
@@ -4479,5 +4520,95 @@ mod model3d_completion_contract_tests {
         let log = logs.iter().find(|l| l.id == id).unwrap();
         assert_eq!(log.status, GenerationStatus::Failed);
         assert_eq!(log.error.as_deref(), Some("provider reported success without a mesh asset"));
+    }
+}
+
+// ─── `usage` derived from the generation row ────────────────────────────────
+//
+// The HTTP tests in `litegen-core/tests/model3d_api.rs` can only assert that
+// `usage` is PRESENT on a poll response: the mock 3D models are priced $0, so
+// every cost they produce is 0.0. The value derivation is pinned here instead,
+// against a row with a real cost.
+#[cfg(test)]
+mod model3d_usage_derivation_tests {
+    use super::*;
+    use crate::types::{Generation, GenerationStatus};
+
+    fn row(cost_usd: f64, status: GenerationStatus) -> Generation {
+        let now = chrono::Utc::now();
+        Generation {
+            id: "litegen-3d-derivation".into(),
+            key_id: None,
+            model: "tripo/v2".into(),
+            provider: "tripo".into(),
+            media_type: "model3d".into(),
+            status,
+            progress: 100,
+            provider_job_id: Some("provider-job-1".into()),
+            result_url: None,
+            error_message: None,
+            cost_usd,
+            created_at: now,
+            completed_at: Some(now),
+            metadata: None,
+            org_id: None,
+            app_id: None,
+        }
+    }
+
+    #[test]
+    fn usage_is_the_row_cost_converted_at_a_thousand_tokens_per_dollar() {
+        let usage = usage_from_row_cost(0.042);
+        assert_eq!(usage.cost_usd, 0.042);
+        assert_eq!(usage.tokens, 42, "1 token = $0.001, so $0.042 = 42 tokens");
+        assert_eq!(usage.cost_source, CostSource::Estimated);
+    }
+
+    #[test]
+    fn a_partial_token_rounds_up_so_a_charged_generation_is_never_free() {
+        // `usd_to_tokens` ceils: $0.0005 is half a token, and billing zero for
+        // a dispatched generation would be the wrong direction to round.
+        assert_eq!(usage_from_row_cost(0.0005).tokens, 1);
+        assert_eq!(usage_from_row_cost(0.0011).tokens, 2);
+    }
+
+    #[test]
+    fn a_zero_cost_row_still_yields_a_present_usage_triple() {
+        // The mock models (and any promo-priced model) cost $0. `usage` must
+        // still be an object — the consumer distinguishes "free" from "unknown".
+        let resp = model3d_response_from_row(&row(0.0, GenerationStatus::Completed));
+        let usage = resp.usage.expect("usage is present even at $0");
+        assert_eq!(usage.cost_usd, 0.0);
+        assert_eq!(usage.tokens, 0);
+        assert_eq!(usage.cost_source, CostSource::Estimated);
+    }
+
+    #[test]
+    fn model3d_response_from_row_carries_the_rows_cost() {
+        let resp = model3d_response_from_row(&row(0.25, GenerationStatus::Completed));
+        let usage = resp.usage.expect("a row-answered poll carries usage");
+        assert_eq!(usage.cost_usd, 0.25);
+        assert_eq!(usage.tokens, 250);
+    }
+
+    #[test]
+    fn a_cancelled_row_carries_usage_too() {
+        // A cancelled generation was still dispatched and still charged, so the
+        // consumer needs its cost to reconcile against.
+        let resp = model3d_response_from_row(&row(0.25, GenerationStatus::Cancelled));
+        assert_eq!(resp.status, GenerationStatus::Cancelled);
+        assert_eq!(resp.usage.expect("usage on a cancelled row").cost_usd, 0.25);
+    }
+
+    #[test]
+    fn only_pending_and_processing_are_non_terminal() {
+        // `get_3d_status`'s read-through hangs off this: a status that wrongly
+        // reported non-terminal would let a poll overwrite a decided outcome.
+        for s in [GenerationStatus::Completed, GenerationStatus::Failed, GenerationStatus::Cancelled] {
+            assert!(s.is_terminal(), "{s} must be terminal");
+        }
+        for s in [GenerationStatus::Pending, GenerationStatus::Processing] {
+            assert!(!s.is_terminal(), "{s} must not be terminal");
+        }
     }
 }
