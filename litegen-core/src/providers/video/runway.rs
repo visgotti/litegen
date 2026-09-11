@@ -124,6 +124,18 @@ impl VideoProvider for RunwayProvider {
             }
         });
 
+        // gen4_turbo is only in the `/v1/image_to_video` model union — Runway's
+        // `/v1/text_to_video` has no gen4_turbo branch — so a prompt-only
+        // request can only be rejected. Fail here, before the round trip.
+        // @see <https://docs.dev.runwayml.com/openapi.json>
+        if prompt_image.is_none() && model_name == "gen4_turbo" {
+            return Err(ProviderError::InvalidRequest(
+                "runway gen4_turbo is image-to-video only: supply an init image, \
+                 or use runway/gen4.5 for text-to-video"
+                    .to_string(),
+            ));
+        }
+
         // Choose endpoint: image_to_video if image provided, else text_to_video
         let endpoint = if prompt_image.is_some() {
             "image_to_video"
@@ -396,9 +408,10 @@ mod tests {
             .mount(&server)
             .await;
 
+        // Text-to-video is gen4.5's job: gen4_turbo is not in /v1/text_to_video.
         let provider = make_provider(&server.uri());
-        let schema = ref_schema("runway/gen4-turbo");
-        let base = make_base("a drone shot over a misty forest", "runway/gen4-turbo");
+        let schema = ref_schema("runway/gen4.5");
+        let base = make_base("a drone shot over a misty forest", "runway/gen4.5");
         let extras = make_extras();
         let materialized = empty_materialized();
 
@@ -413,7 +426,7 @@ mod tests {
         let received = server.received_requests().await.unwrap();
         assert_eq!(received.len(), 1);
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
-        assert_eq!(body["model"], "gen4_turbo");
+        assert_eq!(body["model"], "gen4.5");
         assert_eq!(body["promptText"], "a drone shot over a misty forest");
         assert_eq!(body["duration"], 5);
 
@@ -427,12 +440,12 @@ mod tests {
     /// `gen3a_turbo` was removed from the Runway API on 2026-07-30 ("Requests
     /// that use these model identifiers will fail"), and does not appear in the
     /// `/v1/image_to_video` model union in docs.dev.runwayml.com/openapi.json.
-    /// The current fast model is `gen4_turbo`.
+    /// The current fast model is `gen4_turbo`, which is image-to-video only.
     #[tokio::test]
     async fn sends_gen4_turbo_not_the_retired_gen3a_turbo() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/text_to_video"))
+            .and(path("/image_to_video"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "t1" })))
             .mount(&server)
             .await;
@@ -440,14 +453,44 @@ mod tests {
         let provider = make_provider(&server.uri());
         let schema = ref_schema("runway/gen4-turbo");
         let base = make_base("a drone shot over a misty forest", "runway/gen4-turbo");
+        let materialized = crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".to_string(),
+                form: MaterializedRefForm::Url("https://example.test/first.png".to_string()),
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
         provider
-            .generate(&schema, &base, &make_extras(), &empty_materialized())
+            .generate(&schema, &base, &make_extras(), &materialized)
             .await
             .expect("generate");
 
         let received = server.received_requests().await.unwrap();
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
         assert_eq!(body["model"], "gen4_turbo");
+        assert_eq!(body["promptImage"], "https://example.test/first.png");
+    }
+
+    /// `/v1/text_to_video` has no `gen4_turbo` branch in
+    /// docs.dev.runwayml.com/openapi.json (re-read 2026-09-11), so a
+    /// prompt-only gen4_turbo request must fail here rather than be sent to an
+    /// endpoint that can only reject it.
+    #[tokio::test]
+    async fn gen4_turbo_without_an_init_image_is_rejected_before_any_request() {
+        let server = MockServer::start().await;
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("runway/gen4-turbo");
+        let base = make_base("a city at night", "runway/gen4-turbo");
+        let err = provider
+            .generate(&schema, &base, &make_extras(), &empty_materialized())
+            .await
+            .err()
+            .expect("gen4_turbo cannot do text-to-video");
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "got {err:?}");
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "no request may reach Runway"
+        );
     }
 
     /// The quality tier is `gen4.5` (dot, not underscore) per the spec's
@@ -474,9 +517,10 @@ mod tests {
         assert_eq!(body["model"], "gen4.5");
     }
 
-    /// `1280:768` / `768:1280` are gen3-era ratios. The gen4 `ratio` enum is
-    /// `1280:720 | 720:1280 | 1104:832 | 832:1104 | 960:960 | 1584:672`, so the
-    /// default we substitute when the caller omits one must be a member of it.
+    /// `1280:768` / `768:1280` are gen3-era ratios. `/v1/text_to_video` takes
+    /// only `1280:720 | 720:1280` for `gen4.5` (the six-value gen4 enum is
+    /// `/v1/image_to_video`'s), so the default we substitute when the caller
+    /// omits one must be a member of that, the narrowest enum.
     #[tokio::test]
     async fn default_ratio_is_a_member_of_the_gen4_enum() {
         let server = MockServer::start().await;
@@ -487,8 +531,8 @@ mod tests {
             .await;
 
         let provider = make_provider(&server.uri());
-        let schema = ref_schema("runway/gen4-turbo");
-        let base = make_base("a city at night", "runway/gen4-turbo");
+        let schema = ref_schema("runway/gen4.5");
+        let base = make_base("a city at night", "runway/gen4.5");
         provider
             .generate(&schema, &base, &make_extras(), &empty_materialized())
             .await
@@ -496,13 +540,11 @@ mod tests {
 
         let received = server.received_requests().await.unwrap();
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
-        const GEN4_RATIOS: [&str; 6] = [
-            "1280:720", "720:1280", "1104:832", "832:1104", "960:960", "1584:672",
-        ];
+        const T2V_RATIOS: [&str; 2] = ["1280:720", "720:1280"];
         let ratio = body["ratio"].as_str().expect("ratio must always be sent");
         assert!(
-            GEN4_RATIOS.contains(&ratio),
-            "ratio {ratio:?} is not in the gen4 enum {GEN4_RATIOS:?}"
+            T2V_RATIOS.contains(&ratio),
+            "ratio {ratio:?} is not in the gen4.5 text_to_video enum {T2V_RATIOS:?}"
         );
     }
 

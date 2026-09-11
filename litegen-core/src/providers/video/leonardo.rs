@@ -79,11 +79,19 @@ impl LeonardoVideoProvider {
         }
     }
 
-    fn resolve_resolution(res: Option<&str>) -> &'static str {
+    /// Map a requested resolution to Leonardo's preset. With none requested,
+    /// pick one the model accepts: Kling 2.1 Pro and Kling 2.5 Turbo take only
+    /// `RESOLUTION_1080`, so a blanket 720 default made them fail.
+    ///
+    /// @see <https://docs.leonardo.ai/v1.0/docs/kling-2-1-pro> — "resolution ... Set to `RESOLUTION_1080`."
+    /// @see <https://docs.leonardo.ai/v1.0/docs/kling-2-5-turbo> — "resolution ... Set to `RESOLUTION_1080`."
+    fn resolve_resolution(leo_model: &str, res: Option<&str>) -> &'static str {
         match res {
             Some("1080p") | Some("1080P") => "RESOLUTION_1080",
             Some("480p") | Some("480P") => "RESOLUTION_480",
-            _ => "RESOLUTION_720",
+            Some(_) => "RESOLUTION_720",
+            None if leo_model.starts_with("KLING") => "RESOLUTION_1080",
+            None => "RESOLUTION_720",
         }
     }
 }
@@ -152,9 +160,12 @@ impl VideoProvider for LeonardoVideoProvider {
             "imageId": image_id,
             "imageType": image_type,
             "model": leo_model,
-            "resolution": Self::resolve_resolution(extras.resolution.as_deref()),
+            "resolution": Self::resolve_resolution(leo_model, extras.resolution.as_deref()),
         });
-        if extras.duration_seconds > 0.0 {
+        // `duration` is documented for Veo and Kling only; Motion 2.0 (and
+        // Motion 2.0 Fast) take no duration parameter at all.
+        // @see <https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration>
+        if extras.duration_seconds > 0.0 && !leo_model.starts_with("MOTION2") {
             body["duration"] = Value::Number((extras.duration_seconds as i64).into());
         }
         if let Some(Value::Object(map)) = &extras.extra {
@@ -357,5 +368,65 @@ mod tests {
         let poll = provider.poll_status(&handle).await.unwrap();
         assert_eq!(poll.status, GenerationStatus::Completed);
         assert_eq!(poll.video_url.unwrap(), "https://cdn.leo/v.mp4");
+    }
+
+    /// Kling 2.1 Pro accepts only `RESOLUTION_1080`; a request that names no
+    /// resolution used to go out as `RESOLUTION_720`.
+    /// @see <https://docs.leonardo.ai/v1.0/docs/kling-2-1-pro>
+    #[tokio::test]
+    async fn kling_without_a_resolution_sends_1080() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/generations-image-to-video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "motionVideoGenerationJob": { "generationId": "leo-vid-2" }
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("leonardo/kling2.1");
+        let base = make_base("a paper boat on a river", "leonardo/kling2.1");
+        let mut extras = extras_with_image_id();
+        extras.resolution = None;
+        extras.duration_seconds = 5.0;
+        let materialized = MaterializedRequest { refs: vec![] as Vec<MaterializedRef>, cleanup: Cleanup::empty() };
+
+        provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["model"], "KLING2_1");
+        assert_eq!(body["resolution"], "RESOLUTION_1080");
+        assert_eq!(body["duration"], 5);
+    }
+
+    /// Motion 2.0 has no duration parameter — the v1 reference documents
+    /// `duration` for Veo and Kling only — so none is sent.
+    /// @see <https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration>
+    #[tokio::test]
+    async fn motion2_sends_no_duration() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/generations-image-to-video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "motionVideoGenerationJob": { "generationId": "leo-vid-3" }
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("leonardo/motion2");
+        let base = make_base("leaves drifting in the wind", "leonardo/motion2");
+        let mut extras = extras_with_image_id();
+        extras.duration_seconds = 5.0;
+        let materialized = MaterializedRequest { refs: vec![] as Vec<MaterializedRef>, cleanup: Cleanup::empty() };
+
+        provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["model"], "MOTION2");
+        assert!(body.get("duration").is_none(), "Motion 2.0 got a duration: {body}");
     }
 }
