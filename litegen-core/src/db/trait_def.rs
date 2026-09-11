@@ -110,6 +110,19 @@ pub trait DatabaseStore: Send + Sync {
         app_id: Option<&str>,
     ) -> Result<(), sqlx::Error>;
 
+    /// Move an async (`video`/`model3d`) request's log row — written `pending`
+    /// at submit, under the generation's id — to its terminal status:
+    /// `completed`, `failed` or `cancelled`, the vocabulary the log reader
+    /// parses, with the error when it failed. Only `status` and `error` change.
+    /// Called on every terminal transition; callers log a failure and carry on,
+    /// since a stale log row must never fail a request or a poller tick.
+    async fn update_request_log_status(
+        &self,
+        id: &str,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<(), sqlx::Error>;
+
     // superseded by get_request_logs_for_tenant for the API (kept for tests/back-compat)
     async fn get_request_logs(
         &self,

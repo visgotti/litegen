@@ -47,6 +47,7 @@ mod tests {
         ) -> Result<(), sqlx::Error> { Ok(()) }
 
         async fn update_generation_metadata(&self, _id: &str, _metadata: &serde_json::Value) -> Result<(), sqlx::Error> { Ok(()) }
+        async fn update_request_log_status(&self, _id: &str, _status: &str, _error: Option<&str>) -> Result<(), sqlx::Error> { Ok(()) }
 
         async fn get_generation(&self, _id: &str) -> Result<Option<crate::types::Generation>, sqlx::Error> { Ok(None) }
 
@@ -596,6 +597,7 @@ models:
         ) -> Result<(), sqlx::Error> { Ok(()) }
 
         async fn update_generation_metadata(&self, _id: &str, _metadata: &serde_json::Value) -> Result<(), sqlx::Error> { Ok(()) }
+        async fn update_request_log_status(&self, _id: &str, _status: &str, _error: Option<&str>) -> Result<(), sqlx::Error> { Ok(()) }
 
         async fn get_generation(&self, _id: &str) -> Result<Option<crate::types::Generation>, sqlx::Error> { Ok(None) }
 

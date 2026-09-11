@@ -22,7 +22,14 @@ async fn reap_generation(db: &Arc<dyn DatabaseStore>, gen_id: &str, reason: &str
         .update_generation_status(gen_id, "failed", 0, None, Some(reason), Some(chrono::Utc::now()))
         .await
     {
+        // Still active, so the next tick reaps it again — and marks the log then.
         warn!(generation_id = %gen_id, error = %e, "poller: failed to reap stuck generation");
+        return;
+    }
+    // A reap is a terminal transition like any other: the request log (same
+    // id) must not keep reading `pending` for a generation that has failed.
+    if let Err(e) = db.update_request_log_status(gen_id, "failed", Some(reason)).await {
+        warn!(generation_id = %gen_id, error = %e, "poller: failed to mark the reaped request log failed");
     }
 }
 
@@ -314,6 +321,18 @@ pub(crate) async fn poll_once(
         if let Some(meta) = &outcome.assets {
             if let Err(e) = db.update_generation_metadata(&gen.id, meta).await {
                 warn!(generation_id = %gen.id, error = %e, "poller: failed to persist 3d assets");
+            }
+        }
+
+        // The submit handler logged this request `pending` under the same id;
+        // move that row to the outcome too, or `/v1/logs` reads `pending`
+        // forever. Best-effort: the generation row above is the source of truth.
+        if is_terminal {
+            if let Err(e) = db
+                .update_request_log_status(&gen.id, &status_str, outcome.error.as_deref())
+                .await
+            {
+                warn!(generation_id = %gen.id, error = %e, "poller: failed to update request log status");
             }
         }
 
@@ -1020,5 +1039,92 @@ mod poller_tests {
 
         let row = db.get_generation("litegen-img-stray-1").await.unwrap().unwrap();
         assert_eq!(row.status, crate::types::GenerationStatus::Pending, "skipped, not failed");
+    }
+
+    // ─── Request-log lifecycle ────────────────────────────────────────────
+    //
+    // The submit handlers log an async request `pending` under the generation's
+    // id. Every terminal transition the poller makes must reach that row too,
+    // or `/v1/logs` shows the request `pending` forever.
+
+    /// Seed what a video/3D submit writes: a `pending` request-log row and the
+    /// generation row, sharing one id.
+    async fn seed_submitted(db: &Arc<dyn DatabaseStore>, id: &str, model: &str, media_type: &str, job_id: &str) {
+        db.log_request(id, model, "mock", "pending", media_type, 0.0, 5, None, None, None, None)
+            .await
+            .unwrap();
+        db.insert_generation(id, None, model, "mock", media_type, Some(job_id), 0.0, None, None)
+            .await
+            .unwrap();
+    }
+
+    async fn request_log(db: &Arc<dyn DatabaseStore>, id: &str) -> crate::types::RequestLog {
+        let (logs, _) = db.get_request_logs(1, 100).await.unwrap();
+        logs.into_iter().find(|l| l.id == id).expect("request log row")
+    }
+
+    #[tokio::test]
+    async fn poll_once_marks_the_request_log_completed_when_a_video_completes() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = make_registry().await;
+        seed_submitted(&db, "litegen-vid-log-1", "mock/video-gen", "video", "mock-video-job-1").await;
+
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &test_3d_store()).await;
+
+        let log = request_log(&db, "litegen-vid-log-1").await;
+        assert_eq!(log.status, GenerationStatus::Completed);
+        assert_eq!(log.error, None);
+    }
+
+    #[tokio::test]
+    async fn poll_once_marks_the_request_log_failed_with_the_error_when_a_3d_job_fails() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = make_3d_registry().await;
+        let store = test_3d_store();
+        let job_id = submit_mock_3d("mock/fail-3d", "anything").await;
+        seed_submitted(&db, "litegen-3d-log-fail", "mock/fail-3d", "model3d", &job_id).await;
+
+        for _ in 0..5 {
+            poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &store).await;
+            let row = db.get_generation("litegen-3d-log-fail").await.unwrap().unwrap();
+            if row.status == GenerationStatus::Failed { break; }
+        }
+
+        let gen = db.get_generation("litegen-3d-log-fail").await.unwrap().unwrap();
+        assert_eq!(gen.status, GenerationStatus::Failed);
+        let log = request_log(&db, "litegen-3d-log-fail").await;
+        assert_eq!(log.status, GenerationStatus::Failed);
+        assert!(log.error.as_deref().is_some_and(|e| !e.is_empty()), "{:?}", log.error);
+        assert_eq!(log.error, gen.error_message, "the log carries the provider's error");
+    }
+
+    #[tokio::test]
+    async fn poll_once_marks_the_request_log_failed_when_a_3d_completion_has_no_mesh() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = registry_with_3d_mesh_missing().await;
+        seed_submitted(&db, "litegen-3d-log-no-mesh", "mock/mesh-3d", "model3d", "job-no-mesh").await;
+
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &test_3d_store()).await;
+
+        let log = request_log(&db, "litegen-3d-log-no-mesh").await;
+        assert_eq!(log.status, GenerationStatus::Failed);
+        assert_eq!(log.error.as_deref(), Some("provider reported success without a mesh asset"));
+    }
+
+    #[tokio::test]
+    async fn reaping_a_generation_marks_its_request_log_failed() {
+        // A non-retryable poll error terminalises through `reap_generation`,
+        // the poller's other terminal path (next to the shared tail).
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = registry_with(PollBehavior::TerminalError).await;
+        seed_submitted(&db, "litegen-vid-log-dead", "mock/video-gen", "video", "job-dead").await;
+
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &test_3d_store()).await;
+
+        let gen = db.get_generation("litegen-vid-log-dead").await.unwrap().unwrap();
+        assert_eq!(gen.status, GenerationStatus::Failed);
+        let log = request_log(&db, "litegen-vid-log-dead").await;
+        assert_eq!(log.status, GenerationStatus::Failed);
+        assert!(log.error.as_deref().is_some_and(|e| e.contains("401")), "{:?}", log.error);
     }
 }
