@@ -5542,3 +5542,32 @@ verifiable with the dashboard's vitest/build/lint and the landing script tests.
   a multi-second 3D poll (Task 13/14 review).
 - [x] DONE 2026-09-11 **Gates:** `cd dashboard && npm test && npm run build && npm run lint`;
   `cd apps/landing && npm run test:scripts`. Commit, ticking this section.
+
+---
+
+### Task 17B: Fixes found by the first real-browser run (Storybook pass)
+
+Task 20's Playwright pass over all 71 stories (2026-09-11) found no functional
+defect but four user-visible issues in the Task 21 components:
+
+- [ ] **Corrupt vs. missing mesh.** `ModelViewer` gives a corrupt/unparseable GLB
+  the same "may be missing (404) or corrupt" message as a missing file, and
+  offers Retry, which cannot fix a parse failure. Distinguish them from the
+  `error` event's detail (a fetch/HTTP failure vs. a parse failure such as the
+  `RangeError` the corrupt fixture produces): a download failure keeps
+  "couldn't download the mesh" + Retry; a parse failure says "the mesh file is
+  not a valid glTF" with download only (`data-reason="parse"`).
+- [ ] **`ResultTile3D` done-without-mesh.** A `done` tile with no mesh renders
+  muted "no mesh" text; the component contract says a completed job without a
+  mesh is an error. Render it as the error state (the live fan-out already
+  converts it; this makes the component honest on its own).
+- [ ] **Interaction prompt.** `<model-viewer>`'s idle hand-gesture hint overlays
+  the compact Playground tiles (visible in the Storybook screenshots). Set the
+  documented `interaction-prompt="none"` attribute — the toolbar and
+  auto-rotate already make interactivity obvious.
+- [ ] **Toolbar wrap.** The inspector toolbar wraps "Copy mesh URL" onto a
+  second row at ~820 px. Make the toolbar wrap gracefully (group controls so a
+  wrap happens between groups, or let the fullscreen/copy group sit on the
+  right) rather than orphaning one button.
+- [ ] Update the affected stories so they show the new states, re-run the
+  Storybook browser pass for the touched stories, and run the dashboard gates.
