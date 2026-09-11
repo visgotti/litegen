@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import type { ParamSpec } from '@litegen/sdk';
-import { sizeEnumOptions } from './params';
+import { paramDescription, paramLabel, sizeEnumOptions } from './params';
 
 type AnySpec = { kind: string; [k: string]: unknown };
 
@@ -89,13 +89,19 @@ export default function ParamField({ name, spec, models, totalSelected, value, o
       );
   }
 
+  // The description is both the label's tooltip and a visible help line:
+  // a tooltip alone never shows on touch devices.
+  const description = paramDescription(spec);
   return (
     <div className="pg-param-row">
-      <label className="pg-param-label">
-        {name}
+      <label className="pg-param-label" title={description ?? undefined}>
+        {paramLabel(name, spec)}
         <span className="pg-param-applies" data-testid={`${tid}-applies`}>{applies}</span>
       </label>
       {control}
+      {description && (
+        <span className="pg-param-description" data-testid={`${tid}-description`}>{description}</span>
+      )}
     </div>
   );
 }
