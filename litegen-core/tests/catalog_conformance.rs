@@ -671,13 +671,14 @@ fn minimax_hailuo_resolutions_are_valid_for_every_advertised_mode() {
     }
 }
 
-/// First & last frame generation accepts only `MiniMax-Hailuo-02`. A
-/// `last_frame` role on any other model sends `last_frame_image` with a model
-/// the fl2v request does not accept (and makes /v1/models report
-/// `supports_last_frame: true`).
+/// On the **v1** API, first & last frame generation accepts only
+/// `MiniMax-Hailuo-02`. A `last_frame` role on any other v1 model sends
+/// `last_frame_image` with a model the fl2v request does not accept (and makes
+/// /v1/models report `supports_last_frame: true`). The H3 models are exempt:
+/// they go through the v2 surface, which takes roled image items.
 /// @see <https://platform.minimax.io/docs/api-reference/video-generation-fl2v.md> (2026-09-11)
 #[test]
-fn minimax_only_hailuo_02_declares_a_last_frame() {
+fn minimax_v1_models_other_than_hailuo_02_declare_no_last_frame() {
     let reg = registry();
     let has_last_frame = |id: &str| {
         reg.get(id)
@@ -2685,5 +2686,378 @@ fn fal_flux_2_matches_the_endpoint_input_schema() {
             );
         }
         other => panic!("{id} size is {other:?}, expected a freeform WxH size"),
+    }
+}
+
+// ─── kling: 2026-09-11 drift decisions applied ──────────────────────────────
+
+/// Kling Image 3.0 on POST /v1/images/generations (`model_name` kling-v3):
+/// text + image input, eight aspect ratios including 21:9, 1K/2K via
+/// `resolution`, prompt at most 2500 characters. Character / face feature
+/// reference (`image_reference`) is "Not Supported" on Image 3.0, and
+/// `image_fidelity` / `human_fidelity` are kling-v1/v1-5 only.
+/// @see https://kling.ai/document-api/api/image/3-0-omni/image-generation.md (2026-09-11)
+/// @see https://kling.ai/document-api/guides/capability-map/image.md (2026-09-11)
+#[test]
+fn kling_image_3_0_matches_the_image_3_0_contract() {
+    let reg = registry();
+    let schema = reg.get("kling/kling-v3").expect("kling/kling-v3 missing");
+    assert!(schema.capabilities.text_to_image && schema.capabilities.image_to_image);
+    assert_eq!(
+        schema.prompt.max_length,
+        Some(2500),
+        "Image 3.0 prompt limit"
+    );
+    let mut got = aspect_ratios(&reg, "kling/kling-v3");
+    got.sort();
+    let mut want: Vec<String> = ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    want.sort();
+    assert_eq!(got, want, "Image 3.0 aspect ratios");
+    let refs = schema
+        .ref_inputs
+        .as_ref()
+        .expect("Image 3.0 takes a reference image");
+    assert_eq!(refs.max_total, 1, "`image` is a single image");
+    assert!(
+        schema.extra_allowlist.iter().any(|k| k == "resolution"),
+        "resolution selects 1k/2k"
+    );
+    for key in ["image_reference", "image_fidelity", "human_fidelity"] {
+        assert!(
+            !schema.extra_allowlist.iter().any(|k| k == key),
+            "kling/kling-v3 allowlists {key}, which Image 3.0 does not support"
+        );
+    }
+}
+
+/// Kling 3.0 on the legacy text2video / image2video endpoints (both
+/// `model_name` enums list kling-v3): text and image input, 3-15 s,
+/// 16:9 | 9:16 | 1:1, mode std | pro | 4k, native audio (`sound`),
+/// first + last frame. Camera control is "Not Supported" and cfg_scale is not
+/// documented for 3.0, so neither is allowlisted.
+/// @see https://kling.ai/document-api/api/video/1-6/text-to-video.md (2026-09-11)
+/// @see https://kling.ai/document-api/api/video/2-1/image-to-video.md (2026-09-11)
+/// @see https://kling.ai/document-api/guides/capability-map/video.md (2026-09-11)
+#[test]
+fn kling_v3_video_matches_the_capability_map() {
+    let reg = registry();
+    let id = "kling/video-kling-v3";
+    let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+    assert!(
+        schema.capabilities.text_to_video && schema.capabilities.image_to_video,
+        "{id}: text and image input"
+    );
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Float(f)) => {
+            assert_eq!(f.min, Some(3.0), "{id}: 3~15 s");
+            assert_eq!(f.max, Some(15.0), "{id}: 3~15 s");
+        }
+        other => panic!("{id} duration_seconds is {other:?}"),
+    }
+    let mut got = aspect_ratios(&reg, id);
+    got.sort();
+    let mut want: Vec<String> = ["16:9", "9:16", "1:1"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    want.sort();
+    assert_eq!(got, want, "{id} aspect ratios");
+    for key in ["mode", "sound"] {
+        assert!(
+            schema.extra_allowlist.iter().any(|k| k == key),
+            "{id}: Kling 3.0 documents {key}"
+        );
+    }
+    for key in ["cfg_scale", "camera_control"] {
+        assert!(
+            !schema.extra_allowlist.iter().any(|k| k == key),
+            "{id} allowlists {key}, which Kling 3.0 does not support"
+        );
+    }
+    let refs = schema.ref_inputs.as_ref().expect("Kling 3.0 takes frames");
+    assert!(refs.roles.contains_key("first_frame"), "{id}: first frame");
+    assert!(
+        refs.roles.contains_key("last_frame"),
+        "{id}: First/Last Frame is Supported"
+    );
+}
+
+// ─── leonardo: 2026-09-11 drift decisions applied ───────────────────────────
+
+/// Veo 3.1 Fast (`VEO3_1FAST`): the v1 Veo 3.1 guide covers it — "model ...
+/// Set to VEO3_1, VEO3_1FAST", "duration ... Set to 4, 6, or 8", "resolution
+/// ... Set to RESOLUTION_720 and RESOLUTION_1080"; Leonardo's model schema
+/// caps its prompt at 9999 characters.
+/// @see <https://docs.leonardo.ai/v1.0/docs/veo-31> (read 2026-09-11)
+/// @see <https://docs.leonardo.ai/reference/creategeneration> — Veo3_1FastGenerate001GenerationRequest, prompt maxLength 9999 (read 2026-09-11)
+#[test]
+fn leonardo_veo3_1_fast_matches_the_veo_3_1_fast_contract() {
+    let reg = registry();
+    let schema = reg.get("leonardo/veo3.1-fast").expect("veo3.1-fast missing");
+    assert!(schema.capabilities.image_to_video);
+    assert_eq!(
+        enum_values(&reg, "leonardo/veo3.1-fast", "resolution"),
+        vec!["720p".to_string(), "1080p".to_string()],
+        "Veo 3.1 Fast renders at 720p or 1080p on the v1 API"
+    );
+    assert_eq!(schema.prompt.max_length, Some(9999), "Veo 3.1 Fast prompt limit");
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Float(f)) => {
+            assert_eq!(f.min, Some(4.0), "Veo 3.1 Fast: 4, 6 or 8 s");
+            assert_eq!(f.max, Some(8.0), "Veo 3.1 Fast: 4, 6 or 8 s");
+            assert_eq!(f.default, Some(8.0), "Veo 3.1 Fast defaults to 8 s");
+        }
+        other => panic!("veo3.1-fast duration_seconds is {other:?}"),
+    }
+}
+
+// ─── ideogram: 2026-09-11 drift decisions applied ───────────────────────────
+
+/// Ideogram 4.0 is text-to-image only on `POST /v1/ideogram-v4/generate`:
+/// the request has `text_prompt`, `resolution`, `rendering_speed` and
+/// `enable_copyright_detection` — no aspect_ratio, seed, negative prompt,
+/// style or reference-image field. Its `resolution` is the `ResolutionV4`
+/// enum ("The 1K and 2K resolutions supported for Ideogram 4.0"), which we
+/// advertise as the `size` enum. The three rows mirror the 3.0 speed tiers
+/// (FLASH "currently return[s] a 400" on 4.0, so it has no row).
+/// @see <https://developer.ideogram.ai/openapi.json> (post_generate_image_v4, ResolutionV4), read 2026-09-11
+#[test]
+fn ideogram_v4_rows_match_the_v4_generate_contract() {
+    use litegen::capabilities::schema::SizeSpec;
+    const RESOLUTION_V4: [(u32, u32); 38] = [
+        (2048, 2048), (1440, 2880), (2880, 1440), (1664, 2496), (2496, 1664), (1792, 2240),
+        (2240, 1792), (1440, 2560), (2560, 1440), (1600, 2560), (2560, 1600), (1728, 2304),
+        (2304, 1728), (1296, 3168), (3168, 1296), (1152, 2944), (2944, 1152), (1248, 3328),
+        (3328, 1248), (1280, 3072), (3072, 1280), (1024, 3072), (3072, 1024), (1024, 1024),
+        (896, 1120), (1120, 896), (864, 1152), (1152, 864), (832, 1248), (1248, 832),
+        (800, 1280), (1280, 800), (720, 1280), (1280, 720), (720, 1440), (1440, 720),
+        (512, 1536), (1536, 512),
+    ];
+    let mut theirs = RESOLUTION_V4.to_vec();
+    theirs.sort();
+    let reg = registry();
+    for id in ["ideogram/ideogram-v4", "ideogram/ideogram-v4-turbo", "ideogram/ideogram-v4-quality"] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing from the catalog"));
+        assert!(m.capabilities.text_to_image, "{id} must be text-to-image");
+        assert!(!m.capabilities.image_to_image, "{id}: v4 generate takes no reference images");
+        assert!(m.ref_inputs.is_none(), "{id}: v4 generate takes no reference images");
+        for absent in ["aspect_ratio", "seed", "negative_prompt", "style"] {
+            assert!(!m.params.contains_key(absent), "{id} advertises {absent}, which v4 generate lacks");
+        }
+        let mut ours = match m.params.get("size") {
+            Some(ParamSpec::Size(SizeSpec::Enum(e))) => e.values.clone(),
+            other => panic!("{id} size is {other:?}, expected the ResolutionV4 enum"),
+        };
+        ours.sort();
+        assert_eq!(ours, theirs, "{id} sizes differ from Ideogram's ResolutionV4 enum");
+        for key in &m.extra_allowlist {
+            assert!(
+                ["enable_copyright_detection"].contains(&key.as_str()),
+                "{id} allowlists {key:?}, not a v4 generate field"
+            );
+        }
+    }
+}
+
+// ─── fal: 2026-09-11 drift decisions applied ────────────────────────────────
+
+/// `fal/ltx-2.3` is text- and image-to-video over fal-ai/ltx-2.3/{text,image}-to-video.
+/// Both request schemas: prompt maxLength 5000; duration enum [6, 8, 10]
+/// (default 6 — expressed as the 6–10 range); resolution enum [1080p, 1440p,
+/// 2160p]; aspect_ratio 16:9 | 9:16 (image-to-video adds `auto`); fps enum
+/// [24, 25, 48, 50]; no seed.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-2.3/text-to-video>, read 2026-09-11
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-2.3/image-to-video>, read 2026-09-11
+#[test]
+fn fal_ltx_2_3_matches_the_ltx_2_3_endpoint_schemas() {
+    let reg = registry();
+    let id = "fal/ltx-2.3";
+    let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing from the catalog"));
+    assert!(m.capabilities.text_to_video && m.capabilities.image_to_video, "{id} capabilities");
+    assert_eq!(m.prompt.max_length, Some(5000), "{id} prompt maxLength is 5000");
+    match m.params.get("duration_seconds") {
+        Some(ParamSpec::Float(d)) => {
+            assert_eq!((d.min, d.max, d.default), (Some(6.0), Some(10.0), Some(6.0)), "{id} duration is 6 | 8 | 10, default 6");
+        }
+        other => panic!("{id} duration_seconds is {other:?}"),
+    }
+    assert_eq!(enum_values(&reg, id, "resolution"), ["1080p", "1440p", "2160p"], "{id} resolution enum");
+    let mut ars = aspect_ratios(&reg, id);
+    ars.sort();
+    assert_eq!(ars, ["16:9", "9:16"], "{id} aspect ratios (both endpoints)");
+    match m.params.get("fps") {
+        Some(ParamSpec::Int(f)) => assert_eq!((f.min, f.max), (Some(24), Some(50)), "{id} fps is 24 | 25 | 48 | 50"),
+        other => panic!("{id} fps is {other:?}"),
+    }
+    assert!(!m.params.contains_key("seed"), "{id}: neither LTX-2.3 endpoint takes a seed");
+    let ri = m.ref_inputs.as_ref().expect("start frame ref input");
+    assert_eq!(ri.max_total, 1);
+    let init = ri.roles.get("init").expect("init role");
+    assert!(!init.required, "{id} is text-to-video without a start frame");
+}
+
+// ─── minimax: 2026-09-11 drift decisions applied ────────────────────────────
+
+/// MiniMax-H3 does text-to-video, first/last-frame image-to-video and
+/// reference-to-video; `768P` / `2K`; integer 4–15 s; prompt ≤ 7000 characters.
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-09-11)
+#[test]
+fn minimax_h3_matches_the_v2_create_contract() {
+    let reg = registry();
+    let schema = reg.get("minimax/MiniMax-H3").expect("minimax/MiniMax-H3 missing");
+    assert!(schema.capabilities.text_to_video && schema.capabilities.image_to_video);
+    assert_eq!(enum_values(&reg, "minimax/MiniMax-H3", "resolution"), vec!["768P", "2K"]);
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max), (Some(4), Some(15))),
+        other => panic!("MiniMax-H3 duration_seconds is {other:?}, expected an integer 4-15"),
+    }
+    assert_eq!(schema.prompt.max_length, Some(7000));
+    let roles = &schema.ref_inputs.as_ref().expect("MiniMax-H3 takes image inputs").roles;
+    assert_eq!(roles.get("first_frame").map(|r| r.max_count), Some(1));
+    assert_eq!(roles.get("last_frame").map(|r| r.max_count), Some(1));
+    assert_eq!(roles.get("reference").map(|r| r.max_count), Some(9), "reference images ≤ 9");
+    // Text-to-video rejects `adaptive`, and one list serves every mode.
+    let ratios = aspect_ratios(&reg, "minimax/MiniMax-H3");
+    assert!(!ratios.is_empty() && !ratios.iter().any(|r| r == "adaptive"), "{ratios:?}");
+}
+
+/// MiniMax-H3-Max: text-to-video and first/last-frame image-to-video only (no
+/// reference-to-video); `480P` / `768P` ("2K is not supported"); 5–15 s ("4
+/// seconds is not supported").
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-09-11)
+#[test]
+fn minimax_h3_max_has_no_2k_no_4s_and_no_reference_role() {
+    let reg = registry();
+    let schema = reg.get("minimax/MiniMax-H3-Max").expect("minimax/MiniMax-H3-Max missing");
+    assert!(schema.capabilities.text_to_video && schema.capabilities.image_to_video);
+    assert_eq!(enum_values(&reg, "minimax/MiniMax-H3-Max", "resolution"), vec!["480P", "768P"]);
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Int(d)) => assert_eq!((d.min, d.max), (Some(5), Some(15))),
+        other => panic!("MiniMax-H3-Max duration_seconds is {other:?}, expected an integer 5-15"),
+    }
+    let roles = &schema.ref_inputs.as_ref().expect("MiniMax-H3-Max takes first/last frames").roles;
+    assert!(roles.contains_key("first_frame") && roles.contains_key("last_frame"));
+    assert!(!roles.contains_key("reference"), "H3 Max has no reference-to-video");
+}
+
+// ─── hunyuan: 2026-09-11 drift decisions applied ────────────────────────────
+
+/// Hunyuan Image 3.0 is aiart `SubmitTextToImageJob` ("提交混元生图（3.0）任务"):
+/// Prompt is required and "最多可传8192个 utf-8 字符"; Images is "参考图，最多三张图".
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/aiart/v20221229/models.go> (2026-09-11)
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-cli/master/tccli/services/aiart/v20221229/api.json> (2026-09-11)
+#[test]
+fn hunyuan_image_3_is_text_and_image_to_image_with_up_to_three_references() {
+    let reg = registry();
+    let schema = reg.get("hunyuan/hunyuan-image-3").expect("hunyuan-image-3 missing");
+    assert!(schema.capabilities.text_to_image, "SubmitTextToImageJob takes a prompt alone");
+    assert!(schema.capabilities.image_to_image, "SubmitTextToImageJob takes reference Images");
+    assert!(schema.prompt.required, "Prompt is required");
+    assert_eq!(schema.prompt.max_length, Some(8192), "Prompt is at most 8192 characters");
+    let ri = schema.ref_inputs.as_ref().expect("hunyuan-image-3 declares no ref_inputs");
+    assert_eq!(ri.max_total, 3, "Images: at most three reference images");
+    let init = ri.roles.get("init").expect("hunyuan-image-3 declares no init role");
+    assert!(!init.required && init.min_count == 0, "Images is optional");
+    assert_eq!(init.max_count, 3);
+}
+
+/// `SubmitTextToImageJob.Seed`: "取值范围：1 - 4294967295". `Resolution`: width and
+/// height in [512, 2048], W*H at most 1024*1024, output snapped to the
+/// documented size list (37 entries, default 1024:1024).
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/aiart/v20221229/models.go> (2026-09-11)
+#[test]
+fn hunyuan_image_3_seed_and_sizes_match_submit_text_to_image_job() {
+    let reg = registry();
+    let schema = reg.get("hunyuan/hunyuan-image-3").expect("hunyuan-image-3 missing");
+    match schema.params.get("seed") {
+        Some(ParamSpec::Seed(s)) => {
+            assert_eq!((s.min, s.max), (1, 4_294_967_295), "Seed range is 1 - 4294967295");
+        }
+        other => panic!("hunyuan-image-3 seed is {other:?}, expected Seed"),
+    }
+    let sizes = match schema.params.get("size") {
+        Some(ParamSpec::Size(litegen::capabilities::schema::SizeSpec::Enum(e))) => e.values.clone(),
+        other => panic!("hunyuan-image-3 size is {other:?}, expected the documented size list"),
+    };
+    assert_eq!(sizes.len(), 37, "the documented size list has 37 entries");
+    for &(w, h) in &sizes {
+        assert!((512..=2048).contains(&w) && (512..=2048).contains(&h), "{w}x{h} outside [512, 2048]");
+        assert!(w * h <= 1024 * 1024, "{w}x{h} exceeds 1024*1024 pixels");
+    }
+    for s in [(1024, 1024), (2048, 512), (512, 2048), (1280, 720), (720, 1280), (768, 1024)] {
+        assert!(sizes.contains(&s), "{s:?} is in the documented size list");
+    }
+    assert!(!schema.params.contains_key("negative_prompt"), "SubmitTextToImageJob has no NegativePrompt");
+}
+
+/// The adapter merges every allowlisted extra key into the request verbatim,
+/// and Tencent fails an undefined parameter (UnknownParameter).
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/aiart/v20221229/models.go> (2026-09-11)
+#[test]
+fn hunyuan_image_3_extra_allowlist_names_only_submit_text_to_image_job_parameters() {
+    const PARAMS: [&str; 7] = ["Prompt", "Images", "Resolution", "Seed", "LogoAdd", "LogoParam", "Revise"];
+    let reg = registry();
+    let schema = reg.get("hunyuan/hunyuan-image-3").expect("hunyuan-image-3 missing");
+    for key in &schema.extra_allowlist {
+        assert!(
+            PARAMS.contains(&key.as_str()),
+            "hunyuan-image-3 allowlists {key:?}, which is not a SubmitTextToImageJob parameter"
+        );
+    }
+}
+
+/// `SubmitImageToVideoGeneralJob` (图生视频通用能力): Image is its only required
+/// member, Prompt is optional and "最多支持200个 utf-8 字符".
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/vclm/v20240523/models.go> (2026-09-11)
+/// @see <https://cloud.tencent.com/document/api/1616/124465> (2026-09-11)
+#[test]
+fn hunyuan_video_i2v_requires_one_image_and_an_optional_short_prompt() {
+    let reg = registry();
+    let schema = reg.get("hunyuan/hunyuan-video-i2v").expect("hunyuan-video-i2v missing");
+    assert!(schema.capabilities.image_to_video);
+    assert!(!schema.capabilities.text_to_video, "Image is required: no text-only jobs");
+    assert!(!schema.prompt.required, "Prompt is optional");
+    assert_eq!(schema.prompt.max_length, Some(200), "Prompt is at most 200 characters");
+    let ri = schema.ref_inputs.as_ref().expect("hunyuan-video-i2v declares no ref_inputs");
+    assert_eq!(ri.max_total, 1);
+    let first = ri.roles.get("first_frame").expect("hunyuan-video-i2v declares no first_frame role");
+    assert!(first.required && first.min_count == 1 && first.max_count == 1, "exactly one Image");
+}
+
+/// `Resolution`: "可选择：480p、720p、1080p". `Fps`: "从16, 24, 30中选择。默认值：30".
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/vclm/v20240523/models.go> (2026-09-11)
+#[test]
+fn hunyuan_video_i2v_resolution_and_fps_match_submit_image_to_video_general_job() {
+    let reg = registry();
+    assert_eq!(
+        enum_values(&reg, "hunyuan/hunyuan-video-i2v", "resolution"),
+        vec!["480p".to_string(), "720p".to_string(), "1080p".to_string()],
+        "SubmitImageToVideoGeneralJob renders 480p, 720p or 1080p"
+    );
+    let schema = reg.get("hunyuan/hunyuan-video-i2v").unwrap();
+    match schema.params.get("fps") {
+        Some(ParamSpec::Int(f)) => {
+            assert_eq!((f.min, f.max, f.default), (Some(16), Some(30), Some(30)), "Fps is 16, 24 or 30 (default 30)");
+        }
+        other => panic!("hunyuan-video-i2v fps is {other:?}, expected Int"),
+    }
+}
+
+/// The adapter merges every allowlisted extra key into the request verbatim,
+/// and Tencent fails an undefined parameter (UnknownParameter).
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/vclm/v20240523/models.go> (2026-09-11)
+#[test]
+fn hunyuan_video_i2v_extra_allowlist_names_only_submit_image_to_video_general_job_parameters() {
+    const PARAMS: [&str; 6] = ["Image", "Prompt", "Resolution", "Fps", "LogoAdd", "LogoParam"];
+    let reg = registry();
+    let schema = reg.get("hunyuan/hunyuan-video-i2v").expect("hunyuan-video-i2v missing");
+    for key in &schema.extra_allowlist {
+        assert!(
+            PARAMS.contains(&key.as_str()),
+            "hunyuan-video-i2v allowlists {key:?}, which is not a SubmitImageToVideoGeneralJob parameter"
+        );
     }
 }

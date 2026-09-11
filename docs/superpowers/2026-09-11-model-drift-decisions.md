@@ -91,18 +91,18 @@ vendor's published prices on 2026-09-11.
 | kling | `kling-v2-5-turbo`, `kling-v2-6`, Image 2.1 | the 9/15 successors (section 1) | y | see §1 | - [x] added ✅ 2026-09-11 |
 | vidu | `viduq3-turbo`, `viduq3-pro`, `viduq2-pro-fast` | Q3 generation, plus a cheap Q2 Pro | y | $0.055/s; $0.045–0.12/s; $0.04 + $0.01/s | - [x] added ✅ 2026-09-11 |
 | pixverse | `v6`, `c1` | PixVerse's two recommended models (everything else is now "Legacy") | y | $0.35 / $0.40 for 5 s at 540p | - [x] added ✅ 2026-09-11 |
-| ideogram | `ideogram-v4` | Ideogram 4.0, the flagship | n (a small v4 branch: new path, `text_prompt`) | $0.03 / $0.06 / $0.10 | - [ ] add |
+| ideogram | `ideogram-v4` | Ideogram 4.0, the flagship | n (a small v4 branch: new path, `text_prompt`) | $0.03 / $0.06 / $0.10 | - [x] added ✅ 2026-09-11 (v4, -turbo, -quality) |
 | minimax | `MiniMax-Hailuo-2.3-Fast` | the cheapest Hailuo image-to-video | y | $0.19 / $0.32 / $0.33 | - [x] added ✅ 2026-09-11 |
-| minimax | `MiniMax-H3`, `MiniMax-H3-Max` | MiniMax's current video models; Hailuo is now "legacy" | n (V2 API) | $0.05–0.13/s | - [ ] add later |
+| minimax | `MiniMax-H3`, `MiniMax-H3-Max` | MiniMax's current video models; Hailuo is now "legacy" | n (V2 API) | $0.05–0.13/s | - [x] added ✅ 2026-09-11 (new V2 path) |
 | recraft | `recraftv4_1_vector`, `recraftv4_1_pro_vector`, `recraftv2_vector` | V4.1 SVG output (we only carry V4.1 raster) | y (no `size`) | $0.08 / $0.30 / $0.044 | - [x] added ✅ 2026-09-11 |
 | bytedance | `seedance-1-0-pro-fast-251015`, `dreamina-seedance-2-0-mini-260615`, `seedream-4-5-251128`, `seedream-5-0-lite-260128` | the successors, plus Seedance 2.0 mini | y / partial (2.0 reference roles) | $1 per 1M tokens; $3.5 per 1M; $0.04; $0.035 per image | - [x] added ✅ 2026-09-11 |
 | google | `gemini-omni-1.1-flash` | Google's default video model (GA 2026-08-27) | n (Interactions API) | ≈$0.10/s at 720p | - [ ] deferred 2026-09-11: needs a core change (see note below) |
-| hunyuan | aiart `SubmitTextToImageJob` | Hunyuan Image 3.0: newer, and 0.2 CNY vs 0.5 CNY | n (aiart service) | 0.2 CNY/image | - [ ] add or replace hunyuan-image |
+| hunyuan | aiart `SubmitTextToImageJob` | Hunyuan Image 3.0: newer, and 0.2 CNY vs 0.5 CNY | n (aiart service) | 0.2 CNY/image | - [x] added ✅ 2026-09-11 as hunyuan/hunyuan-image-3 (2.0 kept) |
 | bfl | `flux-2-max`, `flux-2-klein-9b` | FLUX.2 top tier and fast tier | y (same schema as flux-2-pro) | from $0.07/MP; from $0.015 | - [x] added ✅ 2026-09-11 |
 | stability | `sd3.5-medium` | SD 3.5 Medium on the sd3 route | y (`resolve_model` already routes it) | $0.035 | - [x] added ✅ 2026-09-11 |
 | replicate | `black-forest-labs/flux-1.1-pro` | replaces `replicate/flux-pro`: BFL retired FLUX.1 [pro] on its own API | n (one `resolve_model_version` line) | $0.04/image | - [x] added ✅ 2026-09-11 (flux-pro kept) |
 | fal | `fal-ai/flux-2` (FLUX.2 [dev]) | half the price of `fal/flux-dev`; BFL hosts no [dev] | n (one `resolve_endpoint` line; unknown ids fall back to flux/dev) | $0.012/MP | - [x] added ✅ 2026-09-11 |
-| fal | `ltx-2.3/{text,image}-to-video` or `ltx-video-13b-distilled` | successors for `fal/video`'s LTX endpoints | n (new endpoint specs; LTX-2.3 takes 6/8/10 s) | $0.08/s at 1080p; $0.04/video | - [ ] replace fal/video |
+| fal | `ltx-2.3/{text,image}-to-video` or `ltx-video-13b-distilled` | successors for `fal/video`'s LTX endpoints | n (new endpoint specs; LTX-2.3 takes 6/8/10 s) | $0.08/s at 1080p; $0.04/video | - [x] added ✅ 2026-09-11 as fal/ltx-2.3; fal/video kept |
 
 **Why Gemini Omni is deferred (investigated 2026-09-11).** Auth is not the
 problem: the Interactions API takes our `x-goog-api-key`. Neither way it
@@ -137,6 +137,14 @@ Request shape, for whoever builds it:
 - Status lives in `in_progress | queued | completed | failed | …`.
 - Sources: https://ai.google.dev/gemini-api/docs/omni and
   https://ai.google.dev/static/api/interactions.openapi.json.
+
+**Backlog round (✅ 2026-09-11).** The add-later items are done except Gemini Omni:
+`kling/kling-v3` and `kling/video-kling-v3` (Image and Video 3.0),
+`leonardo/veo3.1-fast`, `ideogram/ideogram-v4` in three speed tiers,
+`fal/ltx-2.3`, `minimax/MiniMax-H3` and `-H3-Max` on the V2 API, and
+`hunyuan/hunyuan-image-3` plus `hunyuan/hunyuan-video-i2v`. Every provider's
+weekly "new" list is now empty except google's, which still shows the
+deferred `gemini-omni-1.1-flash`.
 
 ## 4. Price drift on carried models
 

@@ -1194,6 +1194,76 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://fal.ai/docs/documentation"
   },
   {
+    "id": "fal/ltx-2.3",
+    "provider": "fal",
+    "displayName": "LTX-2.3 (Fal)",
+    "description": "Lightricks LTX-2.3 Pro text- and image-to-video with native audio, 1080p to 4K.",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 6,
+        "min": 6,
+        "max": 10
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1080p",
+          "1440p",
+          "2160p"
+        ],
+        "default": "1080p"
+      },
+      {
+        "name": "fps",
+        "kind": "int",
+        "default": 25,
+        "min": 24,
+        "max": 50
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.48
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://fal.ai/docs/documentation"
+  },
+  {
     "id": "fal/recraft-v3",
     "provider": "fal",
     "displayName": "Recraft V3 (Fal)",
@@ -1896,6 +1966,93 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://www.tencentcloud.com/document/product/1284/74915"
   },
   {
+    "id": "hunyuan/hunyuan-image-3",
+    "provider": "hunyuan",
+    "displayName": "Hunyuan Image 3.0",
+    "description": "Tencent Hunyuan Image 3.0 text-to-image with up to three reference images (async SubmitTextToImageJob on aiart).",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [
+      "2048x512",
+      "1984x512",
+      "1920x512",
+      "1856x512",
+      "1792x512",
+      "1728x512",
+      "1664x512",
+      "1600x512",
+      "1536x512",
+      "1472x576",
+      "1408x640",
+      "1344x704",
+      "1280x768",
+      "1216x832",
+      "1152x896",
+      "1088x960",
+      "1024x1024",
+      "960x1088",
+      "896x1152",
+      "832x1216",
+      "768x1280",
+      "704x1344",
+      "640x1408",
+      "576x1472",
+      "512x1536",
+      "512x1600",
+      "512x1664",
+      "512x1728",
+      "512x1792",
+      "512x1856",
+      "512x1920",
+      "512x1984",
+      "512x2048",
+      "768x1024",
+      "720x1280",
+      "1024x768",
+      "1280x720"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 3,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 3
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 8192
+    },
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 1,
+        "max": 4294967295
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.0298
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://www.tencentcloud.com/document/product/1284/74915"
+  },
+  {
     "id": "hunyuan/hunyuan-video",
     "provider": "hunyuan",
     "displayName": "Hunyuan Video",
@@ -1942,6 +2099,65 @@ export const MODELS: ModelEntry[] = [
     },
     "tags": [
       "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://www.tencentcloud.com/document/product/1284/74915"
+  },
+  {
+    "id": "hunyuan/hunyuan-video-i2v",
+    "provider": "hunyuan",
+    "displayName": "Hunyuan Video I2V",
+    "description": "Tencent Hunyuan image-to-video at 480p/720p/1080p (async SubmitImageToVideoGeneralJob on vclm).",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 200
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      },
+      {
+        "name": "fps",
+        "kind": "int",
+        "default": 30,
+        "min": 16,
+        "max": 30
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.894
+    },
+    "tags": [
       "image-to-video"
     ],
     "referenceUrl": "https://www.tencentcloud.com/document/product/1284/74915"
@@ -2205,6 +2421,224 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://developer.ideogram.ai/"
   },
   {
+    "id": "ideogram/ideogram-v4",
+    "provider": "ideogram",
+    "displayName": "Ideogram 4.0",
+    "description": "Ideogram 4.0 text-to-image, Ideogram's flagship for prompt fidelity and text rendering.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [
+      "2048x2048",
+      "1440x2880",
+      "2880x1440",
+      "1664x2496",
+      "2496x1664",
+      "1792x2240",
+      "2240x1792",
+      "1440x2560",
+      "2560x1440",
+      "1600x2560",
+      "2560x1600",
+      "1728x2304",
+      "2304x1728",
+      "1296x3168",
+      "3168x1296",
+      "1152x2944",
+      "2944x1152",
+      "1248x3328",
+      "3328x1248",
+      "1280x3072",
+      "3072x1280",
+      "1024x3072",
+      "3072x1024",
+      "1024x1024",
+      "896x1120",
+      "1120x896",
+      "864x1152",
+      "1152x864",
+      "832x1248",
+      "1248x832",
+      "800x1280",
+      "1280x800",
+      "720x1280",
+      "1280x720",
+      "720x1440",
+      "1440x720",
+      "512x1536",
+      "1536x512"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [],
+    "pricing": {
+      "baseCostUsd": 0.06
+    },
+    "tags": [
+      "text-to-image"
+    ],
+    "referenceUrl": "https://developer.ideogram.ai/"
+  },
+  {
+    "id": "ideogram/ideogram-v4-quality",
+    "provider": "ideogram",
+    "displayName": "Ideogram 4.0 Quality",
+    "description": "Ideogram 4.0 with QUALITY rendering speed.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [
+      "2048x2048",
+      "1440x2880",
+      "2880x1440",
+      "1664x2496",
+      "2496x1664",
+      "1792x2240",
+      "2240x1792",
+      "1440x2560",
+      "2560x1440",
+      "1600x2560",
+      "2560x1600",
+      "1728x2304",
+      "2304x1728",
+      "1296x3168",
+      "3168x1296",
+      "1152x2944",
+      "2944x1152",
+      "1248x3328",
+      "3328x1248",
+      "1280x3072",
+      "3072x1280",
+      "1024x3072",
+      "3072x1024",
+      "1024x1024",
+      "896x1120",
+      "1120x896",
+      "864x1152",
+      "1152x864",
+      "832x1248",
+      "1248x832",
+      "800x1280",
+      "1280x800",
+      "720x1280",
+      "1280x720",
+      "720x1440",
+      "1440x720",
+      "512x1536",
+      "1536x512"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [],
+    "pricing": {
+      "baseCostUsd": 0.1
+    },
+    "tags": [
+      "text-to-image",
+      "quality"
+    ],
+    "referenceUrl": "https://developer.ideogram.ai/"
+  },
+  {
+    "id": "ideogram/ideogram-v4-turbo",
+    "provider": "ideogram",
+    "displayName": "Ideogram 4.0 Turbo",
+    "description": "Ideogram 4.0 with TURBO rendering speed (faster, cheaper).",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [
+      "2048x2048",
+      "1440x2880",
+      "2880x1440",
+      "1664x2496",
+      "2496x1664",
+      "1792x2240",
+      "2240x1792",
+      "1440x2560",
+      "2560x1440",
+      "1600x2560",
+      "2560x1600",
+      "1728x2304",
+      "2304x1728",
+      "1296x3168",
+      "3168x1296",
+      "1152x2944",
+      "2944x1152",
+      "1248x3328",
+      "3328x1248",
+      "1280x3072",
+      "3072x1280",
+      "1024x3072",
+      "3072x1024",
+      "1024x1024",
+      "896x1120",
+      "1120x896",
+      "864x1152",
+      "1152x864",
+      "832x1248",
+      "1248x832",
+      "800x1280",
+      "1280x800",
+      "720x1280",
+      "1280x720",
+      "720x1440",
+      "1440x720",
+      "512x1536",
+      "1536x512"
+    ],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [],
+    "pricing": {
+      "baseCostUsd": 0.03
+    },
+    "tags": [
+      "text-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://developer.ideogram.ai/"
+  },
+  {
     "id": "kling/kling-v1-5",
     "provider": "kling",
     "displayName": "Kling Image v1.5",
@@ -2355,6 +2789,62 @@ export const MODELS: ModelEntry[] = [
     ],
     "pricing": {
       "baseCostUsd": 0.014
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
+  },
+  {
+    "id": "kling/kling-v3",
+    "provider": "kling",
+    "displayName": "Kling Image v3",
+    "description": "Kling Image 3.0 text-to-image and image-to-image.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "4:3",
+      "3:4",
+      "3:2",
+      "2:3",
+      "21:9"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.028
     },
     "tags": [
       "text-to-image",
@@ -2610,6 +3100,70 @@ export const MODELS: ModelEntry[] = [
     ],
     "pricing": {
       "baseCostUsd": 0.21
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
+  },
+  {
+    "id": "kling/video-kling-v3",
+    "provider": "kling",
+    "displayName": "Kling Video v3",
+    "description": "Kling 3.0 text/image-to-video with native audio, multi-shot and up to 4K.",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1"
+    ],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 3,
+        "max": 15
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.42
     },
     "tags": [
       "text-to-video",
@@ -2893,6 +3447,64 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "image-to-video",
       "premium"
+    ],
+    "referenceUrl": "https://docs.leonardo.ai/"
+  },
+  {
+    "id": "leonardo/veo3.1-fast",
+    "provider": "leonardo",
+    "displayName": "Leonardo Veo 3.1 Fast",
+    "description": "Google Veo 3.1 Fast served through Leonardo's first-party API (start-frame image-to-video).",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 9999
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 8,
+        "min": 4,
+        "max": 8
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 2.5
+    },
+    "tags": [
+      "image-to-video",
+      "fast"
     ],
     "referenceUrl": "https://docs.leonardo.ai/"
   },
@@ -3301,6 +3913,158 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image",
       "image-to-image"
+    ],
+    "referenceUrl": "https://platform.minimax.io/docs"
+  },
+  {
+    "id": "minimax/MiniMax-H3",
+    "provider": "minimax",
+    "displayName": "MiniMax H3",
+    "description": "MiniMax H3 text-to-video, image-to-video (first/last frame) and reference-to-video, up to 2K.",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "maxRefImages": 9,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 7000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 4,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "768P",
+          "2K"
+        ],
+        "default": "768P"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.4
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
+    ],
+    "referenceUrl": "https://platform.minimax.io/docs"
+  },
+  {
+    "id": "minimax/MiniMax-H3-Max",
+    "provider": "minimax",
+    "displayName": "MiniMax H3 Max",
+    "description": "MiniMax H3 Max, the fast H3 variant, text-to-video and image-to-video (first/last frame).",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 7000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "int",
+        "default": 5,
+        "min": 5,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480P",
+          "768P"
+        ],
+        "default": "768P"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.4
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "fast"
     ],
     "referenceUrl": "https://platform.minimax.io/docs"
   },

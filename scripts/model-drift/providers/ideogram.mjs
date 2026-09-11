@@ -4,20 +4,23 @@
 // and partner endpoints (ernie, z-image, fp8/distilled builds); we track the
 // documented API only.
 //
-// No model id is sent: the adapter POSTs all three litegen ids to
-// /v1/ideogram-v3/generate and varies only `rendering_speed` (omitted / TURBO /
-// QUALITY), so all three map to the generation slug in that path. The ids a
+// No model id is sent: the adapter POSTs the three 3.0 litegen ids to
+// /v1/ideogram-v3/generate and the three 4.0 ids to /v1/ideogram-v4/generate,
+// varying only `rendering_speed` (omitted / TURBO / QUALITY), so each id maps
+// to the generation slug in its path. The ids a
 // source lists are the model slugs of the text-to-image endpoints the docs'
 // "Generate Images" page offers — /v1/{model}/generate (Ideogram 3.0, 4.0) and
 // /v1/text-to-image/{model} (P-Image) — so a new generation such as
 // /v1/ideogram-v5/generate surfaces as new. The spec's `V_n` enums are not used:
 // ModelEnum only serves the legacy pre-3.0 /generate family, and its `V_4` is
 // DescribeModelVersion (the /describe captioner), not a generation endpoint.
-// A new rendering_speed (e.g. FLASH) shows up in the snapshot diff.
-// Mapping mirrors litegen-core/src/providers/image/ideogram.rs `rendering_speed`.
+// A new rendering_speed, or FLASH becoming usable on 4.0 (the spec says it
+// "currently return[s] a 400"), shows up in the snapshot diff.
+// Mapping mirrors litegen-core/src/providers/image/ideogram.rs `generation` and
+// `rendering_speed`.
 import { openapiExcerpt } from '../extract.mjs';
 
-const ENDPOINT = '/v1/ideogram-v3/generate';
+const ENDPOINTS = ['/v1/ideogram-v3/generate', '/v1/ideogram-v4/generate'];
 
 const GENERATE = [
   /^\/v1\/(?!async\/)([^/]+)\/(?:async\/)?generate(?:-transparent)?$/, // /v1/ideogram-v4/generate, …/async/generate-transparent
@@ -35,6 +38,9 @@ export default {
     'ideogram/ideogram-v3': 'ideogram-v3',
     'ideogram/ideogram-v3-turbo': 'ideogram-v3',
     'ideogram/ideogram-v3-quality': 'ideogram-v3',
+    'ideogram/ideogram-v4': 'ideogram-v4',
+    'ideogram/ideogram-v4-turbo': 'ideogram-v4',
+    'ideogram/ideogram-v4-quality': 'ideogram-v4',
   },
   sources: [
     {
@@ -42,11 +48,9 @@ export default {
       url: 'https://developer.ideogram.ai/openapi.json',
       expect: 'json',
       extract: generationModels,
-      snapshot: (spec, _body, { ours }) => openapiExcerpt(spec, { paths: [ENDPOINT], ours }),
+      snapshot: (spec, _body, { ours }) => openapiExcerpt(spec, { paths: ENDPOINTS, ours }),
     },
   ],
-  // ideogram-v4 stays unacknowledged on purpose: add later (it needs a v4
-  // request branch — new path, `text_prompt`).
   acknowledged: [
     { id: 'p-image-ideogram', reason: 'skipped 2026-09-11: P-Image is a budget tier on /v1/text-to-image/{model}; it needs its own request branch' },
   ],

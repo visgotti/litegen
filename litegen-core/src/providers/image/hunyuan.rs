@@ -15,6 +15,33 @@ use crate::types::*;
 const TC3_CONTENT_TYPE: &str = "application/json; charset=utf-8";
 const IMAGE_VERSION: &str = "2023-09-01";
 
+/// Hunyuan Image 3.0 is served by a different Tencent product than Image 2.0:
+/// aiart (`aiart.tencentcloudapi.com`, version 2022-12-29, TC3 service
+/// `aiart`). `SubmitTextToImageJob` returns `Response.JobId`;
+/// `QueryTextToImageJob` reports `JobStatusCode` 1 (queued) | 2 (running) |
+/// 4 (failed, `JobErrorMsg`) | 5 (done, `ResultImage` URLs valid for 1 h).
+/// Only this catalog id takes that path.
+///
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/aiart/v20221229/client.go>
+///   (`SubmitTextToImageJob` / `QueryTextToImageJob`: `InitBaseRequest(…, "aiart", APIVersion, …)`)
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/aiart/v20221229/models.go>
+///   (`SubmitTextToImageJobRequestParams`, `QueryTextToImageJobResponseParams`)
+const IMAGE3_MODEL_ID: &str = "hunyuan/hunyuan-image-3";
+const AIART_VERSION: &str = "2022-12-29";
+
+/// A Tencent Cloud product the adapter calls: its TC3 service name (also the
+/// `<service>.tencentcloudapi.com` host prefix) and its API version.
+#[derive(Clone, Copy)]
+struct Product {
+    service: &'static str,
+    version: &'static str,
+}
+
+/// Hunyuan Image 2.0 (`SubmitHunyuanImageJob`).
+const HUNYUAN: Product = Product { service: "hunyuan", version: IMAGE_VERSION };
+/// Hunyuan Image 3.0 (`SubmitTextToImageJob`).
+const AIART: Product = Product { service: "aiart", version: AIART_VERSION };
+
 /// Tencent Hunyuan image generation provider.
 ///
 /// RPC-style Tencent Cloud API: POST to `/` with the action in the
@@ -46,12 +73,14 @@ impl HunyuanImageProvider {
         }
     }
 
-    fn endpoint(&self) -> String {
+    /// The configured `api_base` (tests, proxies) wins for every product;
+    /// otherwise the product's own `https://<service>.tencentcloudapi.com/`.
+    fn endpoint(&self, product: Product) -> String {
         self.config
             .as_ref()
             .and_then(|c| c.api_base.as_deref())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| "https://hunyuan.tencentcloudapi.com/".to_string())
+            .unwrap_or_else(|| format!("https://{}.tencentcloudapi.com/", product.service))
     }
 
     fn creds(&self) -> Result<ProviderCredentials, ProviderError> {
@@ -71,18 +100,25 @@ impl HunyuanImageProvider {
     }
 
     /// Issue one TC3-signed RPC call (POST `/`, action via X-TC-Action header).
-    async fn rpc(&self, creds: &ProviderCredentials, region: &str, action: &str, body: &Value) -> Result<Value, ProviderError> {
+    async fn rpc(
+        &self,
+        creds: &ProviderCredentials,
+        region: &str,
+        product: Product,
+        action: &str,
+        body: &Value,
+    ) -> Result<Value, ProviderError> {
         let body_bytes = serde_json::to_vec(body).map_err(|e| ProviderError::InvalidRequest(e.to_string()))?;
-        let endpoint = self.endpoint();
+        let endpoint = self.endpoint(product);
         let url = reqwest::Url::parse(&endpoint).map_err(|e| ProviderError::InvalidRequest(format!("bad hunyuan url: {e}")))?;
-        let signed = tc3::sign(creds, "hunyuan", &url, TC3_CONTENT_TYPE, &body_bytes)?;
+        let signed = tc3::sign(creds, product.service, &url, TC3_CONTENT_TYPE, &body_bytes)?;
 
         let mut req = self
             .client
             .post(url)
             .header("Content-Type", TC3_CONTENT_TYPE)
             .header("X-TC-Action", action)
-            .header("X-TC-Version", IMAGE_VERSION)
+            .header("X-TC-Version", product.version)
             .header("X-TC-Region", region);
         for (k, v) in &signed {
             req = req.header(k, v);
@@ -145,6 +181,103 @@ impl HunyuanImageProvider {
             })?
             .to_vec())
     }
+
+    /// Hunyuan Image 3.0: `SubmitTextToImageJob` on aiart, then poll
+    /// `QueryTextToImageJob`. The request takes exactly Prompt, Images,
+    /// Resolution, Seed, LogoAdd, LogoParam and Revise — no NegativePrompt,
+    /// which the catalog row does not advertise.
+    async fn generate_image3(
+        &self,
+        creds: &ProviderCredentials,
+        region: &str,
+        base: &BaseGenerationRequest,
+        extras: &ImageExtras,
+        materialized: &MaterializedRequest,
+    ) -> Result<GenerationOutput, ProviderError> {
+        let mut submit = json!({ "Prompt": base.prompt });
+        if let Some(size) = extras.size.as_deref() {
+            // Resolution is `W:H`; the validator accepts `WxH` or `WXH`.
+            submit["Resolution"] = Value::String(size.replace(['x', 'X'], ":"));
+        }
+        if let Some(seed) = base.seed {
+            // The catalog bounds the seed to Tencent's 1..=4294967295.
+            submit["Seed"] = Value::Number(seed.into());
+        }
+        // Images: "参考图，最多三张图 - Base64 或 Url" — a flat list of strings,
+        // each either raw base64 or a URL.
+        let images: Vec<Value> = materialized
+            .refs
+            .iter()
+            .filter_map(|r| match &r.form {
+                MaterializedRefForm::Base64(b64) => Some(Value::String(b64.clone())),
+                MaterializedRefForm::Url(u) => Some(Value::String(u.clone())),
+                _ => None,
+            })
+            .collect();
+        if !images.is_empty() {
+            submit["Images"] = Value::Array(images);
+        }
+        if let Some(Value::Object(map)) = &extras.extra {
+            if let Some(obj) = submit.as_object_mut() {
+                for (k, v) in map {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        let submit_resp = self.rpc(creds, region, AIART, "SubmitTextToImageJob", &submit).await?;
+        let job_id = submit_resp["Response"]["JobId"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ProviderError::RequestFailed {
+                message: "Hunyuan Image 3.0 submit missing Response.JobId".to_string(),
+                status_code: None,
+                provider_error: Some(submit_resp.clone()),
+                retryable: false,
+            })?;
+
+        // JobStatusCode: 1 queued, 2 running, 4 failed, 5 done. Prompt
+        // rewriting (Revise, on by default) adds about 20 s.
+        let max_attempts = 90;
+        for _ in 0..max_attempts {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let q = self.rpc(creds, region, AIART, "QueryTextToImageJob", &json!({ "JobId": job_id })).await?;
+            let resp = &q["Response"];
+            let non_empty = |k: &str| resp[k].as_str().filter(|s| !s.is_empty()).map(String::from);
+            match resp["JobStatusCode"].as_str() {
+                Some("5") => {
+                    // A finished job with no image will never produce one.
+                    let image_url = resp["ResultImage"][0]
+                        .as_str()
+                        .filter(|u| !u.is_empty())
+                        .ok_or_else(|| ProviderError::RequestFailed {
+                            message: "Hunyuan Image 3.0 job is done but returned no ResultImage".to_string(),
+                            status_code: None,
+                            provider_error: Some(q.clone()),
+                            retryable: false,
+                        })?;
+                    let bytes = self.fetch_image_bytes(image_url).await?;
+                    let mut metadata = HashMap::new();
+                    metadata.insert("job_id".to_string(), Value::String(job_id.to_string()));
+                    return Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata });
+                }
+                Some("4") => {
+                    let why = non_empty("JobErrorMsg")
+                        .or_else(|| non_empty("JobErrorCode"))
+                        .or_else(|| non_empty("JobStatusMsg"))
+                        .unwrap_or_else(|| "unknown error".to_string());
+                    return Err(ProviderError::RequestFailed {
+                        message: format!("Hunyuan Image 3.0 job failed: {why}"),
+                        status_code: None,
+                        provider_error: Some(q.clone()),
+                        retryable: false,
+                    });
+                }
+                _ => continue,
+            }
+        }
+        Err(ProviderError::Timeout { timeout_ms: max_attempts * 2000 })
+    }
 }
 
 impl Default for HunyuanImageProvider {
@@ -174,13 +307,16 @@ impl ImageProvider for HunyuanImageProvider {
 
     async fn generate(
         &self,
-        _model: &ModelSchema,
+        model: &ModelSchema,
         base: &BaseGenerationRequest,
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let creds = self.creds()?;
         let region = self.region(&creds);
+        if model.id == IMAGE3_MODEL_ID {
+            return self.generate_image3(&creds, &region, base, extras, materialized).await;
+        }
 
         let mut submit = json!({ "Prompt": base.prompt });
         if let Some(np) = base.negative_prompt.as_deref() {
@@ -210,7 +346,7 @@ impl ImageProvider for HunyuanImageProvider {
             }
         }
 
-        let submit_resp = self.rpc(&creds, &region, "SubmitHunyuanImageJob", &submit).await?;
+        let submit_resp = self.rpc(&creds, &region, HUNYUAN, "SubmitHunyuanImageJob", &submit).await?;
         let job_id = submit_resp["Response"]["JobId"].as_str().ok_or_else(|| ProviderError::RequestFailed {
             message: "Hunyuan submit missing Response.JobId".to_string(),
             status_code: None,
@@ -222,7 +358,7 @@ impl ImageProvider for HunyuanImageProvider {
         let max_attempts = 90;
         for _ in 0..max_attempts {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            let q = self.rpc(&creds, &region, "QueryHunyuanImageJob", &json!({ "JobId": job_id })).await?;
+            let q = self.rpc(&creds, &region, HUNYUAN, "QueryHunyuanImageJob", &json!({ "JobId": job_id })).await?;
             let resp = &q["Response"];
             match resp["JobStatusCode"].as_str() {
                 Some("5") => {
@@ -279,7 +415,7 @@ impl ImageProvider for HunyuanImageProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::materializer::Cleanup;
+    use crate::proxy::materializer::{Cleanup, MaterializedRef};
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -417,5 +553,176 @@ mod tests {
             .expect("submit request");
         let body: Value = serde_json::from_slice(&submit.body).unwrap();
         assert_eq!(body["Resolution"], "768:1024");
+    }
+
+    // ─── Hunyuan Image 3.0 (aiart SubmitTextToImageJob) ─────────────────────
+
+    const IMAGE3: &str = "hunyuan/hunyuan-image-3";
+
+    fn requests_for<'a>(received: &'a [wiremock::Request], action: &str) -> Vec<&'a wiremock::Request> {
+        received
+            .iter()
+            .filter(|r| r.headers.get("x-tc-action").map(|v| v == action).unwrap_or(false))
+            .collect()
+    }
+
+    /// Mount SubmitTextToImageJob (only with aiart's version header, so a
+    /// request sent as Image 2.0's action or version gets wiremock's 404).
+    async fn mount_image3_submit(server: &MockServer, response: Value) {
+        Mock::given(method("POST"))
+            .and(header("x-tc-action", "SubmitTextToImageJob"))
+            .and(header("x-tc-version", "2022-12-29"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "Response": response })))
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_image3_query(server: &MockServer, response: Value) {
+        Mock::given(method("POST"))
+            .and(header("x-tc-action", "QueryTextToImageJob"))
+            .and(header("x-tc-version", "2022-12-29"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "Response": response })))
+            .mount(server)
+            .await;
+    }
+
+    /// With no api_base, each product goes to its own host: Image 2.0 to
+    /// hunyuan, Image 3.0 to aiart.
+    #[test]
+    fn default_endpoints_are_per_product() {
+        let p = HunyuanImageProvider::new();
+        assert_eq!(p.endpoint(HUNYUAN), "https://hunyuan.tencentcloudapi.com/");
+        assert_eq!(p.endpoint(AIART), "https://aiart.tencentcloudapi.com/");
+    }
+
+    #[tokio::test]
+    async fn image3_submits_text_to_image_job_on_aiart_and_polls_until_done() {
+        let server = MockServer::start().await;
+        let image_server = MockServer::start().await;
+        let image_url = format!("{}/h3.png", image_server.uri());
+        mount_image3_submit(&server, json!({ "JobId": "h3-1", "RequestId": "r1" })).await;
+        // First poll: running (JobStatusCode 2) — must keep polling.
+        Mock::given(method("POST"))
+            .and(header("x-tc-action", "QueryTextToImageJob"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Response": { "JobStatusCode": "2", "JobStatusMsg": "处理中", "ResultImage": [] }
+            })))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        mount_image3_query(&server, json!({
+            "JobStatusCode": "5", "JobStatusMsg": "处理完成", "JobErrorCode": "", "JobErrorMsg": "",
+            "ResultImage": [image_url.clone()], "ResultDetails": ["Success"]
+        }))
+        .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"HUNYUAN3PNG".to_vec()))
+            .mount(&image_server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema(IMAGE3);
+        let mut base = make_base("雨中, 竹林, 小路", IMAGE3);
+        base.seed = Some(4_294_967_295);
+        let mut extras = make_extras();
+        extras.size = Some("1280x720".to_string());
+        let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+
+        let out = provider.generate(&schema, &base, &extras, &materialized).await.expect("generate");
+        assert_eq!(out.data, b"HUNYUAN3PNG");
+        assert_eq!(out.metadata.get("job_id"), Some(&json!("h3-1")));
+
+        let received = server.received_requests().await.unwrap();
+        assert!(requests_for(&received, "SubmitHunyuanImageJob").is_empty(), "Image 3.0 must not call Image 2.0's action");
+        assert_eq!(requests_for(&received, "QueryTextToImageJob").len(), 2, "a running job is polled again");
+        let submit = requests_for(&received, "SubmitTextToImageJob")[0];
+        let auth = submit.headers.get("authorization").unwrap().to_str().unwrap();
+        assert!(auth.starts_with("TC3-HMAC-SHA256 Credential=AKIDtest/"), "auth: {auth}");
+        assert!(auth.contains("/aiart/tc3_request"), "signed for the aiart service: {auth}");
+        let body: Value = serde_json::from_slice(&submit.body).unwrap();
+        assert_eq!(
+            body,
+            json!({ "Prompt": "雨中, 竹林, 小路", "Resolution": "1280:720", "Seed": 4_294_967_295u64 }),
+            "text-only request carries no Images, NegativePrompt or ContentImage"
+        );
+        let query: Value = serde_json::from_slice(&requests_for(&received, "QueryTextToImageJob")[0].body).unwrap();
+        assert_eq!(query, json!({ "JobId": "h3-1" }));
+    }
+
+    #[tokio::test]
+    async fn image3_sends_reference_images_as_the_images_list() {
+        let server = MockServer::start().await;
+        // Fail the submit so generate() returns without polling.
+        mount_image3_submit(&server, json!({ "Error": { "Code": "InvalidParameterValue", "Message": "stop" } })).await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema(IMAGE3);
+        let base = make_base("a fox in the style of the references", IMAGE3);
+        let mut extras = make_extras();
+        extras.size = None;
+        let materialized = MaterializedRequest {
+            refs: vec![
+                MaterializedRef { role: "init".to_string(), form: MaterializedRefForm::Base64("aW1n".to_string()) },
+                MaterializedRef { role: "init".to_string(), form: MaterializedRefForm::Url("https://x/ref.png".to_string()) },
+            ],
+            cleanup: Cleanup::empty(),
+        };
+
+        let err = provider.generate(&schema, &base, &extras, &materialized).await.unwrap_err();
+        assert!(err.to_string().contains("stop"), "vendor error surfaces: {err}");
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests_for(&received, "SubmitTextToImageJob")[0].body).unwrap();
+        assert_eq!(body["Images"], json!(["aW1n", "https://x/ref.png"]));
+        assert!(body.get("ContentImage").is_none(), "ContentImage is Image 2.0's field: {body}");
+        assert!(body.get("Resolution").is_none(), "no size → Tencent's default 1024:1024: {body}");
+    }
+
+    #[tokio::test]
+    async fn image3_failed_job_reports_the_job_error_message() {
+        let server = MockServer::start().await;
+        mount_image3_submit(&server, json!({ "JobId": "h3-2" })).await;
+        mount_image3_query(&server, json!({
+            "JobStatusCode": "4", "JobStatusMsg": "处理失败",
+            "JobErrorCode": "OperationDenied.ImageIllegalDetected", "JobErrorMsg": "图片包含违规内容", "ResultImage": []
+        }))
+        .await;
+
+        let provider = make_provider(&server.uri());
+        let err = provider
+            .generate(&ref_schema(IMAGE3), &make_base("x", IMAGE3), &make_extras(), &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("图片包含违规内容"), "JobErrorMsg surfaces: {err}");
+    }
+
+    #[tokio::test]
+    async fn image3_done_without_a_result_image_is_an_error() {
+        let server = MockServer::start().await;
+        mount_image3_submit(&server, json!({ "JobId": "h3-3" })).await;
+        mount_image3_query(&server, json!({ "JobStatusCode": "5", "JobStatusMsg": "处理完成", "ResultImage": [""] })).await;
+
+        let provider = make_provider(&server.uri());
+        let err = provider
+            .generate(&ref_schema(IMAGE3), &make_base("x", IMAGE3), &make_extras(), &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no ResultImage"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn image3_submit_without_a_job_id_is_an_error() {
+        let server = MockServer::start().await;
+        mount_image3_submit(&server, json!({ "RequestId": "r1" })).await;
+
+        let provider = make_provider(&server.uri());
+        let err = provider
+            .generate(&ref_schema(IMAGE3), &make_base("x", IMAGE3), &make_extras(), &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("JobId"), "{err}");
+        let received = server.received_requests().await.unwrap();
+        assert!(requests_for(&received, "QueryTextToImageJob").is_empty(), "nothing to poll");
     }
 }
