@@ -43,6 +43,8 @@
 
 ### Task 1: `MediaType::Model3d` + 3D capability flags + `ParamSpec` labels
 
+**Status:** ✅ DONE (2026-08-20, d5011ec) — task review clean
+
 **Files:**
 - Modify: `litegen-core/src/capabilities/schema.rs`
 - Modify: `litegen-core/src/types/mod.rs:217-220` (`MediaType`), `:227-243` (`ModelCapabilities`)
@@ -53,7 +55,7 @@
 - Consumes: nothing.
 - Produces: `capabilities::MediaType::Model3d`; `types::MediaType::Model3d`; `ModelCapabilityFlags { text_to_3d, image_to_3d, multiview_to_3d }`; `ModelCapabilities { supports_text_to_3d, supports_image_to_3d, supports_multiview_to_3d, supports_pbr, supports_rig, supports_texture, output_formats: Vec<String>, max_polycount: Option<u32> }`; `label: Option<String>` / `description: Option<String>` on every `ParamSpec*` payload struct; extended `KNOWN_PARAMS`.
 
-- [ ] **Step 1: Write the failing wire-format test**
+- [x] DONE 2026-08-20 **Step 1: Write the failing wire-format test**
 
 Append inside `mod tests` in `litegen-core/tests/unit_tests.rs`:
 
@@ -117,12 +119,12 @@ fn known_params_include_the_3d_knobs() {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] DONE 2026-08-20 **Step 2: Run the tests to verify they fail**
 
 Run: `cd litegen-core && cargo test --test unit_tests model3d 2>&1 | tail -20`
 Expected: FAIL — `no variant named Model3d`, `no field text_to_3d`, `no field label`.
 
-- [ ] **Step 3: Add the enum variant and flags in `capabilities/schema.rs`**
+- [x] DONE 2026-08-20 **Step 3: Add the enum variant and flags in `capabilities/schema.rs`**
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -148,7 +150,7 @@ pub struct ModelCapabilityFlags {
 }
 ```
 
-- [ ] **Step 4: Add `label`/`description` to every `ParamSpec` payload struct**
+- [x] DONE 2026-08-20 **Step 4: Add `label`/`description` to every `ParamSpec` payload struct**
 
 Add these two lines to **each** of `ParamSpecBool`, `ParamSpecInt`, `ParamSpecFloat`, `ParamSpecString`, `ParamSpecAspectRatio`, `ParamSpecSeed`, `SizeSpecFreeform`, `SizeSpecEnum` in `capabilities/schema.rs`:
 
@@ -159,7 +161,7 @@ Add these two lines to **each** of `ParamSpecBool`, `ParamSpecInt`, `ParamSpecFl
 
 `ParamSpecSeed` currently derives `Copy` — remove `Copy` from its derive list (a `String` field is not `Copy`) and fix any resulting move errors by cloning. `ParamSpecAspectRatio`, `SizeSpecFreeform`, `SizeSpecEnum` have no `Default` derive; leave their derives otherwise unchanged.
 
-- [ ] **Step 5: Extend `KNOWN_PARAMS`**
+- [x] DONE 2026-08-20 **Step 5: Extend `KNOWN_PARAMS`**
 
 ```rust
 pub const KNOWN_PARAMS: &[&str] = &[
@@ -187,7 +189,7 @@ pub const KNOWN_PARAMS: &[&str] = &[
 ];
 ```
 
-- [ ] **Step 6: Add the `types::MediaType` variant and the 3D `ModelCapabilities` fields**
+- [x] DONE 2026-08-20 **Step 6: Add the `types::MediaType` variant and the 3D `ModelCapabilities` fields**
 
 In `litegen-core/src/types/mod.rs`:
 
@@ -223,7 +225,7 @@ and append to `ModelCapabilities` (all additive, all defaulted so existing image
     pub max_polycount: Option<u32>,
 ```
 
-- [ ] **Step 7: Let the compiler find every match arm and struct literal**
+- [x] DONE 2026-08-20 **Step 7: Let the compiler find every match arm and struct literal**
 
 Run: `cd litegen-core && cargo build 2>&1 | grep -E "^error" -A 8 | head -60`
 
@@ -283,7 +285,7 @@ fn extract_max_polycount(s: &crate::capabilities::ModelSchema) -> Option<u32> {
 
 `stability.rs:620` builds a `ModelCapabilities` literal — add `..Default::default()` only if the struct derives `Default`; it does not, so spell out the eight new fields as `false` / `Vec::new()` / `None`.
 
-- [ ] **Step 8: Run the tests to verify they pass**
+- [x] DONE 2026-08-20 **Step 8: Run the tests to verify they pass**
 
 Run: `cd litegen-core && cargo test --test unit_tests model3d 2>&1 | tail -20`
 Expected: PASS (4 tests).
@@ -291,7 +293,7 @@ Expected: PASS (4 tests).
 Run: `cd litegen-core && cargo test 2>&1 | tail -20`
 Expected: no regressions.
 
-- [ ] **Step 9: Commit**
+- [x] DONE 2026-08-20 **Step 9: Commit**
 
 ```bash
 git add litegen-core/src/capabilities/schema.rs litegen-core/src/types/mod.rs \
@@ -305,6 +307,8 @@ git push origin master
 
 ### Task 2: `Model3dAsset` + request/response types + OpenAPI registration
 
+**Status:** ✅ DONE (2026-08-20, 5a85adb) — task review clean
+
 **Files:**
 - Modify: `litegen-core/src/types/mod.rs` (after `VideoGenerationResponse`, ~line 143)
 - Modify: `litegen-core/src/api/openapi.rs` (`components(schemas(...))`)
@@ -314,7 +318,7 @@ git push origin master
 - Consumes: `MediaType::Model3d`, `GenerationStatus`, `UsageInfo` (Task 1 / existing).
 - Produces: `types::Model3dAssetKind`, `types::Model3dAsset`, `types::Model3dGenerationRequest`, `types::Model3dGenerationResponse`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] DONE 2026-08-20 **Step 1: Write the failing test**
 
 Append to `mod tests` in `litegen-core/tests/unit_tests.rs`:
 
@@ -391,12 +395,12 @@ fn model3d_response_omits_empty_assets_and_keeps_progress() {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] DONE 2026-08-20 **Step 2: Run to verify it fails**
 
 Run: `cd litegen-core && cargo test --test unit_tests model3d_ 2>&1 | tail -20`
 Expected: FAIL — `cannot find type Model3dGenerationRequest`.
 
-- [ ] **Step 3: Add the types**
+- [x] DONE 2026-08-20 **Step 3: Add the types**
 
 Insert into `litegen-core/src/types/mod.rs` immediately after the `VideoGenerationResponse` block (before `// ─── Shared Types ───`):
 
@@ -481,7 +485,7 @@ impl Model3dGenerationResponse {
 }
 ```
 
-- [ ] **Step 4: Register the schemas with utoipa**
+- [x] DONE 2026-08-20 **Step 4: Register the schemas with utoipa**
 
 In `litegen-core/src/api/openapi.rs`, inside `components(schemas(`, after `crate::types::VideoGenerationResponse,`:
 
@@ -492,12 +496,12 @@ In `litegen-core/src/api/openapi.rs`, inside `components(schemas(`, after `crate
         crate::types::Model3dAssetKind,
 ```
 
-- [ ] **Step 5: Run to verify it passes**
+- [x] DONE 2026-08-20 **Step 5: Run to verify it passes**
 
 Run: `cd litegen-core && cargo test --test unit_tests model3d 2>&1 | tail -20`
 Expected: PASS (7 tests total across Tasks 1–2).
 
-- [ ] **Step 6: Commit**
+- [x] DONE 2026-08-20 **Step 6: Commit**
 
 ```bash
 git add litegen-core/src/types/mod.rs litegen-core/src/api/openapi.rs litegen-core/tests/unit_tests.rs
@@ -509,6 +513,8 @@ git push origin master
 
 ### Task 3: `Model3dProvider` trait, extras, handle, and poll result
 
+**Status:** ✅ DONE (2026-08-20, 65e4c0d) — task review clean
+
 **Files:**
 - Modify: `litegen-core/src/providers/mod.rs` (after `VideoGenerationPollResult`, ~line 340)
 - Create: `litegen-core/src/providers/model3d/mod.rs`
@@ -519,7 +525,7 @@ git push origin master
 - Consumes: `types::{Model3dGenerationRequest, Model3dAsset, GenerationStatus}`, `capabilities::ModelSchema`, `proxy::materializer::MaterializedRequest`, `ProviderInstanceConfig`, `ProviderError`, `CostEstimate`, `HealthCheckResult`.
 - Produces: `providers::{Model3dProvider, Model3dExtras, Model3dGenerationHandle, Model3dGenerationPollResult, Model3dFile}`.
 
-- [ ] **Step 1: Add the trait and its data types**
+- [x] DONE 2026-08-20 **Step 1: Add the trait and its data types**
 
 Append to `litegen-core/src/providers/mod.rs`, immediately after the `VideoGenerationPollResult` struct:
 
@@ -618,7 +624,7 @@ pub trait Model3dProvider: Send + Sync {
 }
 ```
 
-- [ ] **Step 2: Create the module root**
+- [x] DONE 2026-08-20 **Step 2: Create the module root**
 
 `litegen-core/src/providers/model3d/mod.rs`:
 
@@ -634,7 +640,7 @@ pub mod mock;
 
 Add `pub mod model3d;` to `litegen-core/src/providers/mod.rs` alongside `pub mod video;`.
 
-- [ ] **Step 3: Verify it compiles**
+- [x] DONE 2026-08-20 **Step 3: Verify it compiles**
 
 Because `glb` and `mock` do not exist yet, create them as empty placeholders for this step only:
 
@@ -644,7 +650,7 @@ cargo build 2>&1 | tail -20
 ```
 Expected: builds clean (warnings about unused types are fine).
 
-- [ ] **Step 4: Commit**
+- [x] DONE 2026-08-20 **Step 4: Commit**
 
 ```bash
 git add litegen-core/src/providers/mod.rs litegen-core/src/providers/model3d/
@@ -656,6 +662,8 @@ git push origin master
 
 ### Task 4: `glb.rs` — a real glTF 2.0 binary writer
 
+**Status:** ✅ DONE (2026-08-27, 80099ce + ad56a1f) — task review clean
+
 **Files:**
 - Create: `litegen-core/src/providers/model3d/glb.rs` (replacing the Task 3 placeholder)
 
@@ -665,7 +673,7 @@ git push origin master
 
 **Why it must be real bytes:** aipix's contract §6 calls out that the video mock's `https://example.com/...` placeholder is non-downloadable and forced a bundled fallback on their side. A 3D mock that returns a URL nothing can load repeats that mistake, and the acceptance checklist requires the mesh to load in three.js `GLTFLoader`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] DONE 2026-08-27 **Step 1: Write the failing test**
 
 Create `litegen-core/src/providers/model3d/glb.rs` containing only its test module for now:
 
@@ -746,12 +754,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] DONE 2026-08-27 **Step 2: Run to verify it fails**
 
 Run: `cd litegen-core && cargo test glb:: 2>&1 | tail -20`
 Expected: FAIL — `cannot find function generate_cube_glb`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] DONE 2026-08-27 **Step 3: Write the implementation**
 
 Prepend to `litegen-core/src/providers/model3d/glb.rs`:
 
@@ -887,12 +895,12 @@ fn pad_to_4(buf: &mut Vec<u8>, filler: u8) {
 }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] DONE 2026-08-27 **Step 4: Run to verify it passes**
 
 Run: `cd litegen-core && cargo test glb:: 2>&1 | tail -20`
 Expected: PASS (5 tests).
 
-- [ ] **Step 5: Verify the bytes load in a real glTF parser**
+- [x] DONE 2026-08-27 **Step 5: Verify the bytes load in a real glTF parser**
 
 Run:
 ```bash
@@ -903,7 +911,7 @@ const {execSync}=require("child_process");
 ```
 Then confirm visually in Task 15's Playwright run, which loads the mock GLB through `<model-viewer>` (three.js `GLTFLoader` under the hood). Note in the commit message that byte-level validity is unit-tested and loader acceptance is covered by the Playwright spec.
 
-- [ ] **Step 6: Commit**
+- [x] DONE 2026-08-27 **Step 6: Commit**
 
 ```bash
 git add litegen-core/src/providers/model3d/glb.rs
@@ -915,6 +923,8 @@ git push origin master
 
 ### Task 5: Mock 3D provider + `models/mock.yaml` entries
 
+**Status:** ✅ DONE (2026-08-27, b73e504) — task review clean
+
 **Files:**
 - Create: `litegen-core/src/providers/model3d/mock.rs` (replacing the Task 3 placeholder)
 - Modify: `models/mock.yaml`
@@ -925,7 +935,7 @@ git push origin master
 
 **Model id note:** `mock/mesh-3d` deliberately matches the id aipix already seeds locally (`apps/api/src/modules/seed/seed.service.ts`), so aipix's `mock/*` short-circuit can be deleted rather than re-pointed.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] DONE 2026-08-27 **Step 1: Write the failing tests**
 
 Create `litegen-core/src/providers/model3d/mock.rs` with only its test module:
 
@@ -1081,12 +1091,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] DONE 2026-08-27 **Step 2: Run to verify it fails**
 
 Run: `cd litegen-core && cargo test model3d::mock 2>&1 | tail -20`
 Expected: FAIL — `cannot find type MockModel3dProvider`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] DONE 2026-08-27 **Step 3: Write the implementation**
 
 Prepend to `litegen-core/src/providers/model3d/mock.rs`:
 
@@ -1288,12 +1298,12 @@ If `generate_visual_image_png` reports dimensions other than 512×512, correct t
 
 If `MaterializedRequest` has no `Default` impl, add `#[derive(Default)]` to it in `proxy/materializer.rs` (all its fields are collections/options) rather than hand-building one in each test.
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] DONE 2026-08-27 **Step 4: Run to verify it passes**
 
 Run: `cd litegen-core && cargo test model3d:: 2>&1 | tail -20`
 Expected: PASS (5 mock tests + 5 glb tests).
 
-- [ ] **Step 5: Add the mock model YAML entries**
+- [x] DONE 2026-08-27 **Step 5: Add the mock model YAML entries**
 
 Append to the `models:` list in `models/mock.yaml`:
 
@@ -1387,14 +1397,14 @@ Append to the `models:` list in `models/mock.yaml`:
     tags: [mock, test]
 ```
 
-- [ ] **Step 6: Verify the YAML loads**
+- [x] DONE 2026-08-27 **Step 6: Verify the YAML loads**
 
 Run: `cd litegen-core && cargo test capabilities 2>&1 | tail -20`
 Expected: PASS — the loader accepts every param key (they are in `KNOWN_PARAMS` from Task 1) and `media_type: model3d` deserializes.
 
 If the loader rejects `label`/`description` inside a param, the `ParamSpec*` structs from Task 1 Step 4 are missing them — fix there, not here.
 
-- [ ] **Step 7: Commit**
+- [x] DONE 2026-08-27 **Step 7: Commit**
 
 ```bash
 git add litegen-core/src/providers/model3d/mock.rs models/mock.yaml
@@ -1406,6 +1416,8 @@ git push origin master
 
 ### Task 6: Registry wiring
 
+**Status:** ✅ DONE (2026-08-27, 331831f) — task review clean
+
 **Files:**
 - Modify: `litegen-core/src/proxy/registry.rs` — struct field, `register_provider`, `build_model3d_provider`, `MODEL3D_PROVIDERS`, `provider_catalog`, accessors, test helper
 - Test: `litegen-core/src/proxy/registry.rs` (`mod tests`, extend `provider_catalog_covers_registry` + a new test)
@@ -1414,7 +1426,7 @@ git push origin master
 - Consumes: `Model3dProvider`, `MockModel3dProvider` (Tasks 3, 5).
 - Produces: `ProviderRegistry::{model3d_provider_for, model3d_provider_for_request, get_model3d_provider, register_mock_model3d}`; `registry::MODEL3D_PROVIDERS`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] DONE 2026-08-27 **Step 1: Write the failing tests**
 
 Append inside `mod tests` in `litegen-core/src/proxy/registry.rs`:
 
@@ -1455,12 +1467,12 @@ Append inside `mod tests` in `litegen-core/src/proxy/registry.rs`:
     }
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] DONE 2026-08-27 **Step 2: Run to verify it fails**
 
 Run: `cd litegen-core && cargo test proxy::registry 2>&1 | tail -20`
 Expected: FAIL — `cannot find value MODEL3D_PROVIDERS`.
 
-- [ ] **Step 3: Add the field, factory, and const**
+- [x] DONE 2026-08-27 **Step 3: Add the field, factory, and const**
 
 In `litegen-core/src/proxy/registry.rs`:
 
@@ -1504,7 +1516,7 @@ fn build_model3d_provider(
 pub const MODEL3D_PROVIDERS: &[&str] = &["mock"];
 ```
 
-- [ ] **Step 4: Wire `register_provider` and the accessors**
+- [x] DONE 2026-08-27 **Step 4: Wire `register_provider` and the accessors**
 
 Extend `register_provider`:
 ```rust
@@ -1577,7 +1589,7 @@ Add the accessors next to their video equivalents:
     }
 ```
 
-- [ ] **Step 5: Extend the catalog**
+- [x] DONE 2026-08-27 **Step 5: Extend the catalog**
 
 In `provider_catalog()`, widen the name union and the modality list:
 ```rust
@@ -1616,14 +1628,14 @@ Also extend the existing `provider_catalog_covers_registry` test's `builds` expr
         }
 ```
 
-- [ ] **Step 6: Run to verify it passes**
+- [x] DONE 2026-08-27 **Step 6: Run to verify it passes**
 
 Run: `cd litegen-core && cargo test proxy::registry 2>&1 | tail -20`
 Expected: PASS.
 
 The pre-existing `assert_eq!(bedrock.modalities, vec!["image".to_string(), "video".to_string()])` still holds (bedrock has no 3D arm). If any catalog assertion now fails, the modality push order is wrong — fix the order, do not relax the assertion.
 
-- [ ] **Step 7: Commit**
+- [x] DONE 2026-08-27 **Step 7: Commit**
 
 ```bash
 git add litegen-core/src/proxy/registry.rs
@@ -1634,6 +1646,8 @@ git push origin master
 ---
 
 ### Task 7: 3D asset storage — absolute URLs, explicit keys, local fallback
+
+**Status:** ✅ DONE (2026-08-27, b4a44d2) — task review clean
 
 **Files:**
 - Modify: `litegen-core/src/proxy/storage.rs`
@@ -1647,7 +1661,7 @@ git push origin master
 
 **Why a new local store:** `LocalStorage::put` returns `local://{key}` and `S3Store::store` infers `.png` from a content-type switch. Neither can satisfy "every asset URL is absolute and downloads a `.glb`". `LocalModel3dStorage` keeps bytes in-process and returns `{public_base_url}/v1/models3d/assets/{key}`, which the new route serves.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] DONE 2026-08-27 **Step 1: Write the failing tests**
 
 Append to `litegen-core/src/proxy/storage.rs`:
 
@@ -1721,12 +1735,12 @@ mod model3d_storage_tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] DONE 2026-08-27 **Step 2: Run to verify it fails**
 
 Run: `cd litegen-core && cargo test model3d_storage 2>&1 | tail -20`
 Expected: FAIL — `cannot find function model3d_asset_key`.
 
-- [ ] **Step 3: Implement the store**
+- [x] DONE 2026-08-27 **Step 3: Implement the store**
 
 Append to `litegen-core/src/proxy/storage.rs` (before the test module):
 
@@ -1814,7 +1828,7 @@ pub fn build_model3d_store(config: &ImageStorageConfig, public_base_url: &str) -
 }
 ```
 
-- [ ] **Step 4: Add `public_base_url` to `ServerConfig`**
+- [x] DONE 2026-08-27 **Step 4: Add `public_base_url` to `ServerConfig`**
 
 In `litegen-core/src/config/mod.rs`:
 
@@ -1851,7 +1865,7 @@ If `AppConfig` has a manual `Serialize` impl (it does — see `mod.rs:579`), add
 
 Add the key to `litegen.example.yaml` under `server:` with a comment.
 
-- [ ] **Step 5: Add the asset-serving route**
+- [x] DONE 2026-08-27 **Step 5: Add the asset-serving route**
 
 In `litegen-core/src/api/handlers/mod.rs`, next to `get_mock_video_bytes`:
 
@@ -1883,7 +1897,7 @@ Register it in the route table next to `/mock/video/{id}` — note the wildcard 
         .route("/v1/models3d/assets/{*key}", get(get_model3d_asset_bytes))
 ```
 
-- [ ] **Step 6: Run to verify it passes**
+- [x] DONE 2026-08-27 **Step 6: Run to verify it passes**
 
 Run: `cd litegen-core && cargo test model3d_storage 2>&1 | tail -20`
 Expected: PASS (5 tests).
@@ -1891,7 +1905,7 @@ Expected: PASS (5 tests).
 Run: `cd litegen-core && cargo build 2>&1 | tail -5`
 Expected: clean.
 
-- [ ] **Step 7: Commit**
+- [x] DONE 2026-08-27 **Step 7: Commit**
 
 ```bash
 git add litegen-core/src/proxy/storage.rs litegen-core/src/config/mod.rs \
@@ -1904,6 +1918,8 @@ git push origin master
 
 ### Task 8: `validate_model3d` + the `ValidatedModel3d` extractor
 
+**Status:** ✅ DONE (2026-08-27, 9cecdaa) — task review clean
+
 **Files:**
 - Modify: `litegen-core/src/api/middleware/validator.rs`
 - Test: `litegen-core/tests/unit_tests.rs` (a new `mod model3d_validation`)
@@ -1914,7 +1930,7 @@ git push origin master
 
 **The behaviour that matters most:** `strict: false` drops an unsupported param and records it in `dropped` (→ the `X-Litegen-Dropped-Params` header); `strict: true` returns `param_unsupported`. aipix relies on this so it does not duplicate litegen's per-model capability table.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] DONE 2026-08-27 **Step 1: Write the failing tests**
 
 Create `litegen-core/tests/model3d_validation.rs`:
 
@@ -2100,12 +2116,12 @@ fn prompt_is_still_required() {
 
 If `validator` is not currently `pub` from the crate root, add `pub use` as needed in `src/api/middleware/mod.rs` (`pub mod validator;`) rather than moving the tests inline — the module is already referenced as `crate::api::middleware::validator` elsewhere.
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] DONE 2026-08-27 **Step 2: Run to verify it fails**
 
 Run: `cd litegen-core && cargo test --test model3d_validation 2>&1 | tail -20`
 Expected: FAIL — `cannot find function validate_model3d`.
 
-- [ ] **Step 3: Implement `validate_model3d`**
+- [x] DONE 2026-08-27 **Step 3: Implement `validate_model3d`**
 
 Add to `litegen-core/src/api/middleware/validator.rs`, after `validate_video`:
 
@@ -2260,7 +2276,7 @@ pub fn validate_model3d(
 }
 ```
 
-- [ ] **Step 4: Add the extractor**
+- [x] DONE 2026-08-27 **Step 4: Add the extractor**
 
 After `impl FromRequest<Arc<AppState>> for ValidatedVideo`:
 
@@ -2302,12 +2318,12 @@ impl FromRequest<Arc<AppState>> for ValidatedModel3d {
 }
 ```
 
-- [ ] **Step 5: Run to verify it passes**
+- [x] DONE 2026-08-27 **Step 5: Run to verify it passes**
 
 Run: `cd litegen-core && cargo test --test model3d_validation 2>&1 | tail -20`
 Expected: PASS (7 tests).
 
-- [ ] **Step 6: Commit**
+- [x] DONE 2026-08-27 **Step 6: Commit**
 
 ```bash
 git add litegen-core/src/api/middleware/validator.rs litegen-core/tests/model3d_validation.rs
@@ -2319,6 +2335,8 @@ git push origin master
 
 ### Task 9: Router — `model3d_jobs`, `generate_model3d`, `get_model3d_status`, re-host helper
 
+**Status:** ✅ DONE (2026-08-27, 3278851) — task review clean
+
 **Files:**
 - Modify: `litegen-core/src/proxy/router.rs`
 - Test: `litegen-core/src/proxy/router.rs` (new `mod model3d_router_tests`)
@@ -2329,7 +2347,7 @@ git push origin master
 
 **Design note:** `rehost_model3d_files` is a free function (not a method) because the poller calls it too, and the poller has no `ProxyRouter`. Uploading happens in the same tick the provider reports completion — several vendors expire download URLs within five minutes, and re-hosting is what makes per-app BYO buckets work for meshes.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] DONE 2026-08-27 **Step 1: Write the failing tests**
 
 Append to `litegen-core/src/proxy/router.rs`:
 
@@ -2418,12 +2436,12 @@ mod model3d_router_tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] DONE 2026-08-27 **Step 2: Run to verify it fails**
 
 Run: `cd litegen-core && cargo test model3d_router 2>&1 | tail -20`
 Expected: FAIL — `cannot find function rehost_model3d_files`.
 
-- [ ] **Step 3: Implement the re-host helper**
+- [x] DONE 2026-08-27 **Step 3: Implement the re-host helper**
 
 Add to `litegen-core/src/proxy/router.rs` (module level, near the bottom before the tests):
 
@@ -2480,7 +2498,7 @@ pub async fn rehost_model3d_files(
 }
 ```
 
-- [ ] **Step 4: Add the router field and methods**
+- [x] DONE 2026-08-27 **Step 4: Add the router field and methods**
 
 In `ProxyRouter`, next to `video_jobs`:
 ```rust
@@ -2670,7 +2688,7 @@ Add the needed imports to the `use crate::providers::{...}` line: `Model3dExtras
 
 Note: 3D deliberately has **no** `execute_route_model3d` / routing-strategy path in this phase — there is one 3D provider. Add the route dispatch alongside the real vendors in phase 2.
 
-- [ ] **Step 5: Run to verify it passes**
+- [x] DONE 2026-08-27 **Step 5: Run to verify it passes**
 
 Run: `cd litegen-core && cargo test model3d_router 2>&1 | tail -20`
 Expected: PASS (3 tests).
@@ -2678,7 +2696,7 @@ Expected: PASS (3 tests).
 Run: `cd litegen-core && cargo test 2>&1 | tail -20`
 Expected: no regressions (the `ProxyRouter::new` signature change is fixed at every site).
 
-- [ ] **Step 6: Commit**
+- [x] DONE 2026-08-27 **Step 6: Commit**
 
 ```bash
 git add litegen-core/src/proxy/router.rs litegen-core/src/api/middleware/e2e_tests.rs \
@@ -2692,6 +2710,8 @@ git push origin master
 
 ### Task 10: API handlers, routes, per-app storage, and metadata persistence
 
+**Status:** ✅ DONE (2026-08-27, 85641e5 + af005d0) — task review clean
+
 **Files:**
 - Modify: `litegen-core/src/api/handlers/mod.rs` — `generate_3d`, `estimate_3d_cost`, `get_3d_status`, `resolve_app_model3d_store`, route table, `list_models` media filter
 - Modify: `litegen-core/src/api/openapi.rs` — register the three paths
@@ -2704,7 +2724,7 @@ git push origin master
 
 **Why a metadata writer:** `generations.metadata` is already a nullable TEXT column in both migrations (`20240101000003_generations.sql`) — no migration is needed — but `update_generation_status` cannot write it. The asset list lives there so `GET /v1/generations/{id}` and the dashboard gallery can render a mesh without a second lookup.
 
-- [ ] **Step 1: Add `update_generation_metadata` to the DB layer**
+- [x] DONE 2026-08-27 **Step 1: Add `update_generation_metadata` to the DB layer**
 
 `litegen-core/src/db/trait_def.rs`, in `trait DatabaseStore`:
 ```rust
@@ -2738,7 +2758,7 @@ git push origin master
 
 Then `cargo build` and add `async fn update_generation_metadata(&self, _id: &str, _metadata: &serde_json::Value) -> Result<(), sqlx::Error> { Ok(()) }` to every stub the compiler names.
 
-- [ ] **Step 2: Write the failing integration test**
+- [x] DONE 2026-08-27 **Step 2: Write the failing integration test**
 
 Create `litegen-core/tests/model3d_api.rs`. Model the harness on `src/api/middleware/e2e_tests.rs` (`AppState` + `tower::ServiceExt::oneshot`); read that file and copy its `NoopDb`/state construction rather than inventing one. Use an in-memory `SqliteDatabase` so generation rows persist.
 
@@ -2916,7 +2936,7 @@ async fn failing_model_terminates_failed_with_an_error_and_no_assets() {
 }
 ```
 
-- [ ] **Step 3: Build the shared test harness**
+- [x] DONE 2026-08-27 **Step 3: Build the shared test harness**
 
 Create `litegen-core/tests/harness/mod.rs`. Read `src/api/middleware/e2e_tests.rs` first and lift its `AppState` construction verbatim, changing only: use `SqliteDatabase::connect("sqlite::memory:")` instead of `NoopDb`; register `MockModel3dProvider` alongside the image/video mocks; build the router from `crate::api::handlers::routes(...)` so the real route table (not a hand-picked subset) is under test.
 
@@ -2971,12 +2991,12 @@ pub async fn run_to_completion(app: &Router, model: &str, prompt: &str) -> Strin
 
 Replace the `todo!` with the real wiring before running. If the handler route table requires auth for these endpoints, either construct a `KeyContext` the way `e2e_tests.rs` does, or mount the subset of routes those tests already mount — match whatever `e2e_tests.rs` does rather than weakening auth.
 
-- [ ] **Step 4: Run to verify it fails**
+- [x] DONE 2026-08-27 **Step 4: Run to verify it fails**
 
 Run: `cd litegen-core && cargo test --test model3d_api 2>&1 | tail -20`
 Expected: FAIL — no `/v1/models3d/*` routes; 404s.
 
-- [ ] **Step 5: Implement the handlers**
+- [x] DONE 2026-08-27 **Step 5: Implement the handlers**
 
 Add to `litegen-core/src/api/handlers/mod.rs`, after `estimate_video_cost`:
 
@@ -3223,7 +3243,7 @@ pub(crate) fn model3d_response_from_row(gen: &crate::types::Generation) -> Model
 
 Add `use crate::api::middleware::validator::ValidatedModel3d;` and `use crate::providers::Model3dExtras;` to the handler imports.
 
-- [ ] **Step 6: Register the routes and the `media_type` filter**
+- [x] DONE 2026-08-27 **Step 6: Register the routes and the `media_type` filter**
 
 In the route table, next to the video routes:
 ```rust
@@ -3257,7 +3277,7 @@ and in the handler:
 ```
 Add the `params(("media_type" = Option<String>, Query, description = "Filter by media type"))` line to its `#[utoipa::path]`.
 
-- [ ] **Step 7: Add `resolve_app_model3d_store`**
+- [x] DONE 2026-08-27 **Step 7: Add `resolve_app_model3d_store`**
 
 Next to `resolve_app_image_store` — same `app_storage_credentials` row, no new table, no new dashboard form, so an app that configured BYO storage for images gets it for meshes for free:
 
@@ -3317,7 +3337,7 @@ pub(crate) async fn resolve_app_model3d_store(
 
 The poller (Task 11) is the caller — it resolves per-app storage per row. Nothing in `generate_3d` needs it, because 3D never completes inline.
 
-- [ ] **Step 8: Register the paths with utoipa**
+- [x] DONE 2026-08-27 **Step 8: Register the paths with utoipa**
 
 In `src/api/openapi.rs` `paths(...)`, after the video entries:
 ```rust
@@ -3326,7 +3346,7 @@ In `src/api/openapi.rs` `paths(...)`, after the video entries:
         crate::api::handlers::get_3d_status,
 ```
 
-- [ ] **Step 9: Run to verify it passes**
+- [x] DONE 2026-08-27 **Step 9: Run to verify it passes**
 
 Run: `cd litegen-core && cargo test --test model3d_api 2>&1 | tail -30`
 Expected: PASS (9 tests).
@@ -3334,7 +3354,7 @@ Expected: PASS (9 tests).
 Run: `cd litegen-core && cargo test 2>&1 | tail -20`
 Expected: no regressions.
 
-- [ ] **Step 10: Commit**
+- [x] DONE 2026-08-27 **Step 10: Commit**
 
 ```bash
 git add litegen-core/src/api/handlers/mod.rs litegen-core/src/api/openapi.rs \
@@ -3348,6 +3368,8 @@ git push origin master
 
 ### Task 11: Poller — media-type dispatch and same-tick re-hosting
 
+**Status:** ✅ DONE (2026-08-27, a1e1821 + 812f94f) — task review clean
+
 **Files:**
 - Modify: `litegen-core/src/proxy/poller.rs`
 - Test: `litegen-core/src/proxy/poller.rs` (`mod poller_tests`)
@@ -3358,7 +3380,7 @@ git push origin master
 
 **The rule that drives the shape:** `poll_status()` returning `Completed` comes back with bytes already in hand, and the upload must happen **in the same loop iteration**. Video never had this pressure because litegen passes provider URLs straight through; several 3D vendors expire download URLs within five minutes.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] DONE 2026-08-27 **Step 1: Write the failing tests**
 
 Append to `mod poller_tests` in `litegen-core/src/proxy/poller.rs`:
 
@@ -3505,12 +3527,12 @@ Append to `mod poller_tests` in `litegen-core/src/proxy/poller.rs`:
 
 Every existing `poll_once(...)` call in this module gains the `&store` argument.
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] DONE 2026-08-27 **Step 2: Run to verify it fails**
 
 Run: `cd litegen-core && cargo test poller_tests 2>&1 | tail -20`
 Expected: FAIL — `poll_once` takes 4 arguments, not 5.
 
-- [ ] **Step 3: Restructure `poll_once`**
+- [x] DONE 2026-08-27 **Step 3: Restructure `poll_once`**
 
 Change the signature and hoist the per-row work into a media-type branch:
 
@@ -3683,7 +3705,7 @@ async fn handle_poll_error(
 
 **On `resolve_app_model3d_store` in the poller:** that function as written in Task 10 takes `&AppState`, which `poll_once` does not have. Refactor it to take `(db: &Arc<dyn DatabaseStore>, secrets_key: Option<[u8; 32]>, app_id: &str)` — those are the only two things it reads from state — and have any handler-side caller pass `&state.db, state.secrets_key`. Do that refactor here rather than duplicating the decrypt logic.
 
-- [ ] **Step 4: Update the poller's spawn site**
+- [x] DONE 2026-08-27 **Step 4: Update the poller's spawn site**
 
 Find where the poll loop is spawned (`grep -rn "poll_once" src/ | grep -v tests`) and thread the store through, built once at startup:
 ```rust
@@ -3694,7 +3716,7 @@ let model3d_store = crate::proxy::storage::build_model3d_store(
 ```
 Pass the same `Arc` the router holds if one is already available there — `state.router.model3d_store.clone()` avoids building it twice and keeps the local in-process store consistent between the router and poller paths. Prefer that.
 
-- [ ] **Step 5: Run to verify it passes**
+- [x] DONE 2026-08-27 **Step 5: Run to verify it passes**
 
 Run: `cd litegen-core && cargo test poller 2>&1 | tail -20`
 Expected: PASS (existing video tests + 4 new).
@@ -3702,7 +3724,7 @@ Expected: PASS (existing video tests + 4 new).
 Run: `cd litegen-core && cargo test 2>&1 | tail -20`
 Expected: no regressions.
 
-- [ ] **Step 6: Commit**
+- [x] DONE 2026-08-27 **Step 6: Commit**
 
 ```bash
 git add litegen-core/src/proxy/poller.rs litegen-core/src/api/handlers/mod.rs litegen-core/src/main.rs
@@ -3714,6 +3736,8 @@ git push origin master
 
 ### Task 12: TypeScript SDK — generic `pollJob`, `Model3dJob`, `client.models3d`
 
+**Status:** ✅ DONE (2026-08-27, 12ef80c + 11d4d22) — task review clean
+
 **Files:**
 - Modify: `sdks/typescript/src/polling.ts`, `src/client.ts`, `src/index.ts`
 - Regenerate: `sdks/typescript/src/generated/schema.ts`, `apps/landing/public/openapi.json`
@@ -3723,7 +3747,7 @@ git push origin master
 - Consumes: the regenerated `components["schemas"]["Model3dGenerationRequest" | "Model3dGenerationResponse" | "Model3dAsset"]`.
 - Produces: `pollJob<T>`, `poll3d`, `Model3dJob`, `client.models3d.{generate,estimateCost,getStatus,waitForCompletion,poll}`, exported types `Model3dGenerationRequest`, `Model3dGenerationResponse`, `Model3dAsset`, `Model3dJob`, and `MediaType.Model3d`.
 
-- [ ] **Step 1: Regenerate the OpenAPI document and SDK schema**
+- [x] DONE 2026-08-27 **Step 1: Regenerate the OpenAPI document and SDK schema**
 
 ```bash
 cd litegen-core && cargo run --bin litegen -- --dump-openapi > ../apps/landing/public/openapi.json 2>/dev/null \
@@ -3739,7 +3763,7 @@ grep -c "Model3dGenerationResponse" sdks/typescript/src/generated/schema.ts   # 
 grep -o '"/v1/models3d/[^"]*"' apps/landing/public/openapi.json | sort -u     # expect 3 paths
 ```
 
-- [ ] **Step 2: Write the failing test**
+- [x] DONE 2026-08-27 **Step 2: Write the failing test**
 
 Create `sdks/typescript/test/models3d.test.ts`:
 
@@ -3833,12 +3857,12 @@ describe("pollJob", () => {
 });
 ```
 
-- [ ] **Step 3: Run to verify it fails**
+- [x] DONE 2026-08-27 **Step 3: Run to verify it fails**
 
 Run: `cd sdks/typescript && npm test 2>&1 | tail -20`
 Expected: FAIL — `client.models3d` is undefined, `pollJob` is not exported.
 
-- [ ] **Step 4: Generalise `polling.ts`**
+- [x] DONE 2026-08-27 **Step 4: Generalise `polling.ts`**
 
 Replace the body of `sdks/typescript/src/polling.ts`'s poll functions with the generic version (types and `TERMINAL_STATUSES` stay as they are):
 
@@ -3925,7 +3949,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 ```
 
-- [ ] **Step 5: Add `Model3dJob` and the namespace to `client.ts`**
+- [x] DONE 2026-08-27 **Step 5: Add `Model3dJob` and the namespace to `client.ts`**
 
 After `VideosNamespace`:
 
@@ -4010,7 +4034,7 @@ class Models3dNamespace {
 
 Add `readonly models3d: Models3dNamespace;` to `LiteGenClient` (next to `videos`), initialise it in the constructor, and add `poll3d, waitForJob` to the `./polling` import.
 
-- [ ] **Step 6: Export from `index.ts`**
+- [x] DONE 2026-08-27 **Step 6: Export from `index.ts`**
 
 Add `Model3dJob` to the `from "./client"` export list; add `poll3d, waitForJob` to the `from "./polling"` export; add `Model3d: "model3d",` to the `MediaType` const; and add the type aliases next to the video ones:
 ```ts
@@ -4019,12 +4043,12 @@ export type Model3dGenerationResponse = components["schemas"]["Model3dGeneration
 export type Model3dAsset = components["schemas"]["Model3dAsset"];
 ```
 
-- [ ] **Step 7: Run to verify it passes**
+- [x] DONE 2026-08-27 **Step 7: Run to verify it passes**
 
 Run: `cd sdks/typescript && npm run build && npm test 2>&1 | tail -20`
 Expected: build clean, all tests PASS.
 
-- [ ] **Step 8: Commit**
+- [x] DONE 2026-08-27 **Step 8: Commit**
 
 ```bash
 git add sdks/typescript/ apps/landing/public/openapi.json
@@ -4036,6 +4060,8 @@ git push origin master
 
 ### Task 13: Dashboard — `<model-viewer>` component and the three-way media surfaces
 
+**Status:** ✅ DONE (2026-08-27, 44d3c7b + f92e775) — task review clean
+
 **Files:**
 - Create: `dashboard/src/components/ModelViewer.tsx`
 - Modify: `dashboard/src/pages/Generations.tsx:19-43` (`MediaPreview`), `dashboard/src/pages/Models.tsx:88` (filter), `dashboard/src/components/ModelDetail.tsx:7-8` (curl builder), `dashboard/src/components/TracePanel.tsx:220-235` (artifact drill-down)
@@ -4044,7 +4070,7 @@ git push origin master
 - Consumes: `Generation.media_type === 'model3d'`, `Generation.metadata.assets` (Task 10), the SDK's `Model3dAsset` type (Task 12).
 - Produces: `<ModelViewer src={...} poster={...} />`; helper `meshUrl(g)` / `previewUrl(g)` exported from `ModelViewer.tsx`.
 
-- [ ] **Step 1: Add the `<model-viewer>` dependency**
+- [x] DONE 2026-08-27 **Step 1: Add the `<model-viewer>` dependency**
 
 `<model-viewer>` ships as a self-registering custom element with no bundler-level three.js dependency:
 ```bash
@@ -4052,7 +4078,7 @@ cd dashboard && npm install @google/model-viewer
 ```
 Confirm it is a runtime dependency, not a devDependency, in `dashboard/package.json`.
 
-- [ ] **Step 2: Write the component**
+- [x] DONE 2026-08-27 **Step 2: Write the component**
 
 `dashboard/src/components/ModelViewer.tsx`:
 
@@ -4139,7 +4165,7 @@ export default function ModelViewer({
 
 If the project's TS config rejects the unknown `model-viewer` intrinsic element, `React.createElement` (used above) sidesteps the JSX intrinsic check — no global type augmentation needed.
 
-- [ ] **Step 3: Extend `MediaPreview` in `Generations.tsx`**
+- [x] DONE 2026-08-27 **Step 3: Extend `MediaPreview` in `Generations.tsx`**
 
 Replace the two-way `isVideo` switch (`dashboard/src/pages/Generations.tsx:19-43`) with a three-way one:
 
@@ -4183,7 +4209,7 @@ function MediaPreview({ g, thumb }: { g: Generation; thumb?: boolean }) {
 }
 ```
 
-- [ ] **Step 4: Extend the remaining three surfaces**
+- [x] DONE 2026-08-27 **Step 4: Extend the remaining three surfaces**
 
 `Models.tsx:88` — widen the filter and give `model3d` a readable label:
 ```tsx
@@ -4219,12 +4245,12 @@ Read the surrounding lines before editing — if the file uses an `isVideo` bool
     }
 ```
 
-- [ ] **Step 5: Verify the build and typecheck**
+- [x] DONE 2026-08-27 **Step 5: Verify the build and typecheck**
 
 Run: `cd dashboard && npm run build 2>&1 | tail -20`
 Expected: clean. A TS error about the `model-viewer` element means Step 2's `React.createElement` was replaced with JSX — revert to `createElement`.
 
-- [ ] **Step 6: Commit**
+- [x] DONE 2026-08-27 **Step 6: Commit**
 
 ```bash
 git add dashboard/src/components/ModelViewer.tsx dashboard/src/pages/Generations.tsx \
@@ -4238,6 +4264,8 @@ git push origin master
 
 ### Task 14: Playground — async job state machine and `ResultTile3D`
 
+**Status:** ✅ DONE (2026-08-27, bd49c9a + f92e775) — task review clean
+
 **Files:**
 - Modify: `dashboard/src/playground/types.ts`, `useFanOut.ts`, `SingleMode.tsx`, `ResultGrid.tsx`
 - Create: `dashboard/src/playground/ResultTile3D.tsx`
@@ -4248,7 +4276,7 @@ git push origin master
 
 **This is the one genuinely new piece.** The Playground has no polling machinery at all — `TileStatus` is `'queued' | 'running' | 'done' | 'error'`, all client-side, because image generation returns its result from the same request. 3D needs a real pending → poll → done path. Reuse the SDK's `client.models3d.poll` as the polling primitive so it is not hand-rolled a second time.
 
-- [ ] **Step 1: Extend the tile types**
+- [x] DONE 2026-08-27 **Step 1: Extend the tile types**
 
 `dashboard/src/playground/types.ts`:
 ```ts
@@ -4283,7 +4311,7 @@ export interface ResultTileState {
 
 Every existing `ResultTileState` literal now needs `mediaType: 'image'` — the compiler will name them.
 
-- [ ] **Step 2: Add the 3D branch to `useFanOut`**
+- [x] DONE 2026-08-27 **Step 2: Add the 3D branch to `useFanOut`**
 
 In `dashboard/src/playground/useFanOut.ts`, split the worker body on media type. The image path is unchanged; the 3D path submits then polls:
 
@@ -4338,7 +4366,7 @@ In `dashboard/src/playground/useFanOut.ts`, split the worker body on media type.
 
 Derive `mediaType` from the request list — change `run`'s parameter to `Array<{ modelId: string; mediaType: 'image' | 'model3d'; request: ImageGenerationRequest | Model3dGenerationRequest }>` and set `mediaType` on each initial tile.
 
-- [ ] **Step 3: Write `ResultTile3D`**
+- [x] DONE 2026-08-27 **Step 3: Write `ResultTile3D`**
 
 `dashboard/src/playground/ResultTile3D.tsx` — same head/meta/rerun chrome as `ResultTile.tsx`, mesh body:
 
@@ -4389,7 +4417,7 @@ In `ResultGrid.tsx`, pick the component per tile:
   : <ResultTile key={t.key} tile={t} onRerun={onRerun} />)}
 ```
 
-- [ ] **Step 4: Widen the Playground's model filter**
+- [x] DONE 2026-08-27 **Step 4: Widen the Playground's model filter**
 
 `SingleMode.tsx:50-51` currently pins the Playground to mock image models — a deliberate free, deterministic sandbox. Keep that constraint and just admit the 3D mocks:
 ```tsx
@@ -4399,12 +4427,12 @@ In `ResultGrid.tsx`, pick the component per tile:
 ```
 Leave the default-model preference (`mock/visual-image-gen`) as it is, so the Playground's first paint does not change. Apply the same filter change in `CompareMode.tsx` if it duplicates the predicate — `grep -n "media_type === 'image'" dashboard/src/playground/*.tsx`.
 
-- [ ] **Step 5: Verify the build**
+- [x] DONE 2026-08-27 **Step 5: Verify the build**
 
 Run: `cd dashboard && npm run build 2>&1 | tail -20`
 Expected: clean.
 
-- [ ] **Step 6: Commit**
+- [x] DONE 2026-08-27 **Step 6: Commit**
 
 ```bash
 git add dashboard/src/playground/
@@ -4524,6 +4552,8 @@ git push origin master
 ---
 
 ### Task 16: Landing generated config
+
+**Status:** 🟡 PARTIAL (2026-08-27, 6b927b8) — committed; task review pending (implementer session ended before writing its report)
 
 **Files:**
 - Modify: `apps/landing/scripts/derive-models.mjs`, `apps/landing/scripts/derive-capabilities.mjs`
@@ -4768,6 +4798,8 @@ gateway (`cargo build --release -p litegen`) before the run.
 
 ### Task 18: Param-mapping matrix — the request-flow validation checklist
 
+**Status:** ✅ DONE (2026-08-27, 02715ec) — task review clean
+
 **Files:**
 - Create: `docs/superpowers/param-mapping-matrix.md`
 - Modify: `docs/superpowers/plans/2026-08-20-3d-model-generation.md` (link it from Task 17's checklist)
@@ -4780,7 +4812,7 @@ gateway (`cargo build --release -p litegen`) before the run.
 validates it, and what proves the mapping is right?" without reading three files.
 The matrix is that answer, and it is where a reviewer ticks off a verified flow.
 
-- [ ] **Step 1: Generate the raw inventory (do not hand-transcribe)**
+- [x] DONE 2026-08-27 **Step 1: Generate the raw inventory (do not hand-transcribe)**
 
 Hand-written tables rot. Derive the starting data:
 
@@ -4802,7 +4834,7 @@ PY
 
 Run it and keep the output — it is the matrix's spine.
 
-- [ ] **Step 2: Write the document**
+- [x] DONE 2026-08-27 **Step 2: Write the document**
 
 `docs/superpowers/param-mapping-matrix.md`. Structure:
 
@@ -4874,14 +4906,14 @@ Name the test in the cell, e.g. `✅ meshy::tests::maps_topology`.
 
 Fill the Image/Video section from Step 1's real output — every row, not a sample.
 
-- [ ] **Step 3: Tick what today's code already earns**
+- [x] DONE 2026-08-27 **Step 3: Tick what today's code already earns**
 
 Walk the existing validator tests and per-provider test modules and mark the
 image/video rows they genuinely cover, naming each test. Leave everything
 unproven as ⬜ or 🟡. Resist the urge to mark a row ✅ because the code "looks
 right" — the whole value of this document is that its ticks mean something.
 
-- [ ] **Step 4: Commit**
+- [x] DONE 2026-08-27 **Step 4: Commit**
 
 ```bash
 git add docs/superpowers/param-mapping-matrix.md docs/superpowers/plans/2026-08-20-3d-model-generation.md
@@ -4891,6 +4923,8 @@ git commit -m "docs: param mapping matrix — request flow and per-provider fiel
 ---
 
 ### Task 19: Extend `catalog_conformance` to the 3D family
+
+**Status:** ✅ DONE (2026-08-27, 89a65e1) — task review clean
 
 **Files:**
 - Modify: `litegen-core/tests/catalog_conformance.rs`
@@ -4906,7 +4940,7 @@ own contract forbids, and that the enum vocabularies match the values recorded i
 design spec §9. Those assertions keep working unchanged when real vendor rows
 land; they simply gain more subjects.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] DONE 2026-08-27 **Step 1: Write the failing tests**
 
 Append to `litegen-core/tests/catalog_conformance.rs`:
 
@@ -5049,7 +5083,7 @@ fn target_polycount_bounds_are_sane_where_declared() {
 Rust identifiers cannot begin with a digit — rename `3d_enum_vocabularies_...`
 to `model3d_enum_vocabularies_match_the_documented_vendor_sets`.
 
-- [ ] **Step 2: Run to verify they fail, then pass**
+- [x] DONE 2026-08-27 **Step 2: Run to verify they fail, then pass**
 
 Run: `cd litegen-core && cargo test --test catalog_conformance 2>&1 | tail -20`
 
@@ -5058,7 +5092,7 @@ fails on the empty-catalog assertion — that is correct and expected. **Task 19
 must therefore run AFTER Task 5.** If you are executing in order this is already
 true; if not, sequence it accordingly.
 
-- [ ] **Step 3: Commit**
+- [x] DONE 2026-08-27 **Step 3: Commit**
 
 ```bash
 git add litegen-core/tests/catalog_conformance.rs
@@ -5282,3 +5316,182 @@ Note the last two additions: the Playwright run needs a **release** binary
 (`playwright.config.ts` boots `../litegen-core/target/release/litegen`), and the
 landing app has a script test suite (`npm run test:scripts`) that Task 16's
 generator changes must keep green.
+
+---
+
+# Plan Amendment 2 — 2026-09-11: thorough 3D preview + observability
+
+The user asked for "thorough 3D model previewing capabilities" and Storybook
+coverage of both the Playground and the generation-viewing (observability)
+surfaces. A survey of the dashboard found three concrete gaps that make this
+more than polish:
+
+1. **The Logs → trace panel can never show a 3D mesh (or a video).** The
+   request artifact is written at submit time with `output_value: None`
+   (async — the URL is unknown), and **nothing ever updates it**
+   (`DatabaseStore` has `insert_request_artifact` only). So
+   `TracePanel`'s `model3d` branch is dead code: every 3D row shows "Output URL
+   not yet available (async generation pending)" forever. Video has the same bug.
+2. **A mesh that fails to load renders an empty canvas.** `ModelViewer` only
+   falls back when the *bundle import* fails; `<model-viewer>`'s own `error`
+   event (404, corrupt GLB, CORS) is never observed.
+3. **The TypeScript SDK has no `generations.get(id)`** even though
+   `GET /v1/generations/{id}` exists — the trace panel needs it to resolve an
+   async artifact to its generation row.
+
+Decisions (recorded here and in the implementing commits):
+
+- **Resolve async artifacts in the frontend from the generation row; do NOT add
+  an artifact-update path in the DB.** The generation row already holds
+  `status`, `result_url` and `metadata.assets`; the artifact's `request_id` IS
+  the generation id (`handlers/mod.rs`, `request_id: response.id.clone()`).
+  Writing the same data a second time into the artifact would create two
+  sources of truth that can disagree. This fixes video too, for free.
+- **Presentational / container split** so every state is storyable without a
+  network: `ModelPreview` and `GenerationOutput` take data as props; only
+  `TracePanel` fetches.
+- **Keep `ModelViewer` the low-level element wrapper; add `ModelPreview` as the
+  full inspector.** Compact contexts (Playground grid tiles, gallery thumbs)
+  keep the light viewer; full contexts (Generations detail row, Playground
+  Single Mode, trace panel) get the inspector.
+- **Add vitest to the dashboard** for the pure asset helpers. The dashboard has
+  no unit runner today (Playwright only); vitest is the boring choice — it is
+  already the SDK's runner and shares the Vite toolchain.
+- **No wireframe mode.** `<model-viewer>` has no wireframe API; faking one
+  means dropping to raw three.js scene access, which is a maintenance cost the
+  user did not ask for.
+
+Sequencing: **21 → 22 → 20 (expanded) → clean + release build → 15 → 17.**
+
+---
+
+### Task 21: `ModelPreview` — the full 3D inspector
+
+**Files:**
+- Create: `dashboard/src/components/model3d-assets.ts` (pure helpers)
+- Create: `dashboard/src/components/model3d-assets.test.ts`
+- Create: `dashboard/src/components/ModelPreview.tsx`
+- Modify: `dashboard/src/components/ModelViewer.tsx`
+- Modify: `dashboard/src/pages/Generations.tsx` (expanded row), `dashboard/src/playground/SingleMode.tsx` (result panel)
+- Modify: `dashboard/package.json` (vitest devDependency + `"test": "vitest run"`)
+
+**Interfaces:**
+- Produces: `assetsOf(g: Generation): Model3dAsset[]`, `meshOf(assets)`,
+  `previewOf(assets)`, `texturesOf(assets)`, `formatBytes(n)`;
+  `<ModelPreview assets={Model3dAsset[]} error?={string} testId?={string} />`;
+  `<ModelViewer … onLoad? onError? autoRotate? exposure? background? />`.
+- Consumes: SDK type `Model3dAsset`.
+
+- [ ] **Step 1: Move the helpers out of `ModelViewer.tsx`.** `meshUrl`/`previewUrl`
+  currently live in the component file behind two `eslint-disable
+  react-refresh/only-export-components` comments. Move them into
+  `model3d-assets.ts` (typed against the SDK's `Model3dAsset`, not a local
+  interface) and delete the disables. Update the two importers.
+- [ ] **Step 2: Unit-test the helpers with vitest** — `assetsOf` tolerates
+  missing/`null`/non-array `metadata.assets`; `meshOf` falls back to
+  `result_url`; `formatBytes` boundary values (0, 1023, 1024, 1.5 MB);
+  `texturesOf` excludes mesh and preview. Watch them fail first.
+- [ ] **Step 3: Make `ModelViewer` observe `<model-viewer>`'s own events.**
+  Attach listeners via a ref for `load`, `error`, and `progress`. On `error`,
+  render the same download-link fallback the import-failure path uses — a
+  404 or corrupt GLB must never leave an empty canvas. Show a thin progress bar
+  driven by `event.detail.totalProgress` while loading. Accept `autoRotate`,
+  `exposure`, and `background` props. Forward `onLoad` with the model's
+  bounding-box dimensions from `getDimensions()`.
+- [ ] **Step 4: Build `ModelPreview`.** A viewer stage plus:
+  - toolbar: auto-rotate toggle, reset camera, exposure slider (0.25–2.0),
+    background (dark / light / checker), fullscreen (Fullscreen API on the
+    container), copy mesh URL;
+  - stats strip: format, size (`formatBytes`), polycount, bounding-box
+    dimensions (from `onLoad`);
+  - asset list: every asset with a kind badge, format, size, polycount or
+    WxH, and open/download links — download via `<a download>` on the
+    absolute URL;
+  - texture/preview thumbnail strip;
+  - an explicit error state when `error` is set or no mesh exists (a
+    completed generation without a mesh is a contract violation — say so).
+  Every control gets a stable `data-testid` (Task 15 drives them).
+- [ ] **Step 5: Wire it in.** Generations expanded row and Playground Single
+  Mode result panel render `ModelPreview`; Playground grid tiles and gallery
+  thumbs keep the compact `ModelViewer` / flat image.
+- [ ] **Step 6: Gates.** `cd dashboard && npm test && npm run build && npm run lint`
+  (lint must not exceed the 13-problem pre-existing baseline). Commit, and tick
+  this task's boxes in the same commit.
+
+---
+
+### Task 22: Observability — resolve async artifacts to their generation
+
+**Files:**
+- Modify: `sdks/typescript/src/client.ts` (`generations.get`), `sdks/typescript/test/client.test.ts`
+- Create: `dashboard/src/components/GenerationOutput.tsx`
+- Modify: `dashboard/src/components/TracePanel.tsx`
+
+**Interfaces:**
+- Consumes: `ModelPreview`, `assetsOf` (Task 21).
+- Produces: `client.generations.get(id, signal?) : Promise<Generation>`;
+  `<GenerationOutput generation={Generation | null} loading={boolean} error?={string} />`.
+
+- [ ] **Step 1: SDK `generations.get`.** `GET /v1/generations/{id}` exists in
+  the API and the OpenAPI document but the client never exposed it. Add it next
+  to `list`/`cancel`, with a test asserting method + URL. Gates:
+  `npm run typecheck && npm test && npm run build` in `sdks/typescript`
+  (typecheck is mandatory — vitest does not type-check, and skipping it let a
+  regression through on Task 12). The pre-existing `contract.test.ts`
+  allowed-models failure stays out of scope.
+- [ ] **Step 2: `GenerationOutput` (presentational).** Renders a generation row
+  by status: pending/processing → status + progress bar; failed/cancelled →
+  the error message; completed `model3d` → `ModelPreview` from `assetsOf`;
+  completed `video` → `<video>` (or `<img>` for an `image/*` GIF result, as
+  `VisualTab` already special-cases); completed image → `<img>`.
+- [ ] **Step 3: `TracePanel` resolution.** In `VisualTab`, when
+  `output_kind === 'url'` and `output_value` is empty and `media_type` is
+  `video` or `model3d`, fetch `client.generations.get(artifact.request_id)`
+  and render `GenerationOutput`. While the generation is non-terminal, re-poll
+  every 3s and stop on terminal or unmount. A 404 (row not yet persisted — the
+  insert is spawned after the response) shows "pending" and keeps polling
+  rather than erroring. Remove the now-dead `model3d` `output_value` branch
+  only if nothing else can reach it; say which you did in the commit.
+- [ ] **Step 4: Gates.** Dashboard `npm test && npm run build && npm run lint`;
+  SDK gates from Step 1. Commit, ticking this task's boxes.
+
+---
+
+## Expansion of Task 20 (Storybook) — binding
+
+Task 20 runs **after** Tasks 21 and 22 and its story list grows to cover both
+surfaces the user named:
+
+**Playground / testing:** `ResultTile3D` (queued, running, polling 33% / 66%,
+done, failed, done-without-mesh, cancelled); `ResultTile` (image, for
+contrast); `ParamField` (every `ParamSpec` kind, with and without
+`label`/`description`, including the 3D enums — topology, symmetry,
+output_format — and `target_polycount`).
+
+**Viewing / observability:** `ModelViewer` (loading, loaded, mesh 404,
+corrupt GLB, bundle-import failure); `ModelPreview` (full asset set with
+textures + preview, mesh-only, no-mesh contract violation, high-polycount
+mesh, light and checker backgrounds); `MediaPreview` (thumb and full ×
+image / video / 3D-with-preview / 3D-without-preview); `GenerationOutput`
+(pending 0%, processing 66%, completed 3D, completed video, failed,
+cancelled).
+
+**Fixtures — real bytes, not placeholders.** Stories must render actual
+meshes, so commit fixtures under `dashboard/.storybook/fixtures/` served via
+`staticDirs`: a textured cube `cube.glb`, a higher-poly `icosphere.glb` (so
+the polycount stat shows something non-trivial), a checker `texture.png`, a
+`preview.png`, and a deliberately corrupt `corrupt.glb`. Generate them with a
+committed script (`make_fixtures.py`, stdlib only) rather than copying binaries
+from elsewhere, so they are reproducible. The mesh-404 story points at a path
+that does not exist.
+
+Stories co-locate as `*.stories.tsx` beside their components. Add
+`npm run build-storybook` to the amended acceptance gates.
+
+## Expansion of Task 15 (Playwright) — binding
+
+Add coverage for the inspector and the observability fix: in the Generations
+expanded row, the `ModelPreview` stats strip shows the mock's polycount (12)
+and the asset list lists the mesh and the preview; and in Logs, opening the
+trace panel for a completed 3D request renders the mesh (the `model-viewer`
+element reaches `loaded`) rather than "Output URL not yet available".
