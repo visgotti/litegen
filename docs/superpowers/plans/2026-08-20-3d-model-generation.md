@@ -4444,6 +4444,8 @@ git push origin master
 
 ### Task 15: Playwright coverage for the 3D surfaces
 
+**Status:** ✅ DONE (2026-09-11, 760918e) — `dashboard/e2e/model3d.spec.ts`, 7 tests green against the release binary (also 21/21 at `--repeat-each=3`); full default suite 10/10; no component edits needed. Committed locally, not pushed (user's choice for this branch).
+
 **Files:**
 - Create: `dashboard/tests/model3d.spec.ts` (match the existing spec directory — check `dashboard/playwright.config.ts` for `testDir`)
 
@@ -4452,7 +4454,7 @@ git push origin master
 
 **Why this is the only gate on the TS `MediaType` copies:** the two Rust `MediaType` enums are compiler-enforced, but `apps/landing/src/config/models.generated.ts` and the dashboard's string comparisons compile fine with a missed spot. This spec is what catches that, and it is also what proves the mock GLB actually loads in three.js (`<model-viewer>` uses `GLTFLoader` internally).
 
-- [ ] **Step 1: Write the spec**
+- [x] DONE 2026-09-11 **Step 1: Write the spec**
 
 Read an existing spec first (`ls dashboard/tests/`) and copy its login/setup fixture verbatim — do not invent a new auth path.
 
@@ -4530,18 +4532,18 @@ test.describe('3D model generation', () => {
 
 Adjust every `data-testid` to the ones the Playground actually uses — read `SingleMode.tsx` / `CompareMode.tsx` and use the real ids rather than the ones guessed here. If a needed id is missing, add it in the component (that is a legitimate part of this task).
 
-- [ ] **Step 2: Run to verify it fails, then passes**
+- [x] DONE 2026-09-11 **Step 2: Run to verify it fails, then passes**
 
 Run: `cd dashboard && npx playwright test model3d 2>&1 | tail -30`
 
 Expected on first run: failures pointing at missing test ids or a not-yet-running backend. Start the stack the way the other specs do (check `dashboard/playwright.config.ts`'s `webServer`), fix the ids, and re-run until green.
 
-- [ ] **Step 3: Run the whole suite**
+- [x] DONE 2026-09-11 **Step 3: Run the whole suite**
 
 Run: `cd dashboard && npx playwright test 2>&1 | tail -20`
 Expected: no regressions in the existing specs.
 
-- [ ] **Step 4: Commit**
+- [x] DONE 2026-09-11 (760918e; local commit on `deploy/litegen-visgotti-instance`, not pushed — user's choice) **Step 4: Commit**
 
 ```bash
 git add dashboard/tests/model3d.spec.ts dashboard/src/playground/
