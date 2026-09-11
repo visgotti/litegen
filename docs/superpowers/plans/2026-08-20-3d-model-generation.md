@@ -5584,3 +5584,41 @@ defect but four user-visible issues in the Task 21 components:
   right) rather than orphaning one button.
 - [x] DONE 2026-09-11 Update the affected stories so they show the new states, re-run the
   Storybook browser pass for the touched stories, and run the dashboard gates.
+
+---
+
+### Task 17C: Backend follow-ups found by the e2e run
+
+Task 15's Playwright run (2026-09-11) surfaced two backend defects, both
+verified in code by the controller:
+
+- [ ] **Endpoint/media-type mismatch is accepted.** None of the `Validated{Image,
+  Video,Model3d}` extractors in `litegen-core/src/api/middleware/validator.rs`
+  checks the resolved schema's `media_type` (the file has zero references to
+  it). So `POST /v1/images/cost` (and `/v1/images/generations`) accepts
+  `mock/mesh-3d` and dispatches it to the image provider — and a video model
+  can be sent to the image endpoint today too. Each extractor must reject a
+  schema from another family with **400**, `validation_error`, code
+  `model_media_type_mismatch`, and a message naming the right endpoint (e.g.
+  "model 'mock/mesh-3d' is a model3d model; use /v1/models3d/generations").
+  Check it **before** param validation so the error is the real one. Cover
+  image↔video↔model3d both directions and the cost endpoints, and check no
+  existing test relied on cross-family requests.
+- [ ] **Async request logs never leave `pending`.** Handlers log async requests
+  (`video`, `model3d`) with status `pending`, and `DatabaseStore` has no way to
+  update a request log, so every 3D and video row in `/v1/logs` shows `pending`
+  forever. Add `DatabaseStore::update_request_log_status(id, status, error)`
+  (sqlite + postgres + every test stub), using the generation status vocabulary
+  the log reader already parses (`completed`/`failed`/`cancelled`), and call it
+  on every terminal transition: the poller's shared terminal tail (covers video
+  and model3d) and the handler-observed 3D completion/failure paths in
+  `get_3d_status` (`persist_model3d_result` and its mesh-guard failure). The
+  log id is the generation id. A failed update must be logged, never fatal.
+  Test with an in-memory SQLite: submit → drive to terminal → the log row's
+  status is terminal.
+- [ ] **Mock catalog nit:** `mock/all-params-3d`'s `target_polycount` has a
+  `label` but no `description`; add one so the Playground help line renders
+  for it too.
+- [ ] **Gates:** `cd litegen-core && cargo test && cargo clippy --all-targets`
+  (no NEW clippy error in files this task touches — the branch carries 17
+  pre-existing ones, see the SDD ledger); commit, ticking this section.
