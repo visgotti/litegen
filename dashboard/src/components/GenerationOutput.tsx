@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { Generation } from '@litegen/sdk';
 import ModelPreview from './ModelPreview';
 import { assetsOf } from './model3d-assets';
@@ -47,23 +47,36 @@ function InFlight({ generation }: { generation: Generation }) {
 }
 
 /**
- * A video result. Starts as `<video>` unless the result is known to be an
- * image; if the browser cannot decode it as video, falls back to `<img>` once.
- * That fallback covers GIF "videos" served from extensionless URLs (the mock
- * provider's `/mock/video/{id}`), whose mime the generation row does not keep.
- * Keyed by URL at the call site, so a new result starts over as video.
+ * A video result. Renders as `<img>` up front when `videoResultIsImage` says
+ * the URL is plausibly an image (GIF, `image/*`, a `data:image/...` URL) —
+ * that heuristic is a pure function of the URL, so it is decided once here
+ * rather than re-checked later. If the `<video>` element itself fails to
+ * load, that is therefore a real failure (an expired signed URL, a 404, a
+ * CORS block) and not a disguised image: render an explicit message with a
+ * link to open the URL directly instead of a silently broken `<img>`.
+ * Keyed by URL at the call site, so a new result starts over.
  */
 function VideoResult({ url }: { url: string }) {
-  const [asImage, setAsImage] = useState(() => videoResultIsImage(url));
-  if (asImage) {
+  const [failed, setFailed] = useState(false);
+  if (videoResultIsImage(url)) {
     return <img data-testid="generation-output-image" src={url} alt="Generated output" style={MEDIA} />;
+  }
+  if (failed) {
+    return (
+      <div data-testid="generation-output-video-error" style={ERROR_NOTICE}>
+        <strong>Video failed to load.</strong>{' '}
+        <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit' }}>
+          Open it directly
+        </a>
+      </div>
+    );
   }
   return (
     <video
       data-testid="generation-output-video"
       controls
       src={url}
-      onError={() => setAsImage(true)}
+      onError={() => setFailed(true)}
       style={MEDIA}
     />
   );
@@ -94,39 +107,7 @@ function Completed({ generation }: { generation: Generation }) {
   );
 }
 
-/**
- * Renders one generation row by status. Presentational: the caller fetches
- * (and re-polls) the row and passes the latest state in.
- *
- * `generation` null with no `error` is the "resolving" state — the first fetch
- * is in flight (`loading`), or the row does not exist yet and the caller is
- * still retrying.
- */
-export default function GenerationOutput({
-  generation,
-  loading,
-  error,
-}: {
-  generation: Generation | null;
-  loading: boolean;
-  error?: string;
-}) {
-  if (error) {
-    return (
-      <div data-testid="generation-output-error" style={ERROR_NOTICE}>
-        <strong>Could not load the generation:</strong> {error}
-      </div>
-    );
-  }
-
-  if (!generation) {
-    return (
-      <div data-testid="generation-output-resolving" style={MUTED}>
-        {loading ? 'Resolving generation…' : 'Waiting for the generation record…'}
-      </div>
-    );
-  }
-
+function byStatus(generation: Generation): ReactNode {
   // Widened to string: the wire value is not type-checked, so the default
   // branch must be reachable (switching on the union would narrow it to never).
   const status: string = generation.status;
@@ -157,4 +138,56 @@ export default function GenerationOutput({
         </div>
       );
   }
+}
+
+/**
+ * Renders one generation row by status. Presentational: the caller fetches
+ * (and re-polls) the row and passes the latest state in.
+ *
+ * `generation` null with no `error` is the "resolving" state — the first fetch
+ * is in flight (`loading`), or the row does not exist yet and the caller is
+ * still retrying.
+ *
+ * `reconnecting` means the caller's poll hit a transient error (5xx, timeout,
+ * network error) but is still within its retry streak: rather than clearing
+ * `generation` or setting `error`, it keeps the last known state and flags
+ * this so a small muted note appears alongside it instead of discarding
+ * minutes of progress over one hiccup. Mutually exclusive with `error` in
+ * practice — the caller only sets `error` once it gives up.
+ */
+export default function GenerationOutput({
+  generation,
+  loading,
+  error,
+  reconnecting,
+}: {
+  generation: Generation | null;
+  loading: boolean;
+  error?: string;
+  reconnecting?: boolean;
+}) {
+  if (error) {
+    return (
+      <div data-testid="generation-output-error" style={ERROR_NOTICE}>
+        <strong>Could not load the generation:</strong> {error}
+      </div>
+    );
+  }
+
+  const body = !generation ? (
+    <div data-testid="generation-output-resolving" style={MUTED}>
+      {loading ? 'Resolving generation…' : 'Waiting for the generation record…'}
+    </div>
+  ) : byStatus(generation);
+
+  return (
+    <>
+      {body}
+      {reconnecting && (
+        <div data-testid="generation-output-reconnecting" style={{ ...MUTED, marginTop: 8 }}>
+          Reconnecting…
+        </div>
+      )}
+    </>
+  );
 }
