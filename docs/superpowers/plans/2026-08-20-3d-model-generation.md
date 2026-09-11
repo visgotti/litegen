@@ -5593,10 +5593,19 @@ defect but four user-visible issues in the Task 21 components:
 
 ### Task 17C: Backend follow-ups found by the e2e run
 
+**Status:** ✅ DONE (2026-09-11, 56c251d) — `require_media_type` in all three
+extractors (400 `model_media_type_mismatch`, before param validation; no
+existing test posted cross-family); `DatabaseStore::update_request_log_status`
+on sqlite/postgres/all 4 test doubles, called on every terminal transition —
+the brief's list plus two it did not name, `reap_generation` and
+`cancel_generation`, which left their rows `pending` the same way. Gated
+Postgres round-trip run green on local PG14. Report:
+`.superpowers/sdd/2026-08-20-3d-model-generation/task-17c-report.md`
+
 Task 15's Playwright run (2026-09-11) surfaced two backend defects, both
 verified in code by the controller:
 
-- [ ] **Endpoint/media-type mismatch is accepted.** None of the `Validated{Image,
+- [x] DONE 2026-09-11 **Endpoint/media-type mismatch is accepted.** None of the `Validated{Image,
   Video,Model3d}` extractors in `litegen-core/src/api/middleware/validator.rs`
   checks the resolved schema's `media_type` (the file has zero references to
   it). So `POST /v1/images/cost` (and `/v1/images/generations`) accepts
@@ -5608,7 +5617,7 @@ verified in code by the controller:
   Check it **before** param validation so the error is the real one. Cover
   image↔video↔model3d both directions and the cost endpoints, and check no
   existing test relied on cross-family requests.
-- [ ] **Async request logs never leave `pending`.** Handlers log async requests
+- [x] DONE 2026-09-11 **Async request logs never leave `pending`.** Handlers log async requests
   (`video`, `model3d`) with status `pending`, and `DatabaseStore` has no way to
   update a request log, so every 3D and video row in `/v1/logs` shows `pending`
   forever. Add `DatabaseStore::update_request_log_status(id, status, error)`
@@ -5620,9 +5629,9 @@ verified in code by the controller:
   log id is the generation id. A failed update must be logged, never fatal.
   Test with an in-memory SQLite: submit → drive to terminal → the log row's
   status is terminal.
-- [ ] **Mock catalog nit:** `mock/all-params-3d`'s `target_polycount` has a
+- [x] DONE 2026-09-11 **Mock catalog nit:** `mock/all-params-3d`'s `target_polycount` has a
   `label` but no `description`; add one so the Playground help line renders
   for it too.
-- [ ] **Gates:** `cd litegen-core && cargo test && cargo clippy --all-targets`
+- [x] DONE 2026-09-11 **Gates:** `cd litegen-core && cargo test && cargo clippy --all-targets`
   (no NEW clippy error in files this task touches — the branch carries 17
   pre-existing ones, see the SDD ledger); commit, ticking this section.
