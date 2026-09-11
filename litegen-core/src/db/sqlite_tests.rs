@@ -353,7 +353,11 @@ mod tests {
     #[tokio::test]
     async fn update_request_log_status_moves_a_pending_row_to_its_terminal_status() {
         let db = in_memory_db().await;
-        db.log_request("rl-fail", "mock/video-gen", "mock", "pending", "video", 0.25, 12, None, None, None, None).await.unwrap();
+        // 999_999 ms (~16 min) stands in for a submit-time latency no test run
+        // can reach, so the re-stamp below is unmistakable without pinning a
+        // wall-clock number.
+        let started = std::time::Instant::now();
+        db.log_request("rl-fail", "mock/video-gen", "mock", "pending", "video", 0.25, 999_999, None, None, None, None).await.unwrap();
         db.log_request("rl-done", "mock/mesh-3d", "mock", "pending", "model3d", 0.0, 30, None, None, None, None).await.unwrap();
 
         db.update_request_log_status("rl-fail", "failed", Some("provider error")).await.unwrap();
@@ -366,9 +370,37 @@ mod tests {
         let done = logs.iter().find(|l| l.id == "rl-done").unwrap();
         assert_eq!(done.status, GenerationStatus::Completed);
         assert_eq!(done.error, None);
-        // Only status/error change; the submit-time facts stay as logged.
-        assert_eq!(failed.latency_ms, 12);
+        // A row that was `pending` is an ASYNC row whose logged latency is the
+        // enqueue time; settling it re-stamps `latency_ms` with the END-TO-END
+        // time (now − created_at) so `/v1/stats` percentiles keep one meaning.
+        // `created_at` is `datetime('now')` — truncated to the second — so the
+        // re-stamp can read up to a second high; bound it by the test's own
+        // elapsed time plus that second instead of asserting an exact number.
+        let ceiling = started.elapsed().as_millis() as u64 + 2_000;
+        assert!(
+            failed.latency_ms <= ceiling,
+            "a settled pending row carries its end-to-end latency, not the 999_999ms submit stamp; got {}",
+            failed.latency_ms
+        );
+        // Everything else about the submit-time row stays as logged.
         assert!((failed.cost_usd - 0.25).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn update_request_log_status_leaves_a_non_pending_rows_latency_alone() {
+        // The re-stamp is conditional on the PRE-UPDATE status (SQL evaluates
+        // SET expressions against the old row). A sync image row already carries
+        // the latency its handler measured end to end, so settling it — a cancel,
+        // say — must not overwrite that with time-since-created.
+        let db = in_memory_db().await;
+        db.log_request("rl-sync", "mock/image-gen", "mock", "completed", "image", 0.01, 1234, None, None, None, None).await.unwrap();
+
+        db.update_request_log_status("rl-sync", "cancelled", None).await.unwrap();
+
+        let (logs, _) = db.get_request_logs(1, 50).await.unwrap();
+        let row = logs.iter().find(|l| l.id == "rl-sync").unwrap();
+        assert_eq!(row.status, GenerationStatus::Cancelled);
+        assert_eq!(row.latency_ms, 1234, "a row that was never `pending` keeps its measured latency");
     }
 
     // ─── Audit Log ──────────────────────────────────────────────────────────

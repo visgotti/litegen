@@ -23,6 +23,11 @@ COPY models /app/models
 ENV LITEGEN_MODELS_DIR=/app/models \
     LITEGEN__SERVER__HOST=0.0.0.0 \
     LITEGEN__SERVER__PORT=4000
+# Set LITEGEN__SERVER__PUBLIC_BASE_URL to the origin clients reach this
+# container on (e.g. https://api.example.com). 3D asset URLs are minted
+# absolute from it; the default derives from the bind host, which inside a
+# container is the unreachable 0.0.0.0 (loopback after the fallback).
+# ENV LITEGEN__SERVER__PUBLIC_BASE_URL=https://api.example.com
 EXPOSE 4000
 USER 1000:1000
 ENTRYPOINT ["/app/litegen"]
