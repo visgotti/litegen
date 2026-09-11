@@ -95,7 +95,7 @@ console.log(image.data[0]?.url);
 // Video — await resolves to the finished job (submits + polls under the hood)
 const video = await client.videos.generate({
   prompt: 'a timelapse of clouds drifting over a city',
-  model: 'runway/gen4-turbo',
+  model: 'runway/gen4.5',
   duration_seconds: 5,
 });
 console.log(video.video_url);
@@ -103,7 +103,7 @@ console.log(video.video_url);
 // …or stream progress as it runs:
 for await (const update of client.videos.generate({
   prompt: 'a timelapse of clouds drifting over a city',
-  model: 'runway/gen4-turbo',
+  model: 'runway/gen4.5',
 })) {
   console.log(update.status, update.progress);
 }`;
@@ -128,7 +128,7 @@ print(image["data"][0]["url"])
 # Video — .result() blocks until the job finishes (submits + polls under the hood)
 video = client.videos.generate(
     prompt="a timelapse of clouds drifting over a city",
-    model="runway/gen4-turbo",
+    model="runway/gen4.5",
     duration_seconds=5,
 ).result()
 print(video["video_url"])
@@ -136,6 +136,6 @@ print(video["video_url"])
 # …or stream progress as it runs:
 for update in client.videos.generate(
     prompt="a timelapse of clouds drifting over a city",
-    model="runway/gen4-turbo",
+    model="runway/gen4.5",
 ):
     print(update["status"], update["progress"])`;

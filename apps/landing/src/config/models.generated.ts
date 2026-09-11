@@ -144,7 +144,7 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 4000
+      "maxLength": 512
     },
     "params": [
       {
@@ -1227,17 +1227,19 @@ export const MODELS: ModelEntry[] = [
       "3:2",
       "3:4",
       "4:3",
+      "4:5",
+      "5:4",
       "9:16",
       "16:9",
       "21:9"
     ],
-    "maxRefImages": 3,
+    "maxRefImages": 14,
     "refRoles": [
       {
         "name": "init",
         "required": false,
         "min": 0,
-        "max": 3
+        "max": 14
       }
     ],
     "promptLimits": {
@@ -1279,17 +1281,23 @@ export const MODELS: ModelEntry[] = [
       "3:2",
       "3:4",
       "4:3",
+      "4:5",
+      "5:4",
       "9:16",
       "16:9",
-      "21:9"
+      "21:9",
+      "1:4",
+      "4:1",
+      "1:8",
+      "8:1"
     ],
-    "maxRefImages": 3,
+    "maxRefImages": 14,
     "refRoles": [
       {
         "name": "init",
         "required": false,
         "min": 0,
-        "max": 3
+        "max": 14
       }
     ],
     "promptLimits": {
@@ -1330,17 +1338,23 @@ export const MODELS: ModelEntry[] = [
       "3:2",
       "3:4",
       "4:3",
+      "4:5",
+      "5:4",
       "9:16",
       "16:9",
-      "21:9"
+      "21:9",
+      "1:4",
+      "4:1",
+      "1:8",
+      "8:1"
     ],
-    "maxRefImages": 3,
+    "maxRefImages": 14,
     "refRoles": [
       {
         "name": "init",
         "required": false,
         "min": 0,
-        "max": 3
+        "max": 14
       }
     ],
     "promptLimits": {
@@ -1583,7 +1597,16 @@ export const MODELS: ModelEntry[] = [
       "imageTo3d": false,
       "multiviewTo3d": false
     },
-    "sizes": [],
+    "sizes": [
+      "768x768",
+      "768x1024",
+      "1024x768",
+      "1024x1024",
+      "720x1280",
+      "1280x720",
+      "768x1280",
+      "1280x768"
+    ],
     "aspectRatios": [],
     "maxRefImages": 1,
     "refRoles": [
@@ -1649,18 +1672,9 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 2000
+      "maxLength": 2500
     },
-    "params": [
-      {
-        "name": "resolution",
-        "kind": "string",
-        "enum": [
-          "540p",
-          "720p"
-        ]
-      }
-    ],
+    "params": [],
     "pricing": {
       "baseCostUsd": 0.5
     },
@@ -1700,7 +1714,9 @@ export const MODELS: ModelEntry[] = [
       "16:10",
       "10:16",
       "3:1",
-      "1:3"
+      "1:3",
+      "2:1",
+      "1:2"
     ],
     "maxRefImages": 3,
     "refRoles": [
@@ -1784,7 +1800,9 @@ export const MODELS: ModelEntry[] = [
       "16:10",
       "10:16",
       "3:1",
-      "1:3"
+      "1:3",
+      "2:1",
+      "1:2"
     ],
     "maxRefImages": 3,
     "refRoles": [
@@ -1868,7 +1886,9 @@ export const MODELS: ModelEntry[] = [
       "16:10",
       "10:16",
       "3:1",
-      "1:3"
+      "1:3",
+      "2:1",
+      "1:2"
     ],
     "maxRefImages": 3,
     "refRoles": [
@@ -2091,14 +2111,14 @@ export const MODELS: ModelEntry[] = [
     "id": "kling/video-kling-v2-1",
     "provider": "kling",
     "displayName": "Kling Video v2.1",
-    "description": "Kling v2.1 text/image-to-video (first frame + image_tail last frame).",
+    "description": "Kling v2.1 image-to-video (first frame + image_tail last frame).",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
       "inpainting": false,
-      "textToVideo": true,
+      "textToVideo": false,
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
@@ -2114,8 +2134,8 @@ export const MODELS: ModelEntry[] = [
     "refRoles": [
       {
         "name": "first_frame",
-        "required": false,
-        "min": 0,
+        "required": true,
+        "min": 1,
         "max": 1
       },
       {
@@ -2146,7 +2166,6 @@ export const MODELS: ModelEntry[] = [
       "baseCostUsd": 1
     },
     "tags": [
-      "text-to-video",
       "image-to-video"
     ],
     "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
@@ -2433,8 +2452,18 @@ export const MODELS: ModelEntry[] = [
       {
         "name": "duration_seconds",
         "kind": "float",
-        "min": 3,
+        "min": 5,
         "max": 9
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p",
+          "4k"
+        ]
       }
     ],
     "pricing": {
@@ -2642,7 +2671,8 @@ export const MODELS: ModelEntry[] = [
         "enum": [
           "540p",
           "720p",
-          "1080p"
+          "1080p",
+          "4k"
         ]
       }
     ],
@@ -2751,7 +2781,9 @@ export const MODELS: ModelEntry[] = [
       "16:9",
       "9:16",
       "4:3",
-      "3:4"
+      "3:4",
+      "21:9",
+      "9:21"
     ],
     "maxRefImages": 2,
     "refRoles": [
@@ -2778,6 +2810,16 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "min": 5,
         "max": 9
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p",
+          "4k"
+        ]
       }
     ],
     "pricing": {
@@ -2959,7 +3001,6 @@ export const MODELS: ModelEntry[] = [
         "name": "resolution",
         "kind": "string",
         "enum": [
-          "512P",
           "768P",
           "1080P"
         ]
@@ -2993,16 +3034,10 @@ export const MODELS: ModelEntry[] = [
     },
     "sizes": [],
     "aspectRatios": [],
-    "maxRefImages": 2,
+    "maxRefImages": 1,
     "refRoles": [
       {
         "name": "first_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      },
-      {
-        "name": "last_frame",
         "required": false,
         "min": 0,
         "max": 1
@@ -3049,7 +3084,7 @@ export const MODELS: ModelEntry[] = [
       "textToImage": false,
       "imageToImage": false,
       "inpainting": false,
-      "textToVideo": true,
+      "textToVideo": false,
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
@@ -3061,8 +3096,8 @@ export const MODELS: ModelEntry[] = [
     "refRoles": [
       {
         "name": "subject",
-        "required": false,
-        "min": 0,
+        "required": true,
+        "min": 1,
         "max": 1
       }
     ],
@@ -3083,7 +3118,7 @@ export const MODELS: ModelEntry[] = [
       "baseCostUsd": 0.65
     },
     "tags": [
-      "text-to-video",
+      "image-to-video",
       "subject-reference"
     ],
     "referenceUrl": "https://platform.minimax.io/docs"
@@ -3134,7 +3169,7 @@ export const MODELS: ModelEntry[] = [
     "id": "openai/gpt-image-1",
     "provider": "openai",
     "displayName": "GPT Image 1",
-    "description": "OpenAI GPT Image 1. Text-to-image plus prompt-driven editing and inpainting via the images/edits endpoint.",
+    "description": "DEPRECATED: OpenAI shuts gpt-image-1 down on 2026-10-23 (replacement gpt-image-2). OpenAI GPT Image 1. Text-to-image plus prompt-driven editing and inpainting via the images/edits endpoint.",
     "mediaType": "image",
     "output": "image",
     "capabilities": {
@@ -3199,13 +3234,13 @@ export const MODELS: ModelEntry[] = [
     "id": "openai/gpt-image-2",
     "provider": "openai",
     "displayName": "GPT Image 2",
-    "description": "OpenAI's current flagship image model. Arbitrary resolutions (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1).",
+    "description": "OpenAI GPT Image 2. Text-to-image plus prompt-driven editing and inpainting via the images/edits endpoint. Arbitrary resolutions (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1).",
     "mediaType": "image",
     "output": "image",
     "capabilities": {
       "textToImage": true,
-      "imageToImage": false,
-      "inpainting": false,
+      "imageToImage": true,
+      "inpainting": true,
       "textToVideo": false,
       "imageToVideo": false,
       "textTo3d": false,
@@ -3214,8 +3249,21 @@ export const MODELS: ModelEntry[] = [
     },
     "sizes": [],
     "aspectRatios": [],
-    "maxRefImages": 0,
-    "refRoles": [],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "mask",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
     "promptLimits": {
       "required": true,
       "maxLength": 32000
@@ -3237,7 +3285,9 @@ export const MODELS: ModelEntry[] = [
       "baseCostUsd": 0.04
     },
     "tags": [
-      "text-to-image"
+      "text-to-image",
+      "image-to-image",
+      "inpainting"
     ],
     "referenceUrl": "https://platform.openai.com/docs/guides/image-generation"
   },
@@ -3629,7 +3679,9 @@ export const MODELS: ModelEntry[] = [
       "1434x1024",
       "1024x1434",
       "1024x2048",
-      "2048x1024"
+      "2048x1024",
+      "1820x1024",
+      "1024x1820"
     ],
     "aspectRatios": [],
     "maxRefImages": 0,
@@ -3644,6 +3696,10 @@ export const MODELS: ModelEntry[] = [
         "kind": "seed",
         "min": 0,
         "max": 4294967294
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string"
       },
       {
         "name": "style",
@@ -3696,7 +3752,9 @@ export const MODELS: ModelEntry[] = [
       "1434x1024",
       "1024x1434",
       "1024x2048",
-      "2048x1024"
+      "2048x1024",
+      "1820x1024",
+      "1024x1820"
     ],
     "aspectRatios": [],
     "maxRefImages": 0,
@@ -3825,25 +3883,26 @@ export const MODELS: ModelEntry[] = [
     },
     "sizes": [
       "1024x1024",
-      "1365x1024",
-      "1024x1365",
-      "1536x1024",
-      "1024x1536",
-      "1024x1280",
-      "1280x1024",
-      "1024x1707",
-      "1707x1024",
-      "1434x1024",
-      "1024x1434",
-      "1024x2048",
-      "2048x1024"
+      "1536x768",
+      "768x1536",
+      "1280x832",
+      "832x1280",
+      "1216x896",
+      "896x1216",
+      "1152x896",
+      "896x1152",
+      "832x1344",
+      "1280x896",
+      "896x1280",
+      "1344x768",
+      "768x1344"
     ],
     "aspectRatios": [],
     "maxRefImages": 0,
     "refRoles": [],
     "promptLimits": {
       "required": true,
-      "maxLength": 1000
+      "maxLength": 10000
     },
     "params": [
       {
@@ -3851,22 +3910,6 @@ export const MODELS: ModelEntry[] = [
         "kind": "seed",
         "min": 0,
         "max": 4294967294
-      },
-      {
-        "name": "negative_prompt",
-        "kind": "string"
-      },
-      {
-        "name": "style",
-        "kind": "string",
-        "enum": [
-          "realistic_image",
-          "digital_illustration",
-          "vector_illustration",
-          "icon",
-          "any"
-        ],
-        "default": "realistic_image"
       }
     ],
     "pricing": {
@@ -3895,26 +3938,27 @@ export const MODELS: ModelEntry[] = [
       "multiviewTo3d": false
     },
     "sizes": [
-      "1024x1024",
-      "1365x1024",
-      "1024x1365",
-      "1536x1024",
-      "1024x1536",
-      "1024x1280",
-      "1280x1024",
-      "1024x1707",
-      "1707x1024",
-      "1434x1024",
-      "1024x1434",
-      "1024x2048",
-      "2048x1024"
+      "2048x2048",
+      "3072x1536",
+      "1536x3072",
+      "2560x1664",
+      "1664x2560",
+      "2432x1792",
+      "1792x2432",
+      "2304x1792",
+      "1792x2304",
+      "1664x2688",
+      "2560x1792",
+      "1792x2560",
+      "2688x1536",
+      "1536x2688"
     ],
     "aspectRatios": [],
     "maxRefImages": 0,
     "refRoles": [],
     "promptLimits": {
       "required": true,
-      "maxLength": 1000
+      "maxLength": 10000
     },
     "params": [
       {
@@ -3922,22 +3966,6 @@ export const MODELS: ModelEntry[] = [
         "kind": "seed",
         "min": 0,
         "max": 4294967294
-      },
-      {
-        "name": "negative_prompt",
-        "kind": "string"
-      },
-      {
-        "name": "style",
-        "kind": "string",
-        "enum": [
-          "realistic_image",
-          "digital_illustration",
-          "vector_illustration",
-          "icon",
-          "any"
-        ],
-        "default": "realistic_image"
       }
     ],
     "pricing": {
@@ -4384,7 +4412,7 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 5500
+      "maxLength": 1000
     },
     "params": [
       {
@@ -4411,7 +4439,7 @@ export const MODELS: ModelEntry[] = [
     "mediaType": "image",
     "output": "image",
     "capabilities": {
-      "textToImage": true,
+      "textToImage": false,
       "imageToImage": true,
       "inpainting": false,
       "textToVideo": false,
@@ -4433,14 +4461,14 @@ export const MODELS: ModelEntry[] = [
     "refRoles": [
       {
         "name": "init",
-        "required": false,
+        "required": true,
         "min": 1,
         "max": 3
       }
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 5500
+      "maxLength": 1000
     },
     "params": [
       {
@@ -4454,7 +4482,6 @@ export const MODELS: ModelEntry[] = [
       "baseCostUsd": 0.02
     },
     "tags": [
-      "text-to-image",
       "image-to-image",
       "fast"
     ],
@@ -4464,14 +4491,14 @@ export const MODELS: ModelEntry[] = [
     "id": "runway/gen4-turbo",
     "provider": "runway",
     "displayName": "Runway Gen-4 Turbo",
-    "description": "Runway Gen-4 Turbo image-to-video and text-to-video.",
+    "description": "Runway Gen-4 Turbo image-to-video (requires a first-frame image).",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
       "inpainting": false,
-      "textToVideo": true,
+      "textToVideo": false,
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
@@ -4490,8 +4517,8 @@ export const MODELS: ModelEntry[] = [
     "refRoles": [
       {
         "name": "init",
-        "required": false,
-        "min": 0,
+        "required": true,
+        "min": 1,
         "max": 1
       }
     ],
@@ -4518,7 +4545,6 @@ export const MODELS: ModelEntry[] = [
       "baseCostUsd": 0.25
     },
     "tags": [
-      "text-to-video",
       "image-to-video",
       "fast"
     ],
@@ -4544,11 +4570,7 @@ export const MODELS: ModelEntry[] = [
     "sizes": [],
     "aspectRatios": [
       "1280:720",
-      "720:1280",
-      "1104:832",
-      "832:1104",
-      "960:960",
-      "1584:672"
+      "720:1280"
     ],
     "maxRefImages": 1,
     "refRoles": [
@@ -4940,9 +4962,7 @@ export const MODELS: ModelEntry[] = [
     "aspectRatios": [
       "16:9",
       "9:16",
-      "1:1",
-      "3:4",
-      "4:3"
+      "1:1"
     ],
     "maxRefImages": 7,
     "refRoles": [
@@ -5017,9 +5037,7 @@ export const MODELS: ModelEntry[] = [
     "aspectRatios": [
       "16:9",
       "9:16",
-      "1:1",
-      "3:4",
-      "4:3"
+      "1:1"
     ],
     "maxRefImages": 7,
     "refRoles": [
@@ -5127,13 +5145,14 @@ export const MODELS: ModelEntry[] = [
         "name": "duration_seconds",
         "kind": "float",
         "default": 5,
-        "min": 4,
+        "min": 1,
         "max": 8
       },
       {
         "name": "resolution",
         "kind": "string",
         "enum": [
+          "540p",
           "720p",
           "1080p"
         ]

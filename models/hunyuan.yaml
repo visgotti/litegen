@@ -13,20 +13,24 @@ models:
     params:
       negative_prompt: { kind: string, max_length: 1024 }
       seed: { kind: seed, min: 0, max: 2147483647 }
+      # Resolution is an enum of eight W:H values (default 1024:1024); the
+      # adapter sends WxH as W:H. With a ContentImage only the first four apply.
+      # @see https://cloud.tencent.com/document/product/1729/105969 (2026-09-11)
       size:
         kind: size
-        mode: freeform
-        min_width: 512
-        max_width: 1280
-        min_height: 512
-        max_height: 1280
+        mode: enum
+        values: [[768,768],[768,1024],[1024,768],[1024,1024],[720,1280],[1280,720],[768,1280],[1280,768]]
     ref_inputs:
       max_total: 1
       default_role: init
       provider_format: { form: base64 }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [Style, LogoAdd, RspImgType, Revise]
+    # Only SubmitHunyuanImageJob parameters: Tencent fails a request carrying an
+    # undefined parameter (UnknownParameter). RspImgType belongs to the sync
+    # TextToImageLite action, not this one.
+    # @see https://cloud.tencent.com/document/api/1729/101847 (UnknownParameter)
+    extra_allowlist: [Style, LogoAdd, Revise]
     tags: [text-to-image, image-to-image]
 
   # Video product (混元生视频 / vclm): vclm.tencentcloudapi.com (v2024-05-23).
@@ -40,16 +44,17 @@ models:
     # image. vclm does expose SubmitTextToVideoJob, but we do not implement it,
     # so text_to_video is not advertised.
     capabilities: { image_to_video: true }
-    prompt: { required: true, max_length: 2000 }
-    params:
-      resolution:
-        kind: string
-        enum_values: [540p, 720p]
+    # SubmitImageToVideoJob: Prompt "不能超过2500个字符" (at most 2500 characters).
+    # It has no Resolution parameter, and the adapter never sends `resolution`,
+    # so no resolution param is advertised and Resolution is not allowlisted
+    # (Tencent fails undefined parameters with UnknownParameter).
+    # @see https://cloud.tencent.com/document/product/1616/130567 (2026-09-11)
+    prompt: { required: true, max_length: 2500 }
     ref_inputs:
       max_total: 1
       default_role: first_frame
       provider_format: { form: base64 }
       roles:
         first_frame: { required: true, min_count: 1, max_count: 1 }
-    extra_allowlist: [LogoAdd, Resolution]
+    extra_allowlist: [LogoAdd]
     tags: [image-to-video]

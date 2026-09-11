@@ -50,8 +50,12 @@ fn no_retired_model_ids_are_advertised() {
         ("openai/dall-e-3", "OpenAI shutdown 2026-05-12"),
         ("google/imagen-3", "imagen-3.0-generate-002 shutdown 2025-11-10"),
         ("google/veo-2.0-generate-001", "Google shutdown 2026-06-30"),
-        ("google/veo-3.0-generate-001", "Google shutdown 2026-06-30"),
-        ("google/veo-3.0-fast-generate-001", "Google shutdown 2026-06-30"),
+        // Deprecated and past their earliest shutdown date, but not yet shut
+        // down as of 2026-09-11 (their deprecations rows are not grayed); veo-3.1
+        // is the replacement, so they stay out of the catalog.
+        // @see https://ai.google.dev/gemini-api/docs/deprecations
+        ("google/veo-3.0-generate-001", "deprecated; earliest shutdown 2026-06-30"),
+        ("google/veo-3.0-fast-generate-001", "deprecated; earliest shutdown 2026-06-30"),
         ("runway/gen-3", "gen3a_turbo removed from the API 2026-07-30"),
         ("runway/gen-3-turbo", "gen3a_turbo removed from the API 2026-07-30"),
         ("bfl/flux-pro", "no /v1/flux-pro endpoint in api.bfl.ai/openapi.json"),
@@ -409,5 +413,874 @@ fn target_polycount_bounds_are_sane_where_declared() {
                 m.id, max
             );
         }
+    }
+}
+
+// ─── Runway: vendor facts re-read 2026-09-11 (model-drift) ──────────────────
+
+/// `gen4_turbo` appears only in the `POST /v1/image_to_video` model union
+/// (`promptImage` required); `/v1/text_to_video` has no gen4_turbo branch, and
+/// the model guide lists its input as "Image". Advertising text-to-video sent
+/// prompt-only requests to an endpoint that rejects the model.
+/// @see <https://docs.dev.runwayml.com/openapi.json> (2026-09-11)
+/// @see <https://docs.dev.runwayml.com/guides/models.md> (2026-09-11)
+#[test]
+fn runway_gen4_turbo_is_image_to_video_only() {
+    let reg = registry();
+    let schema = reg.get("runway/gen4-turbo").expect("runway/gen4-turbo missing");
+    assert!(
+        !schema.capabilities.text_to_video,
+        "gen4_turbo is not accepted by /v1/text_to_video"
+    );
+    assert!(schema.capabilities.image_to_video);
+    let init = schema
+        .ref_inputs
+        .as_ref()
+        .and_then(|ri| ri.roles.get("init"))
+        .expect("gen4-turbo needs an init role for its required promptImage");
+    assert!(
+        init.required && init.min_count >= 1,
+        "promptImage is required, so the init role must be required: {init:?}"
+    );
+}
+
+/// `POST /v1/text_to_video` takes `ratio` ∈ `1280:720 | 720:1280` for gen4.5.
+/// The catalog has one `allowed` list per model, not per mode, so a model that
+/// advertises text-to-video may only offer ratios text-to-video accepts.
+/// @see <https://docs.dev.runwayml.com/openapi.json> (2026-09-11)
+#[test]
+fn runway_gen4_5_ratios_are_in_the_text_to_video_enum() {
+    const T2V_RATIOS: [&str; 2] = ["1280:720", "720:1280"];
+    let reg = registry();
+    let schema = reg.get("runway/gen4.5").expect("runway/gen4.5 missing");
+    assert!(schema.capabilities.text_to_video, "gen4.5 is Runway's text-to-video model");
+    let allowed = aspect_ratios(&reg, "runway/gen4.5");
+    assert!(!allowed.is_empty(), "runway/gen4.5 declares no aspect ratios");
+    for ar in allowed {
+        assert!(
+            T2V_RATIOS.contains(&ar.as_str()),
+            "runway/gen4.5 allows {ar:?}, which /v1/text_to_video rejects for gen4.5"
+        );
+    }
+}
+
+/// `POST /v1/text_to_image` `promptText`: "A non-empty string up to 1000
+/// characters" (`maxLength: 1000`) for gen4_image and gen4_image_turbo. The
+/// catalog said 5500.
+/// @see <https://docs.dev.runwayml.com/openapi.json> (2026-09-11)
+#[test]
+fn runway_image_prompt_limit_is_the_prompt_text_max_length() {
+    let reg = registry();
+    for id in ["runway/gen4_image", "runway/gen4_image_turbo"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert_eq!(
+            schema.prompt.max_length,
+            Some(1000),
+            "{id}: Runway's promptText maxLength is 1000"
+        );
+    }
+}
+
+/// gen4_image_turbo's `/v1/text_to_image` branch lists `referenceImages` in
+/// `required` ("An array of one to three images", `minItems: 1`). A role with
+/// `required: false` lets a zero-reference request through to a 400, and
+/// `text_to_image` promises a prompt-only request can work.
+/// @see <https://docs.dev.runwayml.com/openapi.json> (2026-09-11)
+/// @see <https://docs.dev.runwayml.com/guides/models.md> (2026-09-11) — "Text+Image (References)"
+#[test]
+fn runway_gen4_image_turbo_requires_a_reference_image() {
+    let reg = registry();
+    let schema = reg
+        .get("runway/gen4_image_turbo")
+        .expect("runway/gen4_image_turbo missing");
+    let init = schema
+        .ref_inputs
+        .as_ref()
+        .and_then(|ri| ri.roles.get("init"))
+        .expect("gen4_image_turbo needs an init role for referenceImages");
+    assert!(
+        init.required && init.min_count >= 1 && init.max_count == 3,
+        "referenceImages is required, one to three images: {init:?}"
+    );
+    assert!(
+        !schema.capabilities.text_to_image,
+        "gen4_image_turbo cannot generate from a prompt alone"
+    );
+    assert!(schema.capabilities.image_to_image);
+}
+
+/// gen4.5 takes `proresProfile` on both `/v1/text_to_video` and
+/// `/v1/image_to_video` ("Only valid when `outputFormat` is `prores` or
+/// `hdr_prores`"). `outputFormat` is allowlisted; its companion was not, so a
+/// caller could pick ProRes but not the profile.
+/// @see <https://docs.dev.runwayml.com/guides/models.md#professional-and-hdr-output-formats> (2026-09-11)
+#[test]
+fn runway_gen4_5_allowlists_the_prores_profile_with_output_format() {
+    let reg = registry();
+    let schema = reg.get("runway/gen4.5").expect("runway/gen4.5 missing");
+    for key in ["outputFormat", "proresProfile"] {
+        assert!(
+            schema.extra_allowlist.iter().any(|k| k == key),
+            "runway/gen4.5 extra_allowlist is missing {key:?}: {:?}",
+            schema.extra_allowlist
+        );
+    }
+}
+
+// ─── OpenAI: vendor facts re-read 2026-09-11 (model-drift) ──────────────────
+
+/// The gpt-image-2 model page lists `v1/images/edits` as "Supported" and
+/// inpainting as a supported feature, and `CreateImageEditRequest.model`
+/// names gpt-image-2. The catalog declared text-to-image only, so a reference
+/// image or mask was refused, and on 2026-10-23 gpt-image-1 (our only other
+/// edit-capable OpenAI model) shuts down.
+/// @see <https://developers.openai.com/api/docs/models/gpt-image-2> (2026-09-11)
+#[test]
+fn openai_gpt_image_2_advertises_editing_and_inpainting() {
+    let reg = registry();
+    let schema = reg.get("openai/gpt-image-2").expect("openai/gpt-image-2 missing");
+    assert!(schema.capabilities.text_to_image);
+    assert!(schema.capabilities.image_to_image, "images/edits supports gpt-image-2");
+    assert!(schema.capabilities.inpainting, "gpt-image-2 lists inpainting");
+    let ri = schema
+        .ref_inputs
+        .as_ref()
+        .expect("gpt-image-2 needs ref_inputs to accept an image or mask");
+    for role in ["init", "mask"] {
+        assert!(ri.roles.contains_key(role), "gpt-image-2 declares no {role:?} role");
+    }
+    match &ri.provider_format {
+        litegen::capabilities::schema::RefProviderFormat::Multipart(mp) => {
+            assert_eq!(mp.field_map.get("init").map(String::as_str), Some("image"));
+            assert_eq!(mp.field_map.get("mask").map(String::as_str), Some("mask"));
+        }
+        other => panic!("images/edits is multipart; gpt-image-2 provider_format is {other:?}"),
+    }
+}
+
+/// Carried models whose vendor shutdown is announced but not yet past carry a
+/// `DEPRECATED:` description naming the date, as the Sora rows already do.
+/// @see <https://developers.openai.com/api/docs/deprecations> (2026-09-11)
+#[test]
+fn openai_models_with_an_announced_shutdown_are_marked_deprecated() {
+    let reg = registry();
+    // (catalog id, announced shutdown date)
+    for (id, date) in [
+        ("openai/gpt-image-1", "2026-10-23"),
+        ("openai/sora", "2026-09-24"),
+        ("openai/sora-2-pro", "2026-09-24"),
+    ] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(
+            schema.description.starts_with("DEPRECATED") && schema.description.contains(date),
+            "{id} shuts down {date}; its description should say so: {:?}",
+            schema.description
+        );
+    }
+}
+
+// ─── MiniMax: vendor facts re-read 2026-09-11 (model-drift) ─────────────────
+
+/// Hailuo resolutions, per model and mode (t2v / i2v / fl2v pages):
+/// MiniMax-Hailuo-02 text-to-video takes `768P | 1080P`, first & last frame
+/// takes `768P | 1080P` ("does not support 512P"), and only image-to-video adds
+/// `512P`; MiniMax-Hailuo-2.3 takes `768P | 1080P` everywhere. Both models
+/// advertise text-to-video and one list serves every mode, so the list must
+/// be the text-to-video one.
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-t2v.md> (2026-09-11)
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-fl2v.md> (2026-09-11)
+#[test]
+fn minimax_hailuo_resolutions_are_valid_for_every_advertised_mode() {
+    let reg = registry();
+    for id in ["minimax/MiniMax-Hailuo-02", "minimax/MiniMax-Hailuo-2.3"] {
+        let values = enum_values(&reg, id, "resolution");
+        assert!(!values.is_empty(), "{id} declares no resolutions");
+        for r in values {
+            assert!(
+                ["768P", "1080P"].contains(&r.as_str()),
+                "{id} allows resolution {r:?}; text-to-video and first/last-frame reject it"
+            );
+        }
+    }
+}
+
+/// First & last frame generation accepts only `MiniMax-Hailuo-02`. A
+/// `last_frame` role on any other model sends `last_frame_image` with a model
+/// the fl2v request does not accept (and makes /v1/models report
+/// `supports_last_frame: true`).
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-fl2v.md> (2026-09-11)
+#[test]
+fn minimax_only_hailuo_02_declares_a_last_frame() {
+    let reg = registry();
+    let has_last_frame = |id: &str| {
+        reg.get(id)
+            .unwrap_or_else(|| panic!("{id} missing"))
+            .ref_inputs
+            .as_ref()
+            .is_some_and(|ri| ri.roles.contains_key("last_frame"))
+    };
+    assert!(
+        has_last_frame("minimax/MiniMax-Hailuo-02"),
+        "MiniMax-Hailuo-02 is the fl2v model"
+    );
+    for id in ["minimax/MiniMax-Hailuo-2.3", "minimax/T2V-01-Director", "minimax/S2V-01"] {
+        assert!(
+            !has_last_frame(id),
+            "{id} declares a last_frame role, but fl2v only accepts MiniMax-Hailuo-02"
+        );
+    }
+}
+
+/// The S2V-01 request schema lists `subject_reference` in `required` (one
+/// image: "only one image supported"). A prompt-only request cannot succeed, so
+/// the role is required and the model is not text-to-video.
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-s2v.md> (2026-09-11)
+#[test]
+fn minimax_s2v_01_requires_its_subject_reference() {
+    let reg = registry();
+    let schema = reg.get("minimax/S2V-01").expect("minimax/S2V-01 missing");
+    let subject = schema
+        .ref_inputs
+        .as_ref()
+        .and_then(|ri| ri.roles.get("subject"))
+        .expect("S2V-01 needs a subject role");
+    assert!(
+        subject.required && subject.min_count == 1 && subject.max_count == 1,
+        "subject_reference is required, exactly one image: {subject:?}"
+    );
+    assert!(
+        !schema.capabilities.text_to_video,
+        "S2V-01 cannot generate from a prompt alone"
+    );
+}
+
+/// `fast_pretreatment` "Applies only to `MiniMax-Hailuo-2.3` and
+/// `MiniMax-Hailuo-02`" (t2v; the i2v page says the same, plus 2.3-Fast).
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-t2v.md> (2026-09-11)
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-i2v.md> (2026-09-11)
+#[test]
+fn minimax_hailuo_models_allowlist_fast_pretreatment() {
+    let reg = registry();
+    for id in ["minimax/MiniMax-Hailuo-02", "minimax/MiniMax-Hailuo-2.3"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(
+            schema.extra_allowlist.iter().any(|k| k == "fast_pretreatment"),
+            "{id} extra_allowlist is missing fast_pretreatment: {:?}",
+            schema.extra_allowlist
+        );
+    }
+}
+
+// ─── Google: vendor facts re-read 2026-09-11 (model-drift) ──────────────────
+
+/// Gemini 3.1 Flash Image and 3.1 Flash Lite Image each document a 14-row
+/// aspect-ratio table: the 10 classic ratios (including 4:5 and 5:4, which the
+/// catalog was missing) plus 1:4, 4:1, 1:8 and 8:1. The v1beta discovery doc's
+/// `ImageConfig.aspectRatio` lists the same 14.
+/// @see <https://ai.google.dev/gemini-api/docs/generate-content/image-generation#aspect_ratios_and_image_size> (2026-09-11)
+#[test]
+fn gemini_3_1_flash_image_models_advertise_the_fourteen_documented_aspect_ratios() {
+    const DOCUMENTED: [&str; 14] = [
+        "1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16",
+        "16:9", "21:9",
+    ];
+    let mut documented: Vec<String> = DOCUMENTED.iter().map(|s| s.to_string()).collect();
+    documented.sort();
+    let reg = registry();
+    for id in [
+        "google/gemini-3.1-flash-image",
+        "google/gemini-3.1-flash-lite-image",
+    ] {
+        let mut allowed = aspect_ratios(&reg, id);
+        allowed.sort();
+        assert_eq!(
+            allowed, documented,
+            "{id} aspect ratios differ from Google's per-model table"
+        );
+    }
+}
+
+/// Gemini 3 Pro Image documents 10 aspect ratios (the table headed
+/// "3.1 Pro Image", whose 1K/2K/4K sizes and 1120/2000 tokens are
+/// gemini-3-pro-image's): 4:5 and 5:4 yes, the 1:4/4:1/1:8/8:1 extremes no.
+/// @see <https://ai.google.dev/gemini-api/docs/generate-content/image-generation#aspect_ratios_and_image_size> (2026-09-11)
+#[test]
+fn gemini_3_pro_image_advertises_the_ten_documented_aspect_ratios() {
+    const DOCUMENTED: [&str; 10] = [
+        "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9",
+    ];
+    let mut documented: Vec<String> = DOCUMENTED.iter().map(|s| s.to_string()).collect();
+    documented.sort();
+    let reg = registry();
+    let mut allowed = aspect_ratios(&reg, "google/gemini-3-pro-image");
+    allowed.sort();
+    assert_eq!(
+        allowed, documented,
+        "google/gemini-3-pro-image aspect ratios differ from Google's table"
+    );
+}
+
+/// "Gemini 3 image models let you to mix up to 14 reference images": 14 objects
+/// on 3.1 Flash Lite, 10 objects + 4 characters on 3.1 Flash, 6 objects +
+/// 5 characters + 3 style references on 3 Pro. The catalog capped them at 3.
+/// @see <https://ai.google.dev/gemini-api/docs/generate-content/image-generation#use-14-images> (2026-09-11)
+#[test]
+fn gemini_3_image_models_accept_fourteen_reference_images() {
+    let reg = registry();
+    for id in [
+        "google/gemini-3.1-flash-image",
+        "google/gemini-3.1-flash-lite-image",
+        "google/gemini-3-pro-image",
+    ] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        let refs = schema
+            .ref_inputs
+            .as_ref()
+            .unwrap_or_else(|| panic!("{id} declares no ref_inputs"));
+        assert_eq!(refs.max_total, 14, "{id} ref_inputs.max_total");
+        let init = refs
+            .roles
+            .get("init")
+            .unwrap_or_else(|| panic!("{id} declares no init role"));
+        assert_eq!(init.max_count, 14, "{id} init.max_count");
+    }
+}
+
+/// The Gemini Developer API's `ImageConfig` has only `aspectRatio` and
+/// `imageSize`; python-genai's `_ImageConfig_to_mldev` raises for
+/// `person_generation` ("only supported in Gemini Enterprise Agent Platform
+/// mode, not in Gemini Developer API mode"). The adapter forwards allowlisted
+/// extras into `generationConfig.imageConfig`, so allowlisting it guarantees an
+/// unknown-field 400 whenever it is used.
+/// @see <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta> (schemas.ImageConfig, revision 20260910)
+/// @see <https://github.com/googleapis/python-genai/blob/main/google/genai/models.py> (`_ImageConfig_to_mldev`)
+#[test]
+fn gemini_image_models_do_not_allowlist_the_vertex_only_person_generation() {
+    let reg = registry();
+    for id in [
+        "google/gemini-3.1-flash-image",
+        "google/gemini-3.1-flash-lite-image",
+        "google/gemini-3-pro-image",
+    ] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(
+            !schema.extra_allowlist.iter().any(|k| k == "personGeneration"),
+            "{id} allowlists personGeneration, which the Gemini Developer API's ImageConfig does not accept"
+        );
+    }
+}
+
+// ─── Hunyuan: vendor facts re-read 2026-09-11 (model-drift) ─────────────────
+
+/// `SubmitHunyuanImageJob.Resolution` supports exactly eight `W:H` values
+/// (default 1024:1024). The catalog's freeform 512–1280 box let through sizes
+/// such as 800x900 that Tencent rejects.
+/// @see <https://cloud.tencent.com/document/product/1729/105969> (2026-09-11)
+#[test]
+fn hunyuan_image_sizes_are_the_documented_resolution_enum() {
+    let reg = registry();
+    let schema = reg
+        .get("hunyuan/hunyuan-image")
+        .expect("hunyuan-image missing");
+    let mut sizes = match schema.params.get("size") {
+        Some(ParamSpec::Size(litegen::capabilities::schema::SizeSpec::Enum(e))) => e.values.clone(),
+        other => panic!("hunyuan-image size is {other:?}, expected the documented enum"),
+    };
+    sizes.sort();
+    let mut documented: Vec<(u32, u32)> = vec![
+        (768, 768),
+        (768, 1024),
+        (1024, 768),
+        (1024, 1024),
+        (720, 1280),
+        (1280, 720),
+        (768, 1280),
+        (1280, 768),
+    ];
+    documented.sort();
+    assert_eq!(
+        sizes, documented,
+        "hunyuan-image sizes differ from SubmitHunyuanImageJob.Resolution"
+    );
+}
+
+/// The adapter merges every allowlisted extra key into the request verbatim,
+/// and Tencent Cloud API 3.0 fails a request that carries an undefined
+/// parameter (`UnknownParameter`). `RspImgType` belongs to the synchronous
+/// `TextToImageLite` action, not `SubmitHunyuanImageJob`.
+/// @see <https://cloud.tencent.com/document/product/1729/105969> (2026-09-11)
+/// @see <https://cloud.tencent.com/document/api/1729/101847> — UnknownParameter
+#[test]
+fn hunyuan_image_extra_allowlist_names_only_submit_hunyuan_image_job_parameters() {
+    const PARAMS: [&str; 11] = [
+        "Prompt",
+        "NegativePrompt",
+        "Style",
+        "Resolution",
+        "Num",
+        "Clarity",
+        "ContentImage",
+        "Revise",
+        "Seed",
+        "LogoAdd",
+        "LogoParam",
+    ];
+    let reg = registry();
+    let schema = reg
+        .get("hunyuan/hunyuan-image")
+        .expect("hunyuan-image missing");
+    for key in &schema.extra_allowlist {
+        assert!(
+            PARAMS.contains(&key.as_str()),
+            "hunyuan-image allowlists {key:?}, which is not a SubmitHunyuanImageJob parameter"
+        );
+    }
+}
+
+/// Same rule for the video adapter's action. `SubmitImageToVideoJob` has no
+/// `Resolution` parameter, so allowlisting it guarantees `UnknownParameter`.
+/// @see <https://cloud.tencent.com/document/product/1616/130567> (2026-09-11)
+#[test]
+fn hunyuan_video_extra_allowlist_names_only_submit_image_to_video_job_parameters() {
+    const PARAMS: [&str; 21] = [
+        "Model",
+        "Image",
+        "ImageTail",
+        "Prompt",
+        "NegativePrompt",
+        "Duration",
+        "Mode",
+        "CfgScale",
+        "Sound",
+        "LogoAdd",
+        "LogoParam",
+        "MultiShot",
+        "ShotType",
+        "MultiPrompt",
+        "ElementList",
+        "StaticMask",
+        "DynamicMasks",
+        "CameraControl",
+        "CallbackUrl",
+        "VoiceList",
+        "ExternalTaskId",
+    ];
+    let reg = registry();
+    let schema = reg
+        .get("hunyuan/hunyuan-video")
+        .expect("hunyuan-video missing");
+    for key in &schema.extra_allowlist {
+        assert!(
+            PARAMS.contains(&key.as_str()),
+            "hunyuan-video allowlists {key:?}, which is not a SubmitImageToVideoJob parameter"
+        );
+    }
+}
+
+/// `SubmitImageToVideoJob` takes no resolution (quality is `Mode`: std|pro)
+/// and the adapter never reads `resolution`, so the `[540p, 720p]` enum was a
+/// control that validated and was then silently dropped.
+/// @see <https://cloud.tencent.com/document/product/1616/130567> (2026-09-11)
+#[test]
+fn hunyuan_video_does_not_advertise_a_resolution_param() {
+    let reg = registry();
+    let schema = reg
+        .get("hunyuan/hunyuan-video")
+        .expect("hunyuan-video missing");
+    assert!(
+        !schema.params.contains_key("resolution"),
+        "hunyuan-video advertises resolution, which SubmitImageToVideoJob does not take and the adapter never sends"
+    );
+}
+
+/// `SubmitImageToVideoJob.Prompt`: "不能超过2500个字符" (at most 2500 characters).
+/// @see <https://cloud.tencent.com/document/product/1616/130567> (2026-09-11)
+#[test]
+fn hunyuan_video_prompt_limit_matches_submit_image_to_video_job() {
+    let reg = registry();
+    let schema = reg
+        .get("hunyuan/hunyuan-video")
+        .expect("hunyuan-video missing");
+    assert_eq!(
+        schema.prompt.max_length,
+        Some(2500),
+        "SubmitImageToVideoJob caps Prompt at 2500 characters"
+    );
+}
+
+// ─── Ideogram: vendor facts re-read 2026-09-11 (model-drift) ────────────────
+
+/// Ideogram 3.0's `aspect_ratio` enum (`AspectRatioV3`). We advertise `W:H`
+/// and the adapter swaps ':' for 'x'; our list omitted 1x2 and 2x1.
+/// @see <https://developer.ideogram.ai/openapi.json> (components.schemas.AspectRatioV3), read 2026-09-11
+#[test]
+fn ideogram_aspect_ratios_are_exactly_the_v3_enum() {
+    const V3_RATIOS: [&str; 15] = [
+        "1x3", "3x1", "1x2", "2x1", "9x16", "16x9", "10x16", "16x10", "2x3", "3x2", "3x4",
+        "4x3", "4x5", "5x4", "1x1",
+    ];
+    let mut theirs: Vec<String> = V3_RATIOS.iter().map(|s| s.to_string()).collect();
+    theirs.sort();
+    let reg = registry();
+    for id in ["ideogram/ideogram-v3", "ideogram/ideogram-v3-turbo", "ideogram/ideogram-v3-quality"] {
+        let mut ours: Vec<String> = aspect_ratios(&reg, id).iter().map(|ar| ar.replace(':', "x")).collect();
+        ours.sort();
+        assert_eq!(ours, theirs, "{id} aspect ratios differ from Ideogram's AspectRatioV3 enum");
+    }
+}
+
+// ─── Recraft: vendor facts re-read 2026-09-11 (model-drift) ─────────────────
+
+/// The enumerated `size` values a Recraft model advertises.
+fn recraft_sizes(reg: &CapabilityRegistry, id: &str) -> Vec<(u32, u32)> {
+    let schema = reg
+        .get(id)
+        .unwrap_or_else(|| panic!("{id} missing from the catalog"));
+    match schema.params.get("size") {
+        Some(ParamSpec::Size(litegen::capabilities::schema::SizeSpec::Enum(e))) => {
+            let mut v = e.values.clone();
+            v.sort();
+            v
+        }
+        None => Vec::new(),
+        other => panic!("{id} size is {other:?}, expected an enumerated SizeSpec"),
+    }
+}
+
+/// Recraft V4 / V4.1 raster sizes. We had copied the V2/V3 list, of which only
+/// 1024x1024 is valid on V4.1.
+/// @see <https://www.recraft.ai/docs/api-reference/appendix.md> ("List of supported image sizes"), read 2026-09-11
+#[test]
+fn recraft_v4_1_sizes_are_the_v4_table() {
+    let mut v4: Vec<(u32, u32)> = vec![
+        (1024, 1024), (1536, 768), (768, 1536), (1280, 832), (832, 1280), (1216, 896), (896, 1216),
+        (1152, 896), (896, 1152), (832, 1344), (1280, 896), (896, 1280), (1344, 768), (768, 1344),
+    ];
+    v4.sort();
+    assert_eq!(recraft_sizes(&registry(), "recraft/recraftv4_1"), v4);
+}
+
+/// Recraft V4 Pro / V4.1 Pro (2K) raster sizes — none of the V2/V3 sizes we
+/// advertised is on this list.
+/// @see <https://www.recraft.ai/docs/api-reference/appendix.md> ("List of supported image sizes"), read 2026-09-11
+#[test]
+fn recraft_v4_1_pro_sizes_are_the_v4_pro_table() {
+    let mut pro: Vec<(u32, u32)> = vec![
+        (2048, 2048), (3072, 1536), (1536, 3072), (2560, 1664), (1664, 2560), (2432, 1792),
+        (1792, 2432), (2304, 1792), (1792, 2304), (1664, 2688), (2560, 1792), (1792, 2560),
+        (2688, 1536), (1536, 2688),
+    ];
+    pro.sort();
+    assert_eq!(recraft_sizes(&registry(), "recraft/recraftv4_1_pro"), pro);
+}
+
+/// Recraft V2 / V3 raster sizes: the Appendix gives 16:9 as 1820x1024 and 9:16
+/// as 1024x1820, which we did not advertise; everything we do advertise must be
+/// in the spec's V2/V3 block (which also keeps the legacy 1707x1024).
+/// @see <https://www.recraft.ai/docs/api-reference/appendix.md>
+/// @see <https://external.api.recraft.ai/doc/spec/external-api.yaml> (ImageSize), read 2026-09-11
+#[test]
+fn recraft_v2_v3_sizes_are_the_v2_v3_table() {
+    const V2_V3_SIZES: [(u32, u32); 15] = [
+        (1024, 1024), (1365, 1024), (1024, 1365), (1536, 1024), (1024, 1536), (1820, 1024),
+        (1024, 1820), (1024, 2048), (2048, 1024), (1434, 1024), (1024, 1434), (1024, 1280),
+        (1280, 1024), (1024, 1707), (1707, 1024),
+    ];
+    let reg = registry();
+    for id in ["recraft/recraftv3", "recraft/recraftv2"] {
+        let ours = recraft_sizes(&reg, id);
+        for s in &ours {
+            assert!(V2_V3_SIZES.contains(s), "{id} advertises {s:?}, not a V2/V3 size");
+        }
+        for s in [(1820, 1024), (1024, 1820)] {
+            assert!(ours.contains(&s), "{id} does not advertise {s:?} (16:9 / 9:16)");
+        }
+    }
+}
+
+/// Maximum prompt length: 10000 for every V4 / V4.1 model, 1000 for V2 / V3.
+/// @see <https://www.recraft.ai/docs/api-reference/appendix.md> ("Maximum prompt length"), read 2026-09-11
+#[test]
+fn recraft_prompt_limits_match_the_appendix() {
+    let reg = registry();
+    for (id, limit) in [
+        ("recraft/recraftv4_1", 10000),
+        ("recraft/recraftv4_1_pro", 10000),
+        ("recraft/recraftv3", 1000),
+        ("recraft/recraftv3_vector", 1000),
+        ("recraft/recraftv2", 1000),
+    ] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert_eq!(schema.prompt.max_length, Some(limit), "{id} prompt max_length");
+    }
+}
+
+/// `negative_prompt` is a V2 / V3 parameter: declared on V2 (which lacked it),
+/// not on V4.1 (which had it).
+/// @see <https://www.recraft.ai/docs/api-reference/endpoints.md> (Generate image → Parameters), read 2026-09-11
+#[test]
+fn recraft_negative_prompt_is_declared_exactly_on_v2_v3() {
+    let reg = registry();
+    for id in ["recraft/recraftv3", "recraft/recraftv3_vector", "recraft/recraftv2"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(schema.params.contains_key("negative_prompt"), "{id} should declare negative_prompt");
+    }
+    for id in ["recraft/recraftv4_1", "recraft/recraftv4_1_pro"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(
+            !schema.params.contains_key("negative_prompt"),
+            "{id} declares negative_prompt, which Recraft documents for V2 / V3 models only"
+        );
+    }
+}
+
+/// `text_layout` is "V3 models only".
+/// @see <https://www.recraft.ai/docs/api-reference/endpoints.md> (Generate image → Parameters), read 2026-09-11
+#[test]
+fn recraft_text_layout_is_only_allowlisted_on_v3() {
+    let reg = registry();
+    for m in reg.for_provider("recraft") {
+        if m.extra_allowlist.iter().any(|k| k == "text_layout") {
+            assert!(
+                m.id.starts_with("recraft/recraftv3"),
+                "{} allowlists text_layout, a V3-only parameter",
+                m.id
+            );
+        }
+    }
+}
+
+/// V4.1 takes styles through `style_id` / style references only; the curated
+/// `style` names (and substyles) are the V2 / V3 system. The adapter already
+/// never forwards `style` to V4.x, so advertising it promised a no-op.
+/// @see <https://www.recraft.ai/docs/api-reference/models/recraft-v4-1.md> ("Styles: Apply via style_id or attached style references")
+/// @see <https://www.recraft.ai/docs/api-reference/styles.md>, read 2026-09-11
+#[test]
+fn recraft_v4_1_declares_no_curated_style() {
+    let reg = registry();
+    for id in ["recraft/recraftv4_1", "recraft/recraftv4_1_pro"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(!schema.params.contains_key("style"), "{id} advertises a curated `style`");
+        assert!(
+            !schema.extra_allowlist.iter().any(|k| k == "substyle"),
+            "{id} allowlists substyle"
+        );
+        assert!(
+            schema.extra_allowlist.iter().any(|k| k == "style_id"),
+            "{id} must keep style_id, its only style input"
+        );
+    }
+}
+
+// ─── Vidu: vendor facts re-read 2026-09-11 (model-drift) ────────────────────
+
+/// "3:4 & 4:3 only support q2 & q3 model" (text2video; reference2video says
+/// q2), and img2video / start-end2video take no aspect_ratio at all — so q1
+/// and 2.0 get 16:9, 9:16 and 1:1 only.
+/// @see <https://platform.vidu.com/docs/text-to-video.md>
+/// @see <https://platform.vidu.com/docs/reference-to-video.md>, read 2026-09-11
+#[test]
+fn vidu_3_4_and_4_3_are_only_advertised_for_q2_models() {
+    let reg = registry();
+    for id in ["vidu/viduq1", "vidu/vidu2.0"] {
+        let ratios = aspect_ratios(&reg, id);
+        assert!(!ratios.is_empty(), "{id} declares no aspect ratios");
+        for ar in ratios {
+            assert!(
+                ["16:9", "9:16", "1:1"].contains(&ar.as_str()),
+                "{id} allows {ar:?}; Vidu's q1 / 2.0 models take 16:9, 9:16 and 1:1 only"
+            );
+        }
+    }
+    for ar in aspect_ratios(&reg, "vidu/viduq2-pro") {
+        assert!(
+            ["16:9", "9:16", "3:4", "4:3", "1:1"].contains(&ar.as_str()),
+            "vidu/viduq2-pro allows {ar:?}, not in reference2video's aspect_ratio list"
+        );
+    }
+}
+
+/// `style` (general / anime) exists only on text2video, so only a model that
+/// can use text2video may allowlist it (vidu2.0 did, and cannot).
+/// @see <https://platform.vidu.com/docs/text-to-video.md>, read 2026-09-11
+#[test]
+fn vidu_style_is_only_allowlisted_on_text_to_video_models() {
+    let reg = registry();
+    for m in reg.for_provider("vidu") {
+        if m.extra_allowlist.iter().any(|k| k == "style") {
+            assert!(
+                m.capabilities.text_to_video,
+                "{} allowlists text2video's `style` but has no text-to-video mode",
+                m.id
+            );
+        }
+    }
+}
+
+/// viduq2-pro: 540p/720p/1080p and a 1s floor on img2video, start-end2video and
+/// reference2video; start-end2video caps it at 8s (the other two allow 10).
+/// @see <https://platform.vidu.com/docs/image-to-video.md>
+/// @see <https://platform.vidu.com/docs/start-end-to-video.md>
+/// @see <https://platform.vidu.com/docs/reference-to-video.md>, read 2026-09-11
+#[test]
+fn vidu_q2_pro_duration_and_resolution_hold_on_every_endpoint() {
+    let reg = registry();
+    let schema = reg.get("vidu/viduq2-pro").expect("viduq2-pro missing");
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Float(f)) => {
+            assert_eq!(f.min, Some(1.0), "viduq2-pro accepts 1s clips");
+            assert_eq!(f.max, Some(8.0), "start-end2video caps viduq2-pro at 8s");
+        }
+        other => panic!("viduq2-pro duration_seconds is {other:?}"),
+    }
+    assert_eq!(
+        enum_values(&reg, "vidu/viduq2-pro", "resolution"),
+        vec!["540p".to_string(), "720p".to_string(), "1080p".to_string()],
+        "viduq2-pro resolutions"
+    );
+}
+
+// ─── PixVerse: vendor facts re-read 2026-09-11 (model-drift) ────────────────
+
+/// `generate_audio_switch` is "Supported in v5.5/v5.6/v6/c1 models"; v5 and
+/// below get audio through sound_effect_* instead.
+/// @see <https://docs.platform.pixverse.ai/text-to-video-generation-13016634e0.md>
+/// @see <https://docs.platform.pixverse.ai/image-to-video-generation-13016633e0.md>, read 2026-09-11
+#[test]
+fn pixverse_generate_audio_switch_is_not_allowlisted_below_v5_5() {
+    let reg = registry();
+    for id in ["pixverse/v3.5", "pixverse/v4.5", "pixverse/v5"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(
+            !schema.extra_allowlist.iter().any(|k| k == "generate_audio_switch"),
+            "{id} allowlists generate_audio_switch, which PixVerse supports from v5.5 up"
+        );
+    }
+}
+
+// ─── Kling: vendor facts re-read 2026-09-11 (model-drift) ──────────────────
+
+/// Kling's text2video `model_name` enum has no `kling-v2-1`, and its capability
+/// map lists Kling 2.1 text-to-video as "Not Supported": the model is
+/// image-to-video only, so every request needs its first frame. (The request
+/// validator enforces ref roles, not capability flags, so the role is what
+/// actually stops a prompt-only request.) Kling retires 2.1 on 2026-09-15; the
+/// test tolerates the model's removal.
+/// @see https://kling.ai/document-api/api/video/1-6/text-to-video.md (2026-09-11)
+#[test]
+fn kling_v2_1_video_is_image_to_video_only() {
+    let reg = registry();
+    if let Some(schema) = reg.get("kling/video-kling-v2-1") {
+        assert!(
+            !schema.capabilities.text_to_video,
+            "kling/video-kling-v2-1 advertises text-to-video; Kling's text2video enum has no kling-v2-1"
+        );
+        let first = schema
+            .ref_inputs
+            .as_ref()
+            .and_then(|r| r.roles.get("first_frame"))
+            .expect("kling/video-kling-v2-1 declares no first_frame role");
+        assert!(
+            first.required && first.min_count >= 1,
+            "kling/video-kling-v2-1 must require its first frame"
+        );
+    }
+}
+
+// ─── Bedrock: vendor facts re-read 2026-09-11 (model-drift) ─────────────────
+
+/// Nova Canvas output resolution: "Each side must be between 320-4096 pixels,
+/// inclusive. Each side must be evenly divisible by 16."
+/// @see <https://docs.aws.amazon.com/nova/latest/userguide/image-gen-access.html#image-gen-resolutions> (read 2026-09-11)
+#[test]
+fn bedrock_nova_canvas_sides_are_multiples_of_16() {
+    let reg = registry();
+    let schema = reg
+        .get("bedrock/amazon.nova-canvas-v1:0")
+        .expect("nova-canvas missing");
+    match schema.params.get("size") {
+        Some(ParamSpec::Size(litegen::capabilities::schema::SizeSpec::Freeform(f))) => {
+            assert_eq!(f.multiple_of, Some(16), "each side must be divisible by 16");
+            assert_eq!(
+                (f.min_width, f.max_width, f.min_height, f.max_height),
+                (320, 4096, 320, 4096),
+                "each side is 320-4096 px"
+            );
+        }
+        other => panic!("nova-canvas size is {other:?}, expected a freeform box"),
+    }
+}
+
+/// The adapter only emits `taskType: TEXT_VIDEO`, whose `text` "Must be 1-512
+/// characters in length" (4000 is MULTI_SHOT_AUTOMATED's limit).
+/// @see <https://docs.aws.amazon.com/nova/latest/userguide/video-gen-access.html> (read 2026-09-11)
+#[test]
+fn bedrock_nova_reel_prompt_limit_is_the_text_video_limit() {
+    let reg = registry();
+    let schema = reg
+        .get("bedrock/amazon.nova-reel-v1:1")
+        .expect("nova-reel missing");
+    assert_eq!(
+        schema.prompt.max_length,
+        Some(512),
+        "TEXT_VIDEO text is 1-512 characters"
+    );
+}
+
+// ─── Luma: vendor facts re-read 2026-09-11 (model-drift) ────────────────────
+
+/// The three video rows that resolve to a Dream Machine model we can call
+/// (luma/dream-machine is sent as ray-2).
+const LUMA_DREAM_MACHINE_VIDEO: [&str; 3] = ["luma/dream-machine", "luma/ray-2", "luma/ray-flash-2"];
+
+/// `VideoModelOutputDuration`: "5s" | "9s" — 3s is not a value, and a 3.0
+/// floor let `"3s"` through to the vendor.
+/// @see <https://docs.lumalabs.ai/reference/creategeneration> (read 2026-09-11)
+#[test]
+fn luma_video_duration_bounds_are_the_documented_values() {
+    let reg = registry();
+    for id in LUMA_DREAM_MACHINE_VIDEO {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        match schema.params.get("duration_seconds") {
+            Some(ParamSpec::Float(f)) => {
+                assert_eq!(f.min, Some(5.0), "{id}: the shortest Luma duration is 5s");
+                assert_eq!(f.max, Some(9.0), "{id}: the longest Luma duration is 9s");
+            }
+            other => panic!("{id} duration_seconds is {other:?}"),
+        }
+    }
+}
+
+/// `VideoModelOutputResolution`: 540p | 720p | 1080p | 4k, for both ray-2 and
+/// ray-flash-2 ("possible values for resolution: 540p, 720p, 1080p, 4k").
+/// @see <https://docs.lumalabs.ai/reference/creategeneration> (read 2026-09-11)
+/// @see <https://docs.lumalabs.ai/changelog/upscale>
+#[test]
+fn luma_video_resolutions_are_the_documented_enum() {
+    let reg = registry();
+    for id in LUMA_DREAM_MACHINE_VIDEO {
+        let mut got = enum_values(&reg, id, "resolution");
+        got.sort();
+        let mut want: Vec<String> = ["540p", "720p", "1080p", "4k"].iter().map(|s| s.to_string()).collect();
+        want.sort();
+        assert_eq!(got, want, "{id} resolution values");
+    }
+}
+
+/// `AspectRatio` is one enum for every video model:
+/// 1:1, 16:9, 9:16, 4:3, 3:4, 21:9, 9:21.
+/// @see <https://docs.lumalabs.ai/reference/creategeneration> (read 2026-09-11)
+#[test]
+fn luma_video_aspect_ratios_are_the_full_documented_enum() {
+    let reg = registry();
+    for id in LUMA_DREAM_MACHINE_VIDEO {
+        let mut got = aspect_ratios(&reg, id);
+        got.sort();
+        let mut want: Vec<String> = ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "9:21"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        want.sort();
+        assert_eq!(got, want, "{id} aspect ratios");
     }
 }
