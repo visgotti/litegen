@@ -255,6 +255,21 @@ impl DatabaseStore for PostgresDatabase {
         Ok(())
     }
 
+    async fn update_request_log_status(
+        &self,
+        id: &str,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE request_logs SET status = $1, error = $2 WHERE id = $3")
+            .bind(status)
+            .bind(error)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn get_request_logs(
         &self,
         page: u32,
