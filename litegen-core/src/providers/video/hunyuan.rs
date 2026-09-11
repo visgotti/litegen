@@ -14,16 +14,29 @@ use crate::types::*;
 
 const TC3_CONTENT_TYPE: &str = "application/json; charset=utf-8";
 const VCLM_VERSION: &str = "2024-05-23";
+const SUBMIT_ACTION: &str = "SubmitHunyuanToVideoJob";
+const DESCRIBE_ACTION: &str = "DescribeHunyuanToVideoJob";
 
 /// Tencent Hunyuan video generation provider (Video Creation Large Model / vclm).
 ///
-/// RPC-style, TC3-HMAC-SHA256 signed. Async: `SubmitImageToVideoJob` (on
+/// RPC-style, TC3-HMAC-SHA256 signed. Async: `SubmitHunyuanToVideoJob` (on
 /// `vclm.tencentcloudapi.com`) returns `Response.JobId`; poll
-/// `DescribeImageToVideoJob` until done, then read the result video URL. Region
-/// `ap-guangzhou`. The vclm product is separate from the Hunyuan image product.
+/// `DescribeHunyuanToVideoJob` until `Status` is `DONE` (then read
+/// `ResultVideoUrl`) or `FAIL`. Region `ap-guangzhou`. The vclm product is
+/// separate from the Hunyuan image product.
 ///
-/// @see <https://github.com/TencentCloud/tencentcloud-sdk-nodejs/blob/master/src/services/vclm/v20240523/vclm_client.ts>
-///   Verbatim: "endpoint 'vclm.tencentcloudapi.com' ... apiVersion '2024-05-23' ... SubmitImageToVideoJob ..."
+/// This is Tencent's native Hunyuan video model. The provider used to call the
+/// Kling-branded `SubmitImageToVideoJob` with `Model: "Kling-V1-6"`, a Kling
+/// version retired 2026-09-15, behind an id that promises Hunyuan.
+///
+/// `SubmitHunyuanToVideoJob` takes exactly `Prompt` (required, at most 200
+/// characters), `Image` (`{Base64}` or `{Url}`, optional: without it the job is
+/// text-to-video), `Resolution` (720p only), `LogoAdd` and `LogoParam`. There is
+/// no model selector.
+///
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/vclm/v20240523/models.go>
+///   (`SubmitHunyuanToVideoJobRequestParams`, `DescribeHunyuanToVideoJobResponseParams`: "WAIT：等待中，RUN：执行中，FAIL：任务失败，DONE：任务成功")
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/vclm/v20240523/client.go>
 /// @see <https://www.tencentcloud.com/document/product/845/32207> — TC3-HMAC-SHA256
 pub struct HunyuanVideoProvider {
     config: Option<ProviderInstanceConfig>,
@@ -142,22 +155,17 @@ impl VideoProvider for HunyuanVideoProvider {
         &self,
         model: &ModelSchema,
         base: &BaseGenerationRequest,
-        _extras: &VideoExtras,
+        extras: &VideoExtras,
         materialized: &MaterializedRequest,
     ) -> Result<VideoGenerationHandle, ProviderError> {
         let creds = self.creds()?;
         let region = self.region(&creds);
 
-        // SubmitImageToVideoJob requires a Model selector (Kling-branded on vclm);
-        // resolve via the instance model_mapping, falling back to a stable enum value.
-        let native_model = self
-            .config
-            .as_ref()
-            .and_then(|c| c.model_mapping.get(&model.id).cloned())
-            .unwrap_or_else(|| "Kling-V1-6".to_string());
-
-        let mut body = json!({ "Prompt": base.prompt, "Model": native_model });
-        // Driving/first-frame image: nested Image{Url} (URL) or Image{Base64} (base64).
+        // No Model field: SubmitHunyuanToVideoJob has no model selector, and an
+        // undefined parameter fails the request (UnknownParameter).
+        let mut body = json!({ "Prompt": base.prompt });
+        // Optional first-frame image: nested Image{Url} (URL) or Image{Base64}
+        // (base64). Without one the job is text-to-video.
         for r in &materialized.refs {
             match &r.form {
                 MaterializedRefForm::Url(u) => body["Image"] = json!({ "Url": u }),
@@ -165,7 +173,11 @@ impl VideoProvider for HunyuanVideoProvider {
                 _ => {}
             }
         }
-        if let Some(Value::Object(map)) = &_extras.extra {
+        // "目前仅支持720p视频分辨率，默认720p" — the catalog enum is [720p].
+        if let Some(res) = extras.resolution.as_deref() {
+            body["Resolution"] = Value::String(res.to_string());
+        }
+        if let Some(Value::Object(map)) = &extras.extra {
             if let Some(obj) = body.as_object_mut() {
                 for (k, v) in map {
                     obj.insert(k.clone(), v.clone());
@@ -173,7 +185,7 @@ impl VideoProvider for HunyuanVideoProvider {
             }
         }
 
-        let resp = self.rpc(&creds, &region, "SubmitImageToVideoJob", &body).await?;
+        let resp = self.rpc(&creds, &region, SUBMIT_ACTION, &body).await?;
         let job_id = resp["Response"]["JobId"].as_str().ok_or_else(|| ProviderError::RequestFailed {
             message: "Hunyuan submit missing Response.JobId".to_string(),
             status_code: None,
@@ -194,33 +206,33 @@ impl VideoProvider for HunyuanVideoProvider {
     ) -> Result<VideoGenerationPollResult, ProviderError> {
         let creds = self.creds()?;
         let region = self.region(&creds);
-        let q = self.rpc(&creds, &region, "DescribeImageToVideoJob", &json!({ "JobId": handle.provider_job_id })).await?;
+        let q = self.rpc(&creds, &region, DESCRIBE_ACTION, &json!({ "JobId": handle.provider_job_id })).await?;
         let resp = &q["Response"];
 
-        // vclm reports status via a Status/StatusCode string; the finished video
-        // URL appears as ResultVideoUrl (presence implies completion).
-        let video_url = resp["ResultVideoUrl"].as_str().or_else(|| resp["VideoUrl"].as_str()).map(String::from);
-        let status_str = resp["Status"].as_str().or_else(|| resp["StatusCode"].as_str()).unwrap_or("");
-        let status = if video_url.is_some() {
-            GenerationStatus::Completed
-        } else if matches!(status_str, "FAIL" | "FAILED" | "4") {
-            GenerationStatus::Failed
-        } else {
-            GenerationStatus::Processing
+        // Status: WAIT (queued) | RUN (running) | FAIL | DONE; ResultVideoUrl
+        // (valid 24 h) is set once the job is DONE. ErrorCode/ErrorMessage are
+        // "" unless the job FAILed.
+        let video_url = resp["ResultVideoUrl"].as_str().filter(|u| !u.is_empty()).map(String::from);
+        let non_empty = |k: &str| resp[k].as_str().filter(|s| !s.is_empty()).map(String::from);
+        let (status, error) = match resp["Status"].as_str().unwrap_or("") {
+            "DONE" if video_url.is_some() => (GenerationStatus::Completed, None),
+            // A finished job with no video will never produce one: fail loudly
+            // instead of polling until the job times out.
+            "DONE" => (GenerationStatus::Failed, Some("Hunyuan job is DONE but returned no ResultVideoUrl".to_string())),
+            "FAIL" => (
+                GenerationStatus::Failed,
+                Some(non_empty("ErrorMessage").or_else(|| non_empty("ErrorCode")).unwrap_or_else(|| "Hunyuan job failed".to_string())),
+            ),
+            _ => (GenerationStatus::Processing, None),
         };
 
         Ok(VideoGenerationPollResult {
             status,
             progress: if status == GenerationStatus::Completed { 100 } else { 50 },
-            video_url,
+            video_url: video_url.filter(|_| status == GenerationStatus::Completed),
             video_data: None,
             content_type: Some("video/mp4".into()),
-            error: resp["ErrorMessage"]
-                .as_str()
-                .or_else(|| resp["ErrorCode"].as_str())
-                .or_else(|| resp["StatusMsg"].as_str())
-                .filter(|_| status == GenerationStatus::Failed)
-                .map(String::from),
+            error,
             metadata: HashMap::new(),
         })
     }
@@ -249,6 +261,7 @@ impl VideoProvider for HunyuanVideoProvider {
         HealthCheckResult { healthy: true, message: "Hunyuan video provider configured".into(), latency_ms: None }
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -286,28 +299,51 @@ mod tests {
         VideoExtras { duration_seconds: 5.0, aspect_ratio: None, resolution: None, fps: None, extra: None }
     }
 
-    #[tokio::test]
-    async fn submits_and_polls_video_with_tc3() {
-        let server = MockServer::start().await;
+    fn submit_body(received: &[wiremock::Request]) -> Value {
+        let submit = received
+            .iter()
+            .find(|r| r.headers.get("x-tc-action").map(|v| v == SUBMIT_ACTION).unwrap_or(false))
+            .expect("no SubmitHunyuanToVideoJob request was sent");
+        serde_json::from_slice(&submit.body).unwrap()
+    }
+
+    async fn mount_describe(server: &MockServer, response: Value) {
         Mock::given(method("POST"))
-            .and(header("x-tc-action", "SubmitImageToVideoJob"))
+            .and(header("x-tc-action", "DescribeHunyuanToVideoJob"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "Response": response })))
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_submit(server: &MockServer) {
+        // Only the native Hunyuan action is mocked: a request for the Kling
+        // resale action (SubmitImageToVideoJob) gets wiremock's 404.
+        Mock::given(method("POST"))
+            .and(header("x-tc-action", "SubmitHunyuanToVideoJob"))
+            .and(header("x-tc-version", "2024-05-23"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "Response": { "JobId": "hv-1" } })))
-            .mount(&server)
+            .mount(server)
             .await;
-        Mock::given(method("POST"))
-            .and(header("x-tc-action", "DescribeImageToVideoJob"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "Response": { "Status": "DONE", "ResultVideoUrl": "https://cdn.tencent/v.mp4" }
-            })))
-            .mount(&server)
-            .await;
+    }
+
+    fn handle() -> VideoGenerationHandle {
+        VideoGenerationHandle {
+            provider_job_id: "hv-1".to_string(),
+            provider: "hunyuan".to_string(),
+            model: "hunyuan/hunyuan-video".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn submits_hunyuan_to_video_with_the_image_and_polls_with_tc3() {
+        let server = MockServer::start().await;
+        mount_submit(&server).await;
+        mount_describe(&server, json!({ "Status": "DONE", "ResultVideoUrl": "https://cdn.tencent/v.mp4", "ErrorCode": "", "ErrorMessage": "" })).await;
 
         let provider = make_provider(&server.uri());
         let schema = ref_schema("hunyuan/hunyuan-video");
-        let base = make_base("a calligraphy brush stroke coming alive", "hunyuan/hunyuan-video");
+        let base = make_base("一只猫在草原上奔跑，写实风格", "hunyuan/hunyuan-video");
         let extras = make_extras();
-        // SubmitImageToVideoJob needs a driving image; the catalog marks
-        // first_frame required for exactly this reason.
         let materialized = MaterializedRequest {
             refs: vec![MaterializedRef {
                 role: "first_frame".to_string(),
@@ -319,24 +355,95 @@ mod tests {
         let handle = provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
         assert_eq!(handle.provider_job_id, "hv-1");
 
-        // The driving image goes in nested as Image{Base64}.
-        let submitted = server.received_requests().await.unwrap();
-        let submit_body: Value = serde_json::from_slice(
-            &submitted.iter()
-                .find(|r| r.headers.get("x-tc-action").map(|v| v == "SubmitImageToVideoJob").unwrap_or(false))
-                .unwrap()
-                .body,
-        )
-        .unwrap();
-        assert_eq!(submit_body["Image"]["Base64"], "aW1n");
-
         let received = server.received_requests().await.unwrap();
-        let submit = received.iter().find(|r| r.headers.get("x-tc-action").map(|v| v == "SubmitImageToVideoJob").unwrap_or(false)).unwrap();
+        let body = submit_body(&received);
+        assert_eq!(body["Prompt"], "一只猫在草原上奔跑，写实风格");
+        // The image goes in nested as Image{Base64}.
+        assert_eq!(body["Image"]["Base64"], "aW1n");
+        // SubmitHunyuanToVideoJob has no Model parameter; sending the old
+        // Kling selector would fail with UnknownParameter.
+        assert!(body.get("Model").is_none(), "Model must not be sent: {body}");
+
+        let submit = received
+            .iter()
+            .find(|r| r.headers.get("x-tc-action").map(|v| v == SUBMIT_ACTION).unwrap_or(false))
+            .unwrap();
         let auth = submit.headers.get("authorization").unwrap().to_str().unwrap();
         assert!(auth.starts_with("TC3-HMAC-SHA256 Credential=AKIDtest/"), "auth: {auth}");
 
         let poll = provider.poll_status(&handle).await.unwrap();
         assert_eq!(poll.status, GenerationStatus::Completed);
         assert_eq!(poll.video_url.unwrap(), "https://cdn.tencent/v.mp4");
+        assert!(poll.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn text_only_request_sends_just_the_prompt_and_resolution() {
+        let server = MockServer::start().await;
+        mount_submit(&server).await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("hunyuan/hunyuan-video");
+        let base = make_base("a calligraphy brush stroke coming alive", "hunyuan/hunyuan-video");
+        let extras = VideoExtras { resolution: Some("720p".to_string()), ..make_extras() };
+        let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+
+        let handle = provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
+        assert_eq!(handle.provider_job_id, "hv-1");
+
+        let body = submit_body(&server.received_requests().await.unwrap());
+        assert_eq!(body, json!({ "Prompt": "a calligraphy brush stroke coming alive", "Resolution": "720p" }));
+    }
+
+    #[tokio::test]
+    async fn wait_and_run_are_processing() {
+        for s in ["WAIT", "RUN"] {
+            let server = MockServer::start().await;
+            mount_describe(&server, json!({ "Status": s, "ResultVideoUrl": "", "ErrorCode": "", "ErrorMessage": "" })).await;
+            let provider = make_provider(&server.uri());
+            let poll = provider.poll_status(&handle()).await.unwrap();
+            assert_eq!(poll.status, GenerationStatus::Processing, "{s}");
+            assert!(poll.video_url.is_none(), "{s}");
+            assert!(poll.error.is_none(), "{s}");
+        }
+    }
+
+    #[tokio::test]
+    async fn fail_is_failed_with_the_error_message() {
+        let server = MockServer::start().await;
+        mount_describe(&server, json!({
+            "Status": "FAIL", "ResultVideoUrl": "",
+            "ErrorCode": "FailedOperation.DriverFailed", "ErrorMessage": "驱动失败"
+        }))
+        .await;
+        let provider = make_provider(&server.uri());
+        let poll = provider.poll_status(&handle()).await.unwrap();
+        assert_eq!(poll.status, GenerationStatus::Failed);
+        assert_eq!(poll.error.as_deref(), Some("驱动失败"));
+        assert!(poll.video_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn fail_without_a_message_falls_back_to_the_error_code() {
+        let server = MockServer::start().await;
+        mount_describe(&server, json!({
+            "Status": "FAIL", "ResultVideoUrl": "",
+            "ErrorCode": "FailedOperation.DriverFailed", "ErrorMessage": ""
+        }))
+        .await;
+        let provider = make_provider(&server.uri());
+        let poll = provider.poll_status(&handle()).await.unwrap();
+        assert_eq!(poll.status, GenerationStatus::Failed);
+        assert_eq!(poll.error.as_deref(), Some("FailedOperation.DriverFailed"));
+    }
+
+    #[tokio::test]
+    async fn done_without_a_video_url_is_failed_not_polled_forever() {
+        let server = MockServer::start().await;
+        mount_describe(&server, json!({ "Status": "DONE", "ResultVideoUrl": "", "ErrorCode": "", "ErrorMessage": "" })).await;
+        let provider = make_provider(&server.uri());
+        let poll = provider.poll_status(&handle()).await.unwrap();
+        assert_eq!(poll.status, GenerationStatus::Failed);
+        assert!(poll.error.is_some());
     }
 }

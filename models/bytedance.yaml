@@ -39,25 +39,80 @@ models:
     extra_allowlist: [watermark, response_format]
     tags: [text-to-image, image-to-image]
 
-  - id: bytedance/seedream-3-0-t2i-250415
+  # Seedream 3.0 (seedream-3-0-t2i-250415) was deactivated 2026-05-13; the
+  # vendor's recommended replacement is Seedream 5.0 lite.
+  # @see https://docs.byteplus.com/en/docs/ModelArk/1350667
+  #
+  # Seedream 5.0 lite and 4.5 share one request contract (verified 2026-09-11):
+  # no `seed` (the Image generation API documents none), up to 14 reference
+  # images, and WxH sizes with total pixels in [3686400 (2560x1440), 16777216
+  # (4096x4096)] AND aspect ratio in [1/16, 16] — a stricter floor than 4.0's
+  # 921600. As for 4.0, the box is the rule's extremes: 480 = sqrt(3686400/16),
+  # 16384 = sqrt(16777216*16); the vendor rejects sizes that pass the box but
+  # break the pixel range (e.g. 1500x1500). The vendor default is 2048x2048.
+  # @see https://docs.byteplus.com/en/docs/ModelArk/1541523
+  - id: bytedance/seedream-5-0-lite-260128
     provider: bytedance
     media_type: image
-    display_name: Seedream 3.0
-    description: ByteDance Seedream 3.0 text-to-image.
-    pricing: { base_cost_usd: 0.03 }
-    capabilities: { text_to_image: true }
+    display_name: Seedream 5.0 Lite
+    description: ByteDance Seedream 5.0 lite text-to-image + multi-reference edit.
+    # "seedream-5-0-lite-260128 | Free | 0.035" (USD per output image).
+    # @see https://docs.byteplus.com/en/docs/ModelArk/1544106
+    pricing: { base_cost_usd: 0.035 }
+    capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 3000 }
+    # Region: deactivated in eu-west-1 on 2026-09-10 ("Please use these models in
+    # ap-southeast-1"); still served in ap-southeast-1, the adapter's default
+    # api_base (ark.ap-southeast.bytepluses.com). An api_base pointed at the
+    # eu-west-1 host will fail for this model.
+    # @see https://docs.byteplus.com/en/docs/ModelArk/1350667
     params:
-      seed: { kind: seed, min: 0, max: 2147483647 }
       size:
         kind: size
         mode: freeform
-        min_width: 512
-        max_width: 2048
-        min_height: 512
-        max_height: 2048
+        min_width: 480
+        max_width: 16384
+        min_height: 480
+        max_height: 16384
+    ref_inputs:
+      # "Seedream 5.0 lite, 4.5, and 4.0 support up to 14 reference images."
+      # @see https://docs.byteplus.com/en/docs/ModelArk/1541523
+      max_total: 14
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 14 }
     extra_allowlist: [watermark, response_format]
-    tags: [text-to-image]
+    tags: [text-to-image, image-to-image]
+
+  - id: bytedance/seedream-4-5-251128
+    provider: bytedance
+    media_type: image
+    display_name: Seedream 4.5
+    description: ByteDance Seedream 4.5 text-to-image + multi-reference edit.
+    # "seedream-4-5-251128 | Free | 0.04" (USD per output image).
+    # @see https://docs.byteplus.com/en/docs/ModelArk/1544106
+    pricing: { base_cost_usd: 0.04 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 3000 }
+    params:
+      size:
+        kind: size
+        mode: freeform
+        min_width: 480
+        max_width: 16384
+        min_height: 480
+        max_height: 16384
+    ref_inputs:
+      # "Seedream 5.0 lite, 4.5, and 4.0 support up to 14 reference images."
+      # @see https://docs.byteplus.com/en/docs/ModelArk/1541523
+      max_total: 14
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 14 }
+    extra_allowlist: [watermark, response_format]
+    tags: [text-to-image, image-to-image]
 
   # ─── Seedance (video, async task) ─────────────────────────────────────────
   - id: bytedance/doubao-seedance-1-0-pro-250528
@@ -65,7 +120,10 @@ models:
     media_type: video
     display_name: Seedance 1.0 Pro
     description: ByteDance Seedance 1.0 Pro text/image-to-video (first/last frame).
-    pricing: { base_cost_usd: 0.50 }
+    # $2.5 per 1M tokens; the default request (1080p, 16:9 1920x1088, 5 s, 24
+    # fps = 244800 tokens) is listed at $0.61. Verified 2026-09-11.
+    # @see https://docs.byteplus.com/en/docs/ModelArk/1544106
+    pricing: { base_cost_usd: 0.61 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 3000 }
     params:
@@ -94,22 +152,87 @@ models:
     extra_allowlist: [watermark, camera_fixed, callback_url]
     tags: [text-to-video, image-to-video]
 
-  - id: bytedance/doubao-seedance-1-0-lite-i2v-250428
+  # Seedance 1.0 Lite (seedance-1-0-lite-i2v-250428) was deactivated
+  # 2026-05-13; the vendor's recommended replacement is Seedance 1.0 Pro Fast.
+  # @see https://docs.byteplus.com/en/docs/ModelArk/1350667
+  - id: bytedance/seedance-1-0-pro-fast-251015
     provider: bytedance
     media_type: video
-    display_name: Seedance 1.0 Lite (i2v)
-    description: ByteDance Seedance 1.0 Lite image-to-video.
-    pricing: { base_cost_usd: 0.18 }
-    capabilities: { image_to_video: true, text_to_video: true }
+    display_name: Seedance 1.0 Pro Fast
+    description: ByteDance Seedance 1.0 Pro Fast text-to-video and first-frame image-to-video.
+    # $1 per 1M tokens; the default request (1080p, 16:9 1920x1088, 5 s, 24 fps
+    # = 244800 tokens) is listed at $0.24.
+    # @see https://docs.byteplus.com/en/docs/ModelArk/1544106
+    pricing: { base_cost_usd: 0.24 }
+    # "Dreamina Seedance 1.0 pro fast: Supports image-to-video (first frame) and
+    # text-to-video" — no first-and-last-frame mode, so no last_frame role.
+    # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
+    capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 3000 }
     params:
-      duration_seconds: { kind: float, min: 3.0, max: 12.0, default: 5.0 }
+      # "Dreamina Seedance 1.0 pro fast: Default 5; supports [2, 12]."
+      # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
+      duration_seconds: { kind: float, min: 2.0, max: 12.0, default: 5.0 }
+      # seed: [-1, 2147483647], supported by Seedance 1.0 pro fast (-1 = random;
+      # omit it instead). @see https://docs.byteplus.com/en/docs/ModelArk/1520757
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      # "Dreamina Seedance 1.0 pro fast: Default 1080p; supports 480p, 720p, and 1080p."
+      resolution:
+        kind: string
+        enum_values: [480p, 720p, 1080p]
+        default: 1080p
+      # The 1.0 series takes a specified ratio (no `adaptive` for text-to-video);
+      # the vendor defaults to 16:9 for text-to-video, adaptive for image-to-video.
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1","4:3","3:4","21:9"]
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    # watermark, camera_fixed (1.5 pro / 1.0 pro / 1.0 pro fast) and
+    # callback_url are documented request-body fields.
+    # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
+    extra_allowlist: [watermark, camera_fixed, callback_url]
+    tags: [text-to-video, image-to-video, fast]
+
+  # Seedance 2.0 mini: text-to-video plus first-frame and first-and-last-frame
+  # image-to-video. The 2.0 series' omni reference-to-video (reference_image /
+  # reference_video / reference_audio roles) is NOT declared: the adapter only
+  # sends image_url blocks and tags only first_frame / last_frame roles.
+  # Activation: the 2.0 series (mini included) needs USD 30 in BytePlus credits,
+  # an AI Savings Plan or a resource pack before the model can be enabled.
+  # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
+  # @see https://docs.byteplus.com/en/docs/ModelArk/2637911
+  - id: bytedance/dreamina-seedance-2-0-mini-260615
+    provider: bytedance
+    media_type: video
+    display_name: Seedance 2.0 Mini
+    description: ByteDance Dreamina Seedance 2.0 mini text/image-to-video (first/last frame), with generated audio.
+    # $3.5 per 1M tokens (480p/720p, input without video); the default request
+    # (720p, 5 s) is listed at $0.38 per video. List price: a time-limited 60%
+    # discount runs until 2026-10-07. Verified 2026-09-11.
+    # @see https://docs.byteplus.com/en/docs/ModelArk/1544106
+    pricing: { base_cost_usd: 0.38 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 3000 }
+    # No `seed` and no `camera_fixed`: both are documented for Seedance 1.5 pro
+    # / 1.0 pro / 1.0 pro fast only.
+    # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
+    params:
+      # "Dreamina Seedance 2.0 series: Default 5; supports [4, 15] or -1."
+      duration_seconds: { kind: float, min: 4.0, max: 15.0, default: 5.0 }
+      # "Dreamina Seedance 2.0 mini: Default 720p; supports 480p and 720p."
       resolution:
         kind: string
         enum_values: [480p, 720p]
+        default: 720p
+      # Omitting ratio gives the vendor default, `adaptive`.
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["16:9","9:16","1:1","4:3","3:4"]
+        allowed: ["16:9","9:16","1:1","4:3","3:4","21:9"]
     ref_inputs:
       max_total: 2
       default_role: first_frame
@@ -117,5 +240,7 @@ models:
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [watermark, camerafixed, callback_url]
-    tags: [image-to-video, text-to-video, fast]
+    # generate_audio (default true) is a 2.5 / 2.0 series / 1.5 pro body field.
+    # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
+    extra_allowlist: [watermark, generate_audio, callback_url]
+    tags: [text-to-video, image-to-video, fast]

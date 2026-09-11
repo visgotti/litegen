@@ -59,6 +59,7 @@ export default {
   provider: 'replicate',
   models: {
     'replicate/flux-pro': 'black-forest-labs/flux-pro',
+    'replicate/flux-1.1-pro': 'black-forest-labs/flux-1.1-pro',
     'replicate/flux-dev': 'black-forest-labs/flux-dev',
     'replicate/flux-schnell': 'black-forest-labs/flux-schnell',
     'replicate/sdxl': ref(SDXL),
@@ -87,5 +88,47 @@ export default {
       pattern: new RegExp(`^(?:${PINNED.map((p) => p.slug.replace(/[.]/g, '\\.')).join('|')}):[0-9a-f]{64}$`),
       reason: 'another version of a model we pin to one version — a new version shows as a changed *-versions snapshot, not as a new model',
     },
+    // Skips decided 2026-09-11 (docs/superpowers/2026-09-11-model-drift-decisions.md).
+    // FLUX.1 ids are listed one by one so a new FLUX.1 model still surfaces.
+    ...[
+      'flux-1.1-pro-ultra',
+      'flux-1.1-pro-ultra-finetuned',
+      'flux-canny-dev',
+      'flux-canny-pro',
+      'flux-depth-dev',
+      'flux-depth-pro',
+      'flux-dev-lora',
+      'flux-fill-dev',
+      'flux-fill-pro',
+      'flux-kontext-dev',
+      'flux-kontext-dev-lora',
+      'flux-kontext-max',
+      'flux-kontext-pro',
+      'flux-krea-dev',
+      'flux-pro-finetuned',
+      'flux-redux-dev',
+      'flux-redux-schnell',
+      'flux-schnell-lora',
+      'flux-video-upscale',
+    ].map((name) => ({
+      id: `black-forest-labs/${name}`,
+      reason: 'skipped 2026-09-11: another FLUX.1 model or FLUX tool; we carry flux-1.1-pro, flux-pro, flux-dev and flux-schnell here',
+    })),
+    {
+      pattern: /^black-forest-labs\/flux-2-/,
+      reason: 'skipped 2026-09-11: FLUX.2 on Replicate — BFL direct and fal cover it',
+    },
+    {
+      id: 'black-forest-labs/flux-3',
+      reason: "skipped 2026-09-11: FLUX 3 is a video model — decide together with BFL's own flux-3-video",
+    },
+    {
+      pattern: /^stability-ai\/stable-diffusion-3\.5-/,
+      reason: 'skipped 2026-09-11: the SD 3.5 family — Stability direct covers it',
+    },
+    ...['stable-diffusion', 'stable-diffusion-img2img', 'stable-diffusion-inpainting'].map((name) => ({
+      id: `stability-ai/${name}`,
+      reason: 'skipped 2026-09-11: an SD 1.5/2.1-era model',
+    })),
   ],
 };

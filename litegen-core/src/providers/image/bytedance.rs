@@ -24,6 +24,14 @@ use crate::types::*;
 /// from the host instead of copied from the catalog. Shared with the video
 /// provider.
 ///
+/// Newer BytePlus ids carry a BytePlus brand prefix where Volcengine has
+/// `doubao-`: BytePlus `dreamina-seedance-2-0-mini-260615` /
+/// `dola-seedream-5-0-pro-260628` are Volcengine
+/// `doubao-seedance-2-0-mini-260615` / `doubao-seedream-5-0-pro-260628`. The
+/// catalog keeps the BytePlus form (the default host sends it verbatim); for
+/// Volcengine the BytePlus brand is swapped for `doubao-`, never stacked
+/// (`doubao-dreamina-…` is not a Volcengine id).
+///
 /// @see <https://docs.byteplus.com/en/docs/ModelArk/1330310> — BytePlus model list (no `doubao-` ids)
 /// @see <https://www.volcengine.com/docs/82379/1330310> — Volcengine model list (`doubao-` ids)
 pub(crate) fn ark_model_id(model_id: &str, api_base: &str) -> String {
@@ -34,7 +42,11 @@ pub(crate) fn ark_model_id(model_id: &str, api_base: &str) -> String {
         .and_then(|u| u.host_str().map(|h| h == "volces.com" || h.ends_with(".volces.com")))
         .unwrap_or(false);
     if volcengine {
-        format!("doubao-{bare}")
+        let unbranded = ["dreamina-", "dola-"]
+            .into_iter()
+            .find_map(|brand| bare.strip_prefix(brand))
+            .unwrap_or(bare);
+        format!("doubao-{unbranded}")
     } else {
         bare.to_string()
     }
@@ -346,5 +358,35 @@ mod tests {
             ark_model_id("bytedance/doubao-seedance-1-0-pro-250528", volcengine),
             "doubao-seedance-1-0-pro-250528"
         );
+    }
+
+    /// BytePlus documents Seedance 2.0 mini as `dreamina-seedance-2-0-mini-260615`;
+    /// Volcengine documents the same model as `doubao-seedance-2-0-mini-260615`.
+    /// Prefixing `doubao-` onto the BytePlus id sent the non-existent
+    /// `doubao-dreamina-seedance-2-0-mini-260615` to a China host.
+    /// @see <https://docs.byteplus.com/en/docs/ModelArk/1330310>
+    /// @see <https://www.volcengine.com/docs/82379/1330310>
+    #[test]
+    fn ark_model_id_swaps_the_byteplus_brand_prefix_for_volcengine() {
+        let byteplus = "https://ark.ap-southeast.bytepluses.com/api/v3";
+        let volcengine = "https://ark.cn-beijing.volces.com/api/v3";
+        assert_eq!(
+            ark_model_id("bytedance/dreamina-seedance-2-0-mini-260615", byteplus),
+            "dreamina-seedance-2-0-mini-260615"
+        );
+        assert_eq!(
+            ark_model_id("bytedance/dreamina-seedance-2-0-mini-260615", volcengine),
+            "doubao-seedance-2-0-mini-260615"
+        );
+        assert_eq!(ark_model_id("bytedance/seedream-5-0-lite-260128", byteplus), "seedream-5-0-lite-260128");
+        assert_eq!(
+            ark_model_id("bytedance/seedream-5-0-lite-260128", volcengine),
+            "doubao-seedream-5-0-lite-260128"
+        );
+        assert_eq!(
+            ark_model_id("bytedance/seedance-1-0-pro-fast-251015", byteplus),
+            "seedance-1-0-pro-fast-251015"
+        );
+        assert_eq!(ark_model_id("bytedance/seedream-4-5-251128", byteplus), "seedream-4-5-251128");
     }
 }

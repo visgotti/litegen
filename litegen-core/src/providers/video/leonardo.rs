@@ -13,7 +13,7 @@ use crate::providers::{
 };
 use crate::types::*;
 
-/// Leonardo.Ai video generation provider (image-to-video / Motion / Veo3 / Kling).
+/// Leonardo.Ai video generation provider (image-to-video / Motion / Veo 3.1 / Kling).
 ///
 /// Async: `POST /generations-image-to-video` (a start frame `imageId` is
 /// required) returns a generation id; poll `GET /generations/{id}` until
@@ -25,8 +25,8 @@ use crate::types::*;
 ///   (the older /reference/createimagetovideogeneration page now 404s)
 ///   (required: prompt, imageId, imageType; optional: model [MOTION2/VEO3/...],
 ///    resolution [RESOLUTION_720/...], duration)
-/// @see <https://docs.leonardo.ai/docs/generate-with-veo3-veo3-fast-using-start-frame>
-///   Verbatim: "\"model\": \"VEO3\", \"imageType\": \"UPLOADED\", \"resolution\": \"RESOLUTION_720\", \"duration\": 8"
+/// @see <https://docs.leonardo.ai/v1.0/docs/veo-31>
+///   Verbatim: "\"resolution\": \"RESOLUTION_1080\", \"duration\":8, ... \"model\": \"VEO3_1\""
 pub struct LeonardoVideoProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
@@ -66,11 +66,17 @@ impl LeonardoVideoProvider {
         Ok(base)
     }
 
-    /// Map the litegen model id to a Leonardo motion model enum.
+    /// Map the litegen model id to a Leonardo motion model enum. Unknown ids
+    /// fall back to MOTION2, so every catalog id needs its own arm.
+    ///
+    /// @see <https://docs.leonardo.ai/v1.0/docs/commonly-used-api-values> — Video Model IDs
     fn resolve_model(model_id: &str) -> &'static str {
         match model_id.strip_prefix("leonardo/").unwrap_or(model_id) {
             "motion2" | "motion-2" => "MOTION2",
             "motion2-fast" => "MOTION2FAST",
+            "veo3.1" | "veo3-1" => "VEO3_1",
+            // Retired 2026-06-29 and gone from the catalog; kept so a stale
+            // model_mapping fails at the vendor instead of billing as MOTION2.
             "veo3" => "VEO3",
             "veo3-fast" => "VEO3FAST",
             "kling2.1" | "kling-2.1" => "KLING2_1",
@@ -330,6 +336,17 @@ mod tests {
         }
     }
 
+    /// Veo 3.1 is `VEO3_1`; without its arm the id fell through to MOTION2
+    /// and billed as a different model.
+    /// @see <https://docs.leonardo.ai/v1.0/docs/veo-31> (2026-09-11)
+    #[test]
+    fn catalog_video_ids_resolve_to_their_own_leonardo_model() {
+        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/veo3.1"), "VEO3_1");
+        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/kling2.5"), "KLING2_5");
+        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/kling2.1"), "KLING2_1");
+        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/motion2"), "MOTION2");
+    }
+
     #[tokio::test]
     async fn submits_image_to_video_and_polls() {
         let server = MockServer::start().await;
@@ -350,8 +367,8 @@ mod tests {
             .await;
 
         let provider = make_provider(&server.uri());
-        let schema = ref_schema("leonardo/veo3");
-        let base = make_base("a slow zoom over mountains", "leonardo/veo3");
+        let schema = ref_schema("leonardo/veo3.1");
+        let base = make_base("a slow zoom over mountains", "leonardo/veo3.1");
         let extras = extras_with_image_id();
         let materialized = MaterializedRequest { refs: vec![] as Vec<MaterializedRef>, cleanup: Cleanup::empty() };
 
@@ -360,7 +377,7 @@ mod tests {
 
         let received = server.received_requests().await.unwrap();
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
-        assert_eq!(body["model"], "VEO3");
+        assert_eq!(body["model"], "VEO3_1");
         assert_eq!(body["imageId"], "init-123");
         assert_eq!(body["resolution"], "RESOLUTION_720");
         assert_eq!(body["duration"], 8);
@@ -428,5 +445,36 @@ mod tests {
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
         assert_eq!(body["model"], "MOTION2");
         assert!(body.get("duration").is_none(), "Motion 2.0 got a duration: {body}");
+    }
+
+    /// Kling 2.5 Turbo: `KLING2_5`, "resolution ... Set to RESOLUTION_1080",
+    /// "duration ... Set to 5 or 10".
+    /// @see <https://docs.leonardo.ai/v1.0/docs/kling-2-5-turbo>
+    #[tokio::test]
+    async fn kling2_5_sends_kling2_5_at_1080() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/generations-image-to-video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "motionVideoGenerationJob": { "generationId": "leo-vid-4" }
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("leonardo/kling2.5");
+        let base = make_base("a lantern floating over a lake", "leonardo/kling2.5");
+        let mut extras = extras_with_image_id();
+        extras.resolution = None;
+        extras.duration_seconds = 10.0;
+        let materialized = MaterializedRequest { refs: vec![] as Vec<MaterializedRef>, cleanup: Cleanup::empty() };
+
+        provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["model"], "KLING2_5");
+        assert_eq!(body["resolution"], "RESOLUTION_1080");
+        assert_eq!(body["duration"], 10);
     }
 }

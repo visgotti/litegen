@@ -7,15 +7,22 @@
 //   vclm-client     vclm 2024-05-23 (video generation: Hunyuan, Kling, Vidu…)
 //   aiart-client    aiart 2022-12-29 (also a Hunyuan text-to-image action)
 //   vclm-models     the `Model` values SubmitImageToVideoJob accepts (it is a
-//                   Kling-branded action) + that request struct as the snapshot
+//                   Kling-branded resale action we skip) + that request struct
+//                   as the snapshot
+//   vclm-hunyuan-video  index: the SubmitHunyuanToVideoJob request struct and
+//                   the DescribeHunyuanToVideoJob response struct (our video
+//                   action's contract)
 //   hunyuan-models  index: the SubmitHunyuanImageJob request struct
 // Mapping mirrors litegen-core/src/providers/image/hunyuan.rs (action
 // SubmitHunyuanImageJob, no model field) and video/hunyuan.rs (action
-// SubmitImageToVideoJob with `Model: "Kling-V1-6"` hard-coded unless the
-// instance model_mapping overrides it) — so hunyuan/hunyuan-video is Kling 1.6
-// served through Tencent Cloud, not a Hunyuan video model.
+// SubmitHunyuanToVideoJob, Tencent's native Hunyuan video model, no model
+// field). Until 2026-09-11 hunyuan-video called SubmitImageToVideoJob with
+// `Model: "Kling-V1-6"`, i.e. Kling 1.6 resold through Tencent Cloud.
 
 const SDK = 'https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud';
+
+/** Acknowledge a list of upstream ids with one reason (ids compare case-insensitively). */
+const skip = (reason, ids) => ids.map((id) => ({ id, reason: `skipped 2026-09-11: ${reason}` }));
 
 /** Async generation actions of a client.go (`func (c *Client) SubmitXxxJob(request …`), minus model training. */
 const submitJobs = (go) =>
@@ -39,9 +46,7 @@ export default {
   provider: 'hunyuan',
   models: {
     'hunyuan/hunyuan-image': 'SubmitHunyuanImageJob',
-    // Either id keeps the model present; Kling-V1-6 leaving the Model list shows
-    // up as a changed vclm-models snapshot.
-    'hunyuan/hunyuan-video': ['SubmitImageToVideoJob', 'Kling-V1-6'],
+    'hunyuan/hunyuan-video': 'SubmitHunyuanToVideoJob',
   },
   sources: [
     { key: 'hunyuan-client', url: `${SDK}/hunyuan/v20230901/client.go`, expect: 'text', extract: submitJobs },
@@ -55,6 +60,15 @@ export default {
       snapshot: (go) => goStruct(go, 'SubmitImageToVideoJobRequestParams'),
     },
     {
+      key: 'vclm-hunyuan-video',
+      index: true,
+      url: `${SDK}/vclm/v20240523/models.go`,
+      expect: 'text',
+      extract: (go) => [...goStruct(go, 'SubmitHunyuanToVideoJobRequestParams').matchAll(/^\t(\w+) /gm)].map((m) => m[1]),
+      snapshot: (go) =>
+        goStruct(go, 'SubmitHunyuanToVideoJobRequestParams') + '\n' + goStruct(go, 'DescribeHunyuanToVideoJobResponseParams'),
+    },
+    {
       key: 'hunyuan-models',
       index: true,
       url: `${SDK}/hunyuan/v20230901/models.go`,
@@ -63,5 +77,42 @@ export default {
       snapshot: (go) => goStruct(go, 'SubmitHunyuanImageJobRequestParams'),
     },
   ],
-  acknowledged: [],
+  // Left visible on purpose (add later): SubmitTextToImageJob (aiart, Hunyuan
+  // Image 3.0) and SubmitImageToVideoGeneralJob.
+  acknowledged: [
+    ...skip('Kling/Vidu resale action on vclm; we integrate Kling and Vidu directly', [
+      'SubmitImageToVideoJob',
+      'SubmitTextToVideoJob',
+      'SubmitMotionControlKlingJob',
+      'SubmitVideoEditKlingJob',
+      'SubmitVideoExtendKlingJob',
+      'SubmitImageToVideoViduJob',
+      'SubmitReferenceToVideoViduJob',
+      'SubmitTextToVideoViduJob',
+    ]),
+    // The `Model` values of SubmitImageToVideoJob (vclm-models source).
+    ...skip('Kling model resold through SubmitImageToVideoJob; we integrate Kling directly', [
+      'Kling-V1-6',
+      'Kling-V2-Master',
+      'Kling-V2-1',
+      'Kling-V2-5-Turbo',
+      'Kling-V2-6',
+      'kling-v3',
+    ]),
+    ...skip('template/app action, not a general generation model', [
+      'SubmitDrawPortraitJob',
+      'SubmitGlamPicJob',
+      'SubmitMemeJob',
+      'SubmitHumanActorJob',
+      'SubmitPortraitSingJob',
+      'SubmitTemplateToVideoJob',
+      'SubmitVideoFaceFusionJob',
+    ]),
+    ...skip('multi-turn chat variant of SubmitHunyuanImageJob (same model, needs a conversation-id workflow)', [
+      'SubmitHunyuanImageChatJob',
+    ]),
+    ...skip('aiart text-to-image (advanced) action; the SDK marks it migrated to SubmitHunyuanImageJob', [
+      'SubmitTextToImageProJob',
+    ]),
+  ],
 };

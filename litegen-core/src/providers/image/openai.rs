@@ -134,6 +134,30 @@ impl OpenAiProvider {
         }
     }
 
+    /// GPT Image 2.5 output-token cost of `quality` relative to `medium`, the
+    /// quality the catalog's base cost is priced at.
+    ///
+    /// OpenAI's token calculator ("GPT Image 2.5 (Sunburst and Flare)") puts a
+    /// 1024x1024 image at 196 / 439 / 1,756 / 3,122 / 7,024 output tokens for
+    /// low / medium / high / xhigh / max. `max` is 16x `medium`, so the flat
+    /// GPT Image factors (high 2x, anything unknown 1x) would bill a `max`
+    /// image at a sixteenth of its cost. `auto` depends on the generated
+    /// image, so it stays at the medium anchor.
+    ///
+    /// @see <https://developers.openai.com/api/docs/guides/image-generation>
+    ///   ("GPT Image 2.5 and GPT Image 2 output tokens", re-read 2026-09-11)
+    fn gpt_image_2_5_quality_factor(quality: &str) -> f64 {
+        const MEDIUM_TOKENS: f64 = 439.0;
+        let tokens = match quality {
+            "low" => 196.0,
+            "high" => 1_756.0,
+            "xhigh" => 3_122.0,
+            "max" => 7_024.0,
+            _ => MEDIUM_TOKENS,
+        };
+        tokens / MEDIUM_TOKENS
+    }
+
     fn is_dalle3(model: &str) -> bool {
         let m = model.to_lowercase();
         m.contains("dall-e-3") || m.contains("dalle-3") || m.contains("dalle3")
@@ -515,11 +539,15 @@ impl ImageProvider for OpenAiProvider {
             .and_then(|(w, h)| Some(w.parse::<f64>().ok()? * h.parse::<f64>().ok()?))
             .unwrap_or(1024.0 * 1024.0);
         let size_factor = (pixels / (1024.0 * 1024.0)).max(1.0);
-        let quality_factor = match quality {
-            "low" => 0.5,
-            "medium" => 1.0,
-            "high" | "hd" => 2.0,
-            _ => 1.0,
+        let quality_factor = if model_name.starts_with("gpt-image-2.5") {
+            Self::gpt_image_2_5_quality_factor(quality)
+        } else {
+            match quality {
+                "low" => 0.5,
+                "medium" => 1.0,
+                "high" | "hd" => 2.0,
+                _ => 1.0,
+            }
         };
         let base_cost = model.pricing.base_cost_usd * size_factor * quality_factor;
 
@@ -798,21 +826,85 @@ mod tests {
     /// long:short <= 3:1, 655,360..=8,294,400 total pixels. `2160x3840` is a
     /// listed size, but the old 2160 height cap snapped it to `1024x1536`;
     /// `512x512` is under the pixel floor, but the old 256 floor forwarded it.
+    ///
+    /// GPT Image 2.5 (Sunburst, Flare) documents the same custom-size rules
+    /// ("Size and quality options"), which the `gpt-image-2` prefix covers.
     #[test]
     fn gpt_image_2_sizes_follow_the_documented_constraints() {
-        for listed in ["1024x1024", "2048x2048", "2048x1152", "3840x2160", "2160x3840"] {
-            assert_eq!(
-                OpenAiProvider::normalize_size(listed, "gpt-image-2"),
-                listed,
-                "{listed} is a listed gpt-image-2 size and must pass through"
-            );
+        for model in [
+            "gpt-image-2",
+            "gpt-image-2.5-sunburst",
+            "gpt-image-2.5-flare",
+        ] {
+            for listed in [
+                "1024x1024",
+                "2048x2048",
+                "2048x1152",
+                "3840x2160",
+                "2160x3840",
+            ] {
+                assert_eq!(
+                    OpenAiProvider::normalize_size(listed, model),
+                    listed,
+                    "{listed} is a listed {model} size and must pass through"
+                );
+            }
+            for out_of_range in ["512x512", "3840x3840"] {
+                assert_ne!(
+                    OpenAiProvider::normalize_size(out_of_range, model),
+                    out_of_range,
+                    "{out_of_range} breaks {model}'s pixel limits and must not be forwarded verbatim"
+                );
+            }
         }
-        for out_of_range in ["512x512", "3840x3840"] {
-            assert_ne!(
-                OpenAiProvider::normalize_size(out_of_range, "gpt-image-2"),
-                out_of_range,
-                "{out_of_range} breaks the pixel limits and must not be forwarded verbatim"
-            );
+    }
+
+    async fn estimated_cost(provider: &OpenAiProvider, id: &str, quality: &str) -> f64 {
+        let request = ImageGenerationRequest {
+            base: make_base("a tide pool at dawn", id),
+            size: Some("1024x1024".to_string()),
+            aspect_ratio: None,
+            quality: Some(quality.to_string()),
+            style: None,
+            steps: None,
+            guidance_scale: None,
+            strength: None,
+            response_format: "b64_json".to_string(),
+        };
+        provider
+            .estimate_cost(&ref_schema(id), &request)
+            .await
+            .expect("estimate_cost")
+            .base_cost_usd
+    }
+
+    /// GPT Image 2.5 adds `xhigh` and `max`, and its output tokens per quality
+    /// are not GPT Image 2's. OpenAI's token calculator ("GPT Image 2.5
+    /// (Sunburst and Flare)", 1024x1024): low 196, medium 439, high 1,756,
+    /// xhigh 3,122, max 7,024 output tokens. The flat factors billed `max`,
+    /// which they did not know, at the medium price: a sixteenth of its cost.
+    /// @see <https://developers.openai.com/api/docs/guides/image-generation> (2026-09-11)
+    #[tokio::test]
+    async fn gpt_image_2_5_estimate_scales_with_the_documented_quality_tokens() {
+        let provider = OpenAiProvider::new();
+        for id in [
+            "openai/gpt-image-2.5-sunburst",
+            "openai/gpt-image-2.5-flare",
+        ] {
+            let medium = estimated_cost(&provider, id, "medium").await;
+            for (quality, tokens) in [
+                ("low", 196.0),
+                ("high", 1_756.0),
+                ("xhigh", 3_122.0),
+                ("max", 7_024.0),
+            ] {
+                let got = estimated_cost(&provider, id, quality).await;
+                let want = medium * tokens / 439.0;
+                assert!(
+                    (got - want).abs() < 1e-9,
+                    "{id} {quality}: estimated {got}, OpenAI's calculator implies {want}"
+                );
+            }
         }
     }
 

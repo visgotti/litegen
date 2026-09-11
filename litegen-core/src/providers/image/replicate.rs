@@ -79,6 +79,9 @@ impl ReplicateProvider {
         // Map litegen model names to Replicate owner/name pairs
         match native {
             "flux-pro" => ("black-forest-labs/flux-pro".into(), None),
+            // Official model, addressed by owner/name with no version.
+            // @see <https://replicate.com/black-forest-labs/flux-1.1-pro/api/schema>
+            "flux-1.1-pro" => ("black-forest-labs/flux-1.1-pro".into(), None),
             "flux-dev" => ("black-forest-labs/flux-dev".into(), None),
             "flux-schnell" => ("black-forest-labs/flux-schnell".into(), None),
             "sdxl" => (
@@ -669,5 +672,64 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `replicate/flux-1.1-pro` is BFL's official `black-forest-labs/flux-1.1-pro`
+    /// model. Without its own arm the bare `flux-1.1-pro` fell through as the
+    /// owner/name, so the prediction went to `/v1/models/flux-1.1-pro/predictions`,
+    /// which does not exist.
+    /// @see <https://replicate.com/black-forest-labs/flux-1.1-pro/api/schema>
+    #[tokio::test]
+    async fn flux_1_1_pro_posts_to_the_official_black_forest_labs_model() {
+        let provider = ReplicateProvider::new();
+        assert_eq!(
+            provider.resolve_model_version("replicate/flux-1.1-pro"),
+            ("black-forest-labs/flux-1.1-pro".to_string(), None),
+        );
+
+        let server = MockServer::start().await;
+        // An already-succeeded prediction skips the 2s polling loop.
+        Mock::given(method("POST"))
+            .and(path(
+                "/v1/models/black-forest-labs/flux-1.1-pro/predictions",
+            ))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "id": "pred-1",
+                "status": "succeeded",
+                "output": format!("{}/img.webp", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/img.webp"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"WEBP".to_vec()))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&format!("{}/v1", server.uri()));
+        let schema = ref_schema("replicate/flux-1.1-pro");
+        let base = make_base("a lighthouse at dusk", "replicate/flux-1.1-pro");
+        let extras = ImageExtras {
+            steps: None,
+            guidance_scale: None,
+            ..make_extras()
+        };
+        provider
+            .generate(&schema, &base, &extras, &empty_materialized())
+            .await
+            .expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        let post = received
+            .iter()
+            .find(|r| r.method == wiremock::http::Method::POST)
+            .unwrap();
+        let body: Value = serde_json::from_slice(&post.body).unwrap();
+        assert!(
+            body.get("version").is_none(),
+            "official models take no version: {body}"
+        );
+        assert_eq!(body["input"]["prompt"], "a lighthouse at dusk");
+        assert_eq!(body["input"]["aspect_ratio"], "1:1");
     }
 }

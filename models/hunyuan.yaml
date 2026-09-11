@@ -7,7 +7,11 @@ models:
     media_type: image
     display_name: Hunyuan Image
     description: Tencent Hunyuan text-to-image (async SubmitHunyuanImageJob).
-    pricing: { base_cost_usd: 0.04 }
+    # Pay-as-you-go (后付费) 0.5 CNY per image at every monthly volume, converted
+    # at the ECB reference rate for 2026-09-11 (1 CNY = 0.14907 USD, via
+    # https://api.frankfurter.dev/v1/latest?base=CNY&symbols=USD): $0.0745.
+    # @see https://cloud.tencent.com/document/product/1729/105925 (2026-09-11)
+    pricing: { base_cost_usd: 0.0745 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 1024 }
     params:
@@ -34,27 +38,44 @@ models:
     tags: [text-to-image, image-to-image]
 
   # Video product (混元生视频 / vclm): vclm.tencentcloudapi.com (v2024-05-23).
+  # Tencent's native Hunyuan video model: SubmitHunyuanToVideoJob, polled with
+  # DescribeHunyuanToVideoJob (Status WAIT | RUN | FAIL | DONE, ResultVideoUrl).
+  # (This row used to call the Kling-branded SubmitImageToVideoJob with Model
+  # Kling-V1-6, which Kling retires 2026-09-15.) The request takes exactly
+  # Prompt (required, at most 200 utf-8 characters), Image (optional: without
+  # it the job is text-to-video), Resolution ("目前仅支持720p", default 720p),
+  # LogoAdd and LogoParam. There is no duration (the output is 5 s), aspect
+  # ratio or negative prompt, and Tencent fails an undefined parameter with
+  # UnknownParameter, so none is advertised or allowlisted.
+  # @see https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/vclm/v20240523/models.go
+  #   (SubmitHunyuanToVideoJobRequestParams, DescribeHunyuanToVideoJobResponseParams; 2026-09-11)
+  # @see https://raw.githubusercontent.com/TencentCloud/tencentcloud-cli/master/tccli/services/vclm/v20240523/api.json
+  #   (Prompt is the only required member; 2026-09-11)
   - id: hunyuan/hunyuan-video
     provider: hunyuan
     media_type: video
     display_name: Hunyuan Video
-    description: Tencent Hunyuan image-to-video (async SubmitImageToVideoJob on vclm).
-    pricing: { base_cost_usd: 0.50 }
-    # The adapter only ever calls SubmitImageToVideoJob, which needs a driving
-    # image. vclm does expose SubmitTextToVideoJob, but we do not implement it,
-    # so text_to_video is not advertised.
-    capabilities: { image_to_video: true }
-    # SubmitImageToVideoJob: Prompt "不能超过2500个字符" (at most 2500 characters).
-    # It has no Resolution parameter, and the adapter never sends `resolution`,
-    # so no resolution param is advertised and Resolution is not allowlisted
-    # (Tencent fails undefined parameters with UnknownParameter).
-    # @see https://cloud.tencent.com/document/product/1616/130567 (2026-09-11)
-    prompt: { required: true, max_length: 2500 }
+    description: Tencent Hunyuan text/image-to-video (async SubmitHunyuanToVideoJob on vclm).
+    # 混元生视频, 5 s 720p from text or an image: 1.5 credits (积分) per job;
+    # pay-as-you-go credits are 1.2 CNY each, so 1.8 CNY, converted at the ECB
+    # reference rate for 2026-09-11 (1 CNY = 0.14907 USD, via
+    # https://api.frankfurter.dev/v1/latest?base=CNY&symbols=USD): $0.268.
+    # (Prepaid credit packs are 1 CNY per credit. The page's second worked
+    # example multiplies by 2.0, which contradicts its own 1.2 rate table.)
+    # @see https://cloud.tencent.com/document/product/1616/118994 (2026-09-11)
+    pricing: { base_cost_usd: 0.268 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 200 }
+    params:
+      # Forwarded as Resolution; 720p is the only value the action accepts.
+      resolution: { kind: string, enum_values: ["720p"], default: "720p" }
+    # Image: jpg/jpeg/png/webp/bmp/tiff, base64 at most 8 MB (URL 10 MB),
+    # each side 50-5000 px, aspect ratio 1:4 to 4:1.
     ref_inputs:
       max_total: 1
       default_role: first_frame
       provider_format: { form: base64 }
       roles:
-        first_frame: { required: true, min_count: 1, max_count: 1 }
+        first_frame: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [LogoAdd]
-    tags: [image-to-video]
+    tags: [text-to-video, image-to-video]

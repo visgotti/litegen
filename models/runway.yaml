@@ -100,7 +100,10 @@ models:
     media_type: video
     display_name: Runway Gen-4.5
     description: Runway Gen-4.5, the highest-quality Runway video tier.
-    pricing: { base_cost_usd: 0.50 }
+    # gen4.5: 12 credits per second at $0.01 per credit, so the default 5 s
+    # request is 60 credits = $0.60. Verified 2026-09-11.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md
+    pricing: { base_cost_usd: 0.60 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 1000 }
     params:

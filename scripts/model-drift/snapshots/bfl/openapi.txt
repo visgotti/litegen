@@ -1,4 +1,332 @@
 {
+  "POST /v1/flux-2-klein-9b (application/json)": {
+    "properties": {
+      "height": {
+        "anyOf": [
+          {
+            "minimum": 64,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": 0
+      },
+      "input_image": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_2": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_3": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_4": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "output_format": {
+        "anyOf": [
+          {
+            "enum": [
+              "jpeg",
+              "png",
+              "webp"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": "jpeg"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "safety_tolerance": {
+        "default": 2,
+        "maximum": 5,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "user": {
+        "anyOf": [
+          {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "webhook_secret": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "webhook_url": {
+        "anyOf": [
+          {
+            "format": "uri",
+            "maxLength": 2083,
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "width": {
+        "anyOf": [
+          {
+            "minimum": 64,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": 0
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v1/flux-2-max (application/json)": {
+    "properties": {
+      "disable_pup": {
+        "default": false,
+        "type": "boolean"
+      },
+      "height": {
+        "anyOf": [
+          {
+            "minimum": 64,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": 0
+      },
+      "input_image": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_2": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_3": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_4": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_5": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_6": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_7": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "input_image_8": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "output_format": {
+        "anyOf": [
+          {
+            "enum": [
+              "jpeg",
+              "png",
+              "webp"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": "jpeg"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "safety_tolerance": {
+        "default": 2,
+        "maximum": 5,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "user": {
+        "anyOf": [
+          {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "webhook_secret": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "webhook_url": {
+        "anyOf": [
+          {
+            "format": "uri",
+            "maxLength": 2083,
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "width": {
+        "anyOf": [
+          {
+            "minimum": 64,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": 0
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  },
   "POST /v1/flux-2-pro (application/json)": {
     "properties": {
       "disable_pup": {

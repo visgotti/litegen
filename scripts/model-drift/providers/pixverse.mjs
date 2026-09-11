@@ -42,6 +42,8 @@ export default {
     'pixverse/v4.5': 'v4.5',
     'pixverse/v5': 'v5',
     'pixverse/v3.5': 'v3.5',
+    'pixverse/v6': 'v6',
+    'pixverse/c1': 'c1',
   },
   sources: [
     endpoint('text-to-video', 'text-to-video-generation-13016634e0', '/openapi/v2/video/text/generate'),
@@ -56,5 +58,9 @@ export default {
       extract: /^- (?:Models|API Reference > Video Generation) \[[^\]]*\]\(https:\/\/docs\.platform\.pixverse\.ai\/([\w-]+)\.md\)/gm,
     },
   ],
-  acknowledged: [],
+  acknowledged: [
+    { id: 'v5.5', reason: 'skipped 2026-09-11: legacy; v4.5/v5 carried, v6/c1 added' },
+    { id: 'v5.6', reason: 'skipped 2026-09-11: legacy; v4.5/v5 carried, v6/c1 added' },
+    { id: 'v4', reason: 'skipped 2026-09-11: legacy; v4.5/v5 carried, v6/c1 added' },
+  ],
 };

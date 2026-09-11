@@ -70,7 +70,9 @@ models:
     media_type: video
     display_name: PixVerse v3.5
     description: PixVerse v3.5 text/image-to-video + transition.
-    pricing: { base_cost_usd: 0.30 }
+    # 540p (the adapter's default quality), normal motion, 5s: 45 credits at
+    # $0.01 ($10 = 1,000 credits): https://docs.platform.pixverse.ai/pricing-796039m0.md (2026-09-11)
+    pricing: { base_cost_usd: 0.45 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
@@ -95,3 +97,95 @@ models:
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [motion_mode, style, template_id, negative_prompt]
     tags: [text-to-video, image-to-video]
+
+  # ─── V6 / C1 (added 2026-09-11, model-drift) ───────────────────────────────
+  # PixVerse's two recommended models; the capability matrix files every other
+  # model under "Legacy models". Both serve text/, img/ and transition/generate
+  # (the three endpoints the adapter calls); fusion/ and extend/ are not wired.
+  # https://docs.platform.pixverse.ai/capability-matrix-2144288m0.md
+  - id: pixverse/v6
+    provider: pixverse
+    media_type: video
+    display_name: PixVerse V6
+    description: PixVerse V6 text/image-to-video + first/last-frame transition, 1-15s, optional native audio.
+    # 540p (the adapter's default quality), 5s, no audio: 7 credits/s x 5 = 35
+    # credits at $0.01 ($10 = 1,000 credits):
+    # https://docs.platform.pixverse.ai/pricing-796039m0.md (2026-09-11)
+    pricing: { base_cost_usd: 0.35 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      # "v6/c1 : 1~15" on text/, img/ and transition/generate ("1080p supports up to 15s").
+      # https://docs.platform.pixverse.ai/text-to-video-generation-13016634e0.md
+      duration_seconds: { kind: float, min: 1.0, max: 15.0, default: 5.0 }
+      resolution:
+        kind: string
+        enum_values: [360p, 540p, 720p, 1080p]
+        default: 540p
+      aspect_ratio:
+        kind: aspect_ratio
+        # "v6/c1 models : 16:9, 4:3, 1:1, 3:4, 9:16, 2:3, 3:2, 21:9" (text/generate;
+        # img/ and transition/ take the shape of the image).
+        allowed: ["16:9","4:3","1:1","3:4","9:16","2:3","3:2","21:9"]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format:
+        form: multipart
+        field_map:
+          first_frame: image
+          last_frame: image
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    # generate_audio_switch (default false; "Supported in v5.5/v5.6/v6/c1") and
+    # generate_multi_clip_switch ("Supported in v5.5/v6"; text/ and img/ only).
+    # The price above is the no-audio rate (audio: 9 credits/s at 540p). No
+    # negative_prompt, motion_mode or sound_effect_* / lip_sync_* (v5 and below).
+    # https://docs.platform.pixverse.ai/v6-2056814m0.md
+    extra_allowlist: [generate_audio_switch, generate_multi_clip_switch]
+    tags: [text-to-video, image-to-video]
+
+  - id: pixverse/c1
+    provider: pixverse
+    media_type: video
+    display_name: PixVerse C1
+    description: PixVerse C1 cinematic text/image-to-video + first/last-frame transition, 1-15s, optional native audio.
+    # 540p (the adapter's default quality), 5s, no audio: 8 credits/s x 5 = 40
+    # credits at $0.01 ($10 = 1,000 credits):
+    # https://docs.platform.pixverse.ai/pricing-796039m0.md (2026-09-11)
+    pricing: { base_cost_usd: 0.40 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      # "Any integer from 1–15s (1080p supports up to 15s)" on every C1 endpoint.
+      # https://docs.platform.pixverse.ai/c1-2067883m0.md
+      duration_seconds: { kind: float, min: 1.0, max: 15.0, default: 5.0 }
+      resolution:
+        kind: string
+        enum_values: [360p, 540p, 720p, 1080p]
+        default: 540p
+      aspect_ratio:
+        kind: aspect_ratio
+        # "v6/c1 models : 16:9, 4:3, 1:1, 3:4, 9:16, 2:3, 3:2, 21:9" (text/generate).
+        # https://docs.platform.pixverse.ai/text-to-video-generation-13016634e0.md
+        allowed: ["16:9","4:3","1:1","3:4","9:16","2:3","3:2","21:9"]
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format:
+        form: multipart
+        field_map:
+          first_frame: image
+          last_frame: image
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    # generate_audio_switch only: C1 does multi-clip "with prompt", and
+    # generate_multi_clip_switch is "Supported in v5.5/v6". The price above is
+    # the no-audio rate (audio: 10 credits/s at 540p).
+    # https://docs.platform.pixverse.ai/c1-2067883m0.md
+    extra_allowlist: [generate_audio_switch]
+    tags: [text-to-video, image-to-video, premium]

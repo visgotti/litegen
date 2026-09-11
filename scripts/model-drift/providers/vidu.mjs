@@ -75,6 +75,9 @@ export default {
     'vidu/viduq1': 'viduq1',
     'vidu/vidu2.0': 'vidu2.0',
     'vidu/viduq2-pro': 'viduq2-pro',
+    'vidu/viduq3-turbo': 'viduq3-turbo',
+    'vidu/viduq3-pro': 'viduq3-pro',
+    'vidu/viduq2-pro-fast': 'viduq2-pro-fast',
   },
   sources: [
     {
@@ -100,5 +103,15 @@ export default {
       extract: /\/docs\/[\w-]+\.md/g,
     },
   ],
-  acknowledged: [],
+  acknowledged: [
+    // No endpoint page lists these in its `model` values; only the Model Map does.
+    { id: 'viduq3-drama', reason: 'skipped 2026-09-11: no endpoint accepts it (in the Model Map only)' },
+    { id: 'viduq3-ad', reason: 'skipped 2026-09-11: no endpoint accepts it (in the Model Map only)' },
+    { id: 'viduq3', reason: 'skipped 2026-09-11: optional, not carried; revisit on demand' },
+    { id: 'viduq3-mix', reason: 'skipped 2026-09-11: optional, not carried; revisit on demand' },
+    { id: 'viduq3-pro-fast', reason: 'skipped 2026-09-11: optional, not carried; revisit on demand' },
+    { id: 'viduq2', reason: 'skipped 2026-09-11: optional, not carried; revisit on demand' },
+    { id: 'viduq2-turbo', reason: 'skipped 2026-09-11: optional, not carried; revisit on demand' },
+    { id: 'viduq1-classic', reason: 'skipped 2026-09-11: optional, not carried; revisit on demand' },
+  ],
 };

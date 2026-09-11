@@ -59,8 +59,9 @@ export default {
     // Leonardo Diffusion XL (b24e16ff-… is Lightning XL, the API's modelId default).
     'leonardo/diffusion-xl': '1e60896f-3c26-4296-8ecc-53e2afecc132',
     'leonardo/motion2': 'MOTION2',
-    'leonardo/veo3': 'VEO3',
+    'leonardo/veo3.1': 'VEO3_1',
     'leonardo/kling2.1': 'KLING2_1',
+    'leonardo/kling2.5': 'KLING2_5',
   },
   sources: [
     v1Endpoint('image-to-video', 'createimagetovideogeneration', '/generations-image-to-video', (spec) =>
@@ -104,10 +105,37 @@ export default {
       extract: (md, body) => openapiModelIds(embedded(md, body), { paths: ['/generations'] }),
     },
   ],
+  // VEO3_1FAST is left unacknowledged on purpose (visible in the weekly report).
   acknowledged: [
+    {
+      id: 'VEO3',
+      reason: 'Veo 3 retired June 29, 2026 (Deprecations & Changes page); leonardo/veo3 removed 2026-09-11, replaced by leonardo/veo3.1; the v1 pages still list it',
+    },
     {
       id: 'VEO3FAST',
       reason: 'Veo 3 Fast retired June 29, 2026 (Deprecations & Changes page); the v1 pages still list it',
     },
+    { id: 'MOTION2FAST', reason: 'skipped 2026-09-11: each needs a per-model mapping; unmapped names become Lightning XL' },
+    // Platform image models (names from the model-ids snapshot). The image
+    // adapter passes only leonardo/diffusion-xl through a mapping; any other
+    // catalog name would silently generate with Lightning XL.
+    ...[
+      '7b592283-e8a7-4c5a-9ba6-d18c31f258b9', // Lucid Origin
+      '05ce0082-2d80-4a2d-8653-4d1c85e2418e', // Lucid Realism
+      '28aeddf8-bd19-4803-80fc-79602d1a9989', // FLUX.1 Kontext
+      'de7d3faf-762f-48e0-b3b7-9d0ac3a3fcf3', // Leonardo Phoenix 1.0
+      'b2614463-296c-462a-9586-aafdb8f00e36', // Flux Dev
+      '1dd50843-d653-4516-a8e3-f0238ee453ff', // Flux Schnell
+      '6b645e3a-d64f-4341-a6d8-7a3690fbf042', // Leonardo Phoenix 0.9
+      'e71a1c2f-4f80-4800-934f-2c68979d8cc8', // Leonardo Anime XL
+      'b24e16ff-06e3-43eb-8d33-4416c2d75876', // Leonardo Lightning XL
+      '16e7060a-803e-4df3-97ee-edcfa5dc9cc8', // SDXL 1.0
+      'aa77f04e-3eec-4034-9c07-d0f619684628', // Leonardo Kino XL
+      '5c232a9e-9061-4777-980a-ddc8e65647c6', // Leonardo Vision XL
+      '2067ae52-33fd-4a82-bb92-c2c55e7d2786', // AlbedoBase XL
+      'f1929ea3-b169-4c18-a16c-5d58b4292c69', // RPG v5
+      'b63f7119-31dc-4540-969b-2a9df997e173', // SDXL 0.9
+      'd69c8273-6b17-4a30-a13e-d6637ae1c644', // 3D Animation Style
+    ].map((id) => ({ id, reason: 'skipped 2026-09-11: each needs a per-model mapping; unmapped names become Lightning XL' })),
   ],
 };
