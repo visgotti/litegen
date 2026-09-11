@@ -6,6 +6,11 @@
 use litegen::api::middleware::validator::validate_model3d;
 use litegen::capabilities::*;
 use litegen::types::*;
+// Both globs export a `MediaType` and a `ModelPricing` (capabilities::schema
+// and types each define their own). `ModelSchema` needs the capabilities pair;
+// naming them explicitly resolves the rustc `ambiguous_glob_imports`
+// future-incompat warning, which is slated to become a hard error.
+use litegen::capabilities::{MediaType, ModelPricing};
 use std::collections::HashMap;
 
 fn schema_with(params: HashMap<String, ParamSpec>) -> ModelSchema {
