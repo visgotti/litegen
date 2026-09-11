@@ -69,7 +69,7 @@ export function loadEventMatches(detail: unknown, src: string): boolean {
 }
 
 /** Lowercased file extension of a URL's path ('' when it has none). */
-function extensionOf(url: string): string {
+export function extensionOf(url: string): string {
   const path = url.split(/[?#]/, 1)[0];
   const name = path.slice(path.lastIndexOf('/') + 1);
   const dot = name.lastIndexOf('.');

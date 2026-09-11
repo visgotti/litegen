@@ -1,7 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { client } from '../sdk-client';
-import type { RequestLog, RequestArtifact } from '@litegen/sdk';
-import ModelViewer from './ModelViewer';
+import type { Generation, RequestLog, RequestArtifact } from '@litegen/sdk';
+import GenerationOutput from './GenerationOutput';
+import {
+  POLL_INTERVAL_MS,
+  httpStatusOf,
+  resolvesViaGeneration,
+  shouldKeepPolling,
+  type PollResult,
+} from './generation-output';
 
 const TAB_KEY = 'litegen_trace_panel_tab';
 
@@ -217,20 +224,20 @@ function VisualTab({ artifact }: { artifact: RequestArtifact | null }) {
     );
   }
 
+  // Async results (3D always; video until its URL is known) live on the
+  // generation row, not the artifact — which is written at submit time and
+  // never updated. The artifact's request_id IS the generation id.
+  if (resolvesViaGeneration(artifact)) {
+    return <ResolvedGeneration key={artifact.request_id} generationId={artifact.request_id} />;
+  }
+
   if (artifact.output_kind === 'url' && artifact.output_value) {
     // GIF videos (e.g. mock/visual-video-gen) are served as image/gif —
     // render them as <img> so the browser animates them inline.
     const mime = artifact.output_mime ?? '';
     const isGif = mime.startsWith('image/');
-    if (artifact.media_type === 'model3d') {
-      return (
-        <ModelViewer
-          src={artifact.output_value}
-          testId="trace-visual-3d"
-          style={{ maxHeight: 360, border: '1px solid #30363d' }}
-        />
-      );
-    }
+    // No model3d branch here: resolvesViaGeneration routes every 3D artifact
+    // to its generation row above (a 3D artifact's output_value is never set).
     if (artifact.media_type === 'video' && !isGif) {
       return (
         <video
@@ -251,15 +258,61 @@ function VisualTab({ artifact }: { artifact: RequestArtifact | null }) {
     );
   }
 
-  if (artifact.output_kind === 'url' && !artifact.output_value) {
-    return (
-      <div style={{ color: '#8b949e', fontSize: 13 }}>
-        Output URL not yet available (async generation pending).
-      </div>
-    );
-  }
-
   return <div style={{ color: '#8b949e', fontSize: 13 }}>No output available.</div>;
+}
+
+/**
+ * Fetches a generation by id and re-polls it every POLL_INTERVAL_MS until it
+ * reaches a terminal status. Keyed by id at the call site, so a different
+ * artifact mounts fresh state instead of flashing the previous result.
+ *
+ * All setState calls happen after an await and behind an abort check, so
+ * nothing updates after unmount; cleanup aborts the in-flight request and
+ * clears the pending timer.
+ */
+function ResolvedGeneration({ generationId }: { generationId: string }) {
+  const [generation, setGeneration] = useState<Generation | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let notFoundStreak = 0;
+
+    const poll = async () => {
+      let result: PollResult;
+      try {
+        const g = await client.generations.get(generationId, controller.signal);
+        if (controller.signal.aborted) return;
+        notFoundStreak = 0;
+        result = { kind: 'generation', status: g.status };
+        setGeneration(g);
+      } catch (e) {
+        if (controller.signal.aborted) return;
+        const httpStatus = httpStatusOf(e);
+        notFoundStreak = httpStatus === 404 ? notFoundStreak + 1 : 0;
+        result = { kind: 'error', httpStatus };
+        if (!shouldKeepPolling(result, notFoundStreak)) {
+          setError(httpStatus === 404
+            ? `No generation record found for ${generationId}.`
+            : e instanceof Error ? e.message : String(e));
+        }
+      }
+      setLoading(false);
+      if (shouldKeepPolling(result, notFoundStreak)) {
+        timer = setTimeout(poll, POLL_INTERVAL_MS);
+      }
+    };
+
+    void poll();
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [generationId]);
+
+  return <GenerationOutput generation={generation} loading={loading} error={error} />;
 }
 
 function PromptTab({ artifact }: { artifact: RequestArtifact | null }) {
