@@ -1,4 +1,4 @@
-import React, { useEffect, useEffectEvent, useImperativeHandle, useRef, useState } from 'react';
+import React, { useEffect, useEffectEvent, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 // Type-only: erased at compile time, so it does not defeat the lazy import
 // below, but it makes tsc check every element API used here (getDimensions,
 // resetTurntableRotation, cameraOrbit, …) against the installed version.
@@ -79,10 +79,17 @@ type FallbackReason = 'import' | 'webgl' | 'format' | 'load' | 'parse';
  * Resolves a mesh URL to the exact absolute form Chromium records it under in
  * a `PerformanceResourceTiming` entry's `name`. Verified empirically (see the
  * Task 17B report) that this RETAINS the URL fragment — `retrySrc`'s
- * `#retry-N` cache-buster included — rather than stripping it. That is
- * useful here: matching on the exact resolved URL (fragment and all) means a
- * stale entry from an EARLIER attempt at the same mesh can never match a
- * later one, since `retrySrc` gives every attempt a distinct fragment.
+ * `#retry-N` cache-buster included — rather than stripping it, so exact
+ * string equality is the right match, not a fragment-stripped one.
+ *
+ * Fragment uniqueness alone does NOT make a stale entry unmatchable — a
+ * fresh remount's first attempt reuses the exact same bare `src` (no
+ * fragment) as an earlier mount's first attempt. What actually prevents a
+ * stale match is `buffered: false` on the `PerformanceObserver` this is used
+ * with (see the layout effect below): it only ever delivers entries recorded
+ * AFTER `observe()` was called for the CURRENT attempt, so an entry from any
+ * earlier load — same URL or not — is structurally excluded, not just
+ * unlikely to collide.
  */
 function resolveUrl(url: string): string {
   try {
@@ -286,53 +293,52 @@ export default function ModelViewer({
     };
   }, [showElement]);
 
-  // A new attempt (new src, or a retry's new #retry-N fragment) must start
-  // with no captured status — otherwise a fast failure that races ahead of
-  // any timing entry for THIS attempt would read the previous attempt's.
-  useEffect(() => {
+  // Resets the captured status AND (re)creates the scoped PerformanceObserver
+  // for every attempt (a new src, or a retry's new #retry-N fragment), in a
+  // LAYOUT effect rather than a passive one: <model-viewer> only starts
+  // fetching once its own IntersectionObserver reports visible (model-viewer-
+  // base.js, features/loading.js — it never gets `loading="eager"` here),
+  // which happens on a later rendering update than this synchronous,
+  // pre-paint layout effect. That ordering — observer alive before the
+  // element can possibly start a fetch — is what makes `buffered: false`
+  // sufficient on its own, with no supplementary read of any kind: reading
+  // performance.getEntriesByType('resource') to backfill a "missed" entry
+  // (an earlier version of this fix did that as a "safety net") reintroduces
+  // exactly the bug this whole approach exists to avoid — it can match a
+  // STALE entry from an EARLIER, unrelated load of the same URL (a previous
+  // component instance, a different tile), misclassifying a genuine 404 as
+  // an unfixable parse failure and withholding Retry. Reproduced in a real
+  // browser and fixed by deleting that read — see the Task 17B report.
+  // Not keyed on showElement: the observer must exist even before the
+  // element mounts (e.g. while the ~1MB bundle is still importing), or a
+  // fetch that starts the moment it does mount would already be missed.
+  useLayoutEffect(() => {
     statusRef.current = { resolvedSrc: resolveUrl(viewSrc), status: null };
-  }, [viewSrc]);
-
-  // Captures the mesh request's HTTP status live, scoped to this element's
-  // lifetime — not the global performance.getEntriesByType('resource')
-  // buffer (see matchResourceStatus's doc comment for why that buffer is
-  // unusable here). buffered:false on purpose: a backlog of entries from
-  // BEFORE this observer existed is exactly what must not be matched.
-  useEffect(() => {
-    if (!showElement) return;
     if (typeof PerformanceObserver === 'undefined'
       || !PerformanceObserver.supportedEntryTypes?.includes('resource')) {
-      // No Resource Timing Level 2 support (e.g. Safari at this writing):
-      // statusRef.current.status stays null, so classifyViewerError always
-      // gets 'load' — the safe default, never a wrong 'parse'.
+      // Not a browser without resource-timing entries — e.g. Safari has
+      // them — just one without the `responseStatus` field yet
+      // (Resource Timing Level 2). matchResourceStatus already maps a
+      // matched entry with no responseStatus to null, so this early return
+      // (skipping the observer outright) only saves the allocation; either
+      // way statusRef.current.status stays null, and classifyViewerError
+      // treats that as the safe 'load' default, never a wrong 'parse'.
       return;
     }
     const observer = new PerformanceObserver(list => {
       const status = matchResourceStatus(list.getEntries() as unknown as ResourceStatusEntry[], statusRef.current.resolvedSrc);
       if (status !== null) statusRef.current.status = status;
     });
+    // buffered:false: a backlog of entries from BEFORE this observer existed
+    // (including an earlier load of the exact same URL) is exactly what must
+    // never match this attempt.
     observer.observe({ type: 'resource', buffered: false });
     observerRef.current = observer;
-    // One-time safety net, not a recurring buffer scan: a tiny/cached mesh
-    // (the corrupt fixture is 100 bytes) can finish — and have its timing
-    // entry recorded — before this effect runs, since React's passive
-    // effects and the custom element's own reactive src update are both
-    // asynchronous. This catches only an entry for the EXACT current attempt
-    // (statusRef.current.resolvedSrc, just set by the reset effect above),
-    // read once at observer-attach time — not the ongoing, capped-buffer
-    // read this whole approach replaced.
-    if (typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
-      const already = matchResourceStatus(
-        performance.getEntriesByType('resource') as unknown as ResourceStatusEntry[],
-        statusRef.current.resolvedSrc,
-      );
-      if (already !== null) statusRef.current.status = already;
-    }
     return () => {
       observer.disconnect();
       observerRef.current = null;
     };
-  }, [showElement]);
+  }, [viewSrc]);
 
   useImperativeHandle(ref, () => ({
     resetCamera() {
