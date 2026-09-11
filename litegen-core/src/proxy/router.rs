@@ -124,7 +124,9 @@ impl ProxyRouter {
     /// (fallback, weighted_round_robin, lowest_cost, lowest_latency). Otherwise,
     /// falls back to single-provider direct dispatch using schema.provider.
     #[tracing::instrument(
-        skip(self, schema, base, extras, materialized, app_store),
+        // `app_creds` carries decrypted BYO provider secrets — see the note on
+        // `generate_model3d`; an instrumented argument becomes a span attribute.
+        skip(self, schema, base, extras, materialized, app_creds, app_store),
         fields(model = %schema.id, provider = %schema.provider)
     )]
     pub async fn generate_image(
@@ -470,7 +472,9 @@ impl ProxyRouter {
     /// If a model route is configured, dispatches through route strategy.
     /// Otherwise falls back to single-provider direct dispatch using schema.provider.
     #[tracing::instrument(
-        skip(self, schema, base, extras, materialized),
+        // `app_creds` carries decrypted BYO provider secrets — see the note on
+        // `generate_model3d`; an instrumented argument becomes a span attribute.
+        skip(self, schema, base, extras, materialized, app_creds),
         fields(model = %schema.id, provider = %schema.provider)
     )]
     pub async fn generate_video(
@@ -614,8 +618,14 @@ impl ProxyRouter {
 
     /// Submit a 3D generation. Always async: the response is `pending` and the
     /// poller (or `get_model3d_status`) drives it to a terminal state.
+    // `app_creds` is in `skip` because it is NOT loggable: its derived `Debug`
+    // prints a tenant's decrypted BYO `api_key`/`key_secret` verbatim, and an
+    // instrumented argument is recorded as a span attribute on every span AND
+    // inherited by every event inside it — so with the JSON/pretty fmt layer or
+    // an OTLP exporter the plaintext secret lands in the log sink. Same reason
+    // for `generate_image`/`generate_video`. Never remove one from this list.
     #[tracing::instrument(
-        skip(self, schema, base, extras, materialized),
+        skip(self, schema, base, extras, materialized, app_creds),
         fields(model = %schema.id, provider = %schema.provider)
     )]
     pub async fn generate_model3d(
@@ -697,8 +707,20 @@ impl ProxyRouter {
 
     /// Poll an in-flight 3D generation by local ID, re-hosting its files if the
     /// provider reports completion on this call.
-    #[tracing::instrument(skip(self), fields(id = %id))]
-    pub async fn get_model3d_status(&self, id: &str) -> Result<Model3dGenerationResponse, ProxyError> {
+    ///
+    /// `app_store`/`app_prefix` are the calling app's BYO bucket, resolved by
+    /// the handler exactly as `generate_image` takes `app_store`. They are NOT
+    /// optional in spirit: this call and the poller are the two paths that can
+    /// observe completion, and the poller already re-hosts into the app's
+    /// bucket. Passing `None` here when the app has one would put that tenant's
+    /// mesh in the operator's bucket depending only on which observer won.
+    #[tracing::instrument(skip(self, app_store), fields(id = %id))]
+    pub async fn get_model3d_status(
+        &self,
+        id: &str,
+        app_store: Option<Arc<dyn crate::proxy::storage::ImageStorage>>,
+        app_prefix: Option<&str>,
+    ) -> Result<Model3dGenerationResponse, ProxyError> {
         let job = {
             let jobs = self.model3d_jobs.read().await;
             jobs.get(id).cloned()
@@ -725,7 +747,12 @@ impl ProxyRouter {
 
         // Re-host in the same call that saw completion — provider URLs expire.
         let assets = if poll.status == GenerationStatus::Completed && !poll.files.is_empty() {
-            rehost_model3d_files(&self.model3d_store, None, id, &poll.files)
+            rehost_model3d_files(
+                app_store.as_ref().unwrap_or(&self.model3d_store),
+                app_prefix,
+                id,
+                &poll.files,
+            )
                 .await
                 .map_err(|e| ProxyError::ProviderError {
                     provider: handle.provider.clone(),
@@ -782,21 +809,45 @@ impl ProxyRouter {
     }
 
     /// Estimate the cost of a 3D generation without dispatching it.
+    ///
+    /// Mirrors [`estimate_video_cost`](Self::estimate_video_cost) in both
+    /// respects that matter to a consumer calling `/v1/models3d/cost` before
+    /// every generation:
+    ///
+    /// * `app_creds` resolves the provider the same way `generate_model3d`
+    ///   does, so a single-tenant install whose 3D vendor key is stored as an
+    ///   ORG credential (no platform default) gets an estimate instead of a
+    ///   424 for a model it can generate with.
+    /// * the configured markup is applied, so the estimate matches what the
+    ///   generation actually bills.
+    #[tracing::instrument(skip(self, schema, request, app_creds), fields(model = %schema.id))]
     pub async fn estimate_model3d_cost(
         &self,
         schema: &ModelSchema,
         request: &Model3dGenerationRequest,
+        app_creds: Option<ProviderCredentials>,
     ) -> Result<CostEstimate, ProxyError> {
         let provider = self
             .registry
-            .model3d_provider_for(&schema.provider)
+            .model3d_provider_for_request(&schema.provider, app_creds)
             .await
             .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
-        provider.estimate_cost(schema, request).await.map_err(|e| ProxyError::ProviderError {
-            provider: schema.provider.clone(),
-            error: e.to_string(),
-            retryable: e.is_retryable(),
-        })
+        let mut est = provider.estimate_cost(schema, request).await.map_err(|e| {
+            ProxyError::ProviderError {
+                provider: schema.provider.clone(),
+                error: e.to_string(),
+                retryable: e.is_retryable(),
+            }
+        })?;
+
+        let markup = self.config.cost_markup_percent;
+        if markup > 0.0 {
+            let (m, total) = apply_markup(est.base_cost_usd, markup);
+            est.markup_usd = m;
+            est.total_cost_usd = total;
+            est.tokens_required = crate::providers::usd_to_tokens(total, USD_PER_TOKEN);
+        }
+        Ok(est)
     }
 
     /// Dispatch a video request through a configured model route.

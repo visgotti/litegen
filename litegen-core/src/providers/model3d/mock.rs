@@ -22,11 +22,20 @@ const POLLS_BEFORE_DONE: u32 = 3;
 /// The model id that terminates in `failed`, for exercising refund paths.
 const FAIL_MODEL: &str = "mock/fail-3d";
 
+/// How long a FINISHED job stays answerable before it is swept. A real vendor
+/// keeps a completed job queryable for hours; the mock only needs to outlive
+/// every observer of one generation (the client's poll loop and the 5s poller),
+/// with room to spare for a paused debugger.
+const FINISHED_JOB_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
 struct Job {
     model: String,
     mesh: Vec<u8>,
     preview: Vec<u8>,
     polls: AtomicU32,
+    /// When this job first reported a terminal status. Set once; read by the
+    /// sweep in `generate`. `None` means still in flight.
+    finished_at: std::sync::OnceLock<std::time::Instant>,
 }
 
 /// Process-global job store. The mock has no backing service, so submitted work
@@ -90,8 +99,16 @@ impl Model3dProvider for MockModel3dProvider {
             mesh: generate_cube_glb(&base.prompt),
             preview: generate_visual_image_png(&base.prompt),
             polls: AtomicU32::new(0),
+            finished_at: std::sync::OnceLock::new(),
         });
-        jobs().write().await.insert(job_id.clone(), job);
+        let mut jobs = jobs().write().await;
+        // Sweep long-finished jobs here rather than on the poll that finishes
+        // them — see `poll_status`, which must keep answering terminally.
+        jobs.retain(|_, j| {
+            !matches!(j.finished_at.get(), Some(t) if t.elapsed() >= FINISHED_JOB_TTL)
+        });
+        jobs.insert(job_id.clone(), job);
+        drop(jobs);
         Ok(Model3dGenerationHandle {
             provider_job_id: job_id,
             provider: "mock".to_string(),
@@ -133,7 +150,16 @@ impl Model3dProvider for MockModel3dProvider {
             });
         }
 
-        jobs().write().await.remove(&handle.provider_job_id);
+        // Terminal — but the job is NOT forgotten. A 3D generation has two
+        // independent observers: the client's `GET /v1/models3d/{id}` and the
+        // background poller, and the client usually gets here first (it polls
+        // every 2s against the poller's 5s tick). A provider that dropped the
+        // job on its first terminal poll answered the poller's next tick with a
+        // NON-retryable "unknown job", which reaps the already-completed row —
+        // and its request log — as `failed`. Real vendors answer a finished job
+        // with the same terminal result for as long as they retain it; so does
+        // this. `generate` sweeps jobs finished longer ago than FINISHED_JOB_TTL.
+        let _ = job.finished_at.set(std::time::Instant::now());
 
         if job.model == FAIL_MODEL {
             return Ok(Model3dGenerationPollResult {

@@ -6,8 +6,8 @@ mod harness; // see harness/mod.rs — real create_router + in-memory sqlite
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use litegen::db::sqlite::SqliteDatabase;
-use litegen::db::DatabaseStore;
-use litegen::types::{GenerationStatus, RequestLog};
+use litegen::db::{DatabaseStore, GenerationWrite};
+use litegen::types::{GenerationStatus, MediaType, RequestLog};
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -300,6 +300,11 @@ async fn a_completed_3d_generation_moves_its_request_log_from_pending_to_complet
     let log = request_log(&db, &id).await.unwrap();
     assert_eq!(log.status, GenerationStatus::Completed);
     assert_eq!(log.error, None);
+    // The `"model3d"` arm of `parse_media_type` has no other assertion: without
+    // this, deleting it would keep the suite green and render every 3D row on
+    // the Logs surface as an image.
+    assert_eq!(log.media_type, MediaType::Model3d, "the log round-trips as model3d");
+    assert_eq!(submitted.media_type, MediaType::Model3d, "…at submit time too");
 }
 
 #[tokio::test]
@@ -389,6 +394,14 @@ async fn seed_terminal_row(db: &SqliteDatabase, id: &str, cost_usd: f64, status:
     ).await.unwrap();
     db.update_generation_status(id, status, 100, None, None, Some(chrono::Utc::now()))
         .await.unwrap();
+    if status == "completed" {
+        // A `completed` row ALWAYS carries a mesh — `model3d_response_from_row`
+        // reports a mesh-less completed row as `failed` (Ruling R21), so a row
+        // seeded to exercise the cost path has to be a legitimate one.
+        db.update_generation_metadata(id, &json!({
+            "assets": [ { "kind": "mesh", "url": "https://example.test/model.glb", "format": "glb" } ]
+        })).await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -498,4 +511,326 @@ async fn a_cancelled_3d_generation_reports_usage_and_no_error() {
     let polled = get_3d(&app, &id).await;
     assert_eq!(polled["status"], "cancelled");
     assert_usage_triple(&polled, "the cancelled poll");
+}
+
+// ─── Two terminal observers, one outcome ────────────────────────────────────
+//
+// `GET /v1/models3d/{id}` and the background poller BOTH terminalise a 3D
+// generation, and the SDK polls faster (2s) than the poller ticks (5s). Every
+// poll-driven terminal write therefore has to be guarded on the row still being
+// in flight, or the loser of the race overwrites the winner's decided outcome:
+// a cancel resurrected as `completed`, or a completed row reaped as `failed`.
+
+async fn seed_pending_row(db: &SqliteDatabase, id: &str) {
+    db.insert_generation(
+        id, None, "mock/mesh-3d", "mock", "model3d", Some("provider-job-1"),
+        0.0, Some(litegen::api::middleware::DEFAULT_ORG_ID), None,
+    ).await.unwrap();
+}
+
+fn mesh_metadata(url: &str) -> serde_json::Value {
+    json!({ "assets": [ { "kind": "mesh", "url": url, "format": "glb" } ] })
+}
+
+#[tokio::test]
+async fn the_second_observer_of_a_terminal_row_writes_nothing() {
+    let (_app, db) = harness::app_with_mock_3d().await;
+    let id = "litegen-3d-guarded-row";
+    seed_pending_row(&db, id).await;
+
+    // Whoever gets there first wins — here, a cancel.
+    let won = db.update_generation_if_active(
+        id, "cancelled", 0, None, None, Some(chrono::Utc::now()), None,
+    ).await.unwrap();
+    assert_eq!(won, GenerationWrite::Written, "the first terminal observer must write the row");
+
+    // The other observer arrives with a `completed` it polled moments earlier.
+    let won_again = db.update_generation_if_active(
+        id, "completed", 100, Some("https://example.test/model.glb"), None,
+        Some(chrono::Utc::now()), Some(&mesh_metadata("https://example.test/model.glb")),
+    ).await.unwrap();
+    assert_eq!(
+        won_again, GenerationWrite::AlreadyTerminal,
+        "a terminal row must report the loss, not silently overwrite",
+    );
+    assert!(!won_again.owns_outcome(), "the loser owns neither the log update nor the webhook");
+
+    let row = db.get_generation(id).await.unwrap().unwrap();
+    assert_eq!(row.status, GenerationStatus::Cancelled, "the cancel must stand");
+    assert_eq!(row.result_url, None, "no mesh may be attached to a cancelled generation");
+    assert!(row.metadata.is_none(), "no assets either: {:?}", row.metadata);
+}
+
+#[tokio::test]
+async fn terminalising_writes_the_status_and_the_assets_in_one_update() {
+    // Two separate UPDATEs could leave a row permanently `completed` with no
+    // mesh if the second one failed — a generation aipix refunds and litegen
+    // billed (Ruling R21).
+    let (_app, db) = harness::app_with_mock_3d().await;
+    let id = "litegen-3d-atomic-row";
+    seed_pending_row(&db, id).await;
+
+    let url = "https://example.test/atomic.glb";
+    assert_eq!(
+        db.update_generation_if_active(
+            id, "completed", 100, Some(url), None, Some(chrono::Utc::now()), Some(&mesh_metadata(url)),
+        ).await.unwrap(),
+        GenerationWrite::Written,
+    );
+
+    let row = db.get_generation(id).await.unwrap().unwrap();
+    assert_eq!(row.status, GenerationStatus::Completed);
+    assert_eq!(row.result_url.as_deref(), Some(url));
+    assert_eq!(row.metadata.as_ref().unwrap()["assets"][0]["url"], url);
+    assert!(row.completed_at.is_some());
+}
+
+#[tokio::test]
+async fn a_non_terminal_progress_update_keeps_the_row_active() {
+    let (_app, db) = harness::app_with_mock_3d().await;
+    let id = "litegen-3d-progress-row";
+    seed_pending_row(&db, id).await;
+
+    assert_eq!(
+        db.update_generation_if_active(id, "processing", 40, None, None, None, None).await.unwrap(),
+        GenerationWrite::Written,
+    );
+    let row = db.get_generation(id).await.unwrap().unwrap();
+    assert_eq!(row.status, GenerationStatus::Processing);
+    assert_eq!(row.progress, 40);
+    assert!(row.completed_at.is_none(), "a progress update must not stamp completed_at");
+}
+
+#[tokio::test]
+async fn a_completed_row_with_no_mesh_reads_back_as_failed() {
+    // The other half of the same guarantee: if the assets never landed, the row
+    // is not a usable completed generation and must not be reported as one.
+    let (app, db) = harness::app_with_mock_3d().await;
+    let id = "litegen-3d-completed-no-mesh";
+    seed_pending_row(&db, id).await;
+    db.update_generation_status(id, "completed", 100, None, None, Some(chrono::Utc::now()))
+        .await.unwrap();
+
+    let polled = get_3d(&app, id).await;
+    assert_eq!(polled["status"], "failed", "completed with no mesh is a failure: {polled}");
+    assert!(polled.get("assets").is_none(), "{polled}");
+    assert!(
+        polled["error"].as_str().is_some_and(|e| e.contains("mesh")),
+        "the caller must be told why: {polled}",
+    );
+}
+
+// ─── The mock keeps answering a finished job (F15) ──────────────────────────
+
+#[tokio::test]
+async fn the_mock_answers_a_finished_3d_job_terminally_on_every_later_poll() {
+    use litegen::providers::model3d::mock::MockModel3dProvider;
+    use litegen::providers::{Model3dGenerationHandle, Model3dProvider};
+
+    let (app, db) = harness::app_with_mock_3d().await;
+    let id = harness::submit(&app, "mock/mesh-3d", "a fox").await;
+    wait_for_generation_row(&db, &id).await;
+    let row = db.get_generation(&id).await.unwrap().unwrap();
+    let handle = Model3dGenerationHandle {
+        provider_job_id: row.provider_job_id.clone().expect("submit records the provider job id"),
+        provider: "mock".to_string(),
+        model: row.model.clone(),
+        stage_context: None,
+    };
+
+    // The client's GET loop reaches the terminal poll first — it polls every 2s
+    // against the poller's 5s tick, so this is the common case, not the corner.
+    assert_eq!(harness::poll_until_terminal(&app, &id).await["status"], "completed");
+
+    // The poller then polls the SAME job from its already-fetched row list. A
+    // provider that forgets a finished job answers `unknown job` — NON-retryable
+    // — and the poller reaps the completed row (and its log) as `failed`. Real
+    // vendors keep answering terminally; so must the mock.
+    let provider = MockModel3dProvider::new();
+    for attempt in 0..3 {
+        let poll = provider.poll_status(&handle).await.unwrap_or_else(|e| {
+            panic!("poll {attempt} after completion must not error, got: {e}")
+        });
+        assert_eq!(poll.status, GenerationStatus::Completed, "poll {attempt} after completion");
+        assert!(!poll.files.is_empty(), "poll {attempt} must still carry the mesh bytes");
+    }
+}
+
+// ─── Minted asset URLs must be reachable (F4) ───────────────────────────────
+
+#[test]
+fn the_default_public_base_url_is_loopback_not_the_wildcard_bind_address() {
+    use litegen::config::ServerConfig;
+
+    let default = ServerConfig::default();
+    assert_eq!(default.host, "0.0.0.0", "the default BIND address is unchanged");
+    assert_eq!(
+        default.public_base_url(), "http://127.0.0.1:4000",
+        "0.0.0.0 is a bind address, not an origin a client can fetch",
+    );
+
+    let v6 = ServerConfig { host: "::".to_string(), ..ServerConfig::default() };
+    assert_eq!(v6.public_base_url(), "http://127.0.0.1:4000");
+
+    let real = ServerConfig { host: "10.0.0.5".to_string(), ..ServerConfig::default() };
+    assert_eq!(real.public_base_url(), "http://10.0.0.5:4000", "a real host is used as-is");
+}
+
+#[tokio::test]
+async fn the_minted_mesh_url_is_fetchable_not_a_wildcard_address() {
+    // A default single-tenant install (no S3, no public_base_url) minted
+    // http://0.0.0.0:4000/... — absolute, so every check passed, but
+    // unreachable for remote clients and outright blocked by Chromium.
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let url = harness::run_to_completion(&app, "mock/mesh-3d", "a fox").await;
+    assert!(!url.contains("0.0.0.0"), "wildcard bind address in a client-facing URL: {url}");
+    assert!(!url.contains("[::]"), "wildcard bind address in a client-facing URL: {url}");
+    assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+}
+
+// ─── Async request logs report terminal latency, not submit latency (F10) ───
+
+#[tokio::test]
+async fn settling_an_async_request_log_records_the_terminal_latency() {
+    // An async submit logs `pending` with the ENQUEUE time as latency_ms
+    // (milliseconds). Once those rows settle they join the `status='completed'`
+    // percentile window, so /v1/stats p50/p95/p99 collapse toward submit time
+    // for a video/3D-heavy tenant. Settling re-stamps the row with the real
+    // end-to-end latency instead, which is what the percentile means.
+    let (_app, db) = harness::app_with_mock_3d().await;
+    let id = "litegen-3d-latency-row";
+    db.log_request(id, "mock/mesh-3d", "mock", "pending", "model3d", 0.0, 7, None, None, None, None)
+        .await.unwrap();
+
+    // `created_at` is second-resolution in SQLite, so the wait has to cross one.
+    tokio::time::sleep(std::time::Duration::from_millis(1_300)).await;
+    db.update_request_log_status(id, "completed", None).await.unwrap();
+
+    let log = request_log(&db, id).await.unwrap();
+    assert_eq!(log.status, GenerationStatus::Completed);
+    assert!(
+        log.latency_ms >= 1_000,
+        "settled async latency must be end-to-end, not the 7ms enqueue: {}ms",
+        log.latency_ms,
+    );
+}
+
+#[tokio::test]
+async fn settling_an_already_completed_log_leaves_its_latency_alone() {
+    // Sync image rows are logged `completed` with their real latency. Nothing
+    // must re-stamp those.
+    let (_app, db) = harness::app_with_mock_3d().await;
+    let id = "litegen-img-latency-row";
+    db.log_request(id, "mock/image-gen", "mock", "completed", "image", 0.0, 1234, None, None, None, None)
+        .await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    db.update_request_log_status(id, "failed", Some("after the fact")).await.unwrap();
+
+    let log = request_log(&db, id).await.unwrap();
+    assert_eq!(log.latency_ms, 1234, "a row that was never `pending` keeps its measured latency");
+}
+
+// ─── Mesh orientation (F34) ─────────────────────────────────────────────────
+
+/// Positions (as `[x, y, z]`) and triangle indices of the first primitive of a
+/// GLB's first mesh, read through the accessors rather than assumed offsets.
+fn glb_mesh_geometry(glb: &[u8]) -> (Vec<[f32; 3]>, Vec<usize>) {
+    let u32_at = |off: usize| u32::from_le_bytes([glb[off], glb[off + 1], glb[off + 2], glb[off + 3]]);
+    let json_len = u32_at(12) as usize;
+    let doc: serde_json::Value = serde_json::from_slice(&glb[20..20 + json_len]).expect("JSON chunk");
+    let bin = &glb[20 + json_len + 8..];
+
+    let prim = &doc["meshes"][0]["primitives"][0];
+    let pos_acc = &doc["accessors"][prim["attributes"]["POSITION"].as_u64().unwrap() as usize];
+    let idx_acc = &doc["accessors"][prim["indices"].as_u64().unwrap() as usize];
+    let view_offset = |acc: &serde_json::Value| -> usize {
+        let view = &doc["bufferViews"][acc["bufferView"].as_u64().unwrap() as usize];
+        view["byteOffset"].as_u64().unwrap_or(0) as usize
+            + acc["byteOffset"].as_u64().unwrap_or(0) as usize
+    };
+
+    let pos_off = view_offset(pos_acc);
+    let positions = (0..pos_acc["count"].as_u64().unwrap() as usize)
+        .map(|i| {
+            let mut v = [0f32; 3];
+            for (axis, slot) in v.iter_mut().enumerate() {
+                let o = pos_off + i * 12 + axis * 4;
+                *slot = f32::from_le_bytes([bin[o], bin[o + 1], bin[o + 2], bin[o + 3]]);
+            }
+            v
+        })
+        .collect();
+
+    assert_eq!(idx_acc["componentType"], 5123, "indices are u16");
+    let idx_off = view_offset(idx_acc);
+    let indices = (0..idx_acc["count"].as_u64().unwrap() as usize)
+        .map(|i| {
+            let o = idx_off + i * 2;
+            u16::from_le_bytes([bin[o], bin[o + 1]]) as usize
+        })
+        .collect();
+
+    (positions, indices)
+}
+
+#[tokio::test]
+async fn every_triangle_of_the_generated_mesh_faces_outward() {
+    // glTF culls back faces by default: a mesh wound inside-out renders as the
+    // far interior walls with inverted lighting in every viewer. The silhouette
+    // of a cube survives that, which is why screenshots never caught it.
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let url = harness::run_to_completion(&app, "mock/mesh-3d", "a low-poly fox").await;
+    let path = url.splitn(4, '/').nth(3).map(|p| format!("/{p}")).unwrap();
+    let resp = app.oneshot(Request::get(path).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let glb = axum::body::to_bytes(resp.into_body(), 10 * 1024 * 1024).await.unwrap();
+
+    let (positions, indices) = glb_mesh_geometry(&glb);
+    assert_eq!(indices.len() % 3, 0, "indices must be whole triangles");
+
+    // Centroid of the hull, computed rather than assumed to be the origin.
+    let mut centroid = [0f64; 3];
+    for p in &positions {
+        for axis in 0..3 {
+            centroid[axis] += p[axis] as f64 / positions.len() as f64;
+        }
+    }
+
+    for (t, tri) in indices.chunks(3).enumerate() {
+        let (a, b, c) = (positions[tri[0]], positions[tri[1]], positions[tri[2]]);
+        let ab = [(b[0] - a[0]) as f64, (b[1] - a[1]) as f64, (b[2] - a[2]) as f64];
+        let ac = [(c[0] - a[0]) as f64, (c[1] - a[1]) as f64, (c[2] - a[2]) as f64];
+        // Counter-clockwise winding ⇒ right-hand normal points out of the hull.
+        let n = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        let outward = [
+            (a[0] as f64 + b[0] as f64 + c[0] as f64) / 3.0 - centroid[0],
+            (a[1] as f64 + b[1] as f64 + c[1] as f64) / 3.0 - centroid[1],
+            (a[2] as f64 + b[2] as f64 + c[2] as f64) / 3.0 - centroid[2],
+        ];
+        let dot = n[0] * outward[0] + n[1] * outward[1] + n[2] * outward[2];
+        assert!(
+            dot > 0.0,
+            "triangle {t} ({:?}) is wound back-facing: normal {n:?} points into the mesh",
+            tri,
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_write_to_a_row_that_does_not_exist_yet_is_not_a_lost_race() {
+    // The submit handler inserts the generation row from a SPAWNED task, so a
+    // fast first poll can legitimately reach a terminal provider status before
+    // the row exists. That is not "another observer won" — nobody else is
+    // going to update the request log — and conflating the two left every such
+    // generation's log reading `pending`.
+    let (_app, db) = harness::app_with_mock_3d().await;
+    let missing = db.update_generation_if_active(
+        "litegen-3d-never-inserted", "completed", 100, None, None, Some(chrono::Utc::now()), None,
+    ).await.unwrap();
+    assert_eq!(missing, GenerationWrite::Missing);
+    assert!(missing.owns_outcome(), "the caller still owns the request log and the webhook");
 }

@@ -25,6 +25,39 @@ pub struct TenantAuditFilter<'a> {
     pub to: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Outcome of a guarded write through
+/// [`DatabaseStore::update_generation_if_active`].
+///
+/// The three cases are NOT interchangeable: two of them mean "nothing was
+/// written", but only one of them means somebody else is going to finish the
+/// job. Callers use this to decide whether they still own the generation's
+/// request-log update and its terminal webhook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationWrite {
+    /// The row was in flight and this caller wrote it. This caller owns the
+    /// request-log update and the terminal webhook.
+    Written,
+    /// The row had already left `pending`/`processing`: another observer
+    /// decided this generation, and IT owns the log update and the webhook.
+    /// Writing either here would overturn a decision or double-deliver.
+    AlreadyTerminal,
+    /// No such row yet. The 3D/video submit handler inserts the generation row
+    /// from a spawned task, so a fast first poll can legitimately outrun it.
+    /// Nothing was written and there is no competing observer — the caller
+    /// still owns the request log (which IS already there, written `pending`
+    /// just before), and the poller will drive the row once it appears.
+    Missing,
+}
+
+impl GenerationWrite {
+    /// Whether the caller still owns this generation's terminal side effects
+    /// (its request-log update and its webhook). True for everything except
+    /// losing the race to another observer.
+    pub fn owns_outcome(self) -> bool {
+        !matches!(self, GenerationWrite::AlreadyTerminal)
+    }
+}
+
 /// Trait defining the database operations. Implementations exist for SQLite and PostgreSQL.
 #[async_trait]
 #[allow(clippy::too_many_arguments)] // DB trait methods need many params; would need wrapper structs to reduce
@@ -65,6 +98,50 @@ pub trait DatabaseStore: Send + Sync {
         id: &str,
         metadata: &serde_json::Value,
     ) -> Result<(), sqlx::Error>;
+
+    /// Advance a generation that is still IN FLIGHT, in one guarded UPDATE.
+    /// Returns whether the row was actually written (`false` = it had already
+    /// left `pending`/`processing`, which is not an error).
+    ///
+    /// Two things the split `update_generation_status` +
+    /// `update_generation_metadata` pair cannot give the async families:
+    ///
+    /// 1. **Guarded.** A 3D generation has TWO terminal observers — the
+    ///    background poller and `GET /v1/models3d/{id}`, which the SDK polls
+    ///    more often than the poller ticks. An unguarded write lets the loser of
+    ///    that race overwrite a decided outcome: a cancel resurrected as
+    ///    `completed`, a completed row reaped as `failed`, or a stale
+    ///    `processing` tick reverting a finished row. `WHERE status IN
+    ///    ('pending','processing')` makes the first observer the only one, and
+    ///    the returned flag tells the loser to skip its request-log update and
+    ///    its webhook so neither fires twice.
+    /// 2. **Atomic.** `status`, `result_url` and `metadata` move together, so a
+    ///    row can never be left permanently `completed` with no mesh in its
+    ///    metadata — the state Ruling R21 forbids (the consumer refunds while
+    ///    litegen billed).
+    ///
+    /// `completed_at` is `None` for a mid-flight progress update and `Some(now)`
+    /// for a terminal one. `metadata` is `None` to leave the column untouched.
+    ///
+    /// The default implementation is the unguarded, non-atomic pair — correct
+    /// enough for in-memory test doubles, never used by a real backend: both
+    /// SQLite and Postgres override it.
+    async fn update_generation_if_active(
+        &self,
+        id: &str,
+        status: &str,
+        progress: i32,
+        result_url: Option<&str>,
+        error: Option<&str>,
+        completed_at: Option<chrono::DateTime<chrono::Utc>>,
+        metadata: Option<&serde_json::Value>,
+    ) -> Result<GenerationWrite, sqlx::Error> {
+        self.update_generation_status(id, status, progress, result_url, error, completed_at).await?;
+        if let Some(meta) = metadata {
+            self.update_generation_metadata(id, meta).await?;
+        }
+        Ok(GenerationWrite::Written)
+    }
 
     /// Fetch a generation by its local ID.
     async fn get_generation(&self, id: &str) -> Result<Option<Generation>, sqlx::Error>;

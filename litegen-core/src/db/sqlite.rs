@@ -131,6 +131,52 @@ impl DatabaseStore for SqliteDatabase {
         Ok(())
     }
 
+    async fn update_generation_if_active(
+        &self,
+        id: &str,
+        status: &str,
+        progress: i32,
+        result_url: Option<&str>,
+        error: Option<&str>,
+        completed_at: Option<chrono::DateTime<chrono::Utc>>,
+        metadata: Option<&serde_json::Value>,
+    ) -> Result<crate::db::GenerationWrite, sqlx::Error> {
+        // `COALESCE(?, metadata)` leaves the column alone when no metadata is
+        // supplied, so status and assets still land in ONE statement.
+        let meta = metadata.map(|m| serde_json::to_string(m).unwrap_or_else(|_| "null".into()));
+        let res = sqlx::query(
+            r#"
+            UPDATE generations
+            SET status = ?, progress = ?, result_url = ?,
+                error_message = ?, completed_at = ?, metadata = COALESCE(?, metadata)
+            WHERE id = ? AND status IN ('pending', 'processing')
+            "#,
+        )
+        .bind(status)
+        .bind(progress)
+        .bind(result_url)
+        .bind(error)
+        .bind(completed_at)
+        .bind(meta)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if res.rows_affected() > 0 {
+            return Ok(crate::db::GenerationWrite::Written);
+        }
+        // Zero rows means one of two very different things; only the extra
+        // lookup (rare — it runs only when the guard bit) tells them apart.
+        let exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM generations WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(if exists.is_some() {
+            crate::db::GenerationWrite::AlreadyTerminal
+        } else {
+            crate::db::GenerationWrite::Missing
+        })
+    }
+
     async fn get_generation(&self, id: &str) -> Result<Option<Generation>, sqlx::Error> {
         let sql = format!("SELECT {} FROM generations WHERE id = ?", GENERATION_COLS);
         let row = sqlx::query_as::<_, GenerationRow>(&sql)
@@ -264,7 +310,28 @@ impl DatabaseStore for SqliteDatabase {
         status: &str,
         error: Option<&str>,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE request_logs SET status = ?, error = ? WHERE id = ?")
+        // Re-stamp the latency of an ASYNC row when it settles.
+        //
+        // `/v1/stats` percentiles sample `latency_ms` over rows with
+        // `status = 'completed'`. A video/3D submit logs `pending` with the
+        // ENQUEUE time (a few ms) as its latency; once those rows settle they
+        // join that window and drag p50/p95/p99 down to submit time, which is
+        // not a latency anyone asked for. Recording the end-to-end time instead
+        // keeps ONE meaning for the metric across every family: how long the
+        // caller waited for a usable result. A row that was never `pending` —
+        // every sync image row — keeps the latency its handler measured, so
+        // `status` here is the pre-update value (SQL evaluates SET expressions
+        // against the old row).
+        sqlx::query(
+            r#"
+            UPDATE request_logs
+            SET status = ?, error = ?,
+                latency_ms = CASE WHEN status = 'pending'
+                    THEN MAX(0, CAST((julianday('now') - julianday(created_at)) * 86400000.0 AS INTEGER))
+                    ELSE latency_ms END
+            WHERE id = ?
+            "#,
+        )
             .bind(status)
             .bind(error)
             .bind(id)

@@ -129,6 +129,53 @@ impl DatabaseStore for PostgresDatabase {
         Ok(())
     }
 
+    async fn update_generation_if_active(
+        &self,
+        id: &str,
+        status: &str,
+        progress: i32,
+        result_url: Option<&str>,
+        error: Option<&str>,
+        completed_at: Option<chrono::DateTime<chrono::Utc>>,
+        metadata: Option<&serde_json::Value>,
+    ) -> Result<crate::db::GenerationWrite, sqlx::Error> {
+        // `COALESCE($6, metadata)` leaves the column alone when no metadata is
+        // supplied, so status and assets still land in ONE statement.
+        let meta = metadata.map(|m| serde_json::to_string(m).unwrap_or_else(|_| "null".into()));
+        let res = sqlx::query(
+            r#"
+            UPDATE generations
+            SET status = $1, progress = $2, result_url = $3,
+                error_message = $4, completed_at = $5, metadata = COALESCE($6, metadata)
+            WHERE id = $7 AND status IN ('pending', 'processing')
+            "#,
+        )
+        .bind(status)
+        .bind(progress)
+        .bind(result_url)
+        .bind(error)
+        .bind(completed_at)
+        .bind(meta)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if res.rows_affected() > 0 {
+            return Ok(crate::db::GenerationWrite::Written);
+        }
+        // See the SQLite twin: zero rows means "another observer got there
+        // first" OR "the spawned insert has not landed yet", and the caller
+        // must treat those differently.
+        let exists: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM generations WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(if exists.is_some() {
+            crate::db::GenerationWrite::AlreadyTerminal
+        } else {
+            crate::db::GenerationWrite::Missing
+        })
+    }
+
     async fn get_generation(&self, id: &str) -> Result<Option<Generation>, sqlx::Error> {
         let sql = format!("SELECT {} FROM generations WHERE id = $1", GENERATION_COLS);
         let row = sqlx::query_as::<_, GenerationRow>(&sql)
@@ -261,7 +308,19 @@ impl DatabaseStore for PostgresDatabase {
         status: &str,
         error: Option<&str>,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE request_logs SET status = $1, error = $2 WHERE id = $3")
+        // See the SQLite twin: an async row that settles is re-stamped with its
+        // end-to-end latency so `/v1/stats` percentiles keep one meaning; a row
+        // that was never `pending` keeps the latency its handler measured.
+        sqlx::query(
+            r#"
+            UPDATE request_logs
+            SET status = $1, error = $2,
+                latency_ms = CASE WHEN status = 'pending'
+                    THEN GREATEST(0, (EXTRACT(EPOCH FROM (NOW() - created_at)) * 1000)::BIGINT)
+                    ELSE latency_ms END
+            WHERE id = $3
+            "#,
+        )
             .bind(status)
             .bind(error)
             .bind(id)
