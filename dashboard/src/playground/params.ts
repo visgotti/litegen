@@ -32,6 +32,31 @@ export function sizeEnumOptions(spec: ParamSpec): string[] {
   return [];
 }
 
+/** A non-empty trimmed string, else null. Spec fields come from an
+ *  unvalidated schema payload, so a non-string is treated as absent. */
+function nonEmpty(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  return t === '' ? null : t;
+}
+
+/**
+ * Human-facing label for a param row: the schema's declared `label` (every
+ * ParamSpec variant may carry one so clients need not show raw API keys),
+ * else the key humanised — `target_polycount` → `Target polycount`.
+ */
+export function paramLabel(name: string, spec: ParamSpec): string {
+  const declared = nonEmpty((spec as unknown as AnySpec).label);
+  if (declared) return declared;
+  const words = name.split('_').filter(Boolean).join(' ').toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** The schema's declared help text for a param, or null when it has none. */
+export function paramDescription(spec: ParamSpec): string | null {
+  return nonEmpty((spec as unknown as AnySpec).description);
+}
+
 /** Default UI value for a control given its spec. */
 export function defaultForSpec(spec: ParamSpec): unknown {
   const s = spec as unknown as AnySpec;
