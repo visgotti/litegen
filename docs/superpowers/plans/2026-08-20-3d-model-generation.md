@@ -5103,6 +5103,8 @@ git commit -m "test(3d): structural catalog conformance for the model3d family"
 
 ### Task 20: Storybook for the dashboard
 
+**Status:** ✅ DONE (2026-09-11, 98b8506 + b616303) — Storybook 10.6 minimal install; 71 stories across ModelViewer, ModelPreview, GenerationOutput, Generations MediaPreview, ResultTile3D, ResultTile, ResultGrid, ParamField; real GLB/PNG fixtures from `make_fixtures.py`; ParamField now renders `label`/`description`. Real-browser pass (headless Chromium): 71/71 stories + 5/5 extra checks green. Bundle-import failure not storied (no seam) — verified in the pass by blocking the chunk. Report: `.superpowers/sdd/2026-08-20-3d-model-generation/task-20-report.md`
+
 **Files:**
 - Create: `dashboard/.storybook/main.ts`, `dashboard/.storybook/preview.ts`
 - Create: `dashboard/src/components/ModelViewer.stories.tsx`, `dashboard/src/playground/ResultTile3D.stories.tsx`, `dashboard/src/playground/ParamField.stories.tsx`, `dashboard/src/pages/Generations.MediaPreview.stories.tsx`
@@ -5119,7 +5121,7 @@ way to eyeball the viewer against both dashboard themes.
 
 **Must run AFTER Tasks 13 and 14** — it has nothing to render otherwise.
 
-- [ ] **Step 1: Install**
+- [x] DONE 2026-09-11 **Step 1: Install**
 
 The dashboard is React 19 + Vite 8 + TypeScript 6. Use Storybook's Vite-React
 framework and let its initializer match the versions rather than pinning by hand:
@@ -5137,7 +5139,7 @@ If the initializer fails on the React 19 / Vite 8 combination, report it as
 DONE_WITH_CONCERNS with the error rather than downgrading either dependency —
 the dashboard's runtime versions are not negotiable for a tooling addition.
 
-- [ ] **Step 2: Configure**
+- [x] DONE 2026-09-11 **Step 2: Configure**
 
 `dashboard/.storybook/main.ts` — restrict story discovery to co-located files so
 no example scaffolding creeps back in:
@@ -5178,7 +5180,7 @@ If the dashboard has a global stylesheet (check `src/main.tsx` for a CSS import)
 import it in `preview.ts` too — otherwise `.pg-tile`, `.btn` and friends render
 unstyled.
 
-- [ ] **Step 3: Write the stories — one per state that is hard to reach live**
+- [x] DONE 2026-09-11 **Step 3: Write the stories — one per state that is hard to reach live**
 
 `ModelViewer.stories.tsx`:
 
@@ -5276,7 +5278,7 @@ asset. `MediaPreview` is currently module-private in `Generations.tsx`; export i
 so it can be storied. That export is the minimum change — do not restructure the
 page.
 
-- [ ] **Step 4: Verify**
+- [x] DONE 2026-09-11 **Step 4: Verify**
 
 ```bash
 cd dashboard && npm run build-storybook 2>&1 | tail -20
@@ -5290,7 +5292,7 @@ Also confirm the dashboard's own gates still pass, since this task touched
 cd dashboard && npm run build && npm run lint 2>&1 | tail -20
 ```
 
-- [ ] **Step 5: Commit**
+- [x] DONE 2026-09-11 **Step 5: Commit**
 
 ```bash
 git add dashboard/.storybook dashboard/package.json dashboard/package-lock.json \
