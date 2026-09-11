@@ -5424,6 +5424,8 @@ Sequencing: **21 → 22 → 20 (expanded) → clean + release build → 15 → 1
 
 ### Task 22: Observability — resolve async artifacts to their generation
 
+**Status:** ✅ DONE (2026-09-11, c13e652) — contract-test regex fixed (SDK suite fully green); every 3D artifact now resolves via its generation; 404 retry capped at 20 polls
+
 **Files:**
 - Modify: `sdks/typescript/src/client.ts` (`generations.get`), `sdks/typescript/test/client.test.ts`
 - Create: `dashboard/src/components/GenerationOutput.tsx`
@@ -5434,19 +5436,19 @@ Sequencing: **21 → 22 → 20 (expanded) → clean + release build → 15 → 1
 - Produces: `client.generations.get(id, signal?) : Promise<Generation>`;
   `<GenerationOutput generation={Generation | null} loading={boolean} error?={string} />`.
 
-- [ ] **Step 1: SDK `generations.get`.** `GET /v1/generations/{id}` exists in
+- [x] DONE 2026-09-11 **Step 1: SDK `generations.get`.** `GET /v1/generations/{id}` exists in
   the API and the OpenAPI document but the client never exposed it. Add it next
   to `list`/`cancel`, with a test asserting method + URL. Gates:
   `npm run typecheck && npm test && npm run build` in `sdks/typescript`
   (typecheck is mandatory — vitest does not type-check, and skipping it let a
   regression through on Task 12). The pre-existing `contract.test.ts`
   allowed-models failure stays out of scope.
-- [ ] **Step 2: `GenerationOutput` (presentational).** Renders a generation row
+- [x] DONE 2026-09-11 **Step 2: `GenerationOutput` (presentational).** Renders a generation row
   by status: pending/processing → status + progress bar; failed/cancelled →
   the error message; completed `model3d` → `ModelPreview` from `assetsOf`;
   completed `video` → `<video>` (or `<img>` for an `image/*` GIF result, as
   `VisualTab` already special-cases); completed image → `<img>`.
-- [ ] **Step 3: `TracePanel` resolution.** In `VisualTab`, when
+- [x] DONE 2026-09-11 **Step 3: `TracePanel` resolution.** In `VisualTab`, when
   `output_kind === 'url'` and `output_value` is empty and `media_type` is
   `video` or `model3d`, fetch `client.generations.get(artifact.request_id)`
   and render `GenerationOutput`. While the generation is non-terminal, re-poll
@@ -5454,7 +5456,7 @@ Sequencing: **21 → 22 → 20 (expanded) → clean + release build → 15 → 1
   insert is spawned after the response) shows "pending" and keeps polling
   rather than erroring. Remove the now-dead `model3d` `output_value` branch
   only if nothing else can reach it; say which you did in the commit.
-- [ ] **Step 4: Gates.** Dashboard `npm test && npm run build && npm run lint`;
+- [x] DONE 2026-09-11 **Step 4: Gates.** Dashboard `npm test && npm run build && npm run lint`;
   SDK gates from Step 1. Commit, ticking this task's boxes.
 
 ---
