@@ -1,0 +1,5 @@
+# Storybook build output (`npm run build-storybook`) and its failure log.
+storybook-static/
+debug-storybook.log
+# Left behind if make_fixtures.py is imported rather than run.
+__pycache__/
