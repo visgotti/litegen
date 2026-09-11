@@ -8,11 +8,44 @@ import type { Generation, Model3dAsset } from '@litegen/sdk';
 const KINDS = new Set<Model3dAsset['kind']>(['mesh', 'texture', 'preview']);
 
 /** `metadata` is arbitrary JSON on the wire, so every entry is checked before
- *  the renderer dereferences it — one malformed row must not blank the page. */
+ *  the renderer dereferences it — one malformed row must not blank the page
+ *  (the dashboard has no error boundary, so a throw in render unmounts it).
+ *  Every field the renderer calls a method on is checked here. */
 function isAsset(v: unknown): v is Model3dAsset {
   if (typeof v !== 'object' || v === null) return false;
   const a = v as Record<string, unknown>;
-  return typeof a.url === 'string' && a.url !== '' && KINDS.has(a.kind as Model3dAsset['kind']);
+  return typeof a.url === 'string' && a.url !== ''
+    && typeof a.format === 'string'
+    && KINDS.has(a.kind as Model3dAsset['kind']);
+}
+
+/** The well-formed entries of an untrusted asset list (`[]` for non-arrays).
+ *  Applied at the inspector's boundary too, because Playground history is
+ *  replayed from localStorage and never passes through `assetsOf`. */
+export function validAssets(raw: unknown): Model3dAsset[] {
+  return Array.isArray(raw) ? raw.filter(isAsset) : [];
+}
+
+const GLTF_FORMATS = new Set(['glb', 'gltf']);
+
+/** Whether `<model-viewer>` can render a mesh of this format. It is glTF-only,
+ *  so an OBJ/FBX/USDZ mesh would be fetched in full and then fail as if it were
+ *  corrupt. An empty (unknown) format is attempted and left to the viewer. */
+export function canPreviewMesh(format: string): boolean {
+  return format === '' || GLTF_FORMATS.has(format.toLowerCase());
+}
+
+/**
+ * Whether a `<model-viewer>` `load` event belongs to the src now displayed.
+ * When src changes mid-load, model-viewer cancels the old load silently but
+ * still dispatches `load` with the OLD url in `detail.url` (4.3.1,
+ * model-viewer-base.js $updateSource). A detail without a url is accepted, so
+ * a version that stops sending it degrades to the old behaviour instead of
+ * never settling.
+ */
+export function loadEventMatches(detail: unknown, src: string): boolean {
+  const url = (detail as { url?: unknown } | null | undefined)?.url;
+  return typeof url !== 'string' || url === src;
 }
 
 /** Lowercased file extension of a URL's path ('' when it has none). */
@@ -38,8 +71,7 @@ export function meshOf(assets: Model3dAsset[], fallbackUrl?: string | null): Mod
 /** A generation row's assets (`metadata.assets`), with the mesh backfilled
  *  from `result_url` for older 3D rows. Never throws on malformed metadata. */
 export function assetsOf(g: Generation): Model3dAsset[] {
-  const raw = (g.metadata as { assets?: unknown } | null | undefined)?.assets;
-  const assets = Array.isArray(raw) ? raw.filter(isAsset) : [];
+  const assets = validAssets((g.metadata as { assets?: unknown } | null | undefined)?.assets);
   // Only a 3D row's result_url is a mesh; for an image row it is the image.
   if (g.media_type !== 'model3d' || assets.some(a => a.kind === 'mesh')) return assets;
   const mesh = meshOf(assets, g.result_url);
