@@ -55,14 +55,23 @@ pub fn generate_cube_glb(prompt: &str) -> Vec<u8> {
     }
     let positions_len = bin.len(); // 96
 
+    // Counter-clockwise when seen from OUTSIDE the cube. glTF culls back faces
+    // by default (and defines the front face by CCW winding), so an inside-out
+    // mesh renders as the far interior walls with inverted lighting in every
+    // viewer — a cube's silhouette survives that, which is why it is invisible
+    // in a screenshot and immediate the moment anything depends on face
+    // orientation (shadows, section views, a correctly-wound vendor mesh beside
+    // it). `wound_counter_clockwise_when_seen_from_outside` pins every triangle.
+    //
+    // @see <https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#meshes-overview>
     #[rustfmt::skip]
     const INDICES: [u16; INDEX_COUNT] = [
-        0, 1, 2,  0, 2, 3, // -Z
-        4, 6, 5,  4, 7, 6, // +Z
-        0, 4, 5,  0, 5, 1, // -Y
-        3, 2, 6,  3, 6, 7, // +Y
-        0, 3, 7,  0, 7, 4, // -X
-        1, 5, 6,  1, 6, 2, // +X
+        0, 2, 1,  0, 3, 2, // -Z
+        4, 5, 6,  4, 6, 7, // +Z
+        0, 5, 4,  0, 1, 5, // -Y
+        3, 6, 2,  3, 7, 6, // +Y
+        0, 7, 3,  0, 4, 7, // -X
+        1, 6, 5,  1, 2, 6, // +X
     ];
     for i in INDICES {
         bin.extend_from_slice(&i.to_le_bytes());
@@ -208,6 +217,66 @@ mod tests {
     #[test]
     fn generation_is_deterministic() {
         assert_eq!(generate_cube_glb("same"), generate_cube_glb("same"));
+    }
+
+    /// Every triangle must be counter-clockwise seen from outside, i.e. its
+    /// right-hand normal must point AWAY from the cube's centre. glTF's default
+    /// is single-sided culling, so a back-facing triangle is simply not drawn —
+    /// and a fully inverted cube still has a cube's silhouette, so only the
+    /// arithmetic catches it.
+    #[test]
+    fn wound_counter_clockwise_when_seen_from_outside() {
+        let glb = generate_cube_glb("a low-poly fox");
+        let json_len = u32_at(&glb, 12) as usize;
+        let doc: serde_json::Value = serde_json::from_slice(&glb[20..20 + json_len]).unwrap();
+        let bin = &glb[20 + json_len + 8..];
+
+        // Positions are the first bufferView; read them back rather than
+        // re-deriving them, so a change to `corners` is covered too.
+        let positions: Vec<[f64; 3]> = (0..POSITION_COUNT)
+            .map(|i| {
+                let mut v = [0f64; 3];
+                for (axis, slot) in v.iter_mut().enumerate() {
+                    let o = i * 12 + axis * 4;
+                    *slot = f32::from_le_bytes([bin[o], bin[o + 1], bin[o + 2], bin[o + 3]]) as f64;
+                }
+                v
+            })
+            .collect();
+        let idx_off = doc["bufferViews"][1]["byteOffset"].as_u64().unwrap() as usize;
+        let indices: Vec<usize> = (0..INDEX_COUNT)
+            .map(|i| u16::from_le_bytes([bin[idx_off + i * 2], bin[idx_off + i * 2 + 1]]) as usize)
+            .collect();
+
+        // The cube is centred on the origin, but compute the centroid anyway so
+        // the assertion survives a re-centred mesh.
+        let mut centre = [0f64; 3];
+        for p in &positions {
+            for axis in 0..3 {
+                centre[axis] += p[axis] / positions.len() as f64;
+            }
+        }
+
+        for (t, tri) in indices.chunks(3).enumerate() {
+            let (a, b, c) = (positions[tri[0]], positions[tri[1]], positions[tri[2]]);
+            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let n = [
+                ab[1] * ac[2] - ab[2] * ac[1],
+                ab[2] * ac[0] - ab[0] * ac[2],
+                ab[0] * ac[1] - ab[1] * ac[0],
+            ];
+            let outward = [
+                (a[0] + b[0] + c[0]) / 3.0 - centre[0],
+                (a[1] + b[1] + c[1]) / 3.0 - centre[1],
+                (a[2] + b[2] + c[2]) / 3.0 - centre[2],
+            ];
+            let dot = n[0] * outward[0] + n[1] * outward[1] + n[2] * outward[2];
+            assert!(
+                dot > 0.0,
+                "triangle {t} {tri:?} is wound back-facing: normal {n:?} points into the cube",
+            );
+        }
     }
 
     #[test]

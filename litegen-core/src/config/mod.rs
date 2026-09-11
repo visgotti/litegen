@@ -214,12 +214,31 @@ impl Default for ServerConfig {
 
 impl ServerConfig {
     /// The absolute origin to mint client-facing URLs from.
+    ///
+    /// `host` is a BIND address, not an origin, and the two are only
+    /// interchangeable by accident. The default `0.0.0.0` means "listen on
+    /// every interface"; minted into a 3D asset URL it is absolute (so every
+    /// validity check passes) yet unreachable for a remote client and blocked
+    /// outright by Chromium, so a default install would report generations
+    /// `completed` with a dead mesh URL. Fall back to loopback for the wildcard
+    /// addresses — correct for local dev and CI, which is the only situation
+    /// where nobody has set `public_base_url`. Anything else deployed behind a
+    /// proxy MUST set it (`LITEGEN__SERVER__PUBLIC_BASE_URL`).
     pub fn public_base_url(&self) -> String {
         self.public_base_url
             .clone()
-            .unwrap_or_else(|| format!("http://{}:{}", self.host, self.port))
+            .unwrap_or_else(|| format!("http://{}:{}", reachable_host(&self.host), self.port))
             .trim_end_matches('/')
             .to_string()
+    }
+}
+
+/// Map a wildcard bind address onto an address a client can actually connect
+/// to. Everything else is passed through untouched.
+fn reachable_host(host: &str) -> &str {
+    match host {
+        "0.0.0.0" | "::" | "[::]" | "" => "127.0.0.1",
+        other => other,
     }
 }
 

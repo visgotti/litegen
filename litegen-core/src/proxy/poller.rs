@@ -17,14 +17,29 @@ use crate::types::GenerationStatus;
 const MAX_ACTIVE_AGE_SECS: i64 = 2 * 60 * 60; // 2 hours
 
 /// Terminalise a stuck generation as `failed` so it leaves the active window.
+///
+/// Guarded on the row still being in flight: a reap decision is made from a row
+/// list fetched at the top of the tick, and `GET /v1/models3d/{id}` can have
+/// terminalised the row since. Without the guard a generation that already
+/// returned a mesh to its caller is flipped to `failed` with `result_url` NULL.
 async fn reap_generation(db: &Arc<dyn DatabaseStore>, gen_id: &str, reason: &str) {
-    if let Err(e) = db
-        .update_generation_status(gen_id, "failed", 0, None, Some(reason), Some(chrono::Utc::now()))
+    match db
+        .update_generation_if_active(
+            gen_id, "failed", 0, None, Some(reason), Some(chrono::Utc::now()), None,
+        )
         .await
     {
-        // Still active, so the next tick reaps it again — and marks the log then.
-        warn!(generation_id = %gen_id, error = %e, "poller: failed to reap stuck generation");
-        return;
+        Ok(w) if w.owns_outcome() => {}
+        Ok(_) => {
+            // Another observer terminalised it first; it owns the log update.
+            info!(generation_id = %gen_id, "poller: not reaping an already-terminal generation");
+            return;
+        }
+        Err(e) => {
+            // Still active, so the next tick reaps it again — and marks the log then.
+            warn!(generation_id = %gen_id, error = %e, "poller: failed to reap stuck generation");
+            return;
+        }
     }
     // A reap is a terminal transition like any other: the request log (same
     // id) must not keep reading `pending` for a generation that has failed.
@@ -306,22 +321,33 @@ pub(crate) async fn poll_once(
         };
 
         let status_str = outcome.status.to_string();
-        if let Err(e) = db.update_generation_status(
+        // ONE guarded, atomic write: status + result_url + assets together, and
+        // only while the row is still in flight. `GET /v1/models3d/{id}` is the
+        // other terminal observer and the SDK polls it faster than this loop
+        // ticks, so an unguarded write here would overturn a decided outcome
+        // (resurrect a cancel, revert a completed row to `processing`) and a
+        // split write could leave a row `completed` with no mesh.
+        let write = match db.update_generation_if_active(
             &gen.id,
             &status_str,
             outcome.progress as i32,
             outcome.result_url.as_deref(),
             outcome.error.as_deref(),
             completed_at,
+            outcome.assets.as_ref(),
         ).await {
-            warn!(generation_id = %gen.id, error = %e, "poller: update_generation_status failed");
-            continue;
-        }
-
-        if let Some(meta) = &outcome.assets {
-            if let Err(e) = db.update_generation_metadata(&gen.id, meta).await {
-                warn!(generation_id = %gen.id, error = %e, "poller: failed to persist 3d assets");
+            Ok(w) => w,
+            Err(e) => {
+                warn!(generation_id = %gen.id, error = %e, "poller: update_generation_if_active failed");
+                continue;
             }
+        };
+        if !write.owns_outcome() {
+            // The other observer terminalised this row between our
+            // `list_active_generations` and now. It owns the log update and the
+            // webhook; doing either here would duplicate them.
+            info!(generation_id = %gen.id, "poller: row already terminal, leaving it to the observer that wrote it");
+            continue;
         }
 
         // The submit handler logged this request `pending` under the same id;
@@ -343,66 +369,92 @@ pub(crate) async fn poll_once(
             "poller: updated generation status"
         );
 
-        // Dispatch webhook if terminal and the key has a webhook_url
+        // Dispatch webhook if terminal and the key has a webhook_url. Reaching
+        // here means THIS observer wrote the terminal row (`wrote` above), so
+        // the delivery fires exactly once whichever path won the race.
         if is_terminal {
-            if let Some(key_id) = gen.key_id {
-                let db2 = db.clone();
-                let wh_client = wh_client.clone();
-                let gen_id = gen.id.clone();
-                // Build the updated generation for the webhook payload
-                let updated_gen = crate::types::Generation {
-                    status: outcome.status,
-                    progress: outcome.progress as i32,
-                    result_url: outcome.result_url,
-                    error_message: outcome.error,
-                    completed_at,
-                    ..gen
-                };
-
-                tokio::spawn(async move {
-                    match db2.get_api_key(&key_id).await {
-                        Ok(Some(key)) if key.webhook_url.is_some() => {
-                            let url = key.webhook_url.unwrap();
-                            // SSRF re-validation (hosted only): re-check the URL at
-                            // dispatch time so a key whose webhook_url predates the
-                            // create/patch validation — or a host that now resolves
-                            // to an internal address — can't be used as an SSRF
-                            // vector. Single-tenant operators may target internal
-                            // hosts, so they're not re-validated.
-                            if mode == crate::config::Mode::Hosted {
-                                if let Err(reason) = crate::util::ssrf::validate_public_url(&url).await {
-                                    warn!(generation_id = %gen_id, reason = %reason, "skipping webhook dispatch: disallowed url");
-                                    return;
-                                }
-                            }
-                            let secret = key.key_hash.clone();
-                            let key_id_str = key_id.to_string();
-                            // SSRF hardening: dispatch with the no-redirect client
-                            // (built once per tick above) so a public webhook host
-                            // can't 3xx-redirect the POST into an internal target.
-                            if let Err(e) = dispatch_webhook_logged(
-                                &wh_client,
-                                &url,
-                                Some(&secret),
-                                &updated_gen,
-                                db2,
-                                &key_id_str,
-                            ).await {
-                                warn!(generation_id = %gen_id, error = %e, "webhook dispatch failed");
-                            }
-                        }
-                        Ok(Some(_)) => {}  // no webhook_url
-                        Ok(None) => {
-                            warn!(generation_id = %gen_id, key_id = %key_id, "key not found for webhook");
-                        }
-                        Err(e) => {
-                            warn!(generation_id = %gen_id, error = %e, "failed to lookup key for webhook");
-                        }
-                    }
-                });
-            }
+            // The webhook payload must carry the assets the same row now has:
+            // building it from the pre-poll snapshot with `..gen` shipped
+            // `metadata: None`, so a webhook consumer got `result_url` and no
+            // preview/polycount while `GET /v1/generations/{id}` had both.
+            let metadata = outcome.assets.clone().or_else(|| gen.metadata.clone());
+            let updated_gen = crate::types::Generation {
+                status: outcome.status,
+                progress: outcome.progress as i32,
+                result_url: outcome.result_url,
+                error_message: outcome.error,
+                completed_at,
+                metadata,
+                ..gen
+            };
+            dispatch_terminal_webhook(db, &wh_client, mode, updated_gen).await;
         }
     }
+}
+
+/// Deliver the terminal-generation webhook for `gen`, if its key has one.
+///
+/// Extracted from the poller because the poller is no longer the only terminal
+/// observer: `GET /v1/models3d/{id}` terminalises a 3D row too, and whenever it
+/// won the race the row never appeared in `list_active_generations` again, so
+/// the only dispatch site never ran and the caller got no delivery at all.
+/// Both callers dispatch only when their guarded UPDATE actually wrote the row,
+/// which is what makes "at most once" hold.
+///
+/// Spawns and returns immediately: a webhook endpoint's latency must not stall
+/// a poll tick or an HTTP response.
+pub(crate) async fn dispatch_terminal_webhook(
+    db: &Arc<dyn DatabaseStore>,
+    wh_client: &reqwest::Client,
+    mode: crate::config::Mode,
+    gen: crate::types::Generation,
+) {
+    let Some(key_id) = gen.key_id else { return };
+    let db2 = db.clone();
+    let wh_client = wh_client.clone();
+    let gen_id = gen.id.clone();
+
+    tokio::spawn(async move {
+        match db2.get_api_key(&key_id).await {
+            Ok(Some(key)) if key.webhook_url.is_some() => {
+                let url = key.webhook_url.unwrap();
+                // SSRF re-validation (hosted only): re-check the URL at
+                // dispatch time so a key whose webhook_url predates the
+                // create/patch validation — or a host that now resolves
+                // to an internal address — can't be used as an SSRF
+                // vector. Single-tenant operators may target internal
+                // hosts, so they're not re-validated.
+                if mode == crate::config::Mode::Hosted {
+                    if let Err(reason) = crate::util::ssrf::validate_public_url(&url).await {
+                        warn!(generation_id = %gen_id, reason = %reason, "skipping webhook dispatch: disallowed url");
+                        return;
+                    }
+                }
+                let secret = key.key_hash.clone();
+                let key_id_str = key_id.to_string();
+                // SSRF hardening: dispatch with the no-redirect client so a
+                // public webhook host can't 3xx-redirect the POST into an
+                // internal target.
+                if let Err(e) = dispatch_webhook_logged(
+                    &wh_client,
+                    &url,
+                    Some(&secret),
+                    &gen,
+                    db2,
+                    &key_id_str,
+                ).await {
+                    warn!(generation_id = %gen_id, error = %e, "webhook dispatch failed");
+                }
+            }
+            Ok(Some(_)) => {}  // no webhook_url
+            Ok(None) => {
+                warn!(generation_id = %gen_id, key_id = %key_id, "key not found for webhook");
+            }
+            Err(e) => {
+                warn!(generation_id = %gen_id, error = %e, "failed to lookup key for webhook");
+            }
+        }
+    });
 }
 
 /// Resolve a single generation's stored per-org BYO credential, decrypted.
