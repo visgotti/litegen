@@ -203,13 +203,24 @@ async fn request_log_status_update_round_trips_against_postgres() {
         .expect("connect + migrate against the test Postgres");
 
     let id = Uuid::new_v4().to_string();
-    db.log_request(&id, "test-model", "test-provider", "pending", "model3d", 0.0, 40, None, None, None, None)
+    // 999_999 ms (~16 min) is a submit-time latency no test run can reach, so
+    // the async re-stamp below shows up without pinning a wall-clock number.
+    let started = std::time::Instant::now();
+    db.log_request(&id, "test-model", "test-provider", "pending", "model3d", 0.0, 999_999, None, None, None, None)
         .await
         .expect("insert request_log");
+    // A sync row (never `pending`) must come out of the same UPDATE untouched.
+    let sync_id = Uuid::new_v4().to_string();
+    db.log_request(&sync_id, "test-model", "test-provider", "completed", "image", 0.0, 1234, None, None, None, None)
+        .await
+        .expect("insert sync request_log");
 
     db.update_request_log_status(&id, "failed", Some("provider error"))
         .await
         .expect("update_request_log_status");
+    db.update_request_log_status(&sync_id, "failed", Some("provider error"))
+        .await
+        .expect("update_request_log_status (sync row)");
 
     let filters = crate::types::LogFilters { status: Some("failed".to_string()), ..Default::default() };
     let (logs, _) = db
@@ -219,5 +230,19 @@ async fn request_log_status_update_round_trips_against_postgres() {
     let row = logs.iter().find(|l| l.id == id).expect("the updated row is listed as failed");
     assert_eq!(row.status, crate::types::GenerationStatus::Failed);
     assert_eq!(row.error.as_deref(), Some("provider error"));
-    assert_eq!(row.latency_ms, 40, "only status/error change");
+    // Settling an ASYNC row re-stamps `latency_ms` with the end-to-end time
+    // (NOW() − created_at, both full-precision here) so `/v1/stats` percentiles
+    // keep one meaning; `created_at` is NOW() at insert, so the value can only
+    // be the time this test itself took.
+    let ceiling = started.elapsed().as_millis() as u64 + 2_000;
+    assert!(
+        row.latency_ms <= ceiling,
+        "a settled pending row carries its end-to-end latency, not the 999_999ms submit stamp; got {}",
+        row.latency_ms
+    );
+    let sync_row = logs.iter().find(|l| l.id == sync_id).expect("the sync row is listed as failed");
+    assert_eq!(
+        sync_row.latency_ms, 1234,
+        "a row that was never `pending` keeps the latency its handler measured"
+    );
 }

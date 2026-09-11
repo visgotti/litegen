@@ -1,6 +1,13 @@
 import type { components } from "./generated/schema";
 import { LiteGenAPIError, LiteGenTimeoutError } from "./errors";
-import { waitForCompletion, pollVideo, poll3d, waitForJob, type WaitForCompletionOptions } from "./polling";
+import {
+  waitForCompletion,
+  pollVideo,
+  poll3d,
+  waitForJob,
+  MODEL3D_KIND,
+  type WaitForCompletionOptions,
+} from "./polling";
 
 type Schemas = components["schemas"];
 type ImageRequest = Schemas["ImageGenerationRequest"];
@@ -679,7 +686,7 @@ class Models3dNamespace {
     return this.client.request("GET", `/v1/models3d/${encodeURIComponent(id)}`, undefined, signal);
   }
   waitForCompletion(id: string, opts?: WaitForCompletionOptions): Promise<Model3dResponse> {
-    return waitForJob(id, (jid) => this.getStatus(jid, opts?.signal), opts);
+    return waitForJob(id, (jid) => this.getStatus(jid, opts?.signal), opts, MODEL3D_KIND);
   }
   /**
    * Stream progress updates for a 3D job as an async iterable:
