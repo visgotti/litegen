@@ -5681,3 +5681,43 @@ verified in code by the controller:
 - [x] DONE 2026-09-11 **Gates:** `cd litegen-core && cargo test && cargo clippy --all-targets`
   (no NEW clippy error in files this task touches — the branch carries 17
   pre-existing ones, see the SDD ledger); commit, ticking this section.
+
+---
+
+### Task 17D: Two contract violations found by the aipix acceptance checklist
+
+Task 17's §7 run against a live build scored 11/13. Both failures are ours and
+both are visible to the consumer:
+
+- [ ] **`usage` is null on the completed poll response.** The contract says
+  "`usage` carries the same `cost_usd` / `cost_source` / `tokens` triple as
+  video, so aipix's existing applyMarkup + usdToTokens cost path works
+  unchanged", and its §7 checklist item is "`usage.cost_usd` / `cost_source`
+  populated on completion". Today `usage` is populated only on the SUBMIT
+  response; `get_model3d_status` (`litegen-core/src/proxy/router.rs:721`) and
+  `model3d_response_from_row` (`api/handlers/mod.rs:859`) both hard-code
+  `usage: None`. Populate it on every terminal poll response from the
+  persisted `generations.cost_usd` (with `cost_source: Estimated` and
+  `usd_to_tokens`), and from the row when answering out of the DB. Video has
+  the same gap at `router.rs:582` — fix 3D, and say in the commit message
+  whether you also fixed video (prefer yes if it is the same one-liner and the
+  video tests stay green).
+- [ ] **Cancellation is overturned by the next poll.** `PATCH
+  /v1/generations/{id}` with `{"status":"cancelled"}` marks the row cancelled,
+  but the router still holds the in-flight job, so the next
+  `GET /v1/models3d/{id}` polls the provider, gets `Completed`, re-hosts, and
+  persists `completed` OVER the cancelled row — the contract requires
+  cancellation to stop an in-flight job. Fix both halves: (a) when a
+  generation is cancelled, drop its in-memory job (add a router method, e.g.
+  `forget_model3d_job(id)`, called from `cancel_generation`); and (b) make
+  `get_3d_status` read-through: if the persisted row is already terminal
+  (cancelled/failed/completed), answer from the row and never poll or persist
+  over it. Check the video path for the same shape and report it.
+- [ ] **Tests:** integration tests through the real router for both — a
+  completed poll carries `usage.cost_usd` > 0 (use a priced mock model; the 3D
+  mocks are $0, so assert the field is PRESENT and `cost_source` is set, and
+  add a unit test for the value derivation), and cancel → poll → the response
+  and the row both stay `cancelled` with no asset re-host.
+- [ ] **Gates:** `cd litegen-core && cargo test` green; `cargo clippy
+  --all-targets` with no new finding in your lines. Commit path-scoped and tick
+  this section.
