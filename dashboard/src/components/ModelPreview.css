@@ -41,11 +41,16 @@
 }
 
 /* ─── Toolbar ─────────────────────────────────────────────────────── */
-/* Three groups — view controls, background, actions — each wraps as a unit
-   via its own nowrap row, so a narrow inspector drops a whole group to the
-   next line instead of orphaning one button (e.g. "Copy mesh URL") away from
-   its neighbours. `.mp-toolbar-actions` gets `margin-left: auto` so it sits
-   flush right whenever all three groups fit on one row. */
+/* Three groups — view controls, background, actions. The outer `.mp-toolbar`
+   and each `.mp-toolbar-group` both wrap, but the actions group's two items
+   (fullscreen, "Copy mesh URL") are few and narrow enough that they stay
+   together on one line down to very small widths, so in practice a narrow
+   inspector drops whole groups to the next line instead of orphaning one
+   button away from its neighbours. At the narrowest widths the view-controls
+   group (three items, one a slider) can itself wrap internally — a group
+   splitting only within itself, never a lone item stranding away from its
+   own group. `.mp-toolbar-actions` gets `margin-left: auto` so it sits flush
+   right whenever all three groups fit on one row. */
 .mp .mp-toolbar {
   display: flex;
   flex-wrap: wrap;
