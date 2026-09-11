@@ -109,7 +109,7 @@ export interface PaginatedResponse<T> {
 }
 
 /**
- * A DB-backed generation row (video or image). Mirrors the backend
+ * A DB-backed generation row (image, video, or 3D model). Mirrors the backend
  * `Generation` struct in litegen-core (`src/types/mod.rs`) exactly — field names
  * and nullability match the serialized JSON. The real failure reason is
  * `error_message` (there is no `error` field), and there is no `request_body`.
@@ -121,7 +121,7 @@ export interface Generation {
   key_id: string | null;
   model: string;
   provider: string;
-  /** "image" | "video". */
+  /** "image" | "video" | "model3d". */
   media_type: string;
   status: "pending" | "processing" | "completed" | "failed" | "cancelled";
   /** Progress percentage (0–100). */
@@ -1006,6 +1006,20 @@ class GenerationsNamespace {
     return this.client.request(
       "GET",
       `/v1/generations?page=${page}&per_page=${per_page}`,
+      undefined,
+      signal,
+    );
+  }
+
+  /**
+   * Fetch one generation row by id. Rejects with `LiteGenAPIError` (status 404)
+   * when the row does not exist — which, just after submitting an async job,
+   * can simply mean the row has not been persisted yet.
+   */
+  get(id: string, signal?: AbortSignal): Promise<Generation> {
+    return this.client.request(
+      "GET",
+      `/v1/generations/${encodeURIComponent(id)}`,
       undefined,
       signal,
     );

@@ -197,6 +197,51 @@ describe("LiteGenClient.models.list", () => {
   });
 });
 
+describe("LiteGenClient.generations.get", () => {
+  it("GETs /v1/generations/{id} with the id URL-encoded", async () => {
+    const captured: Partial<CapturedRequest> = {};
+    const fetchImpl = mockFetch(async (req) => {
+      Object.assign(captured, req);
+      return new Response(
+        JSON.stringify({
+          id: "litegen-3d/a b",
+          key_id: null,
+          model: "fal/trellis",
+          provider: "fal",
+          media_type: "model3d",
+          status: "processing",
+          progress: 40,
+          cost_usd: 0,
+          created_at: "2026-09-11T00:00:00Z",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    const client = new LiteGenClient({ apiKey: "lg", fetch: fetchImpl });
+    const gen = await client.generations.get("litegen-3d/a b");
+    expect(captured.method).toBe("GET");
+    expect(captured.url).toMatch(/\/v1\/generations\/litegen-3d%2Fa%20b$/);
+    expect(captured.body).toBeUndefined();
+    expect(gen.status).toBe("processing");
+    expect(gen.media_type).toBe("model3d");
+  });
+
+  it("rejects with LiteGenAPIError carrying the HTTP status (404 = not persisted yet)", async () => {
+    const fetchImpl = mockFetch(
+      async () =>
+        new Response(
+          JSON.stringify({ error: { message: "not found", type: "not_found", code: "404" } }),
+          { status: 404, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    const client = new LiteGenClient({ apiKey: "lg", fetch: fetchImpl });
+    await expect(client.generations.get("missing")).rejects.toMatchObject({
+      name: "LiteGenAPIError",
+      status: 404,
+    });
+  });
+});
+
 describe("enum constants", () => {
   it("matches API string values exactly", () => {
     expect(GenerationStatus.Completed).toBe("completed");
