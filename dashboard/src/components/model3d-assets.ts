@@ -169,22 +169,64 @@ export type ViewerErrorReason = 'load' | 'parse';
  *
  * The one signal that does discriminate is outside `detail`:
  * `PerformanceResourceTiming.responseStatus` for the same request (Resource
- * Timing Level 2), passed in by the caller — reading it needs `performance`,
- * which does not belong in a pure helper. It reports whether the browser
- * actually received a response for the mesh, with no extra request of our
- * own (so a presigned/signed mesh URL is never fetched twice). A 2xx/3xx
- * status means the bytes arrived, so a `loadfailure` after that is a parse
- * failure. Anything else — no entry (also the common case for a cross-origin
- * mesh host that does not send `Timing-Allow-Origin`, which most object
- * storage does not), status 0, or a 4xx/5xx — is treated as a download
- * failure so Retry stays available. This also keeps `webglcontextlost` (a
- * failure unrelated to the fetch, which can occur long after a successful
- * load) as `load` rather than misreading a stale successful timing entry.
+ * Timing Level 2), passed in by the caller — reading it needs a live
+ * `PerformanceObserver`, which does not belong in a pure helper (see
+ * `ModelViewer.tsx` and `matchResourceStatus` below for how it's captured;
+ * the global `performance.getEntriesByType('resource')` buffer is NOT used —
+ * it's capped and this SPA's polling fills it within a few generations). It
+ * reports whether the browser actually received a response for the mesh,
+ * with no extra request of our own (so a presigned/signed mesh URL is never
+ * fetched twice). A 2xx/3xx status means the bytes arrived, so a
+ * `loadfailure` after that is a parse failure. Anything else — no entry, a
+ * 4xx/5xx, or status 0 (three.js's `FileLoader` fetches in `cors` mode, so a
+ * response that reached the app already passed CORS; a real cross-origin
+ * mesh host reports its true status here, and 0 means the request never got
+ * a response at all — not "no `Timing-Allow-Origin`", a header this does not
+ * depend on) — is treated as a download failure so Retry stays available.
+ * This also keeps `webglcontextlost` (a failure unrelated to the fetch,
+ * which can occur long after a successful load) as `load` rather than
+ * misreading a stale successful timing entry. Browsers without
+ * `responseStatus` yet (e.g. Safari at this writing) always read as
+ * "unknown" here too, so they always get the safe `load` classification.
  */
 export function classifyViewerError(detail: unknown, responseStatus: number | null): ViewerErrorReason {
   const type = (detail as { type?: unknown } | null | undefined)?.type;
   if (type !== 'loadfailure') return 'load';
   return typeof responseStatus === 'number' && responseStatus >= 200 && responseStatus < 400 ? 'parse' : 'load';
+}
+
+/** The shape of a `PerformanceResourceTiming` entry this module reads.
+ *  `responseStatus` is undefined in browsers that don't implement Resource
+ *  Timing Level 2 yet (e.g. Safari as of this writing) — absence must read
+ *  as "unknown" (`null`, via `matchResourceStatus`), not "0", so it is never
+ *  mistaken for the real opaque/failed-request value. */
+export interface ResourceStatusEntry { name: string; responseStatus?: number }
+
+/**
+ * Picks the HTTP status of the most recent entry in `entries` whose `name`
+ * equals `resolvedSrc` exactly, or null when none matches or the match has
+ * no usable status.
+ *
+ * Pure and DOM-free: `entries` is handed in by the caller, already read live
+ * from a `PerformanceObserver` scoped to the current `<model-viewer>` — never
+ * from the global `performance.getEntriesByType('resource')` buffer, which is
+ * capped (250 entries by default) and gets filled by this SPA's own polling
+ * (generation jobs, Overview, Logs) within a few generations, after which a
+ * read of the global buffer would silently stop seeing new mesh requests at
+ * all. Matching is on the FULL resolved URL, fragment included — Chromium
+ * retains `retrySrc`'s `#retry-N` cache-buster in a resource-timing entry's
+ * `name` (verified empirically, see the Task 17B report), so a stale entry
+ * from an earlier attempt at the same mesh can never match a later one; each
+ * retry gets its own fragment and thus its own entry.
+ */
+export function matchResourceStatus(entries: ResourceStatusEntry[], resolvedSrc: string): number | null {
+  let status: number | null = null;
+  for (const e of entries) {
+    if (e.name === resolvedSrc) {
+      status = typeof e.responseStatus === 'number' ? e.responseStatus : null;
+    }
+  }
+  return status;
 }
 
 /** User-facing explanation for a `<model-viewer>` `error` event's detail.
