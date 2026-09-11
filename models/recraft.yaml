@@ -21,7 +21,8 @@ models:
       size:
         kind: size
         mode: enum
-        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024]]
+        # V2/V3 sizes incl. 16:9 1820x1024 / 9:16 1024x1820: https://www.recraft.ai/docs/api-reference/appendix.md
+        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024],[1820,1024],[1024,1820]]
     extra_allowlist: [style_id, controls, text_layout, substyle]
     tags: [text-to-image]
 
@@ -57,6 +58,8 @@ models:
     prompt: { required: true, max_length: 1000 }
     params:
       seed: { kind: seed, min: 0, max: 4294967294 }
+      # negative_prompt: "V2 / V3 models": https://www.recraft.ai/docs/api-reference/endpoints.md
+      negative_prompt: { kind: string, max_length: 1000 }
       style:
         kind: string
         enum_values: [realistic_image, digital_illustration, vector_illustration, icon, any]
@@ -64,7 +67,8 @@ models:
       size:
         kind: size
         mode: enum
-        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024]]
+        # V2/V3 sizes incl. 16:9 1820x1024 / 9:16 1024x1820: https://www.recraft.ai/docs/api-reference/appendix.md
+        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024],[1820,1024],[1024,1820]]
     extra_allowlist: [style_id, controls, substyle]
     tags: [text-to-image]
 
@@ -75,19 +79,20 @@ models:
     description: Recraft V4.1 raster image generation (current default).
     pricing: { base_cost_usd: 0.04 }
     capabilities: { text_to_image: true }
-    prompt: { required: true, max_length: 1000 }
+    # V4 / V4.1 prompts go to 10000 chars: https://www.recraft.ai/docs/api-reference/appendix.md
+    prompt: { required: true, max_length: 10000 }
+    # No negative_prompt ("V2 / V3 models"), text_layout ("V3 models only") or
+    # curated `style`/substyle (V4.1 styles come via style_id):
+    # https://www.recraft.ai/docs/api-reference/endpoints.md,
+    # https://www.recraft.ai/docs/api-reference/models/recraft-v4-1.md
     params:
       seed: { kind: seed, min: 0, max: 4294967294 }
-      negative_prompt: { kind: string, max_length: 1000 }
-      style:
-        kind: string
-        enum_values: [realistic_image, digital_illustration, vector_illustration, icon, any]
-        default: realistic_image
       size:
         kind: size
         mode: enum
-        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024]]
-    extra_allowlist: [style_id, controls, text_layout, substyle]
+        # V4 / V4.1 sizes: https://www.recraft.ai/docs/api-reference/appendix.md
+        values: [[1024,1024],[1536,768],[768,1536],[1280,832],[832,1280],[1216,896],[896,1216],[1152,896],[896,1152],[832,1344],[1280,896],[896,1280],[1344,768],[768,1344]]
+    extra_allowlist: [style_id, controls]
     tags: [text-to-image]
 
   - id: recraft/recraftv4_1_pro
@@ -97,17 +102,18 @@ models:
     description: Recraft V4.1 Pro raster image generation.
     pricing: { base_cost_usd: 0.25 }
     capabilities: { text_to_image: true }
-    prompt: { required: true, max_length: 1000 }
+    # V4 / V4.1 prompts go to 10000 chars: https://www.recraft.ai/docs/api-reference/appendix.md
+    prompt: { required: true, max_length: 10000 }
+    # No negative_prompt ("V2 / V3 models"), text_layout ("V3 models only") or
+    # curated `style`/substyle (V4.1 styles come via style_id):
+    # https://www.recraft.ai/docs/api-reference/endpoints.md,
+    # https://www.recraft.ai/docs/api-reference/models/recraft-v4-1.md
     params:
       seed: { kind: seed, min: 0, max: 4294967294 }
-      negative_prompt: { kind: string, max_length: 1000 }
-      style:
-        kind: string
-        enum_values: [realistic_image, digital_illustration, vector_illustration, icon, any]
-        default: realistic_image
       size:
         kind: size
         mode: enum
-        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024]]
-    extra_allowlist: [style_id, controls, text_layout, substyle]
+        # V4 Pro / V4.1 Pro (2K) sizes: https://www.recraft.ai/docs/api-reference/appendix.md
+        values: [[2048,2048],[3072,1536],[1536,3072],[2560,1664],[1664,2560],[2432,1792],[1792,2432],[2304,1792],[1792,2304],[1664,2688],[2560,1792],[1792,2560],[2688,1536],[1536,2688]]
+    extra_allowlist: [style_id, controls]
     tags: [text-to-image]

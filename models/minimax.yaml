@@ -33,9 +33,14 @@ models:
     prompt: { required: true, max_length: 2000 }
     params:
       duration_seconds: { kind: float, min: 6.0, max: 10.0, default: 6.0 }
+      # 512P is image-to-video only: Hailuo-02 text-to-video takes 768P | 1080P
+      # and first/last-frame "does not support 512P". One list serves every
+      # mode this model advertises, so 512P is not offered.
+      # @see https://platform.minimax.io/docs/api-reference/video-generation-t2v.md
+      # @see https://platform.minimax.io/docs/api-reference/video-generation-fl2v.md
       resolution:
         kind: string
-        enum_values: [512P, 768P, 1080P]
+        enum_values: [768P, 1080P]
     ref_inputs:
       max_total: 2
       default_role: first_frame
@@ -43,7 +48,9 @@ models:
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [prompt_optimizer, callback_url]
+    # fast_pretreatment: "Applies only to MiniMax-Hailuo-2.3 and MiniMax-Hailuo-02".
+    # @see https://platform.minimax.io/docs/api-reference/video-generation-t2v.md
+    extra_allowlist: [prompt_optimizer, fast_pretreatment, callback_url]
     tags: [text-to-video, image-to-video]
 
   - id: minimax/MiniMax-Hailuo-2.3
@@ -59,14 +66,17 @@ models:
       resolution:
         kind: string
         enum_values: [768P, 1080P]
+    # No last_frame: first & last frame generation accepts only MiniMax-Hailuo-02.
+    # @see https://platform.minimax.io/docs/api-reference/video-generation-fl2v.md
     ref_inputs:
-      max_total: 2
+      max_total: 1
       default_role: first_frame
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [prompt_optimizer, callback_url]
+    # fast_pretreatment: "Applies only to MiniMax-Hailuo-2.3 and MiniMax-Hailuo-02".
+    # @see https://platform.minimax.io/docs/api-reference/video-generation-t2v.md
+    extra_allowlist: [prompt_optimizer, fast_pretreatment, callback_url]
     tags: [text-to-video, image-to-video]
 
   - id: minimax/T2V-01-Director
@@ -88,7 +98,10 @@ models:
     display_name: MiniMax S2V-01
     description: Subject-reference video (character consistency from a face photo).
     pricing: { base_cost_usd: 0.65 }
-    capabilities: { text_to_video: true, image_to_video: true }
+    # subject_reference is required by the S2V-01 request schema, so a
+    # prompt-only request cannot succeed: not text_to_video.
+    # @see https://platform.minimax.io/docs/api-reference/video-generation-s2v.md
+    capabilities: { image_to_video: true }
     prompt: { required: true, max_length: 2000 }
     params:
       duration_seconds: { kind: float, min: 6.0, max: 6.0, default: 6.0 }
@@ -97,6 +110,7 @@ models:
       default_role: subject
       provider_format: { form: base64 }
       roles:
-        subject: { required: false, min_count: 0, max_count: 1 }
+        # Required; "only one image supported".
+        subject: { required: true, min_count: 1, max_count: 1 }
     extra_allowlist: [prompt_optimizer, callback_url]
-    tags: [text-to-video, subject-reference]
+    tags: [image-to-video, subject-reference]

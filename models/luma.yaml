@@ -60,10 +60,16 @@ models:
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 1000 }
     params:
-      duration_seconds: { kind: float, min: 3.0, max: 9.0 }
+      # Sent as ray-2. VideoModelOutputDuration enum: "5s" | "9s" (3s is not a
+      # value). VideoModelOutputResolution enum: 540p | 720p | 1080p | 4k.
+      # @see https://docs.lumalabs.ai/reference/creategeneration
+      duration_seconds: { kind: float, min: 5.0, max: 9.0 }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["1:1","16:9","9:16","4:3","3:4","21:9","9:21"]
+      resolution:
+        kind: string
+        enum_values: [540p, 720p, 1080p, 4k]
     ref_inputs:
       max_total: 2
       default_role: first_frame
@@ -86,9 +92,12 @@ models:
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["1:1","16:9","9:16","4:3","3:4","21:9","9:21"]
+      # "possible values for resolution: 540p, 720p, 1080p, 4k" (create, ray-2).
+      # @see https://docs.lumalabs.ai/reference/creategeneration
+      # @see https://docs.lumalabs.ai/changelog/upscale
       resolution:
         kind: string
-        enum_values: [540p, 720p, 1080p]
+        enum_values: [540p, 720p, 1080p, 4k]
     ref_inputs:
       max_total: 2
       default_role: first_frame
@@ -133,9 +142,15 @@ models:
     prompt: { required: true, max_length: 1000 }
     params:
       duration_seconds: { kind: float, min: 5.0, max: 9.0 }
+      # POST /generations/video takes the same AspectRatio and
+      # VideoModelOutputResolution enums for ray-flash-2 as for ray-2.
+      # @see https://docs.lumalabs.ai/reference/creategeneration
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["1:1","16:9","9:16","4:3","3:4"]
+        allowed: ["1:1","16:9","9:16","4:3","3:4","21:9","9:21"]
+      resolution:
+        kind: string
+        enum_values: [540p, 720p, 1080p, 4k]
     ref_inputs:
       max_total: 2
       default_role: first_frame

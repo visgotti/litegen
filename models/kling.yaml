@@ -47,9 +47,12 @@ models:
     provider: kling
     media_type: video
     display_name: Kling Video v2.1
-    description: Kling v2.1 text/image-to-video (first frame + image_tail last frame).
+    description: Kling v2.1 image-to-video (first frame + image_tail last frame).
     pricing: { base_cost_usd: 1.00 }
-    capabilities: { text_to_video: true, image_to_video: true }
+    # Kling's text2video `model_name` enum has no kling-v2-1 (capability map:
+    # 2.1 text-to-video "Not Supported"), so the first frame is required.
+    # @see https://kling.ai/document-api/api/video/1-6/text-to-video.md (2026-09-11)
+    capabilities: { image_to_video: true }
     prompt: { required: true, max_length: 2500 }
     params:
       negative_prompt: { kind: string, max_length: 2500 }
@@ -63,10 +66,10 @@ models:
       default_role: first_frame
       provider_format: { form: base64 }
       roles:
-        first_frame: { required: false, min_count: 0, max_count: 1 }
+        first_frame: { required: true, min_count: 1, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [cfg_scale, mode, camera_control]
-    tags: [text-to-video, image-to-video]
+    tags: [image-to-video]
 
   - id: kling/video-kling-v1-6
     provider: kling
