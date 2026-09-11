@@ -1,5 +1,8 @@
-# Claude Code (personal, machine-local overrides + worktrees — never publish)
-.claude/
+# Claude Code (personal, machine-local overrides + worktrees — never publish).
+# Shared project skills in .claude/skills/ ARE versioned, so they travel with
+# the repo (e.g. /model-drift, which a scheduled cloud run also needs).
+.claude/*
+!.claude/skills/
 
 # Rust
 litegen-core/target/
