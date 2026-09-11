@@ -1,0 +1,171 @@
+{
+    "taskType": "TEXT_IMAGE",
+    "textToImageParams": {
+        "text": {{string}},
+        "negativeText": {{string}},
+        "style": "3D_ANIMATED_FAMILY_FILM" |
+        "DESIGN_SKETCH" | "FLAT_VECTOR_ILLUSTRATION" |
+        "GRAPHIC_NOVEL_ILLUSTRATION" | "MAXIMALISM" |
+        "MIDCENTURY_RETRO" | "PHOTOREALISM" |
+        "SOFT_DIGITAL_PAINTING"
+    },
+    "imageGenerationConfig": {
+        "width": {{int}},
+        "height": {{int}},
+        "quality": "standard" | "premium",
+        "cfgScale": {{float}},
+        "seed": {{int}},
+        "numberOfImages": {{int}}
+    }
+}
+
+{
+    "taskType": "TEXT_IMAGE",
+    "textToImageParams": {
+        "conditionImage": {{string}} (Base64 encoded image),
+        "controlMode": "CANNY_EDGE" | "SEGMENTATION", 
+        "controlStrength": {{float}},
+        "text": {{string}},
+        "negativeText": {{string}},
+        "style": "3D_ANIMATED_FAMILY_FILM" |
+        "DESIGN_SKETCH" | "FLAT_VECTOR_ILLUSTRATION" |
+        "GRAPHIC_NOVEL_ILLUSTRATION" | "MAXIMALISM" |
+        "MIDCENTURY_RETRO" | "PHOTOREALISM" |
+        "SOFT_DIGITAL_PAINTING"
+    },
+    "imageGenerationConfig": {
+        "width": {{int}},
+        "height": {{int}},
+        "quality": "standard" | "premium",
+        "cfgScale": {{float}},
+        "seed": {{int}},
+        "numberOfImages": {{int}}
+    }
+}
+
+{
+    "taskType": "COLOR_GUIDED_GENERATION",
+    "colorGuidedGenerationParams": {
+        "colors": {{string[]}} (list of hexadecimal color values),
+        "referenceImage": {{string}} (Base64 encoded image),
+        "text": {{string}},
+        "negativeText": {{string}}
+    },
+    "imageGenerationConfig": {
+        "width": {{int}},
+        "height": {{int}},
+        "quality": "standard" | "premium",
+        "cfgScale": {{float}},
+        "seed": {{int}},
+        "numberOfImages": {{int}}
+    }
+}
+
+{
+    "taskType": "IMAGE_VARIATION",
+    "imageVariationParams": {
+        "images": {{string[]}} (list of Base64 encoded images),
+        "similarityStrength": {{float}},
+        "text": {{string}},
+        "negativeText": {{string}}
+    },
+    "imageGenerationConfig": {
+        "height": {{int}},
+        "width": {{int}},
+        "cfgScale": {{float}},
+        "seed": {{int}},
+        "numberOfImages": {{int}}
+    }
+}
+
+{
+    "taskType": "INPAINTING",
+    "inPaintingParams": {
+        "image": {{string}} (Base64 encoded image),
+        "maskPrompt": {{string}},
+        "maskImage": {{string}} (Base64 encoded image),
+        "text": {{string}},
+        "negativeText": {{string}}
+    },
+    "imageGenerationConfig": {
+        "numberOfImages": {{int}},
+        "quality": "standard" | "premium",
+        "cfgScale": {{float}},
+        "seed": {{int}}
+    }
+}
+
+{
+    "taskType": "OUTPAINTING",
+    "outPaintingParams": {
+        "image": {{string}} (Base64 encoded image),
+        "maskPrompt": {{string}},
+        "maskImage": {{string}} (Base64 encoded image),
+        "outPaintingMode": "DEFAULT" | "PRECISE",
+        "text": {{string}},
+        "negativeText": {{string}}
+    },
+    "imageGenerationConfig": {
+        "numberOfImages": {{int}},
+        "quality": "standard" | "premium",
+        "cfgScale": {{float}},
+        "seed": {{int}}
+    }
+}
+
+{
+    "taskType": "BACKGROUND_REMOVAL",
+    "backgroundRemovalParams": {
+        "image": {{string}} (Base64 encoded image)
+    }
+}
+
+{
+    "taskType": "VIRTUAL_TRY_ON",
+    "virtualTryOnParams": {
+        "sourceImage": {{string}} (Base64 encoded image),
+        "referenceImage": {{string}} (Base64 encoded image),
+        "maskType": "IMAGE" | "GARMENT" | "PROMPT",
+        "imageBasedMask":{
+            "maskImage": {{string}} (Base64 encoded image),
+        },
+        "garmentBasedMask":{
+            "maskShape": "CONTOUR" | "BOUNDING_BOX" | "DEFAULT",
+            "garmentClass": "UPPER_BODY" | "LOWER_BODY" |
+            "FULL_BODY" | "FOOTWEAR" | "LONG_SLEEVE_SHIRT" |
+            "SHORT_SLEEVE_SHIRT" | "NO_SLEEVE_SHIRT" |
+            "OTHER_UPPER_BODY" | "LONG_PANTS" | "SHORT_PANTS" |
+            "OTHER_LOWER_BODY" | "LONG_DRESS" | "SHORT_DRESS" |
+            "FULL_BODY_OUTFIT" | "OTHER_FULL_BODY" | "SHOES" |
+            "BOOTS" | "OTHER_FOOTWEAR",
+            "garmentStyling":{ 
+                "longSleeveStyle": "SLEEVE_DOWN" | "SLEEVE_UP",
+                "tuckingStyle": "UNTUCKED" | "TUCKED",
+                "outerLayerStyle": "CLOSED" | "OPEN",
+            }
+        },
+        "promptBasedMask":{
+            "maskShape": "BOUNDING_BOX" | "CONTOUR" | "DEFAULT",
+            "maskPrompt": {{string}},
+        },
+        "maskExclusions": { 
+            "preserveBodyPose": "ON" | "OFF" | "DEFAULT",
+            "preserveHands": "ON" | "OFF" | "DEFAULT",
+            "preserveFace": "OFF" | "ON" | "DEFAULT"
+        },
+        "mergeStyle" : "BALANCED" | "SEAMLESS" | "DETAILED" ,
+        "returnMask": boolean,
+    },
+    "imageGenerationConfig": {
+        "numberOfImages": {{int}},
+        "quality": "standard" | "premium",
+        "cfgScale": {{float}},
+        "seed": {{int}}
+    }
+}
+
+{
+    "images": "images": string[] (list of Base64 encoded images),
+    "maskImage": string (Base64 encoded image),
+    "error": string
+}

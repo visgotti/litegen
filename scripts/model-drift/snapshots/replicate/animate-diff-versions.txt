@@ -1,0 +1,95 @@
+# versions
+lucataco/animate-diff:1531004ee4c98894ab11f8a4ce6206099e732c1da15121987a8eef54828f0663
+lucataco/animate-diff:308bd4a6c0e6dc851aa102769d41fd147ed7c3933ec5b3d52f0211619c682c55
+lucataco/animate-diff:beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa377e48a9f
+
+# input schema of the pinned version beecf59c
+{
+  "POST /predictions (application/json)": {
+    "properties": {
+      "created_at": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "id": {
+        "type": "string"
+      },
+      "input": {
+        "properties": {
+          "guidance_scale": {
+            "default": 7.5,
+            "maximum": 10,
+            "minimum": 1,
+            "type": "number"
+          },
+          "motion_module": {
+            "default": "mm_sd_v14",
+            "enum": [
+              "mm_sd_v14",
+              "mm_sd_v15",
+              "mm_sd_v15_v2"
+            ],
+            "type": "string"
+          },
+          "n_prompt": {
+            "default": "",
+            "type": "string"
+          },
+          "path": {
+            "default": "toonyou_beta3.safetensors",
+            "enum": [
+              "toonyou_beta3.safetensors",
+              "lyriel_v16.safetensors",
+              "rcnzCartoon3d_v10.safetensors",
+              "majicmixRealistic_v5Preview.safetensors",
+              "realisticVisionV40_v20Novae.safetensors"
+            ],
+            "type": "string"
+          },
+          "prompt": {
+            "default": "masterpiece, best quality, 1girl, solo, cherry blossoms, hanami, pink flower, white flower, spring season, wisteria, petals, flower, plum blossoms, outdoors, falling petals, white hair, black eyes",
+            "type": "string"
+          },
+          "seed": {
+            "type": "integer"
+          },
+          "steps": {
+            "default": 25,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "output_file_prefix": {
+        "type": "string"
+      },
+      "webhook": {
+        "format": "uri",
+        "maxLength": 65536,
+        "minLength": 1,
+        "type": "string"
+      },
+      "webhook_events_filter": {
+        "default": [
+          "start",
+          "output",
+          "logs",
+          "completed"
+        ],
+        "items": {
+          "enum": [
+            "start",
+            "output",
+            "logs",
+            "completed"
+          ],
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  }
+}

@@ -1,0 +1,68 @@
+# model values
+v3.5
+v4
+v4.5
+v5
+v5.5
+v5.6
+v6
+c1
+
+{
+  "POST /openapi/v2/video/img/generate (application/json)": {
+    "properties": {
+      "duration": {
+        "type": "integer"
+      },
+      "generate_audio_switch": {
+        "type": "boolean"
+      },
+      "generate_multi_clip_switch": {
+        "type": "boolean"
+      },
+      "img_id": {
+        "format": "uint64",
+        "type": "integer"
+      },
+      "lip_sync_tts_content": {
+        "type": "string"
+      },
+      "lip_sync_tts_speaker_id": {
+        "type": "string"
+      },
+      "lip_sync_tts_switch": {
+        "type": "boolean"
+      },
+      "model": {
+        "type": "string"
+      },
+      "prompt": {
+        "maxLength": 5000,
+        "type": "string"
+      },
+      "quality": {
+        "type": "string"
+      },
+      "seed": {
+        "type": "integer"
+      },
+      "sound_effect_content": {
+        "type": "string"
+      },
+      "sound_effect_switch": {
+        "type": "boolean"
+      },
+      "template_id": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "duration",
+      "img_id",
+      "model",
+      "prompt",
+      "quality"
+    ],
+    "type": "object"
+  }
+}

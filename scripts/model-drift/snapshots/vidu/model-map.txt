@@ -1,0 +1,39 @@
+Model | viduq3-pro | viduq3-mix | viduq3-drama | viduq3-ad | viduq3-turbo
+Resolution | 540p, 720p, 1080p | 540p, 720p, 1080p | 720p, 1080p | 720p, 1080p | 540p, 720p, 1080p
+Frame Rate | 24fps | 24fps | 24fps | 24fps | 24fps
+Duration | 1–16s | 1–16s | 3–15s | 3–15s | 1–16s
+Image-to-Video | ✔️ | - | - | - | ✔️
+Reference-to-Video | - | ✔️ | ✔️ | ✔️ | ✔️
+First/Last Frame | ✔️ | - | - | - | ✔️
+Text-to-Video | ✔️ | - | - | - | ✔️
+Effects/Templates | - | - | - | - | -
+
+Model | viduq2-pro | viduq2 | viduq2-turbo
+Resolution | 540p, 720p, 1080p | 540p, 720p, 1080p | 540p, 720p, 1080p
+Frame Rate | 24fps | 24fps | 24fps
+Duration | 1–10s | 1–10s | 1–10s
+Image-to-Video | ✔️ | - | ✔️
+Reference-to-Video | ✔️ | ✔️ | -
+First/Last Frame | ✔️ | - | ✔️
+Text-to-Video | - | ✔️ | -
+Effects/Templates | - | - | -
+
+Model | viduq1 | viduq1-classic
+Resolution | 1080p | 1080p
+Frame Rate | 24fps | 24fps
+Duration | 5s | 5s
+Image-to-Video | ✔️ | ✔️
+Reference-to-Video | ✔️ | -
+First/Last Frame | ✔️ | ✔️
+Text-to-Video | ✔️ | -
+Effects/Templates | - | -
+
+Model | vidu2.0
+Resolution | 360p, 720p, 1080p
+Frame Rate | 32fps
+Duration | 4s, 8s
+Image-to-Video | ✔️
+Reference-to-Video | ✔️
+First/Last Frame | ✔️
+Text-to-Video | -
+Effects/Templates | ✔️

@@ -1,0 +1,15 @@
+- **Amazon**
+- **Model name:** Nova Canvas
+- **Model ID:** amazon.nova-canvas-v1:0
+- **Regions:** ap-northeast-1, eu-west-1, us-east-1
+- **Legacy date:** March 30, 2026
+- **EOL date:** September 30, 2026
+- **Public extended access start date:** —
+
+- **Amazon**
+- **Model name:** Nova Reel
+- **Model ID:** amazon.nova-reel-v1:1
+- **Regions:** us-east-1
+- **Legacy date:** March 30, 2026
+- **EOL date:** September 30, 2026
+- **Public extended access start date:** —

@@ -1,0 +1,39 @@
+# notice
+> This model or capability will be retired on September 15, 2026. Please migrate to a currently supported Kling AI model or service before this date.
+
+# POST /v1/videos/image2video request body
+| Field Path | Type | Required | Default | Enum |
+| --- | --- | ---: | --- | --- |
+| `model_name` | string | No | `kling-v1` | `kling-v1`, `kling-v1-5`, `kling-v1-6`, `kling-v2-master`, `kling-v2-1`, `kling-v2-1-master`, `kling-v2-5-turbo`, `kling-v2-6`, `kling-v3` |
+| `image` | string | No | - | - |
+| `image_tail` | string | No | - | - |
+| `multi_shot` | boolean | No | `false` | - |
+| `shot_type` | string | No | - | `customize`, `intelligence` |
+| `prompt` | string | No | - | - |
+| `multi_prompt` | array | No | - | - |
+| `negative_prompt` | string | No | - | - |
+| `element_list` | array | No | - | - |
+| `element_list[].element_id` | long | Yes | - | - |
+| `voice_list` | array | No | - | - |
+| `sound` | string | No | `off` | `on`, `off` |
+| `cfg_scale` | float | No | `0.5` | - |
+| `mode` | string | No | `std` | `std`, `pro`, `4k` |
+| `static_mask` | string | No | - | - |
+| `dynamic_masks` | array | No | - | - |
+| `dynamic_masks[].mask` | string | Yes | - | - |
+| `dynamic_masks[].trajectories` | array | Yes | - | - |
+| `dynamic_masks[].trajectories[].x` | int | Yes | - | - |
+| `dynamic_masks[].trajectories[].y` | int | Yes | - | - |
+| `camera_control` | object | No | - | - |
+| `camera_control.type` | string | Yes | - | `simple`, `down_back`, `forward_up`, `right_turn_forward`, `left_turn_forward` |
+| `camera_control.config` | object | No | - | - |
+| `camera_control.config.horizontal` | float | No | - | - |
+| `camera_control.config.vertical` | float | No | - | - |
+| `camera_control.config.pan` | float | No | - | - |
+| `camera_control.config.tilt` | float | No | - | - |
+| `camera_control.config.roll` | float | No | - | - |
+| `camera_control.config.zoom` | float | No | - | - |
+| `duration` | string | No | `5` | `3`, `4`, `5`, `6`, `7`, `8`, `9`, `10`, `11`, `12`, `13`, `14`, `15` |
+| `watermark_info` | object | No | - | - |
+| `callback_url` | string | No | - | - |
+| `external_task_id` | string | No | - | - |

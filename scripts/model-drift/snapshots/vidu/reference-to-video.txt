@@ -1,0 +1,30 @@
+model |  | String | Required | viduq3-turbo viduq3 viduq2 viduq1 vidu2.0
+auto_subjects |  | Bool | Optional | 
+subjects |  | List\[Array\] | Required | 
+ | name | String | Required | 
+ | images | Array{String} | Required | data:image/png;base64,{base64_encode}
+ | voice_id | String | Optional | 
+prompt |  | String | Required | "@1 and @2 are cooking together, and both say they love hot pot."
+audio |  | Bool | Optional | 
+audio_type |  | String | Optional | 
+duration |  | Int | Optional | 3-16 1-10 5 4
+seed |  | Int | Optional | 
+aspect_ratio |  | String | Optional | 16:9 16:9 9:16 1:1
+resolution |  | String | Optional | 
+movement_amplitude |  | String | Optional | auto auto small medium large
+payload |  | String | Optional | 
+off_peak |  | Bool | Optional | false true false true false
+callback_url |  | String | Optional | callback_url
+model |  | String | Required | viduq3-mix viduq3-turbo viduq3 viduq2-pro viduq2 viduq1 vidu2.0
+images |  | Array\[String\] | Optional | 
+videos |  | Array\[String\] | Optional | 
+prompt |  | String | Required | 
+duration |  | Int | Optional | 
+seed |  | Int | Optional | 
+aspect_ratio |  | String | Optional | 
+resolution |  | String | Optional | 
+movement_amplitude |  | String | Optional | 
+bgm |  | Bool | Optional | 
+payload |  | String | Optional | 
+off_peak |  | Bool | Optional | 
+callback_url |  | String | Optional |

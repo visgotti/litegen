@@ -1,0 +1,159 @@
+# versions
+stability-ai/sdxl:1bfb924045802467cf8869d96b231a12e6aa994abfe37e337c63a4e49a8c6c41
+stability-ai/sdxl:2a865c9a94c9992b6689365b75db2d678d5022505ed3f63a5f53929a31a46947
+stability-ai/sdxl:2b017d9b67edd2ee1401238df49d75da53c523f36e363881e057f5dc3ed3c5b2
+stability-ai/sdxl:2f779eb9b23b34fe171f8eaa021b8261566f0d2c10cd2674063e7dbcd351509e
+stability-ai/sdxl:392573f9ac8c7f6153001c5ef00fc9fd6611ad361e3ead07160116747895d7ad
+stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b
+stability-ai/sdxl:728f6fcbe9b1b61804886c971f5924a41b7fcc5ca05004aa2a636c636a941575
+stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc
+stability-ai/sdxl:7ca7f0d3a51cd993449541539270971d38a24d9a0d42f073caf25190d41346d7
+stability-ai/sdxl:8beff3369e81422112d93b89ca01426147de542cd4684c244b673b105188fe5f
+stability-ai/sdxl:a00d0b7dcbb9c3fbb34ba87d2d5b46c56969c84a628bf778a7fdaec30b1b99c5
+stability-ai/sdxl:c221b2b8ef527988fb59bf24a8b97c4561f1c671f73bd389f866bfb27c061316
+stability-ai/sdxl:d02f1e612690b04427b4be7700c4e17457a71758d21805e9ebc54698429bf05e
+stability-ai/sdxl:d830ba5dabf8090ec0db6c10fc862c6eb1c929e1a194a5411852d25fd954ac82
+
+# input schema of the pinned version 39ed52f2
+{
+  "POST /predictions (application/json)": {
+    "properties": {
+      "created_at": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "id": {
+        "type": "string"
+      },
+      "input": {
+        "properties": {
+          "apply_watermark": {
+            "default": true,
+            "type": "boolean"
+          },
+          "disable_safety_checker": {
+            "default": false,
+            "type": "boolean"
+          },
+          "guidance_scale": {
+            "default": 7.5,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "number"
+          },
+          "height": {
+            "default": 1024,
+            "type": "integer"
+          },
+          "high_noise_frac": {
+            "default": 0.8,
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "image": {
+            "format": "uri",
+            "type": "string"
+          },
+          "lora_scale": {
+            "default": 0.6,
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "mask": {
+            "format": "uri",
+            "type": "string"
+          },
+          "negative_prompt": {
+            "default": "",
+            "type": "string"
+          },
+          "num_inference_steps": {
+            "default": 50,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "num_outputs": {
+            "default": 1,
+            "maximum": 4,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "prompt": {
+            "default": "An astronaut riding a rainbow unicorn",
+            "type": "string"
+          },
+          "prompt_strength": {
+            "default": 0.8,
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "refine": {
+            "default": "no_refiner",
+            "enum": [
+              "no_refiner",
+              "expert_ensemble_refiner",
+              "base_image_refiner"
+            ],
+            "type": "string"
+          },
+          "refine_steps": {
+            "type": "integer"
+          },
+          "scheduler": {
+            "default": "K_EULER",
+            "enum": [
+              "DDIM",
+              "DPMSolverMultistep",
+              "HeunDiscrete",
+              "KarrasDPM",
+              "K_EULER_ANCESTRAL",
+              "K_EULER",
+              "PNDM"
+            ],
+            "type": "string"
+          },
+          "seed": {
+            "type": "integer"
+          },
+          "width": {
+            "default": 1024,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "output_file_prefix": {
+        "type": "string"
+      },
+      "webhook": {
+        "format": "uri",
+        "maxLength": 65536,
+        "minLength": 1,
+        "type": "string"
+      },
+      "webhook_events_filter": {
+        "default": [
+          "start",
+          "output",
+          "logs",
+          "completed"
+        ],
+        "items": {
+          "enum": [
+            "start",
+            "output",
+            "logs",
+            "completed"
+          ],
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  }
+}

@@ -1,0 +1,16 @@
+/docs/api-reference/image-generation-i2i.md
+/docs/api-reference/image-generation-t2i.md
+/docs/api-reference/video-agent-create.md
+/docs/api-reference/video-agent-query.md
+/docs/api-reference/video-generation-download.md
+/docs/api-reference/video-generation-fl2v.md
+/docs/api-reference/video-generation-i2v.md
+/docs/api-reference/video-generation-query.md
+/docs/api-reference/video-generation-s2v.md
+/docs/api-reference/video-generation-t2v.md
+/docs/api-reference/video-generation-v2-create.md
+/docs/api-reference/video-generation-v2-delete.md
+/docs/api-reference/video-generation-v2-h3-context-ir.md
+/docs/api-reference/video-generation-v2-list.md
+/docs/api-reference/video-generation-v2-query.md
+/docs/api-reference/video-generation-v2-regeneration.md

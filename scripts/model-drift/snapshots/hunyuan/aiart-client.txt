@@ -1,0 +1,5 @@
+submitdrawportraitjob
+submitglampicjob
+submitmemejob
+submittexttoimagejob
+submittexttoimageprojob

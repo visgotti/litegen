@@ -1,0 +1,8 @@
+stability-ai/sdxl
+stability-ai/stable-diffusion
+stability-ai/stable-diffusion-3
+stability-ai/stable-diffusion-3.5-large
+stability-ai/stable-diffusion-3.5-large-turbo
+stability-ai/stable-diffusion-3.5-medium
+stability-ai/stable-diffusion-img2img
+stability-ai/stable-diffusion-inpainting

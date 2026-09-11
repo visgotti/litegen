@@ -1,0 +1,361 @@
+{
+  "POST /generations (application/json)": {
+    "properties": {
+      "alchemy": {
+        "default": true,
+        "nullable": true,
+        "type": "boolean"
+      },
+      "canvasInitId": {
+        "nullable": true,
+        "type": "string"
+      },
+      "canvasMaskId": {
+        "nullable": true,
+        "type": "string"
+      },
+      "canvasRequest": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "canvasRequestType": {
+        "enum": [
+          "INPAINT",
+          "OUTPAINT",
+          "SKETCH2IMG",
+          "IMG2IMG"
+        ],
+        "nullable": true,
+        "type": "string"
+      },
+      "contrast": {
+        "maximum": 4.5,
+        "minimum": 1,
+        "nullable": true,
+        "type": "number"
+      },
+      "contrastRatio": {
+        "nullable": true,
+        "type": "number"
+      },
+      "controlNet": {
+        "deprecated": true,
+        "nullable": true,
+        "type": "boolean"
+      },
+      "controlNetType": {
+        "deprecated": true,
+        "enum": [
+          "POSE",
+          "CANNY",
+          "DEPTH"
+        ],
+        "nullable": false,
+        "type": "string"
+      },
+      "controlnets": {
+        "items": {
+          "nullable": false,
+          "properties": {
+            "initImageId": {
+              "nullable": false,
+              "type": "string"
+            },
+            "initImageType": {
+              "enum": [
+                "GENERATED",
+                "UPLOADED"
+              ],
+              "nullable": false,
+              "type": "string"
+            },
+            "preprocessorId": {
+              "nullable": false,
+              "type": "number"
+            },
+            "strengthType": {
+              "enum": [
+                "Low",
+                "Mid",
+                "High",
+                "Ultra",
+                "Max"
+              ],
+              "nullable": true,
+              "type": "string"
+            },
+            "weight": {
+              "nullable": true,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "nullable": true,
+        "type": "array"
+      },
+      "elements": {
+        "items": {
+          "nullable": false,
+          "properties": {
+            "akUUID": {
+              "nullable": false,
+              "type": "string"
+            },
+            "weight": {
+              "default": 1,
+              "nullable": true,
+              "type": "number"
+            }
+          },
+          "required": [
+            "akUUID"
+          ],
+          "type": "object"
+        },
+        "nullable": true,
+        "type": "array"
+      },
+      "enhancePrompt": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "enhancePromptInstruction": {
+        "nullable": true,
+        "type": "string"
+      },
+      "expandedDomain": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "fantasyAvatar": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "guidance_scale": {
+        "nullable": true,
+        "type": "number"
+      },
+      "height": {
+        "default": 768,
+        "nullable": true,
+        "type": "integer"
+      },
+      "highContrast": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "highResolution": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "imagePromptWeight": {
+        "nullable": true,
+        "type": "number"
+      },
+      "imagePrompts": {
+        "items": {
+          "nullable": true,
+          "type": "string"
+        },
+        "nullable": true,
+        "type": "array"
+      },
+      "init_generation_image_id": {
+        "nullable": true,
+        "type": "string"
+      },
+      "init_image_id": {
+        "nullable": true,
+        "type": "string"
+      },
+      "init_strength": {
+        "nullable": true,
+        "type": "number"
+      },
+      "modelId": {
+        "default": "b24e16ff-06e3-43eb-8d33-4416c2d75876",
+        "nullable": true,
+        "type": "string"
+      },
+      "negative_prompt": {
+        "nullable": true,
+        "type": "string"
+      },
+      "num_images": {
+        "default": 4,
+        "nullable": true,
+        "type": "integer"
+      },
+      "num_inference_steps": {
+        "nullable": true,
+        "type": "integer"
+      },
+      "photoReal": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "photoRealStrength": {
+        "nullable": true,
+        "type": "number"
+      },
+      "photoRealVersion": {
+        "nullable": true,
+        "type": "string"
+      },
+      "presetStyle": {
+        "default": "DYNAMIC",
+        "enum": [
+          "ANIME",
+          "BOKEH",
+          "CINEMATIC",
+          "CINEMATIC_CLOSEUP",
+          "CREATIVE",
+          "DYNAMIC",
+          "ENVIRONMENT",
+          "FASHION",
+          "FILM",
+          "FOOD",
+          "GENERAL",
+          "HDR",
+          "ILLUSTRATION",
+          "LEONARDO",
+          "LONG_EXPOSURE",
+          "MACRO",
+          "MINIMALISTIC",
+          "MONOCHROME",
+          "MOODY",
+          "NONE",
+          "NEUTRAL",
+          "PHOTOGRAPHY",
+          "PORTRAIT",
+          "RAYTRACED",
+          "RENDER_3D",
+          "RETRO",
+          "SKETCH_BW",
+          "SKETCH_COLOR",
+          "STOCK_PHOTO",
+          "VIBRANT",
+          "UNPROCESSED"
+        ],
+        "nullable": true,
+        "type": "string"
+      },
+      "prompt": {
+        "default": "A majestic cat in the snow",
+        "nullable": false,
+        "type": "string"
+      },
+      "promptMagic": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "promptMagicStrength": {
+        "nullable": true,
+        "type": "number"
+      },
+      "promptMagicVersion": {
+        "nullable": true,
+        "type": "string"
+      },
+      "public": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "scheduler": {
+        "enum": [
+          "KLMS",
+          "EULER_ANCESTRAL_DISCRETE",
+          "EULER_DISCRETE",
+          "DDIM",
+          "DPM_SOLVER",
+          "PNDM",
+          "LEONARDO"
+        ],
+        "nullable": false,
+        "type": "string"
+      },
+      "sd_version": {
+        "enum": [
+          "v1_5",
+          "v2",
+          "v3",
+          "SDXL_0_8",
+          "SDXL_0_9",
+          "SDXL_1_0",
+          "SDXL_LIGHTNING",
+          "PHOENIX",
+          "FLUX",
+          "FLUX_DEV",
+          "KINO_2_0"
+        ],
+        "nullable": false,
+        "type": "string"
+      },
+      "seed": {
+        "nullable": true,
+        "type": "integer"
+      },
+      "tiling": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "transparency": {
+        "enum": [
+          "disabled",
+          "foreground_only"
+        ],
+        "nullable": true,
+        "type": "string"
+      },
+      "ultra": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "unzoom": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "unzoomAmount": {
+        "nullable": true,
+        "type": "number"
+      },
+      "upscaleRatio": {
+        "nullable": true,
+        "type": "number"
+      },
+      "userElements": {
+        "items": {
+          "nullable": false,
+          "properties": {
+            "userLoraId": {
+              "nullable": true,
+              "type": "number"
+            },
+            "weight": {
+              "nullable": true,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "nullable": true,
+        "type": "array"
+      },
+      "weighting": {
+        "deprecated": true,
+        "nullable": true,
+        "type": "number"
+      },
+      "width": {
+        "default": 1024,
+        "nullable": true,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
