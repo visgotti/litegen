@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -12,6 +13,13 @@ export default defineConfig({
   plugins: [react()],
   define: {
     __LITEGEN_API_BASE__: JSON.stringify(API_BASE),
+  },
+  // Unit tests are pure helpers (no DOM), so the default node environment is
+  // enough. `include` is scoped to src/ because vitest's default glob would
+  // also pick up the Playwright *.spec.ts files under e2e*/ and run them
+  // without a browser.
+  test: {
+    include: ['src/**/*.test.ts'],
   },
   server: {
     // When VITE_PROXY_TARGET is set (e.g. in Playwright test env), proxy all
