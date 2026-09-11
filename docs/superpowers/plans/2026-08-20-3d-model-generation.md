@@ -5367,6 +5367,8 @@ Sequencing: **21 → 22 → 20 (expanded) → clean + release build → 15 → 1
 
 ### Task 21: `ModelPreview` — the full 3D inspector
 
+**Status:** ✅ DONE (2026-09-11, e7c8943)
+
 **Files:**
 - Create: `dashboard/src/components/model3d-assets.ts` (pure helpers)
 - Create: `dashboard/src/components/model3d-assets.test.ts`
@@ -5382,23 +5384,23 @@ Sequencing: **21 → 22 → 20 (expanded) → clean + release build → 15 → 1
   `<ModelViewer … onLoad? onError? autoRotate? exposure? background? />`.
 - Consumes: SDK type `Model3dAsset`.
 
-- [ ] **Step 1: Move the helpers out of `ModelViewer.tsx`.** `meshUrl`/`previewUrl`
+- [x] DONE 2026-09-11 **Step 1: Move the helpers out of `ModelViewer.tsx`.** `meshUrl`/`previewUrl`
   currently live in the component file behind two `eslint-disable
   react-refresh/only-export-components` comments. Move them into
   `model3d-assets.ts` (typed against the SDK's `Model3dAsset`, not a local
   interface) and delete the disables. Update the two importers.
-- [ ] **Step 2: Unit-test the helpers with vitest** — `assetsOf` tolerates
+- [x] DONE 2026-09-11 **Step 2: Unit-test the helpers with vitest** — `assetsOf` tolerates
   missing/`null`/non-array `metadata.assets`; `meshOf` falls back to
   `result_url`; `formatBytes` boundary values (0, 1023, 1024, 1.5 MB);
   `texturesOf` excludes mesh and preview. Watch them fail first.
-- [ ] **Step 3: Make `ModelViewer` observe `<model-viewer>`'s own events.**
+- [x] DONE 2026-09-11 **Step 3: Make `ModelViewer` observe `<model-viewer>`'s own events.**
   Attach listeners via a ref for `load`, `error`, and `progress`. On `error`,
   render the same download-link fallback the import-failure path uses — a
   404 or corrupt GLB must never leave an empty canvas. Show a thin progress bar
   driven by `event.detail.totalProgress` while loading. Accept `autoRotate`,
   `exposure`, and `background` props. Forward `onLoad` with the model's
   bounding-box dimensions from `getDimensions()`.
-- [ ] **Step 4: Build `ModelPreview`.** A viewer stage plus:
+- [x] DONE 2026-09-11 **Step 4: Build `ModelPreview`.** A viewer stage plus:
   - toolbar: auto-rotate toggle, reset camera, exposure slider (0.25–2.0),
     background (dark / light / checker), fullscreen (Fullscreen API on the
     container), copy mesh URL;
@@ -5411,10 +5413,10 @@ Sequencing: **21 → 22 → 20 (expanded) → clean + release build → 15 → 1
   - an explicit error state when `error` is set or no mesh exists (a
     completed generation without a mesh is a contract violation — say so).
   Every control gets a stable `data-testid` (Task 15 drives them).
-- [ ] **Step 5: Wire it in.** Generations expanded row and Playground Single
+- [x] DONE 2026-09-11 **Step 5: Wire it in.** Generations expanded row and Playground Single
   Mode result panel render `ModelPreview`; Playground grid tiles and gallery
   thumbs keep the compact `ModelViewer` / flat image.
-- [ ] **Step 6: Gates.** `cd dashboard && npm test && npm run build && npm run lint`
+- [x] DONE 2026-09-11 **Step 6: Gates.** `cd dashboard && npm test && npm run build && npm run lint`
   (lint must not exceed the 13-problem pre-existing baseline). Commit, and tick
   this task's boxes in the same commit.
 
