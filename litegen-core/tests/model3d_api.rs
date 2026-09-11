@@ -316,3 +316,186 @@ async fn a_failed_3d_generation_moves_its_request_log_to_failed_with_the_error()
     assert!(log.error.as_deref().is_some_and(|e| !e.is_empty()), "{:?}", log.error);
     assert_eq!(log.error.as_deref(), last["error"].as_str(), "the log carries the error the caller saw");
 }
+
+// ─── `usage` on the poll response (aipix §7: "usage.cost_usd / cost_source
+// populated on completion") ────────────────────────────────────────────────
+//
+// The contract says `usage` "carries the same cost_usd / cost_source / tokens
+// triple as video, so aipix's existing applyMarkup + usdToTokens cost path
+// works unchanged". Until Task 17D only the SUBMIT response carried it: every
+// poll — router-answered or DB-answered — hard-coded `usage: None`, so the
+// consumer's cost path saw nothing on the one response it actually reads.
+//
+// The mock 3D models are priced $0, so the assertion here is that the field is
+// PRESENT and well-formed; the derivation from a non-zero cost is unit-tested
+// in `litegen-core/src/api/handlers/mod.rs` (`model3d_usage_derivation_tests`).
+
+fn assert_usage_triple(resp: &serde_json::Value, ctx: &str) {
+    let usage = resp.get("usage").unwrap_or_else(|| panic!("{ctx}: `usage` missing: {resp}"));
+    assert!(!usage.is_null(), "{ctx}: `usage` is null: {resp}");
+    assert!(usage["cost_usd"].is_number(), "{ctx}: usage.cost_usd must be a number: {usage}");
+    assert!(usage["tokens"].is_number(), "{ctx}: usage.tokens must be a number: {usage}");
+    assert_eq!(usage["cost_source"], "estimated", "{ctx}: usage.cost_source: {usage}");
+}
+
+#[tokio::test]
+async fn a_completed_3d_poll_carries_the_usage_triple() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+
+    let resp = app.clone().oneshot(
+        Request::post("/v1/models3d/generations")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"model":"mock/mesh-3d","prompt":"a fox"}"#))
+            .unwrap(),
+    ).await.unwrap();
+    let submitted = harness::json_body(resp).await;
+    assert_usage_triple(&submitted, "submit");
+    let id = submitted["id"].as_str().unwrap().to_string();
+
+    let last = harness::poll_until_terminal(&app, &id).await;
+    assert_eq!(last["status"], "completed", "{last}");
+    assert_usage_triple(&last, "the completed poll");
+    assert_eq!(
+        last["usage"]["cost_usd"], submitted["usage"]["cost_usd"],
+        "the poll must report the same cost the submit quoted: {last}",
+    );
+}
+
+#[tokio::test]
+async fn the_db_answered_poll_after_completion_still_carries_usage() {
+    // Once a job has terminalised the router drops it, so every later poll is
+    // answered from the generation row. That path must carry `usage` too — a
+    // client that polls once more (or comes back later) still needs the cost.
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let id = harness::submit(&app, "mock/mesh-3d", "a fox").await;
+    assert_eq!(harness::poll_until_terminal(&app, &id).await["status"], "completed");
+
+    let resp = app.clone().oneshot(
+        Request::get(format!("/v1/models3d/{id}")).body(Body::empty()).unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let again = harness::json_body(resp).await;
+    assert_eq!(again["status"], "completed", "a terminal row must not be re-polled: {again}");
+    assert_usage_triple(&again, "the DB-answered poll");
+}
+
+/// Seed a terminal 3D generation row directly, so the cost is a real one.
+/// Every mock 3D model is priced $0, and `usage.cost_usd` == 0.0 would pass an
+/// "is populated" assertion whether or not the cost actually came from the row.
+async fn seed_terminal_row(db: &SqliteDatabase, id: &str, cost_usd: f64, status: &str) {
+    db.insert_generation(
+        id, None, "mock/mesh-3d", "mock", "model3d", Some("provider-job-1"),
+        cost_usd, Some(litegen::api::middleware::DEFAULT_ORG_ID), None,
+    ).await.unwrap();
+    db.update_generation_status(id, status, 100, None, None, Some(chrono::Utc::now()))
+        .await.unwrap();
+}
+
+#[tokio::test]
+async fn the_poll_reports_the_rows_real_cost_not_a_placeholder() {
+    // The value derivation, through the real router: $0.042 at $0.001/token is
+    // 42 tokens. A hard-coded or re-estimated cost would not survive this.
+    let (app, db) = harness::app_with_mock_3d().await;
+    let id = "litegen-3d-priced-row";
+    seed_terminal_row(&db, id, 0.042, "completed").await;
+
+    let polled = get_3d(&app, id).await;
+    assert_eq!(polled["status"], "completed");
+    assert_usage_triple(&polled, "a priced row");
+    assert_eq!(polled["usage"]["cost_usd"], 0.042, "{polled}");
+    assert_eq!(polled["usage"]["tokens"], 42, "$0.042 / $0.001 per token: {polled}");
+}
+
+#[tokio::test]
+async fn a_failed_3d_poll_carries_usage_too() {
+    // A failed generation was still dispatched, so the consumer needs the cost
+    // triple to reconcile (and refund) against.
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let id = harness::submit(&app, "mock/fail-3d", "anything").await;
+    let last = harness::poll_until_terminal(&app, &id).await;
+    assert_eq!(last["status"], "failed");
+    assert_usage_triple(&last, "the failed poll");
+}
+
+// ─── Cancellation (aipix §7: "PATCH /v1/generations/{id} with cancelled stops
+// an in-flight job") ───────────────────────────────────────────────────────
+//
+// `PATCH` marked the row cancelled, but the router kept the in-flight job, so
+// the very next `GET /v1/models3d/{id}` polled the provider anyway, saw
+// `Completed`, re-hosted the assets and persisted `completed` OVER the
+// cancelled row. Cancellation has to be final in both places.
+
+async fn wait_for_generation_row(db: &SqliteDatabase, id: &str) {
+    // The submit handler inserts the generation row from a spawned task, and
+    // PATCH needs the row to exist before it can cancel it.
+    for _ in 0..200 {
+        if db.get_generation(id).await.unwrap().is_some() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("the submit handler never inserted a generation row for {id}");
+}
+
+async fn cancel(app: &axum::Router, id: &str) -> (StatusCode, serde_json::Value) {
+    let resp = app.clone().oneshot(
+        Request::patch(format!("/v1/generations/{id}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"status":"cancelled"}"#))
+            .unwrap(),
+    ).await.unwrap();
+    let status = resp.status();
+    (status, harness::json_body(resp).await)
+}
+
+async fn get_3d(app: &axum::Router, id: &str) -> serde_json::Value {
+    let resp = app.clone().oneshot(
+        Request::get(format!("/v1/models3d/{id}")).body(Body::empty()).unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    harness::json_body(resp).await
+}
+
+#[tokio::test]
+async fn cancelling_an_in_flight_3d_job_survives_every_later_poll() {
+    let (app, db) = harness::app_with_mock_3d().await;
+    let id = harness::submit(&app, "mock/mesh-3d", "a fox").await;
+    wait_for_generation_row(&db, &id).await;
+
+    // One in-flight poll, so the job is genuinely mid-ramp when it is cancelled.
+    let inflight = get_3d(&app, &id).await;
+    assert!(inflight["status"] == "pending" || inflight["status"] == "processing", "{inflight}");
+
+    let (status, cancelled) = cancel(&app, &id).await;
+    assert_eq!(status, StatusCode::OK, "{cancelled}");
+    assert_eq!(cancelled["status"], "cancelled", "{cancelled}");
+
+    // The mock needs 3 polls to complete; before Task 17D these two polls drove
+    // it there, re-hosted the mesh and wrote `completed` over the cancelled row.
+    for attempt in 0..3 {
+        let polled = get_3d(&app, &id).await;
+        assert_eq!(polled["status"], "cancelled", "poll {attempt} overturned the cancel: {polled}");
+        assert!(polled.get("assets").is_none(), "poll {attempt} re-hosted assets: {polled}");
+    }
+
+    let row = db.get_generation(&id).await.unwrap().unwrap();
+    assert_eq!(row.status, GenerationStatus::Cancelled, "the row must stay cancelled");
+    assert_eq!(row.result_url, None, "no mesh may be persisted for a cancelled generation");
+    let has_assets = row.metadata.as_ref()
+        .and_then(|m| m.get("assets"))
+        .and_then(|a| a.as_array())
+        .is_some_and(|a| !a.is_empty());
+    assert!(!has_assets, "no assets may be re-hosted for a cancelled generation: {:?}", row.metadata);
+}
+
+#[tokio::test]
+async fn a_cancelled_3d_generation_reports_usage_and_no_error() {
+    let (app, db) = harness::app_with_mock_3d().await;
+    let id = harness::submit(&app, "mock/mesh-3d", "a fox").await;
+    wait_for_generation_row(&db, &id).await;
+    assert_eq!(cancel(&app, &id).await.0, StatusCode::OK);
+
+    let polled = get_3d(&app, &id).await;
+    assert_eq!(polled["status"], "cancelled");
+    assert_usage_triple(&polled, "the cancelled poll");
+}
