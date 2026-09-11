@@ -253,6 +253,12 @@ given here.
   are priced per megapixel, so a 4 MP image costs us 4× its catalog price.
 - **Dead code:** the `sd-1.6` arm in `image/stability.rs` targets an API
   discontinued 2025-07-24.
+- ✅ **Fixed 2026-09-11: an omitted duration became a fixed 5 s.**
+  `VideoGenerationRequest.duration_seconds` defaulted to 5.0 during
+  deserialization, so a model whose minimum is higher rejected every request
+  that left it out — fal/ltx-2.3 and bedrock nova-reel at 6 s. It is now
+  `Option<f64>`, validated only when the caller sends it, and resolved from
+  the model's own declared default by `resolve_duration_seconds`.
 - **Inline video bytes are dropped.** `VideoGenerationPollResult.video_data`
   is never read by `router.rs get_video_status` or the poller, which forward
   only `video_url`. Found 2026-09-11; it affects Sora today.

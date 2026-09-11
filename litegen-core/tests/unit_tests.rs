@@ -356,8 +356,19 @@ mod tests {
         let req: VideoGenerationRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.base.prompt, "a flying car");
         assert_eq!(req.base.model, "runway/gen-3");
-        assert_eq!(req.duration_seconds, 10.0);
+        assert_eq!(req.duration_seconds, Some(10.0));
         assert_eq!(req.aspect_ratio.unwrap(), "16:9");
+    }
+
+    /// An omitted duration stays `None` on the wire type: it means "the model's
+    /// own default", which `resolve_duration_seconds` supplies. Deserializing it
+    /// to a fixed 5s made every model with a higher minimum unusable without an
+    /// explicit duration.
+    #[test]
+    fn test_video_request_without_duration_stays_none() {
+        let json = r#"{ "prompt": "a flying car", "model": "runway/gen4.5" }"#;
+        let req: VideoGenerationRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.duration_seconds, None);
     }
 
     #[test]
