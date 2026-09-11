@@ -14,6 +14,11 @@ export default function ResultTile3D({ tile, onRerun }: Props) {
   const meshAsset = meshOf(assets, tile.url);
   const mesh = meshAsset?.url;
   const poster = previewOf(assets)?.url;
+  // A `done` job without a mesh violates the provider contract (the live
+  // fan-out already converts this to an error tile before it gets here — see
+  // useFanOut — but the component stays honest on its own for any other
+  // caller, e.g. a story or a future one that skips that conversion).
+  const doneWithoutMesh = tile.status === 'done' && !mesh;
   return (
     <div className="pg-tile" data-testid={`pg-tile-${tile.modelId}`}>
       <div className="pg-tile-head">
@@ -28,13 +33,13 @@ export default function ResultTile3D({ tile, onRerun }: Props) {
           <span className="pg-tile-status" data-testid={`pg-tile-progress-${tile.modelId}`}>
             ⟳ generating… {tile.progress ?? 0}%
           </span>
-        ) : tile.status === 'error' ? (
-          <span className="pg-tile-error" data-testid={`pg-tile-error-${tile.modelId}`}>⚠ {tile.error}</span>
+        ) : tile.status === 'error' || doneWithoutMesh ? (
+          <span className="pg-tile-error" data-testid={`pg-tile-error-${tile.modelId}`}>
+            ⚠ {doneWithoutMesh ? 'completed without a mesh asset' : tile.error}
+          </span>
         ) : mesh ? (
           <ModelViewer src={mesh} poster={poster} format={meshAsset?.format} testId={`pg-tile-mesh-${tile.modelId}`} style={{ height: 240 }} />
-        ) : (
-          <span className="pg-tile-status">no mesh</span>
-        )}
+        ) : null}
       </div>
       <div className="pg-tile-meta">
         {tile.costUsd != null && <span>${tile.costUsd.toFixed(3)}</span>}

@@ -7,6 +7,7 @@ import {
   loadEventMatches,
   retrySrc,
   validAssets,
+  classifyViewerError,
   describeViewerError,
   formatBytes,
   formatDimensions,
@@ -265,6 +266,48 @@ describe('describeViewerError', () => {
   it('has a generic message for anything else', () => {
     expect(describeViewerError(undefined)).toMatch(/could not render/i);
     expect(describeViewerError({ type: 'something-new' })).toMatch(/could not render/i);
+  });
+
+  it('explains a parse failure, overriding the load-failure text', () => {
+    expect(describeViewerError({ type: 'loadfailure' }, 'parse')).toMatch(/isn't a valid gltf/i);
+  });
+});
+
+describe('classifyViewerError', () => {
+  // Both a download failure and a parse failure dispatch the exact same
+  // `detail` in the installed model-viewer 4.3.1 — a generic `loadfailure`
+  // with no way to tell them apart (see the doc comment on the function and
+  // the Task 17B report for the real-browser evidence). responseStatus, read
+  // by the caller from PerformanceResourceTiming for the same request, is
+  // the only signal that discriminates.
+  it('is a download failure when no response was ever observed (404, network error, or no timing entry)', () => {
+    expect(classifyViewerError({ type: 'loadfailure' }, null)).toBe('load');
+  });
+
+  it('is a download failure for a non-2xx/3xx status', () => {
+    expect(classifyViewerError({ type: 'loadfailure' }, 404)).toBe('load');
+    expect(classifyViewerError({ type: 'loadfailure' }, 500)).toBe('load');
+  });
+
+  it('is a download failure for an opaque cross-origin status (0)', () => {
+    // The common case for object storage that does not send
+    // Timing-Allow-Origin: the resource loaded fine, but we cannot tell, so
+    // this must default to the safe choice (Retry stays available).
+    expect(classifyViewerError({ type: 'loadfailure' }, 0)).toBe('load');
+  });
+
+  it('is a parse failure when the bytes were received (2xx/3xx) but the load still failed', () => {
+    expect(classifyViewerError({ type: 'loadfailure' }, 200)).toBe('parse');
+    expect(classifyViewerError({ type: 'loadfailure' }, 304)).toBe('parse');
+  });
+
+  it('is never a parse failure for an unknown or unrelated detail.type, even with a successful status', () => {
+    // e.g. webglcontextlost, which can fire long after a successful load and
+    // would otherwise pick up that load's own (unrelated) 200 timing entry.
+    expect(classifyViewerError({ type: 'webglcontextlost' }, 200)).toBe('load');
+    expect(classifyViewerError({ type: 'something-new' }, 200)).toBe('load');
+    expect(classifyViewerError(undefined, 200)).toBe('load');
+    expect(classifyViewerError(null, 200)).toBe('load');
   });
 });
 
