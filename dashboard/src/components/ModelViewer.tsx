@@ -3,7 +3,7 @@ import React, { useEffect, useEffectEvent, useImperativeHandle, useRef, useState
 // below, but it makes tsc check every element API used here (getDimensions,
 // resetTurntableRotation, cameraOrbit, …) against the installed version.
 import type { ModelViewerElement } from '@google/model-viewer';
-import { describeViewerError, type Dimensions } from './model3d-assets';
+import { canPreviewMesh, describeViewerError, loadEventMatches, type Dimensions } from './model3d-assets';
 
 export type ViewerBackground = 'dark' | 'light' | 'checker';
 
@@ -41,14 +41,68 @@ interface LoadState {
 
 const loadingState = (src: string): LoadState => ({ src, status: 'loading', progress: 0, message: '' });
 
-/** The one failure presentation, shared by "the viewer bundle failed to
- *  import" and "the element failed to load this mesh": the mesh is still
- *  downloadable, so a failure degrades to a link rather than an empty box. */
-function MeshFallback({ src, message, testId }: { src: string; message: string; testId?: string }) {
+const IMPORT_FAILED_MESSAGE = 'The 3D viewer could not be loaded in this browser.';
+const WEBGL_MESSAGE = "WebGL 2 is unavailable in this browser, so the mesh can't be previewed — download it instead.";
+
+let webgl2Support: boolean | undefined;
+
+/**
+ * Whether this browser can create a WebGL 2 context, probed once per page.
+ * Needed because model-viewer 4.3.1 catches a failed WebGLRenderer
+ * construction with only a console.warn (Renderer.js), then still parses the
+ * model and fires `load` — a blank box reported as success. WebGL 2
+ * specifically: the bundled three.js (0.183) dropped WebGL 1, so a WebGL 1
+ * context would pass a looser probe and still render nothing.
+ */
+function hasWebGL2(): boolean {
+  if (webgl2Support === undefined) {
+    try {
+      const gl = document.createElement('canvas').getContext('webgl2');
+      webgl2Support = gl != null;
+      // Release the probe context now; browsers cap live contexts per page.
+      gl?.getExtension('WEBGL_lose_context')?.loseContext();
+    } catch {
+      webgl2Support = false;
+    }
+  }
+  return webgl2Support;
+}
+
+/**
+ * model-viewer caches a FAILED load under its URL as an empty placeholder
+ * (4.3.1 CachingGLTFLoader.preload's `.catch`), and no public API evicts it —
+ * so remounting for the same src would fail again instantly. Retry evicts it
+ * first. `delete()` is a public static on that class (typed, so an upgrade
+ * that removes it fails the build); it drops the entry synchronously, then
+ * rejects disposing the empty placeholder, which is swallowed.
+ */
+async function evictCachedLoad(url: string): Promise<void> {
+  try {
+    const { CachingGLTFLoader } = await import('@google/model-viewer/lib/three-components/CachingGLTFLoader.js');
+    CachingGLTFLoader.delete(url).catch(() => {});
+  } catch {
+    // Retry still remounts; at worst it fails the same way again.
+  }
+}
+
+type FallbackReason = 'import' | 'webgl' | 'format' | 'load';
+
+/** The one failure presentation for every way the viewer can't show a mesh:
+ *  the mesh is still downloadable, so it degrades to a link rather than an
+ *  empty box. Retry is offered only for a load failure — the one case a
+ *  second attempt can fix (a flaky network, a lost GL context). */
+function MeshFallback({ src, message, reason, testId, onRetry }: {
+  src: string;
+  message: string;
+  reason: FallbackReason;
+  testId?: string;
+  onRetry?: () => void;
+}) {
   return (
     <div
       role="alert"
       data-testid={testId ? `${testId}-fallback` : undefined}
+      data-reason={reason}
       style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8,
         minHeight: 160, padding: 16, textAlign: 'center', boxSizing: 'border-box', width: '100%',
@@ -56,9 +110,32 @@ function MeshFallback({ src, message, testId }: { src: string; message: string; 
       }}
     >
       <span>{message}</span>
-      <a href={src} download data-testid={testId ? `${testId}-fallback-link` : undefined} style={{ color: '#58a6ff' }}>
-        Download mesh
-      </a>
+      <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+        {/* target=_blank: the URL is absolute and usually cross-origin, where
+            `download` is ignored — and this is exactly the broken-mesh case,
+            so it must not navigate the dashboard away. */}
+        <a
+          href={src}
+          download
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid={testId ? `${testId}-fallback-link` : undefined}
+          style={{ color: '#58a6ff' }}
+        >
+          Download mesh
+        </a>
+        {onRetry && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ padding: '4px 10px', fontSize: 12 }}
+            data-testid={testId ? `${testId}-retry` : undefined}
+            onClick={onRetry}
+          >
+            Retry
+          </button>
+        )}
+      </span>
     </div>
   );
 }
@@ -79,8 +156,10 @@ export default function ModelViewer({
   autoRotate = true,
   exposure = 1,
   background = 'dark',
+  format,
   onLoad,
   onError,
+  onRetry,
   ref,
 }: {
   src: string;
@@ -90,8 +169,15 @@ export default function ModelViewer({
   autoRotate?: boolean;
   exposure?: number;
   background?: ViewerBackground;
+  /** Mesh format, when known. A non-glTF format is never handed to the
+   *  element (see `canPreviewMesh`). */
+  format?: string;
   onLoad?: (info: ModelViewerLoadInfo) => void;
+  /** Fired for every failure that leaves no rendered mesh: bundle import,
+   *  missing WebGL 2, and the element's own load/runtime errors. */
   onError?: (message: string) => void;
+  /** Fired when the user retries a failed load; the viewer is loading again. */
+  onRetry?: () => void;
   ref?: React.Ref<ModelViewerHandle>;
 }) {
   const [ready, setReady] = useState(() => !!customElements.get('model-viewer'));
@@ -101,9 +187,25 @@ export default function ModelViewer({
   // as "loading" immediately without a reset effect.
   const [load, setLoad] = useState<LoadState>(() => loadingState(src));
   const current = load.src === src ? load : loadingState(src);
-  const showElement = ready && current.status !== 'error';
 
-  const handleLoad = useEffectEvent((el: ModelViewerElement) => {
+  // Conditions known before anything is fetched. Either one means the element
+  // is never mounted and the ~1MB bundle is never imported.
+  const blocker: { reason: 'format' | 'webgl'; message: string } | null =
+    !canPreviewMesh(format ?? '')
+      ? { reason: 'format', message: `3D preview isn't available for ${(format ?? '').toUpperCase()} files — download the mesh.` }
+      : !hasWebGL2()
+        ? { reason: 'webgl', message: WEBGL_MESSAGE }
+        : null;
+  const blocked = blocker !== null;
+  const webglBlocked = blocker?.reason === 'webgl';
+  const showElement = ready && !blocked && current.status !== 'error';
+
+  const reportError = useEffectEvent((message: string) => onError?.(message));
+
+  const handleLoad = useEffectEvent((el: ModelViewerElement, detail: unknown) => {
+    // A load for a src that has since been replaced (see loadEventMatches)
+    // must not mark the new one loaded with the old one's dimensions.
+    if (!loadEventMatches(detail, src)) return;
     let dimensions: Dimensions | null = null;
     try {
       const d = el.getDimensions();
@@ -123,6 +225,9 @@ export default function ModelViewer({
 
   const handleProgress = useEffectEvent((progress: number) => {
     // `progress` keeps firing around completion; never regress a settled state.
+    // Unlike `load`, its detail carries no url in 4.3.1 ({totalProgress,
+    // reason}), so it can't be filtered by src — but with stale loads ignored
+    // above, a new src stays "loading" and its progress is no longer dropped.
     setLoad(prev => (prev.src === src && prev.status !== 'loading'
       ? prev
       : { src, status: 'loading', progress, message: '' }));
@@ -134,7 +239,7 @@ export default function ModelViewer({
   useEffect(() => {
     const el = elRef.current;
     if (!showElement || !el) return;
-    const onLoadEvent = () => handleLoad(el);
+    const onLoadEvent = (e?: Event) => handleLoad(el, (e as CustomEvent | undefined)?.detail);
     const onErrorEvent = (e: Event) => handleError((e as CustomEvent).detail);
     const onProgressEvent = (e: Event) =>
       handleProgress(Number((e as CustomEvent<{ totalProgress?: number }>).detail?.totalProgress) || 0);
@@ -166,19 +271,40 @@ export default function ModelViewer({
   }), []);
 
   useEffect(() => {
-    if (ready) return;
+    if (ready || blocked) return;
     let cancelled = false;
     import('@google/model-viewer')
       .then(() => { if (!cancelled) setReady(true); })
-      .catch(() => { if (!cancelled) setFailed(true); });
+      .catch(() => {
+        // Most often a stale chunk hash after a redeploy. Reported, not just
+        // rendered, so an enclosing inspector leaves its "loading" state.
+        if (cancelled) return;
+        setFailed(true);
+        reportError(IMPORT_FAILED_MESSAGE);
+      });
     return () => { cancelled = true; };
-  }, [ready]);
+  }, [ready, blocked]);
 
+  useEffect(() => {
+    // Re-reported per src so a caller keying its state by mesh URL sees the
+    // failure for each new mesh too.
+    if (webglBlocked) reportError(WEBGL_MESSAGE);
+  }, [webglBlocked, src]);
+
+  const retry = async () => {
+    await evictCachedLoad(src);
+    setLoad(loadingState(src));
+    onRetry?.();
+  };
+
+  if (blocker) {
+    return <MeshFallback src={src} testId={testId} reason={blocker.reason} message={blocker.message} />;
+  }
   if (failed) {
-    return <MeshFallback src={src} testId={testId} message="The 3D viewer could not be loaded in this browser." />;
+    return <MeshFallback src={src} testId={testId} reason="import" message={IMPORT_FAILED_MESSAGE} />;
   }
   if (current.status === 'error') {
-    return <MeshFallback src={src} testId={testId} message={current.message} />;
+    return <MeshFallback src={src} testId={testId} reason="load" message={current.message} onRetry={retry} />;
   }
   if (!ready) {
     return <span data-testid={testId ? `${testId}-loading` : undefined} style={{ color: '#8b949e' }}>loading viewer…</span>;

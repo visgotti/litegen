@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { Generation, Model3dAsset } from '@litegen/sdk';
 import {
   assetsOf,
+  canPreviewMesh,
   copyToClipboard,
+  loadEventMatches,
+  validAssets,
   describeViewerError,
   formatBytes,
   formatDimensions,
@@ -70,6 +73,64 @@ describe('assetsOf', () => {
 
   it('never invents a mesh for a non-3D row', () => {
     expect(assetsOf(gen({ media_type: 'image', result_url: 'https://cdn.example/a.png' }))).toEqual([]);
+  });
+
+  it('drops an entry with no format rather than letting the renderer throw on it', () => {
+    const noFormat = { kind: 'preview', url: 'https://cdn.example/p.png' };
+    expect(assetsOf(gen({ metadata: { assets: [MESH, noFormat] } }))).toEqual([MESH]);
+  });
+});
+
+describe('validAssets', () => {
+  it('keeps well-formed assets', () => {
+    expect(validAssets([MESH, PREVIEW, TEXTURE])).toEqual([MESH, PREVIEW, TEXTURE]);
+  });
+
+  it.each([
+    ['no format', { kind: 'preview', url: 'https://x/p.png' }],
+    ['numeric format', { kind: 'preview', url: 'https://x/p.png', format: 7 }],
+    ['unknown kind', { kind: 'skeleton', url: 'https://x/s.bin', format: 'bin' }],
+    ['numeric url', { kind: 'mesh', url: 42, format: 'glb' }],
+    ['empty url', { kind: 'mesh', url: '', format: 'glb' }],
+    ['null', null],
+    ['a string', 'https://x/m.glb'],
+  ])('drops an entry with %s', (_label, entry) => {
+    expect(validAssets([entry, MESH])).toEqual([MESH]);
+  });
+
+  it.each([undefined, null, {}, 'mesh.glb', 3])('is empty for non-array input %s', raw => {
+    expect(validAssets(raw)).toEqual([]);
+  });
+});
+
+describe('canPreviewMesh', () => {
+  it.each(['glb', 'GLB', 'gltf', 'GlTf'])('%s renders in <model-viewer>', f => {
+    expect(canPreviewMesh(f)).toBe(true);
+  });
+
+  it.each(['obj', 'fbx', 'usdz', 'OBJ'])('%s does not (model-viewer is glTF-only)', f => {
+    expect(canPreviewMesh(f)).toBe(false);
+  });
+
+  it('attempts an unknown (empty) format and lets the viewer decide', () => {
+    expect(canPreviewMesh('')).toBe(true);
+  });
+});
+
+describe('loadEventMatches', () => {
+  const SRC = 'https://cdn.example/new.glb';
+
+  it('accepts the load for the current src', () => {
+    expect(loadEventMatches({ url: SRC }, SRC)).toBe(true);
+  });
+
+  it('rejects a stale load for a src that has since been replaced', () => {
+    expect(loadEventMatches({ url: 'https://cdn.example/old.glb' }, SRC)).toBe(false);
+  });
+
+  it('accepts a detail without a url rather than never settling', () => {
+    expect(loadEventMatches(undefined, SRC)).toBe(true);
+    expect(loadEventMatches({}, SRC)).toBe(true);
   });
 });
 
