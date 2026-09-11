@@ -118,7 +118,7 @@ video   seed             seed          10  bedrock/amazon.nova-reel-v1:1
 | `style` | String enum | enum + max_length | 11 | validator: **none** — no case sends `req.style`. provider: `recraft::tests::generates_recraftv3_image` (`body["style"]=="digital_illustration"`); `openai::tests::generates_dalle3_image_b64_json` proves the *absence* case (`style` omitted for dall-e-3). conformance: `ideogram_style_values_match_the_documented_enum`. | 🟡 |
 | `negative_prompt` | String | max_length | 22 | validator: **none**. provider: `stability::tests::generates_sd3_large_via_v2_multipart` (asserts the multipart body contains the negative-prompt text, not a strict field-name+value pair). conformance: n/a. | 🟡 |
 | `strength` | Float | range | 3 | validator: **none** — no `strength_out_of_range` case exists (only `guidance_scale` is exercised for the Float kind). provider: strong — `stability::tests::image_to_image_sends_mode_image_to_image`, `strength_is_not_sent_for_text_to_image`, `image_to_image_defaults_strength_when_omitted` all assert presence/absence of the outbound `strength` multipart field. conformance: n/a. | 🟡 |
-| `steps` | Int | range | 13 | validator: `unsupported_param_strict_rejects` / `unsupported_param_lax_drops` prove the shared drop mechanism using `steps` as the literal example — this is genuine, param-named coverage, unlike the other rows above. No test exercises the *range* branch (`steps` out of `[min,max]`) specifically. provider: **none** — `stability.rs` sets `body["steps"]` (line 466) with zero assertion anywhere. conformance: n/a. | 🟡 |
+| `steps` | Int | range | 13 | validator: `unsupported_param_strict_rejects` / `unsupported_param_lax_drops` prove the shared drop mechanism using `steps` as the literal example — this is genuine, param-named coverage, unlike the other rows above. No test exercises the *range* branch (`steps` out of `[min,max]`) specifically. provider: `fal::tests::generates_flux_dev_image` (`body["num_inference_steps"]==28` — **note the outbound rename `steps` → `num_inference_steps`**), `replicate::tests::generates_flux_dev_via_polling` (`body["input"]["num_inference_steps"]==28`) and `replicate::tests::guidance_and_steps_use_each_models_own_input_names` (each model's own input name: flux-dev `num_inference_steps`, flux-pro and SD3 `steps`, fallback `num_inference_steps`). Not universal: `stability.rs` sets `body["steps"]` (line 466) and the multipart `steps` field (line 375) with zero assertion. conformance: n/a. | 🟡 |
 
 ### Video
 
@@ -140,6 +140,10 @@ No vendor 3D adapters exist yet (Meshy/Tripo3D/Stability/Rodin are
 deliberately deferred — see plan amendment 2026-08-20). Every cell in the
 vendor columns below is transcribed from the design spec §9 vendor tables and
 has **never been exercised against a live API or even a wiremock stub of one**.
+Cells tagged `(unconfirmed)` are the exception in the other direction: they do
+**not** appear in §9 at all and were inferred when this table was written, so
+treat them as guesses to verify against vendor docs, not as spec-sourced field
+names.
 Do not upgrade a cell to ✅ on documentation alone — that is exactly the
 mistake this document exists to prevent.
 
@@ -147,12 +151,12 @@ mistake this document exists to prevent.
 |---|---|---|---|---|---|---|---|
 | `prompt` | PromptSpec | required, length | `prompt` | `prompt` | — (image only) | — | ⬜ |
 | `output_format` | String enum | enum_values | `model_urls.<fmt>` (response-side) | `quad`→FBX else GLB | fixed GLB | `format` | ⬜ |
-| `texture` | Bool | supported-or-drop | `should_texture` | `texture` | — | `material` | ⬜ |
+| `texture` | Bool | supported-or-drop | `should_texture` | `texture` (unconfirmed) | — | `material` | ⬜ |
 | `pbr` | Bool | supported-or-drop | (texture_* maps) | `pbr` | — | `material=PBR` | ⬜ |
 | `target_polycount` | Int 100–300000 | range | `target_polycount` | `face_limit` | `vertex_count` | `quality` | ⬜ |
 | `symmetry` | String enum | enum off/auto/on | `symmetry_mode` | — | — | — | ⬜ |
 | `topology` | String enum | enum triangle/quad | `topology` | `quad` (bool) | `remesh` | `mesh_mode` | ⬜ |
-| `rig` | Bool | supported-or-drop | (separate endpoint) | `rig` (unconfirmed) | — | — | ⬜ |
+| `rig` | Bool | supported-or-drop | (separate endpoint — unconfirmed) | `rig` (unconfirmed) | — | — | ⬜ |
 | `seed` | Seed | range | — | `model_seed` | `seed` | — | ⬜ |
 | ref role `init` | RefInputSpec | role declared | `image_url` (b64 ok) | `file_token`\|url | multipart `image` | multipart `images` | ⬜ |
 | ref roles `view-*` | RefInputSpec | role declared | multi-image-to-3d | multiview-to-model | — | `condition_mode` | ⬜ |
@@ -160,8 +164,8 @@ mistake this document exists to prevent.
 What today's tests DO prove about the 3D family — none of it belongs in the
 vendor table above, because it is mock-provider coverage, not vendor-mapping
 coverage:
-- `litegen-core/tests/model3d_validation.rs` (Task 8) exercises `validate_model3d` strict-reject/lax-drop for all 7 params against the mock catalog.
-- `litegen-core/src/providers/model3d/mock.rs` (Task 5, 10/10 tests) and `litegen-core/tests/model3d_api.rs` (Task 10) exercise the full request→response→poll lifecycle end to end against the mock provider — proving the *litegen-internal* plumbing works, not that any vendor mapping is right.
+- `litegen-core/tests/model3d_validation.rs` (Task 8) exercises `validate_model3d` against **synthetic `ModelSchema`s built in the test file — not the mock catalog (`mock.yaml`)**. Pass-through in strict mode is proven for all 7 params (`supported_params_pass_through_untouched`), but lax-drop is proven for 4 of them only (`target_polycount`, `pbr`, `rig`, `topology`) and strict-reject for `target_polycount` alone. The remaining coverage is value-level, not per-param: polycount range, `topology` enum mismatch, multiview ref roles, required prompt. The deferred Task 8/9 follow-up — drop/reject proven per param against the real catalog — is still **open**.
+- `litegen-core/src/providers/model3d/mock.rs` (Task 5 — 5 tests: progress ramp, one-mesh terminal poll, per-prompt distinctness, the `fail` model, unknown job id) plus its GLB writer `litegen-core/src/providers/model3d/glb.rs` (5 more, on the container/mesh JSON/determinism — an earlier revision of this line credited all 10 to `mock.rs`) and `litegen-core/tests/model3d_api.rs` (Task 10) exercise the full request→response→poll lifecycle end to end against the mock provider — proving the *litegen-internal* plumbing works, not that any vendor mapping is right.
 - `litegen-core/tests/catalog_conformance.rs`'s new `model3d_*` tests (Task 19, below) assert the family's structural contract (mode-vs-ref-role coherence, enum vocabularies, no image/video-only params, sane polycount bounds) across every advertised `model3d` row.
 
 None of that substitutes for a real vendor test. The vendor table stays all

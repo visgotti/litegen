@@ -4444,7 +4444,7 @@ git push origin master
 
 ### Task 15: Playwright coverage for the 3D surfaces
 
-**Status:** ✅ DONE (2026-09-11, 760918e + tick a1e8122) — task review clean; `dashboard/e2e/model3d.spec.ts`, 7 tests green against the release binary (also 21/21 at `--repeat-each=3`); full default suite 10/10; no component edits needed. Committed locally, not pushed (user's choice for this branch).
+**Status:** ✅ DONE (2026-09-11, 760918e + tick a1e8122) — task review clean; `dashboard/e2e/model3d.spec.ts`, 7 tests green against the release binary (also 21/21 at `--repeat-each=3`); full default suite 10/10; no component edits needed. Committed on the shared branch `deploy/litegen-visgotti-instance` and **pushed** — a concurrent session pushed the branch, so 760918e is on `origin/deploy/litegen-visgotti-instance` (origin was at 3450a55 when this was verified on 2026-09-11, which contains every 3D commit through 2fed306). Do not assume this branch is local-only: check `git log origin/deploy/litegen-visgotti-instance` before saying what is or isn't published.
 
 **Files:**
 - Create: `dashboard/tests/model3d.spec.ts` (match the existing spec directory — check `dashboard/playwright.config.ts` for `testDir`)
@@ -4543,7 +4543,7 @@ Expected on first run: failures pointing at missing test ids or a not-yet-runnin
 Run: `cd dashboard && npx playwright test 2>&1 | tail -20`
 Expected: no regressions in the existing specs.
 
-- [x] DONE 2026-09-11 (760918e; local commit on `deploy/litegen-visgotti-instance`, not pushed — user's choice) **Step 4: Commit**
+- [x] DONE 2026-09-11 (760918e on the shared branch `deploy/litegen-visgotti-instance`; pushed to `origin` by a concurrent session — verified 2026-09-11 with origin at 3450a55) **Step 4: Commit**
 
 ```bash
 git add dashboard/tests/model3d.spec.ts dashboard/src/playground/
@@ -4668,13 +4668,17 @@ reaches — none in 3D code. aipix §7 checklist: **11 of 13 pass**; items 8
 (`PATCH …/cancelled` is overturned by the next `GET /v1/models3d/{id}`, which
 polls the router's in-memory job and then persists `completed` over the
 cancelled row) FAIL and are written up in
-`.superpowers/sdd/2026-08-20-3d-model-generation/task-17-report.md`. All commits
-are local on `deploy/litegen-visgotti-instance`, unpushed (user's choice).
+`.superpowers/sdd/2026-08-20-3d-model-generation/task-17-report.md`. The work
+lives on `deploy/litegen-visgotti-instance`, a branch **shared with a concurrent
+session that pushes it**: as of 2026-09-11 `origin` was at 3450a55, which
+carries every 3D commit through 2fed306; only the newest commits are still
+local. Verify with `git log origin/deploy/litegen-visgotti-instance` rather than
+assuming anything here is unpublished.
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-08-19-3d-model-generation-design.md` (record the contract reconciliation)
 - Modify: `docs/superpowers/plans/2026-08-20-3d-model-generation.md` (this file — mark every task done)
-- Modify: `README.md`, `litegen.example.yaml` (if either enumerates supported modalities)
+- Modify: `README.md`, `litegen.example.yaml` (if either enumerates supported modalities) — ✅ `README.md` DONE 2026-09-11 (final-review finding F33: the tagline, the Unified API bullet, the source tree and the provider table all said image+video only). It now names the `model3d` family, documents `/v1/models3d/{generations,cost,{id}}` with the async submit→poll flow and the exactly-one-mesh rule, and states plainly that no vendor adapter ships yet (mock providers only; Meshy/Tripo3D/Stability/Rodin deferred).
 
 - [x] DONE 2026-09-11 (gate list per the "Amended acceptance" section below and the controller's final ruling; results in this task's Status line — release build + Playwright skipped for disk) **Step 1: Run every gate**
 

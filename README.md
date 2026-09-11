@@ -2,13 +2,13 @@
 
 # LiteGen
 
-> The universal proxy for AI image and video generation. Like LiteLLM, but for multimedia.
+> The universal proxy for AI image, video, and 3D-model generation. Like LiteLLM, but for multimedia.
 
-LiteGen provides a unified API gateway for all major image and video generation providers. Route requests across OpenAI DALL-E, Stability AI, Replicate, Google Imagen, Fal.ai, Runway, Luma, and more — with automatic fallback, weighted load balancing, caching, cost tracking, and a real-time dashboard.
+LiteGen provides a unified API gateway for all major image and video generation providers, plus a third media family — `model3d` (text/image → mesh). Route requests across OpenAI DALL-E, Stability AI, Replicate, Google Imagen, Fal.ai, Runway, Luma, and more — with automatic fallback, weighted load balancing, caching, cost tracking, and a real-time dashboard.
 
 ## Features
 
-- **Unified API** — OpenAI-compatible REST endpoints for image & video generation
+- **Unified API** — OpenAI-compatible REST endpoints for image, video & 3D-model generation (`/v1/images/*`, `/v1/videos/*`, [`/v1/models3d/*`](#generate-3d-model))
 - **10+ Providers** — OpenAI, Stability, Replicate, Google, Fal, Runway, Luma (more coming)
 - **Smart Routing** — Fallback chains, weighted round-robin, lowest-cost, lowest-latency
 - **Caching** — In-memory cache with configurable TTL to avoid duplicate generations
@@ -138,6 +138,37 @@ curl -X POST http://localhost:4000/v1/videos/generations \
   }'
 ```
 
+### Generate 3D Model
+
+3D generation is **always async**: the `POST` returns a job (`status: "pending"`, `progress: 0`) and the
+client polls `GET /v1/models3d/{id}` until a terminal status. A completed generation carries **exactly
+one `mesh` asset** — plus optional `preview`/`texture` assets — and every asset `url` is absolute.
+
+```bash
+# Submit → {"id": "litegen-3d-<uuid>", "status": "pending", "progress": 0, ...}
+curl -X POST http://localhost:4000/v1/models3d/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "a low-poly fox",
+    "model": "mock/mesh-3d",
+    "target_polycount": 20000
+  }'
+
+# Poll until status is completed / failed / cancelled
+curl http://localhost:4000/v1/models3d/litegen-3d-<uuid>
+
+# Estimate cost without generating
+curl -X POST http://localhost:4000/v1/models3d/cost \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "a low-poly fox", "model": "mock/mesh-3d"}'
+```
+
+> **No vendor 3D adapter ships yet.** The family is wired end to end — schema validation, the async
+> job + background poller, asset re-hosting into litegen's storage, the dashboard's mesh viewer, and the
+> TypeScript SDK's `client.models3d` — but the only 3D providers today are the built-in mocks
+> (`mock/mesh-3d`, `mock/all-params-3d`, `mock/fail-3d`), which emit a real glTF 2.0 binary cube.
+> Meshy, Tripo3D, Stability 3D and Rodin are deliberately deferred.
+
 ### List Models
 ```bash
 curl http://localhost:4000/v1/models
@@ -228,7 +259,8 @@ litegen/
 │   │   ├── db/            # SQLite/Postgres persistence
 │   │   ├── providers/     # Provider implementations
 │   │   │   ├── image/     # OpenAI, Stability, Replicate, Google, Fal, Mock
-│   │   │   └── video/     # OpenAI (Sora), Fal, Replicate, Runway, Luma, Mock
+│   │   │   ├── video/     # OpenAI (Sora), Fal, Replicate, Runway, Luma, Mock
+│   │   │   └── model3d/   # Mock only (no vendor adapter yet)
 │   │   ├── proxy/         # Router, registry, cache
 │   │   └── types/         # Shared types + OpenAPI schemas
 │   ├── migrations/        # SQL migrations
@@ -259,6 +291,10 @@ modality automatically.
 
 **Legend:** ✅ supported in litegen · 🔜 vendor offers a public API for this modality but litegen
 hasn't wired it yet (see [Roadmap: missing providers](#roadmap--missing-providers)) · — no public API.
+
+**3D (`model3d`):** no vendor is wired for 3D yet — the family runs on the built-in mock providers
+only (see [Generate 3D Model](#generate-3d-model)). Meshy, Tripo3D, Stability 3D and Rodin are
+deferred.
 
 ## Roadmap — Missing Providers
 
