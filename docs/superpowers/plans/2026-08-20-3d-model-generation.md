@@ -35,7 +35,7 @@
 | `litegen-core/src/providers/model3d/mock.rs` | `MockModel3dProvider` — progress ramp, real GLB bytes, `mock/fail-3d` |
 | `dashboard/src/components/ModelViewer.tsx` | Lazy-loading `<model-viewer>` wrapper used by every 3D surface |
 | `dashboard/src/playground/ResultTile3D.tsx` | Playground tile rendering a mesh instead of an image |
-| `dashboard/tests/model3d.spec.ts` | Playwright coverage for the gallery + Playground 3D paths |
+| `dashboard/e2e/model3d.spec.ts` | Playwright coverage for the gallery + Playground 3D paths (the plan first said `dashboard/tests/`, which does not exist — see "Correction to Task 15") |
 
 **Modify** — `capabilities/schema.rs`, `capabilities/loader.rs`, `types/mod.rs`, `providers/mod.rs`, `proxy/{registry,router,poller,storage}.rs`, `api/handlers/mod.rs`, `api/middleware/validator.rs`, `api/openapi.rs`, `config/mod.rs`, `db/{trait_def,sqlite,postgres}.rs`, `models/mock.yaml`, `sdks/typescript/src/{polling,client,index}.ts`, `dashboard/src/pages/{Generations,Models}.tsx`, `dashboard/src/components/{ModelDetail,TracePanel}.tsx`, `dashboard/src/playground/{types.ts,useFanOut.ts,SingleMode.tsx,ResultGrid.tsx}`, `apps/landing/scripts/derive-{models,capabilities}.mjs`.
 
@@ -662,7 +662,7 @@ git push origin master
 
 ### Task 4: `glb.rs` — a real glTF 2.0 binary writer
 
-**Status:** ✅ DONE (2026-08-27, 80099ce + ad56a1f) — task review clean
+**Status:** ✅ DONE (2026-08-27, 80099ce + fix ad56a1f) — review clean after 1 fix round (ad56a1f dropped the false equal-length assertion — serde_json's shortest-decimal output makes GLB length prompt-dependent — and added the POSITION min/max assertions). Lint follow-up in Task 17's 2fed306: `pad_to_4` now uses `!len.is_multiple_of(4)`.
 
 **Files:**
 - Create: `litegen-core/src/providers/model3d/glb.rs` (replacing the Task 3 placeholder)
@@ -1918,7 +1918,7 @@ git push origin master
 
 ### Task 8: `validate_model3d` + the `ValidatedModel3d` extractor
 
-**Status:** ✅ DONE (2026-08-27, 9cecdaa) — task review clean
+**Status:** ✅ DONE (2026-08-27, 9cecdaa) — task review clean. Lint follow-up in Task 17's 2fed306: `tests/model3d_validation.rs` glob-imported both `capabilities::*` and `types::*`, which each export a `MediaType` and a `ModelPricing`, so both names were ambiguous under rustc's future-incompat `ambiguous_glob_imports`; the capabilities pair is now imported explicitly.
 
 **Files:**
 - Modify: `litegen-core/src/api/middleware/validator.rs`
@@ -2710,7 +2710,7 @@ git push origin master
 
 ### Task 10: API handlers, routes, per-app storage, and metadata persistence
 
-**Status:** ✅ DONE (2026-08-27, 85641e5 + af005d0) — task review clean
+**Status:** ✅ DONE (2026-08-27, 85641e5 + fix af005d0) — review clean after 1 fix round (af005d0: `completed` without a mesh asset terminalises the row as `failed` instead of forwarding a completion the caller cannot use — ruling R21)
 
 **Files:**
 - Modify: `litegen-core/src/api/handlers/mod.rs` — `generate_3d`, `estimate_3d_cost`, `get_3d_status`, `resolve_app_model3d_store`, route table, `list_models` media filter
@@ -3368,7 +3368,7 @@ git push origin master
 
 ### Task 11: Poller — media-type dispatch and same-tick re-hosting
 
-**Status:** ✅ DONE (2026-08-27, a1e1821 + 812f94f) — task review clean
+**Status:** ✅ DONE (2026-08-27, a1e1821 + fix 812f94f) — review clean after 1 fix round (812f94f: a test that actually drives Completed-with-no-mesh — the old one never reached the guard — and routing that failure through the normal terminal tail so the webhook fires; rulings R22/R23)
 
 **Files:**
 - Modify: `litegen-core/src/proxy/poller.rs`
@@ -3736,7 +3736,7 @@ git push origin master
 
 ### Task 12: TypeScript SDK — generic `pollJob`, `Model3dJob`, `client.models3d`
 
-**Status:** ✅ DONE (2026-08-27, 12ef80c + 11d4d22) — task review clean
+**Status:** ✅ DONE (2026-08-27, 12ef80c + fix 11d4d22) — review clean after 1 fix round (11d4d22: `waitForCompletion` restored to a concretely-typed wrapper — the bare generic re-export broke consumers' inference — and the test index access made safe under `noUncheckedIndexedAccess`; rulings R24/R25). `npm run typecheck` was added to the acceptance gates here, having been the gap that let R24 through.
 
 **Files:**
 - Modify: `sdks/typescript/src/polling.ts`, `src/client.ts`, `src/index.ts`
@@ -4060,7 +4060,7 @@ git push origin master
 
 ### Task 13: Dashboard — `<model-viewer>` component and the three-way media surfaces
 
-**Status:** ✅ DONE (2026-08-27, 44d3c7b + f92e775) — task review clean
+**Status:** ✅ DONE (2026-08-27, 44d3c7b + fix f92e775) — review clean after 1 fix round (f92e775, shared with Task 14). Later touched by Task 21 (`ModelViewer` events/fallbacks) and Task 17B (corrupt-vs-missing classification).
 
 **Files:**
 - Create: `dashboard/src/components/ModelViewer.tsx`
@@ -4264,7 +4264,7 @@ git push origin master
 
 ### Task 14: Playground — async job state machine and `ResultTile3D`
 
-**Status:** ✅ DONE (2026-08-27, bd49c9a + f92e775) — task review clean
+**Status:** ✅ DONE (2026-08-27, bd49c9a + fix f92e775) — review clean after 1 fix round (f92e775: cancel no longer strands a polling tile, Single Mode actually dispatches 3D instead of posting a 3D model to the images endpoint, `n` clamps to 1 for a mesh, and Compare mode costs 3D through `/v1/models3d/cost` instead of silently showing $0; rulings R26-R29)
 
 **Files:**
 - Modify: `dashboard/src/playground/types.ts`, `useFanOut.ts`, `SingleMode.tsx`, `ResultGrid.tsx`
@@ -4444,7 +4444,7 @@ git push origin master
 
 ### Task 15: Playwright coverage for the 3D surfaces
 
-**Status:** ✅ DONE (2026-09-11, 760918e) — `dashboard/e2e/model3d.spec.ts`, 7 tests green against the release binary (also 21/21 at `--repeat-each=3`); full default suite 10/10; no component edits needed. Committed locally, not pushed (user's choice for this branch).
+**Status:** ✅ DONE (2026-09-11, 760918e + tick a1e8122) — task review clean; `dashboard/e2e/model3d.spec.ts`, 7 tests green against the release binary (also 21/21 at `--repeat-each=3`); full default suite 10/10; no component edits needed. Committed locally, not pushed (user's choice for this branch).
 
 **Files:**
 - Create: `dashboard/tests/model3d.spec.ts` (match the existing spec directory — check `dashboard/playwright.config.ts` for `testDir`)
@@ -4647,12 +4647,36 @@ git push origin master
 
 ### Task 17: Polish, cross-workspace verification, and doc reconciliation
 
+**Status:** ✅ DONE (2026-09-11, 2fed306 + 6658b23 + this close-out commit) —
+the two lint findings in code this project wrote are fixed (`glb.rs`
+`is_multiple_of`; the ambiguous glob imports in `tests/model3d_validation.rs`,
+which `-D warnings` never reached because the run stops at the lib's
+pre-existing errors); the design spec is committed with its §14 reconciliation.
+Gates at HEAD: `cargo test` green (lib 561, catalog_conformance 107,
+model3d_api 15, model3d_validation 7, multitenant_api 30, unit_tests 38,
+app_storage_db 1; live_providers 21 ignored by design), SDK typecheck + 28/28 +
+build, dashboard vitest 164/164 + build + build-storybook, dashboard lint at its
+13-finding pre-existing baseline (every one blamed to 2026-06-22 or earlier),
+landing `test:scripts` 16/16. **Not run: `cargo build --release` and the
+Playwright suite** — free disk fell to ~0.3-1.0 GB mid-gate (system swap, not
+this repo), below the controller's 1.5 GB floor; Task 15 last ran them green at
+760918e. Clippy is scoped per ruling R49: 17 findings remain in `-D warnings`
+mode, 16 predating 2026-08-20 and 1 from a peer session's `cca7638`, plus 3 in
+`catalog_conformance.rs` from the peer's `a58366e` that only a warn-mode run
+reaches — none in 3D code. aipix §7 checklist: **11 of 13 pass**; items 8
+(`usage` is null on the completed poll response — present only on submit) and 9
+(`PATCH …/cancelled` is overturned by the next `GET /v1/models3d/{id}`, which
+polls the router's in-memory job and then persists `completed` over the
+cancelled row) FAIL and are written up in
+`.superpowers/sdd/2026-08-20-3d-model-generation/task-17-report.md`. All commits
+are local on `deploy/litegen-visgotti-instance`, unpushed (user's choice).
+
 **Files:**
 - Modify: `docs/superpowers/specs/2026-08-19-3d-model-generation-design.md` (record the contract reconciliation)
 - Modify: `docs/superpowers/plans/2026-08-20-3d-model-generation.md` (this file — mark every task done)
 - Modify: `README.md`, `litegen.example.yaml` (if either enumerates supported modalities)
 
-- [ ] **Step 1: Run every gate**
+- [x] DONE 2026-09-11 (gate list per the "Amended acceptance" section below and the controller's final ruling; results in this task's Status line — release build + Playwright skipped for disk) **Step 1: Run every gate**
 
 ```bash
 cd litegen-core && cargo test 2>&1 | tail -20
@@ -4663,7 +4687,7 @@ cd apps/landing && npm run build 2>&1 | tail -10
 ```
 All five must be clean. Do not proceed past a failure — fix it.
 
-- [ ] **Step 2: Reconcile the design doc with what shipped**
+- [x] DONE 2026-09-11 (6658b23 "docs(3d): commit the design spec with its reconciliation against what shipped" — the spec was untracked; the note landed as its §14 and covers the wire contract, what shipped beyond the spec, and what is still open) **Step 2: Reconcile the design doc with what shipped**
 
 The design doc is still marked `draft (awaiting review)` and specifies a contract that was superseded. Edit its header and add a reconciliation note — do NOT rewrite the file wholesale:
 
@@ -4692,7 +4716,7 @@ The design doc is still marked `draft (awaiting review)` and specifies a contrac
 > poller's media-type branch — shipped as designed.
 ```
 
-- [ ] **Step 3: Verify the aipix acceptance checklist end to end**
+- [x] DONE 2026-09-11 (11/13 pass against a HEAD debug binary; **nothing was written to the aipix repo** — ruling R51. The two failures, `usage` on completion and cancellation being overturned by the 3D status route, are in the task report with commands, output and root cause) **Step 3: Verify the aipix acceptance checklist end to end**
 
 Against a running local litegen with the mock providers:
 ```bash
@@ -4729,11 +4753,11 @@ See also `docs/superpowers/param-mapping-matrix.md` (Task 18) for the per-param
 request-flow checklist — the tickable record of which mappings are actually
 proven by a named test, for every family including this one.
 
-- [ ] **Step 4: Mark this plan complete**
+- [x] DONE 2026-09-11 (this commit: Task 17's boxes ticked, its Status written, and every other task's Status re-read against the ledger so the fix rounds name their commits) **Step 4: Mark this plan complete**
 
 Tick every `- [ ]` in this file as `- [x] DONE 2026-08-20` with the shipping commit subject, in the same commit that ships Step 5. A stale open item that actually shipped is as bad as an unmarked one.
 
-- [ ] **Step 5: Commit**
+- [x] DONE 2026-09-11 (three path-scoped commits: 2fed306 lint fixes, 6658b23 the design spec, and this plan close-out. **No push** — the `git push origin master` below is void on this branch per the standing ruling; a peer session shares this checkout, so every commit named an explicit pathspec) **Step 5: Commit**
 
 ```bash
 git add docs/superpowers/
@@ -4742,7 +4766,7 @@ git push origin master
 git status -sb   # must show no "ahead"
 ```
 
-- [ ] **Step 6: Tell aipix its short-circuit can go**
+- [x] DONE 2026-09-11 (message drafted in the task report for the controller to relay — with the caveat that §7 items 8 and 9 fail, so aipix's short-circuit should not be deleted until they are fixed. Nothing was written to the aipix repo) **Step 6: Tell aipix its short-circuit can go**
 
 Report to the user (do not edit the aipix repo as part of this plan):
 - `mock/mesh-3d` now exists in litegen with the same id aipix seeds locally, returning a real GLB over the real API.
@@ -4800,7 +4824,7 @@ gateway (`cargo build --release -p litegen`) before the run.
 
 ### Task 18: Param-mapping matrix — the request-flow validation checklist
 
-**Status:** ✅ DONE (2026-08-27, 02715ec) — task review clean
+**Status:** ✅ DONE (2026-08-27, 02715ec) — task review clean; Task 17A (a468df4) later annotated the Tripo3D `rig` cell `(unconfirmed)`, the one claim in the matrix that could not be traced to design spec §9
 
 **Files:**
 - Create: `docs/superpowers/param-mapping-matrix.md`
@@ -5321,6 +5345,24 @@ Note the last two additions: the Playwright run needs a **release** binary
 landing app has a script test suite (`npm run test:scripts`) that Task 16's
 generator changes must keep green.
 
+**Amended again at close-out (2026-09-11), and this is the list Task 17 ran:**
+
+- `cargo clippy --all-targets -- -D warnings` cannot be clean on this branch
+  without editing 17 findings in code this project never wrote (ruling R49), so
+  the gate is **no clippy finding in code this project wrote**, proven by
+  blaming every remaining finding. A warn-mode run (`cargo clippy
+  --all-targets`) is also needed: `-D warnings` stops at the lib's pre-existing
+  errors and never checks the integration-test targets — which is how an
+  `ambiguous_glob_imports` warning in our own `tests/model3d_validation.rs`
+  stayed invisible until Task 17.
+- Do **not** run `npm run build` in `apps/landing`: its prebuild regenerates
+  committed files from a live gateway, so it produces an unrelated diff.
+  `npm run test:scripts` is the gate.
+- `cd sdks/typescript && npm run typecheck` is mandatory (see Task 12).
+- Commits are **local only** on `deploy/litegen-visgotti-instance`; every
+  `git push origin master` in this plan is void, and every commit must name an
+  explicit pathspec because a peer session shares this working tree.
+
 ---
 
 # Plan Amendment 2 — 2026-09-11: thorough 3D preview + observability
@@ -5428,7 +5470,7 @@ Sequencing: **21 → 22 → 20 (expanded) → clean + release build → 15 → 1
 
 ### Task 22: Observability — resolve async artifacts to their generation
 
-**Status:** ✅ DONE (2026-09-11, c13e652) — contract-test regex fixed (SDK suite fully green); every 3D artifact now resolves via its generation; 404 retry capped at 20 polls
+**Status:** ✅ DONE (2026-09-11, c13e652 + tick cb9bc20) — review clean, 0 findings; contract-test regex fixed (SDK suite fully green for the first time this project); every 3D artifact now resolves via its generation; 404 retry capped at 20 polls. Task 17A (a468df4) followed up with the corrected 404-retry rationale, transient-error tolerance in the poll, and an honest video-load fallback.
 
 **Files:**
 - Modify: `sdks/typescript/src/client.ts` (`generations.get`), `sdks/typescript/test/client.test.ts`
@@ -5601,6 +5643,10 @@ the brief's list plus two it did not name, `reap_generation` and
 `cancel_generation`, which left their rows `pending` the same way. Gated
 Postgres round-trip run green on local PG14. Report:
 `.superpowers/sdd/2026-08-20-3d-model-generation/task-17c-report.md`
+Task review: the first reviewer was stopped mid-run; re-dispatched 2026-09-11
+as part of the final whole-branch review, still open when Task 17 closed out.
+Task 17's `cargo test` + clippy gates ran at HEAD with 56c251d included and
+were green.
 
 Task 15's Playwright run (2026-09-11) surfaced two backend defects, both
 verified in code by the controller:
