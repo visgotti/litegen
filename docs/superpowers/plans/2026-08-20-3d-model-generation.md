@@ -4553,7 +4553,7 @@ git push origin master
 
 ### Task 16: Landing generated config
 
-**Status:** 🟡 PARTIAL (2026-08-27, 6b927b8) — committed; task review pending (implementer session ended before writing its report)
+**Status:** ✅ DONE (2026-08-27, 6b927b8) — task review clean 2026-09-11 (reviewed on the diff alone; the implementer's session ended before it wrote a report)
 
 **Files:**
 - Modify: `apps/landing/scripts/derive-models.mjs`, `apps/landing/scripts/derive-capabilities.mjs`
@@ -4563,7 +4563,7 @@ git push origin master
 - Consumes: `GET /v1/models` with `media_type: "model3d"` (Task 10).
 - Produces: `mediaType: 'image' | 'video' | 'model3d'`, `outputs: { image, video, model3d }`.
 
-- [ ] **Step 1: Extend `derive-models.mjs`**
+- [x] DONE 2026-08-27 **Step 1: Extend `derive-models.mjs`**
 
 At `:84-91`, add the 3D capability booleans alongside the existing ones:
 ```js
@@ -4599,7 +4599,7 @@ and the emitted type at `:195-196` gains `model3d: string[];`.
 
 Read the file before editing — the line numbers above are from the current revision and the surrounding code may differ.
 
-- [ ] **Step 2: Extend `derive-capabilities.mjs`**
+- [x] DONE 2026-08-27 **Step 2: Extend `derive-capabilities.mjs`**
 
 At `:18-46`, carry a third output flag through the accumulator:
 ```js
@@ -4616,7 +4616,7 @@ and in the emit:
 ```
 Update `anyOut` to consider `has3d`, the emitted `OutputModalities` typedef (`:13`), the emitted TS interface (`:67-69`), the `serialize` template (`:59`), and the hand-written fallback table (`:86-93`) — every literal there needs `model3d: false` so the committed snapshot stays valid if the gateway is unreachable at build time. Fail-open behaviour is otherwise unchanged.
 
-- [ ] **Step 3: Regenerate and inspect the diff**
+- [x] DONE 2026-08-27 **Step 3: Regenerate and inspect the diff**
 
 Start a local litegen with the mock providers, then:
 ```bash
@@ -4627,12 +4627,12 @@ Expected: the mock 3D models appear with `mediaType: 'model3d'`, and every provi
 
 Note: `models.generated.ts` and `capabilities.generated.ts` already show as modified in the working tree from earlier work — inspect `git diff` and keep those changes; do not let a regeneration silently revert them.
 
-- [ ] **Step 4: Verify the landing build**
+- [x] DONE 2026-08-27 **Step 4: Verify the landing build**
 
 Run: `cd apps/landing && npm run build 2>&1 | tail -20`
 Expected: clean.
 
-- [ ] **Step 5: Commit**
+- [x] DONE 2026-08-27 **Step 5: Commit**
 
 ```bash
 git add apps/landing/scripts/ apps/landing/src/config/models.generated.ts \
