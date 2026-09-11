@@ -220,6 +220,112 @@
   }
 }
 
+## fal-ai/flux-2 — active text-to-image (spec written for fal-ai/flux-2-dev)
+{
+  "POST /fal-ai/flux-2-dev (application/json)": {
+    "properties": {
+      "acceleration": {
+        "default": "regular",
+        "enum": [
+          "none",
+          "regular",
+          "high"
+        ],
+        "type": "string"
+      },
+      "enable_prompt_expansion": {
+        "default": false,
+        "type": "boolean"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "guidance_scale": {
+        "default": 2.5,
+        "maximum": 20,
+        "minimum": 0,
+        "type": "number"
+      },
+      "image_size": {
+        "anyOf": [
+          {
+            "properties": {
+              "height": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              },
+              "width": {
+                "default": 512,
+                "exclusiveMinimum": 0,
+                "maximum": 14142,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "enum": [
+              "square_hd",
+              "square",
+              "portrait_4_3",
+              "portrait_16_9",
+              "landscape_4_3",
+              "landscape_16_9"
+            ],
+            "type": "string"
+          }
+        ],
+        "default": "landscape_4_3"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 4,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "num_inference_steps": {
+        "default": 28,
+        "maximum": 50,
+        "minimum": 4,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
 ## fal-ai/flux-pro/v1.1 — active text-to-image
 {
   "POST /fal-ai/flux-pro/v1.1 (application/json)": {

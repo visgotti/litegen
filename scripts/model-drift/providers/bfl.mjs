@@ -13,6 +13,8 @@ const MODELS = {
   'bfl/flux-kontext-pro': 'flux-kontext-pro',
   'bfl/flux-kontext-max': 'flux-kontext-max',
   'bfl/flux-2-pro': 'flux-2-pro',
+  'bfl/flux-2-max': 'flux-2-max',
+  'bfl/flux-2-klein-9b': 'flux-2-klein-9b',
 };
 
 // The endpoints the adapter calls — one per carried model.
@@ -55,5 +57,13 @@ export default {
       id: 'flux-pro-1.0-fill-finetuned',
       reason: 'FLUX.1 Finetuning API deprecated 2025-10-31 (docs.bfl.ml/release-notes: "No migration path available"); the spec still lists it',
     },
+    { id: 'flux-2-klein-4b', reason: 'skipped 2026-09-11: a near-duplicate of flux-2-klein-9b, which we carry' },
+    { id: 'flux-2-flex', reason: "skipped 2026-09-11: BFL's own price pages conflict ($0.05 vs $0.06 per MP)" },
+    { id: 'flux-3-video', reason: 'skipped 2026-09-11: FLUX 3 is video; it needs a BFL video adapter' },
+    ...['flux-pro-1.0-fill', 'flux-pro-1.0-expand'].map((id) => ({
+      id,
+      reason: 'skipped 2026-09-11: FLUX.1 Fill / Expand are edit tools that need image (and mask) inputs',
+    })),
+    { pattern: /^flux-tools\//, reason: 'skipped 2026-09-11: FLUX Tools (erase, deblur, outpainting, try-on, video edit/upscale) are edit tools, not generation models' },
   ],
 };

@@ -42,6 +42,42 @@ models:
     extra_allowlist: [image_fidelity]
     tags: [text-to-image]
 
+  # Kling Image 2.1: the successor to Image 2.0 / 1.5 (both retire 2026-09-15).
+  # Same POST /v1/images/generations endpoint, sent as model_name `kling-v2-1`.
+  # @see https://kling.ai/document-api/api/image/2-1/image-generation.md (2026-09-11)
+  # @see https://kling.ai/document-api/guides/capability-map/image.md (2026-09-11):
+  #   text + image input, 8 ratios incl. 21:9, 1K/2K, subject and face reference.
+  - id: kling/kling-v2-1
+    provider: kling
+    media_type: image
+    display_name: Kling Image v2.1
+    description: Kling Image 2.1 text-to-image, image-to-image and subject/face reference.
+    # Text-to-image at 1K or 2K: 4 units ($0.014) per image. Image-to-image
+    # (a reference image) is 8 units ($0.028).
+    # @see https://kling.ai/document-api/pricing/base/image.md (2026-09-11)
+    pricing: { base_cost_usd: 0.014 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 2500 }
+    params:
+      # "In the Image-to-Image scenario (when the "image" field is not empty),
+      # negative prompts are not supported."
+      negative_prompt: { kind: string, max_length: 2500 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1","4:3","3:4","3:2","2:3","21:9"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 1
+      default_role: subject
+      provider_format: { form: base64 }
+      roles:
+        subject: { required: false, min_count: 0, max_count: 1 }
+    # image_reference: subject | face. resolution: 1k (default) | 2k, same
+    # price. image_fidelity is kling-v1/v1-5 only and human_fidelity
+    # kling-v1-5 only, so neither is allowlisted.
+    extra_allowlist: [image_reference, resolution]
+    tags: [text-to-image, image-to-image]
+
   # ─── Video ────────────────────────────────────────────────────────────────
   - id: kling/video-kling-v2-1
     provider: kling
@@ -94,4 +130,80 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [cfg_scale, mode, camera_control]
+    tags: [text-to-video, image-to-video]
+
+  # Kling 2.5 Turbo and 2.6: the successors to 1.6 / 2.1 (both retire
+  # 2026-09-15). Both are in the model_name enums of the same legacy
+  # /v1/videos/text2video and /v1/videos/image2video endpoints the adapter
+  # calls; `video-` and `kling/` are stripped, so the ids reach Kling unchanged.
+  # @see https://kling.ai/document-api/api/video/1-6/text-to-video.md (2026-09-11)
+  # @see https://kling.ai/document-api/api/video/2-1/image-to-video.md (2026-09-11)
+  # Per-model support comes from the capability map, which the request-body
+  # notes defer to ("Support varies by model version and video mode"):
+  # @see https://kling.ai/document-api/guides/capability-map/video.md (2026-09-11)
+  #   - duration: 5 s or 10 s only. The schema can only express a range, so
+  #     5-10 is advertised; 6-9 s will be refused by Kling.
+  #   - mode: std = 720p, pro = 1080p. Neither model lists 4K, so `4k` fails.
+  #   - first + last frame: 1080p (mode pro) only; last-frame-only is not
+  #     supported, so last_frame needs a first_frame.
+  #   - cfg_scale: "kling-v2.x models do not support this parameter".
+  #   - camera_control: "Not Supported" for both.
+  - id: kling/video-kling-v2-5-turbo
+    provider: kling
+    media_type: video
+    display_name: Kling Video v2.5 Turbo
+    description: Kling 2.5 Turbo text/image-to-video (first frame + image_tail last frame).
+    # Default request (mode std = 720p, 5 s, no audio): 0.3 units ($0.042)/s
+    # x 5 s = $0.21. 1080p (mode pro) is $0.07/s.
+    # @see https://kling.ai/document-api/pricing/base/video.md (2026-09-11)
+    pricing: { base_cost_usd: 0.21 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2500 }
+    params:
+      negative_prompt: { kind: string, max_length: 2500 }
+      duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [mode]
+    tags: [text-to-video, image-to-video]
+
+  - id: kling/video-kling-v2-6
+    provider: kling
+    media_type: video
+    display_name: Kling Video v2.6
+    description: Kling 2.6 text/image-to-video with optional native audio.
+    # Default request (mode std = 720p, 5 s, sound off): 0.3 units ($0.042)/s
+    # x 5 s = $0.21. 1080p silent is $0.07/s; 1080p with native audio
+    # (sound: on) is $0.14/s.
+    # @see https://kling.ai/document-api/pricing/base/video.md (2026-09-11)
+    pricing: { base_cost_usd: 0.21 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 2500 }
+    params:
+      negative_prompt: { kind: string, max_length: 2500 }
+      duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9","9:16","1:1"]
+        default: "16:9"
+    ref_inputs:
+      max_total: 2
+      default_role: first_frame
+      provider_format: { form: base64 }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+        last_frame:  { required: false, min_count: 0, max_count: 1 }
+    # sound: on | off (default off). Native audio is 1080p only (mode pro;
+    # "720P supports silent videos only"), and first + last frame is 1080p
+    # silent only.
+    extra_allowlist: [mode, sound]
     tags: [text-to-video, image-to-video]

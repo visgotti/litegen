@@ -118,7 +118,10 @@ models:
     display_name: FLUX.2 [pro]
     description: Black Forest Labs FLUX.2 pro — recommended default for image
       generation and multi-reference editing.
-    pricing: { base_cost_usd: 0.05 }
+    # FLUX.2 is priced per megapixel: [pro] text-to-image is "from $0.03", the
+    # price of the default 1 MP request (re-read 2026-09-11).
+    # @see https://docs.bfl.ml/quick_start/pricing.md
+    pricing: { base_cost_usd: 0.03 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
@@ -139,3 +142,78 @@ models:
         init: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [output_format, safety_tolerance]
     tags: [text-to-image, image-to-image]
+
+  # POST /v1/flux-2-max takes the same `Flux2Inputs` body as /v1/flux-2-pro
+  # (prompt, seed, width/height, input_image..input_image_8, safety_tolerance
+  # 0-5, output_format, disable_pup), so the typings mirror flux-2-pro. The
+  # adapter sends one reference, as `input_image`.
+  # @see https://api.bfl.ai/openapi.json (/v1/flux-2-max, re-read 2026-09-11)
+  - id: bfl/flux-2-max
+    provider: bfl
+    media_type: image
+    display_name: FLUX.2 [max]
+    description: Black Forest Labs FLUX.2 max — the highest-quality FLUX.2
+      model for image generation and editing, with the strongest editing
+      consistency and prompt following, and grounding search.
+    # [max] text-to-image is "from $0.07" per megapixel: the default 1 MP
+    # request (re-read 2026-09-11).
+    # @see https://docs.bfl.ml/quick_start/pricing.md
+    pricing: { base_cost_usd: 0.07 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 2048
+        min_height: 256
+        max_height: 2048
+        multiple_of: 32
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    # disable_pup: "FLUX.2 [pro] and [max] apply prompt upsampling by default;
+    # set this to true to generate from your prompt exactly as written."
+    extra_allowlist: [output_format, safety_tolerance, disable_pup]
+    tags: [text-to-image, image-to-image, premium]
+
+  # POST /v1/flux-2-klein-9b takes `Flux2KleinInputs`: "like Pro but max 4
+  # images" (input_image..input_image_4) and without `disable_pup` ([klein]
+  # "does not include prompt upsampling"). The size typing mirrors flux-2-pro.
+  # @see https://api.bfl.ai/openapi.json (/v1/flux-2-klein-9b, re-read 2026-09-11)
+  # @see https://docs.bfl.ml/flux_2/flux2_overview.md
+  - id: bfl/flux-2-klein-9b
+    provider: bfl
+    media_type: image
+    display_name: FLUX.2 [klein] 9B
+    description: Black Forest Labs FLUX.2 klein 9B — sub-second, step-distilled
+      FLUX.2 generation and editing, balancing quality and speed.
+    # [klein] 9B is "$0.015 + $0.002/MP" (the first megapixel at the flat
+    # rate): "from $0.015", the default 1 MP request (re-read 2026-09-11).
+    # @see https://docs.bfl.ml/quick_start/pricing.md
+    pricing: { base_cost_usd: 0.015 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      size:
+        kind: size
+        mode: freeform
+        min_width: 256
+        max_width: 2048
+        min_height: 256
+        max_height: 2048
+        multiple_of: 32
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [output_format, safety_tolerance]
+    tags: [text-to-image, image-to-image, fast]

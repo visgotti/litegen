@@ -95,8 +95,12 @@ export default {
   models: {
     'kling/kling-v2': 'kling-v2',
     'kling/kling-v1-5': 'kling-v1-5',
+    // Image 2.1 and Video 2.1 share the vendor id kling-v2-1 (different endpoints).
+    'kling/kling-v2-1': 'kling-v2-1',
     'kling/video-kling-v2-1': 'kling-v2-1',
     'kling/video-kling-v1-6': 'kling-v1-6',
+    'kling/video-kling-v2-5-turbo': 'kling-v2-5-turbo',
+    'kling/video-kling-v2-6': 'kling-v2-6',
   },
   sources: [
     apiPage('images', 'image/2-1/image-generation', 'POST /v1/images/generations'),
@@ -112,5 +116,11 @@ export default {
       extract: /\/document-api\/api\/((?:video|image)\/[\w./-]+?)\.md/g,
     },
   ],
-  acknowledged: [],
+  // kling-v3 is left unacknowledged on purpose (add later).
+  acknowledged: [
+    { id: 'kling-v1', reason: 'skipped 2026-09-11: retires upstream 2026-09-15' },
+    { id: 'kling-v2-master', reason: 'skipped 2026-09-11: retires upstream 2026-09-15' },
+    { id: 'kling-v2-1-master', reason: 'skipped 2026-09-11: retires upstream 2026-09-15' },
+    { id: 'kling-v2-new', reason: 'skipped 2026-09-11: retires upstream 2026-09-15' },
+  ],
 };

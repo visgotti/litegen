@@ -185,6 +185,106 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://docs.aws.amazon.com/nova/latest/userguide/getting-started-api.html"
   },
   {
+    "id": "bfl/flux-2-klein-9b",
+    "provider": "bfl",
+    "displayName": "FLUX.2 [klein] 9B",
+    "description": "Black Forest Labs FLUX.2 klein 9B — sub-second, step-distilled FLUX.2 generation and editing, balancing quality and speed.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.015
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "fast"
+    ],
+    "referenceUrl": "https://docs.bfl.ml/"
+  },
+  {
+    "id": "bfl/flux-2-max",
+    "provider": "bfl",
+    "displayName": "FLUX.2 [max]",
+    "description": "Black Forest Labs FLUX.2 max — the highest-quality FLUX.2 model for image generation and editing, with the strongest editing consistency and prompt following, and grounding search.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.07
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "premium"
+    ],
+    "referenceUrl": "https://docs.bfl.ml/"
+  },
+  {
     "id": "bfl/flux-2-pro",
     "provider": "bfl",
     "displayName": "FLUX.2 [pro]",
@@ -225,7 +325,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.05
+      "baseCostUsd": 0.03
     },
     "tags": [
       "text-to-image",
@@ -488,77 +588,6 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://docs.bfl.ml/"
   },
   {
-    "id": "bytedance/doubao-seedance-1-0-lite-i2v-250428",
-    "provider": "bytedance",
-    "displayName": "Seedance 1.0 Lite (i2v)",
-    "description": "ByteDance Seedance 1.0 Lite image-to-video.",
-    "mediaType": "video",
-    "output": "video",
-    "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": true,
-      "imageToVideo": true,
-      "textTo3d": false,
-      "imageTo3d": false,
-      "multiviewTo3d": false
-    },
-    "sizes": [],
-    "aspectRatios": [
-      "16:9",
-      "9:16",
-      "1:1",
-      "4:3",
-      "3:4"
-    ],
-    "maxRefImages": 2,
-    "refRoles": [
-      {
-        "name": "first_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      },
-      {
-        "name": "last_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 3000
-    },
-    "params": [
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "default": 5,
-        "min": 3,
-        "max": 12
-      },
-      {
-        "name": "resolution",
-        "kind": "string",
-        "enum": [
-          "480p",
-          "720p"
-        ]
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.18
-    },
-    "tags": [
-      "image-to-video",
-      "text-to-video",
-      "fast"
-    ],
-    "referenceUrl": "https://docs.byteplus.com/en/docs/ModelArk/"
-  },
-  {
     "id": "bytedance/doubao-seedance-1-0-pro-250528",
     "provider": "bytedance",
     "displayName": "Seedance 1.0 Pro",
@@ -628,7 +657,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.5
+      "baseCostUsd": 0.61
     },
     "tags": [
       "text-to-video",
@@ -637,43 +666,149 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://docs.byteplus.com/en/docs/ModelArk/"
   },
   {
-    "id": "bytedance/seedream-3-0-t2i-250415",
+    "id": "bytedance/dreamina-seedance-2-0-mini-260615",
     "provider": "bytedance",
-    "displayName": "Seedream 3.0",
-    "description": "ByteDance Seedream 3.0 text-to-image.",
-    "mediaType": "image",
-    "output": "image",
+    "displayName": "Seedance 2.0 Mini",
+    "description": "ByteDance Dreamina Seedance 2.0 mini text/image-to-video (first/last frame), with generated audio.",
+    "mediaType": "video",
+    "output": "video",
     "capabilities": {
-      "textToImage": true,
+      "textToImage": false,
       "imageToImage": false,
       "inpainting": false,
-      "textToVideo": false,
-      "imageToVideo": false,
+      "textToVideo": true,
+      "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
       "multiviewTo3d": false
     },
     "sizes": [],
-    "aspectRatios": [],
-    "maxRefImages": 0,
-    "refRoles": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "4:3",
+      "3:4",
+      "21:9"
+    ],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
     "promptLimits": {
       "required": true,
       "maxLength": 3000
     },
     "params": [
       {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 4,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480p",
+          "720p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.38
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "fast"
+    ],
+    "referenceUrl": "https://docs.byteplus.com/en/docs/ModelArk/"
+  },
+  {
+    "id": "bytedance/seedance-1-0-pro-fast-251015",
+    "provider": "bytedance",
+    "displayName": "Seedance 1.0 Pro Fast",
+    "description": "ByteDance Seedance 1.0 Pro Fast text-to-video and first-frame image-to-video.",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "4:3",
+      "3:4",
+      "21:9"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 3000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 2,
+        "max": 12
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
         "max": 2147483647
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "default": "1080p"
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.03
+      "baseCostUsd": 0.24
     },
     "tags": [
-      "text-to-image"
+      "text-to-video",
+      "image-to-video",
+      "fast"
     ],
     "referenceUrl": "https://docs.byteplus.com/en/docs/ModelArk/"
   },
@@ -712,6 +847,90 @@ export const MODELS: ModelEntry[] = [
     "params": [],
     "pricing": {
       "baseCostUsd": 0.03
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.byteplus.com/en/docs/ModelArk/"
+  },
+  {
+    "id": "bytedance/seedream-4-5-251128",
+    "provider": "bytedance",
+    "displayName": "Seedream 4.5",
+    "description": "ByteDance Seedream 4.5 text-to-image + multi-reference edit.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 14,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 14
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 3000
+    },
+    "params": [],
+    "pricing": {
+      "baseCostUsd": 0.04
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://docs.byteplus.com/en/docs/ModelArk/"
+  },
+  {
+    "id": "bytedance/seedream-5-0-lite-260128",
+    "provider": "bytedance",
+    "displayName": "Seedream 5.0 Lite",
+    "description": "ByteDance Seedream 5.0 lite text-to-image + multi-reference edit.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 14,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 14
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 3000
+    },
+    "params": [],
+    "pricing": {
+      "baseCostUsd": 0.035
     },
     "tags": [
       "text-to-image",
@@ -768,6 +987,61 @@ export const MODELS: ModelEntry[] = [
     ],
     "pricing": {
       "baseCostUsd": 0.02
+    },
+    "tags": [
+      "text-to-image"
+    ],
+    "referenceUrl": "https://fal.ai/docs/documentation"
+  },
+  {
+    "id": "fal/flux-2",
+    "provider": "fal",
+    "displayName": "FLUX.2 [dev] (Fal)",
+    "description": "Black Forest Labs FLUX.2 dev text-to-image on Fal.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 2.5,
+        "min": 0,
+        "max": 20
+      },
+      {
+        "name": "steps",
+        "kind": "int",
+        "default": 28,
+        "min": 4,
+        "max": 50
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.012
     },
     "tags": [
       "text-to-image"
@@ -863,7 +1137,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.05
+      "baseCostUsd": 0.04
     },
     "tags": [
       "text-to-image"
@@ -1016,7 +1290,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.025
+      "baseCostUsd": 0.02
     },
     "tags": [
       "text-to-image"
@@ -1123,7 +1397,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.2
+      "baseCostUsd": 0.02
     },
     "tags": [
       "text-to-video",
@@ -1227,7 +1501,7 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [],
     "pricing": {
-      "baseCostUsd": 0.05
+      "baseCostUsd": 0.134
     },
     "tags": [
       "text-to-image",
@@ -1285,7 +1559,7 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [],
     "pricing": {
-      "baseCostUsd": 0.02
+      "baseCostUsd": 0.067
     },
     "tags": [
       "text-to-image",
@@ -1342,7 +1616,7 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [],
     "pricing": {
-      "baseCostUsd": 0.01
+      "baseCostUsd": 0.034
     },
     "tags": [
       "text-to-image",
@@ -1613,7 +1887,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.04
+      "baseCostUsd": 0.0745
     },
     "tags": [
       "text-to-image",
@@ -1625,14 +1899,14 @@ export const MODELS: ModelEntry[] = [
     "id": "hunyuan/hunyuan-video",
     "provider": "hunyuan",
     "displayName": "Hunyuan Video",
-    "description": "Tencent Hunyuan image-to-video (async SubmitImageToVideoJob on vclm).",
+    "description": "Tencent Hunyuan text/image-to-video (async SubmitHunyuanToVideoJob on vclm).",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
       "inpainting": false,
-      "textToVideo": false,
+      "textToVideo": true,
       "imageToVideo": true,
       "textTo3d": false,
       "imageTo3d": false,
@@ -1644,20 +1918,30 @@ export const MODELS: ModelEntry[] = [
     "refRoles": [
       {
         "name": "first_frame",
-        "required": true,
-        "min": 1,
+        "required": false,
+        "min": 0,
         "max": 1
       }
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 2500
+      "maxLength": 200
     },
-    "params": [],
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p"
+        ],
+        "default": "720p"
+      }
+    ],
     "pricing": {
-      "baseCostUsd": 0.5
+      "baseCostUsd": 0.268
     },
     "tags": [
+      "text-to-video",
       "image-to-video"
     ],
     "referenceUrl": "https://www.tencentcloud.com/document/product/1284/74915"
@@ -2023,6 +2307,62 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
   },
   {
+    "id": "kling/kling-v2-1",
+    "provider": "kling",
+    "displayName": "Kling Image v2.1",
+    "description": "Kling Image 2.1 text-to-image, image-to-image and subject/face reference.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "4:3",
+      "3:4",
+      "3:2",
+      "2:3",
+      "21:9"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "subject",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.014
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
+  },
+  {
     "id": "kling/video-kling-v1-6",
     "provider": "kling",
     "displayName": "Kling Video v1.6",
@@ -2150,6 +2490,134 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
   },
   {
+    "id": "kling/video-kling-v2-5-turbo",
+    "provider": "kling",
+    "displayName": "Kling Video v2.5 Turbo",
+    "description": "Kling 2.5 Turbo text/image-to-video (first frame + image_tail last frame).",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1"
+    ],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 5,
+        "max": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.21
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
+  },
+  {
+    "id": "kling/video-kling-v2-6",
+    "provider": "kling",
+    "displayName": "Kling Video v2.6",
+    "description": "Kling 2.6 text/image-to-video with optional native audio.",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1"
+    ],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 5,
+        "max": 10
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.21
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
+  },
+  {
     "id": "leonardo/diffusion-xl",
     "provider": "leonardo",
     "displayName": "Leonardo Diffusion XL",
@@ -2265,6 +2733,62 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://docs.leonardo.ai/"
   },
   {
+    "id": "leonardo/kling2.5",
+    "provider": "leonardo",
+    "displayName": "Leonardo Kling 2.5 Turbo",
+    "description": "Kling 2.5 Turbo served through Leonardo's first-party API.",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2500
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 5,
+        "max": 10
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "1080p"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 1
+    },
+    "tags": [
+      "image-to-video"
+    ],
+    "referenceUrl": "https://docs.leonardo.ai/"
+  },
+  {
     "id": "leonardo/motion2",
     "provider": "leonardo",
     "displayName": "Leonardo Motion 2.0",
@@ -2315,10 +2839,10 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://docs.leonardo.ai/"
   },
   {
-    "id": "leonardo/veo3",
+    "id": "leonardo/veo3.1",
     "provider": "leonardo",
-    "displayName": "Leonardo Veo 3",
-    "description": "Google Veo 3 served through Leonardo's first-party API (start-frame image-to-video).",
+    "displayName": "Leonardo Veo 3.1",
+    "description": "Google Veo 3.1 served through Leonardo's first-party API (start-frame image-to-video).",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -2344,7 +2868,7 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 4000
+      "maxLength": 9999
     },
     "params": [
       {
@@ -2656,79 +3180,6 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://docs.lumalabs.ai/docs/api"
   },
   {
-    "id": "luma/ray-3",
-    "provider": "luma",
-    "displayName": "Luma Ray 3",
-    "description": "",
-    "mediaType": "video",
-    "output": "video",
-    "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": true,
-      "imageToVideo": true,
-      "textTo3d": false,
-      "imageTo3d": false,
-      "multiviewTo3d": false
-    },
-    "sizes": [],
-    "aspectRatios": [
-      "1:1",
-      "16:9",
-      "9:16",
-      "4:3",
-      "3:4",
-      "21:9",
-      "9:21"
-    ],
-    "maxRefImages": 2,
-    "refRoles": [
-      {
-        "name": "first_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      },
-      {
-        "name": "last_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 1000
-    },
-    "params": [
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "min": 5,
-        "max": 9
-      },
-      {
-        "name": "resolution",
-        "kind": "string",
-        "enum": [
-          "720p",
-          "1080p",
-          "4k"
-        ]
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.5
-    },
-    "tags": [
-      "text-to-video",
-      "image-to-video",
-      "premium"
-    ],
-    "referenceUrl": "https://docs.lumalabs.ai/docs/api"
-  },
-  {
     "id": "luma/ray-flash-2",
     "provider": "luma",
     "displayName": "Luma Ray Flash 2",
@@ -2803,74 +3254,6 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://docs.lumalabs.ai/docs/api"
   },
   {
-    "id": "luma/ray-hdr-3",
-    "provider": "luma",
-    "displayName": "Luma Ray HDR 3",
-    "description": "",
-    "mediaType": "video",
-    "output": "video",
-    "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": true,
-      "imageToVideo": true,
-      "textTo3d": false,
-      "imageTo3d": false,
-      "multiviewTo3d": false
-    },
-    "sizes": [],
-    "aspectRatios": [
-      "16:9",
-      "9:16",
-      "21:9"
-    ],
-    "maxRefImages": 2,
-    "refRoles": [
-      {
-        "name": "first_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      },
-      {
-        "name": "last_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 1000
-    },
-    "params": [
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "min": 5,
-        "max": 9
-      },
-      {
-        "name": "resolution",
-        "kind": "string",
-        "enum": [
-          "1080p",
-          "4k"
-        ]
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.65
-    },
-    "tags": [
-      "text-to-video",
-      "image-to-video",
-      "hdr"
-    ],
-    "referenceUrl": "https://docs.lumalabs.ai/docs/api"
-  },
-  {
     "id": "minimax/image-01",
     "provider": "minimax",
     "displayName": "MiniMax image-01",
@@ -2913,7 +3296,7 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [],
     "pricing": {
-      "baseCostUsd": 0.01
+      "baseCostUsd": 0.0035
     },
     "tags": [
       "text-to-image",
@@ -2977,7 +3360,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.43
+      "baseCostUsd": 0.28
     },
     "tags": [
       "text-to-video",
@@ -3035,11 +3418,70 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.49
+      "baseCostUsd": 0.28
     },
     "tags": [
       "text-to-video",
       "image-to-video"
+    ],
+    "referenceUrl": "https://platform.minimax.io/docs"
+  },
+  {
+    "id": "minimax/MiniMax-Hailuo-2.3-Fast",
+    "provider": "minimax",
+    "displayName": "MiniMax Hailuo 2.3 Fast",
+    "description": "Hailuo 2.3 Fast image-to-video (requires a first-frame image).",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 6,
+        "min": 6,
+        "max": 10
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "768P",
+          "1080P"
+        ],
+        "default": "768P"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.19
+    },
+    "tags": [
+      "image-to-video",
+      "fast"
     ],
     "referenceUrl": "https://platform.minimax.io/docs"
   },
@@ -3252,12 +3694,140 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.04
+      "baseCostUsd": 0.053
     },
     "tags": [
       "text-to-image",
       "image-to-image",
       "inpainting"
+    ],
+    "referenceUrl": "https://platform.openai.com/docs/guides/image-generation"
+  },
+  {
+    "id": "openai/gpt-image-2.5-flare",
+    "provider": "openai",
+    "displayName": "GPT Image 2.5 Flare",
+    "description": "OpenAI GPT Image 2.5 Flare, OpenAI's fastest model for high-quality everyday image generation. Text-to-image plus prompt-driven editing and inpainting via the images/edits endpoint. Arbitrary resolutions (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1); adds the `xhigh` and `max` quality settings.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": true,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "mask",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 32000
+    },
+    "params": [
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "auto",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default": "auto"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.0132
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "inpainting",
+      "fast"
+    ],
+    "referenceUrl": "https://platform.openai.com/docs/guides/image-generation"
+  },
+  {
+    "id": "openai/gpt-image-2.5-sunburst",
+    "provider": "openai",
+    "displayName": "GPT Image 2.5 Sunburst",
+    "description": "OpenAI GPT Image 2.5 Sunburst, OpenAI's most capable image model, for workflows where editing precision matters most. Text-to-image plus prompt-driven editing and inpainting via the images/edits endpoint. Arbitrary resolutions (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1); adds the `xhigh` and `max` quality settings.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": true,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "mask",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 32000
+    },
+    "params": [
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "auto",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default": "auto"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.0132
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image",
+      "inpainting",
+      "premium"
     ],
     "referenceUrl": "https://platform.openai.com/docs/guides/image-generation"
   },
@@ -3386,6 +3956,89 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://platform.openai.com/docs/guides/image-generation"
   },
   {
+    "id": "pixverse/c1",
+    "provider": "pixverse",
+    "displayName": "PixVerse C1",
+    "description": "PixVerse C1 cinematic text/image-to-video + first/last-frame transition, 1-15s, optional native audio.",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16",
+      "2:3",
+      "3:2",
+      "21:9"
+    ],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 1,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "360p",
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "540p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.4
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "premium"
+    ],
+    "referenceUrl": "https://docs.platform.pixverse.ai/"
+  },
+  {
     "id": "pixverse/v3.5",
     "provider": "pixverse",
     "displayName": "PixVerse v3.5",
@@ -3455,7 +4108,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.3
+      "baseCostUsd": 0.45
     },
     "tags": [
       "text-to-video",
@@ -3620,6 +4273,88 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://docs.platform.pixverse.ai/"
   },
   {
+    "id": "pixverse/v6",
+    "provider": "pixverse",
+    "displayName": "PixVerse V6",
+    "description": "PixVerse V6 text/image-to-video + first/last-frame transition, 1-15s, optional native audio.",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16",
+      "2:3",
+      "3:2",
+      "21:9"
+    ],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      },
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 1,
+        "max": 15
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "360p",
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "540p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.35
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video"
+    ],
+    "referenceUrl": "https://docs.platform.pixverse.ai/"
+  },
+  {
     "id": "recraft/recraftv2",
     "provider": "recraft",
     "displayName": "Recraft V2",
@@ -3689,6 +4424,80 @@ export const MODELS: ModelEntry[] = [
     },
     "tags": [
       "text-to-image"
+    ],
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/getting-started"
+  },
+  {
+    "id": "recraft/recraftv2_vector",
+    "provider": "recraft",
+    "displayName": "Recraft V2 Vector",
+    "description": "Recraft V2 vector (SVG) image generation (the cheapest vector model).",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 1000
+    },
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      },
+      {
+        "name": "style",
+        "kind": "string",
+        "enum": [
+          "Vector art",
+          "Line art",
+          "Linocut",
+          "Cartoon",
+          "Flat 2.0",
+          "Color blobs",
+          "Vector Kawaii",
+          "Doodle Line art",
+          "Seamless Vector",
+          "Engraving",
+          "Icon",
+          "Outline",
+          "Pictogram",
+          "Colored outline",
+          "Doodle",
+          "Colored shape",
+          "Gradient outline",
+          "Offset doodle",
+          "Gradient shape",
+          "Broken line",
+          "Offset fill"
+        ],
+        "default": "Vector art"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.044
+    },
+    "tags": [
+      "text-to-image",
+      "vector"
     ],
     "referenceUrl": "https://www.recraft.ai/docs/api-reference/getting-started"
   },
@@ -3883,7 +4692,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.04
+      "baseCostUsd": 0.035
     },
     "tags": [
       "text-to-image"
@@ -3939,12 +4748,148 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.25
+      "baseCostUsd": 0.21
     },
     "tags": [
       "text-to-image"
     ],
     "referenceUrl": "https://www.recraft.ai/docs/api-reference/getting-started"
+  },
+  {
+    "id": "recraft/recraftv4_1_pro_vector",
+    "provider": "recraft",
+    "displayName": "Recraft V4.1 Pro Vector",
+    "description": "Recraft V4.1 Pro vector (SVG) image generation.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.3
+    },
+    "tags": [
+      "text-to-image",
+      "vector"
+    ],
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/getting-started"
+  },
+  {
+    "id": "recraft/recraftv4_1_vector",
+    "provider": "recraft",
+    "displayName": "Recraft V4.1 Vector",
+    "description": "Recraft V4.1 vector (SVG) image generation.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.08
+    },
+    "tags": [
+      "text-to-image",
+      "vector"
+    ],
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/getting-started"
+  },
+  {
+    "id": "replicate/flux-1.1-pro",
+    "provider": "replicate",
+    "displayName": "Flux 1.1 Pro",
+    "description": "Black Forest Labs FLUX1.1 [pro] via Replicate.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "16:9",
+      "3:2",
+      "2:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "3:4",
+      "4:3"
+    ],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.04
+    },
+    "tags": [
+      "text-to-image",
+      "premium"
+    ],
+    "referenceUrl": "https://replicate.com/docs/reference/http"
   },
   {
     "id": "replicate/flux-dev",
@@ -4269,7 +5214,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.012
+      "baseCostUsd": 0.005
     },
     "tags": [
       "text-to-image",
@@ -4315,7 +5260,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.3
+      "baseCostUsd": 0.1
     },
     "tags": [
       "text-to-video"
@@ -4548,7 +5493,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.5
+      "baseCostUsd": 0.6
     },
     "tags": [
       "text-to-video",
@@ -4763,6 +5708,75 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://platform.stability.ai/docs/api-reference"
   },
   {
+    "id": "stability/sd3.5-medium",
+    "provider": "stability",
+    "displayName": "Stable Diffusion 3.5 Medium",
+    "description": "Stable Diffusion 3.5 Medium (2.5B parameters) — a balance of prompt accuracy and image quality for fast generation.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "16:9",
+      "9:16",
+      "3:2",
+      "2:3",
+      "4:5",
+      "5:4",
+      "21:9",
+      "9:21"
+    ],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "strength",
+        "kind": "float",
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.035
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://platform.stability.ai/docs/api-reference"
+  },
+  {
     "id": "stability/sdxl",
     "provider": "stability",
     "displayName": "Stable Diffusion XL",
@@ -4836,7 +5850,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.002
+      "baseCostUsd": 0.009
     },
     "tags": [
       "text-to-image",
@@ -5042,7 +6056,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.3
+      "baseCostUsd": 0.4
     },
     "tags": [
       "text-to-video",
@@ -5126,6 +6140,223 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "reference-to-video",
       "premium"
+    ],
+    "referenceUrl": "https://platform.vidu.com/docs/quick-start"
+  },
+  {
+    "id": "vidu/viduq2-pro-fast",
+    "provider": "vidu",
+    "displayName": "Vidu Q2 Pro Fast",
+    "description": "Vidu Q2 Pro Fast image-to-video and start-end to video (fast, low price; no text-to-video).",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": true,
+        "min": 1,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 1,
+        "max": 8
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.08
+    },
+    "tags": [
+      "image-to-video",
+      "fast"
+    ],
+    "referenceUrl": "https://platform.vidu.com/docs/quick-start"
+  },
+  {
+    "id": "vidu/viduq3-pro",
+    "provider": "vidu",
+    "displayName": "Vidu Q3 Pro",
+    "description": "Vidu Q3 Pro text/image/start-end to video with native audio (no reference-to-video).",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "3:4",
+      "4:3"
+    ],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 1,
+        "max": 16
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.5
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "premium"
+    ],
+    "referenceUrl": "https://platform.vidu.com/docs/quick-start"
+  },
+  {
+    "id": "vidu/viduq3-turbo",
+    "provider": "vidu",
+    "displayName": "Vidu Q3 Turbo",
+    "description": "Vidu Q3 Turbo text/image/reference/start-end to video with native audio (faster, cheaper Q3).",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": true,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "16:9",
+      "9:16",
+      "1:1",
+      "3:4",
+      "4:3"
+    ],
+    "maxRefImages": 7,
+    "refRoles": [
+      {
+        "name": "first_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "last_frame",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 7
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 5000
+    },
+    "params": [
+      {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 3,
+        "max": 16
+      },
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default": "720p"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.275
+    },
+    "tags": [
+      "text-to-video",
+      "image-to-video",
+      "reference-to-video"
     ],
     "referenceUrl": "https://platform.vidu.com/docs/quick-start"
   }

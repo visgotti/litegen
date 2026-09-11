@@ -11,6 +11,8 @@ const ENDPOINTS = ['/images/generations', '/images/edits', '/videos'];
 export default {
   provider: 'openai',
   models: {
+    'openai/gpt-image-2.5-sunburst': 'gpt-image-2.5-sunburst',
+    'openai/gpt-image-2.5-flare': 'gpt-image-2.5-flare',
     'openai/gpt-image-2': 'gpt-image-2',
     'openai/gpt-image-1': 'gpt-image-1',
     'openai/sora': 'sora-2',
@@ -35,5 +37,9 @@ export default {
     { pattern: /-\d{4}-\d{2}-\d{2}$/, reason: 'dated snapshot alias; the undated id is what we track' },
     { id: 'dall-e-2', reason: 'shut down upstream; the spec still lists it (see image/openai.rs)' },
     { id: 'dall-e-3', reason: 'shut down upstream; the spec still lists it (see image/openai.rs)' },
+    ...['gpt-image-1.5', 'gpt-image-1-mini', 'chatgpt-image-latest'].map((id) => ({
+      id,
+      reason: 'skipped 2026-09-11: OpenAI shuts it down 2026-12-01 (developers.openai.com/api/docs/deprecations)',
+    })),
   ],
 };

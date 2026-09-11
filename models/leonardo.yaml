@@ -33,7 +33,7 @@ models:
     extra_allowlist: [alchemy, photoReal, presetStyle, contrast, modelId]
     tags: [text-to-image, image-to-image]
 
-  # ─── Motion / Veo3 / Kling video (image-to-video; start frame required) ────
+  # ─── Motion / Veo 3.1 / Kling video (image-to-video; start frame required) ─
   - id: leonardo/motion2
     provider: leonardo
     media_type: video
@@ -63,14 +63,26 @@ models:
     extra_allowlist: [imageId, imageType, isPublic]
     tags: [image-to-video]
 
-  - id: leonardo/veo3
+  # Veo 3.1 replaces Veo 3 (VEO3), which Leonardo retired 2026-06-29.
+  # @see https://docs.leonardo.ai/docs/deprecations-changes
+  # v1 guide: POST /generations-image-to-video with "model": "VEO3_1";
+  # "duration ... Set to 4, 6, or 8"; "resolution ... Set to RESOLUTION_720
+  # and RESOLUTION_1080". The schema can only express a range, so 4-8 is
+  # advertised; 5 and 7 s will be refused. VEO3_1 is listed under Video Model
+  # IDs but not yet in the v1 reference's `model` enum.
+  # @see https://docs.leonardo.ai/v1.0/docs/veo-31 (2026-09-11)
+  # @see https://docs.leonardo.ai/v1.0/docs/commonly-used-api-values (2026-09-11)
+  - id: leonardo/veo3.1
     provider: leonardo
     media_type: video
-    display_name: Leonardo Veo 3
-    description: Google Veo 3 served through Leonardo's first-party API (start-frame image-to-video).
-    pricing: { base_cost_usd: 2.50 }
+    display_name: Leonardo Veo 3.1
+    description: Google Veo 3.1 served through Leonardo's first-party API (start-frame image-to-video).
+    pricing: { base_cost_usd: 2.50 }  # price unverified: Leonardo publishes API prices only in its logged-in calculator
     capabilities: { image_to_video: true }
-    prompt: { required: true, max_length: 4000 }
+    # Veo 3.1 prompt maxLength 9999, default duration 8 (Leonardo's model
+    # schema, Veo3_1Generate001GenerationRequest).
+    # @see https://docs.leonardo.ai/reference/creategeneration (2026-09-11)
+    prompt: { required: true, max_length: 9999 }
     params:
       duration_seconds: { kind: float, min: 4.0, max: 8.0, default: 8.0 }
       resolution:
@@ -102,6 +114,40 @@ models:
       duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0 }
       # "resolution ... Set to RESOLUTION_1080." — 1080p is the only value.
       # @see https://docs.leonardo.ai/v1.0/docs/kling-2-1-pro
+      resolution:
+        kind: string
+        enum_values: [1080p]
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format:
+        form: multipart
+        field_map:
+          first_frame: file
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [imageId, imageType, isPublic]
+    tags: [image-to-video]
+
+  # Kling 2.5 Turbo (model KLING2_5 in the v1 reference's `model` enum):
+  # "duration ... Set to 5 or 10" (the schema can only express a range, so
+  # 5-10 is advertised; 6-9 s will be refused), "resolution ... Set to
+  # RESOLUTION_1080" (the adapter sends 1080 when none is requested).
+  # @see https://docs.leonardo.ai/v1.0/docs/kling-2-5-turbo (2026-09-11)
+  # @see https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration (2026-09-11)
+  - id: leonardo/kling2.5
+    provider: leonardo
+    media_type: video
+    display_name: Leonardo Kling 2.5 Turbo
+    description: Kling 2.5 Turbo served through Leonardo's first-party API.
+    pricing: { base_cost_usd: 1.00 }  # price unverified: Leonardo publishes API prices only in its logged-in calculator
+    capabilities: { image_to_video: true }
+    # Kling 2.5 Turbo prompt maxLength 2500 (Leonardo's model schema,
+    # Kling2_5GenerationRequest).
+    # @see https://docs.leonardo.ai/reference/creategeneration (2026-09-11)
+    prompt: { required: true, max_length: 2500 }
+    params:
+      duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0 }
       resolution:
         kind: string
         enum_values: [1080p]
