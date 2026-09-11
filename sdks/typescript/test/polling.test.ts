@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { pollVideo, waitForCompletion } from "../src/polling";
+import { pollVideo, poll3d, pollJob, waitForCompletion } from "../src/polling";
+import { LiteGenPollingTimeoutError } from "../src/errors";
 
 type Update = { status: string; progress: number };
 
@@ -40,6 +41,39 @@ describe("pollVideo", () => {
       seen.push(u.status as string);
     }
     expect(seen).toEqual(["processing", "failed"]);
+  });
+});
+
+describe("LiteGenPollingTimeoutError names the family that timed out", () => {
+  const neverTerminal = fakeStatus([{ status: "processing", progress: 10 }]);
+  /** Drain a generator that is expected to throw before its first yield. */
+  const drain = async (gen: AsyncGenerator<unknown, unknown, void>) => {
+    for await (const update of gen) {
+      void update; // unreachable: the deadline is already past
+    }
+  };
+
+  it("says 'video' for a video poll", async () => {
+    const err = await drain(pollVideo("v1", neverTerminal, { timeoutMs: -1 })).catch((e) => e);
+    expect(err).toBeInstanceOf(LiteGenPollingTimeoutError);
+    expect((err as LiteGenPollingTimeoutError).kind).toBe("video");
+    expect((err as Error).message).toContain("Polling for video 'v1' timed out");
+  });
+
+  it("does NOT say 'video' for a 3D poll", async () => {
+    const err = await drain(poll3d("litegen-3d-1", neverTerminal, { timeoutMs: -1 })).catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(LiteGenPollingTimeoutError);
+    expect((err as LiteGenPollingTimeoutError).kind).toBe("3D generation");
+    expect((err as Error).message).toBe("Polling for 3D generation 'litegen-3d-1' timed out");
+    expect((err as Error).message).not.toContain("video");
+  });
+
+  it("falls back to the neutral 'job' when the family is unknown", async () => {
+    const err = await drain(pollJob("x1", neverTerminal, { timeoutMs: -1 })).catch((e) => e);
+    expect((err as LiteGenPollingTimeoutError).kind).toBe("job");
+    expect((err as Error).message).toContain("Polling for job 'x1' timed out");
   });
 });
 

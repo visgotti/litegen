@@ -164,9 +164,11 @@ curl -X POST http://localhost:4000/v1/models3d/cost \
 ```
 
 > **No vendor 3D adapter ships yet.** The family is wired end to end — schema validation, the async
-> job + background poller, asset re-hosting into litegen's storage, the dashboard's mesh viewer, and the
-> TypeScript SDK's `client.models3d` — but the only 3D providers today are the built-in mocks
-> (`mock/mesh-3d`, `mock/all-params-3d`, `mock/fail-3d`), which emit a real glTF 2.0 binary cube.
+> job + background poller, asset re-hosting into the calling app's own bucket when it has storage
+> credentials (falling back to litegen's storage), the dashboard's mesh viewer, and the
+> TypeScript SDK's `client.models3d` — but the only 3D providers today are the built-in mocks:
+> `mock/mesh-3d` and `mock/all-params-3d` emit a real glTF 2.0 binary cube, while `mock/fail-3d`
+> emits no mesh at all — it terminates `failed`, by design, to exercise the error path.
 > Meshy, Tripo3D, Stability 3D and Rodin are deliberately deferred.
 
 ### List Models

@@ -8,6 +8,10 @@ services:
     environment:
       LITEGEN__SERVER__HOST: "0.0.0.0"
       LITEGEN__SERVER__PORT: "4000"
+      # Origin clients reach this container on; 3D asset URLs are minted
+      # absolute from it and are unreachable if it is left at the container's
+      # own bind address. Required behind a proxy or on a remote host.
+      LITEGEN__SERVER__PUBLIC_BASE_URL: "${LITEGEN_PUBLIC_BASE_URL:-http://127.0.0.1:4000}"
       LITEGEN__DATABASE_URL: "postgres://litegen:litegen@db:5432/litegen"
       LITEGEN__MASTER_KEY: "${LITEGEN_MASTER_KEY:?LITEGEN_MASTER_KEY must be set}"
       LITEGEN_CORS_ORIGINS: "${LITEGEN_CORS_ORIGINS:-}"
