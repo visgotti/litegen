@@ -5761,3 +5761,63 @@ both are visible to the consumer:
   unit tests (they type-check today; their arithmetic is independently
   confirmed by the passing priced-row integration test). Evidence in the
   report.
+
+---
+
+## Whole-branch review and fix waves — ✅ DONE (2026-09-11)
+
+After Task 17D, the branch went through a multi-agent whole-branch review
+(8 independent review dimensions over this project's 50 commits and 86
+hand-written files, then perspective-diverse adversarial verification of every
+finding, a completeness critic, and synthesis). 60 raw findings → 45 unique →
+**34 survived verification**: 26 to fix, 8 report-only.
+
+- [x] DONE 2026-09-11 — **Backend fixes** (`8000aff`): the root cause behind six
+  findings was that `GET /v1/models3d/{id}` acted as a second, unguarded
+  terminal writer beside the poller. Now one observer owns a generation's
+  terminal outcome: a new `DatabaseStore::update_generation_if_active` performs
+  one guarded atomic write (`Written` / `AlreadyTerminal` / `Missing`) in both
+  backends, the per-app BYO store is resolved and threaded through the poll
+  path so a tenant's mesh can no longer land in the operator's bucket, the
+  terminal webhook is dispatched from whichever observer's guarded write
+  succeeded (at most once), the DB-fallback read keeps the tenant check,
+  `estimate_3d_cost` honours org BYO credentials and the cost markup, the
+  default `public_base_url` no longer mints `0.0.0.0` URLs, decrypted BYO
+  credentials no longer reach a tracing span (image and video spans had the
+  same omission and were fixed too), the mock answers a finished job terminally
+  on every later poll instead of forgetting it (which had let the poller reap a
+  completed row as failed), and the mock cube's triangles are wound outward.
+- [x] DONE 2026-09-11 — **Dashboard fixes** (`7e439db`): run-epoch guard so a
+  compare-mode rerun can't un-cancel the tile it no longer owns; explicit 3D
+  poll timeout instead of inheriting the SDK's 5-minute video default; 3D
+  capability labels in the model detail card; Size/N controls hidden for 3D;
+  corrected `matchResourceStatus` docs.
+- [x] DONE 2026-09-11 — **Docs/SDK fixes** (`f654933`): the Python contract
+  ratchet covers the three `/v1/models3d` operations again; three
+  param-matrix accuracy defects corrected (including two vendor cells marked
+  `(unconfirmed)` rather than dropped); the plan's push-state claims corrected;
+  README now describes the 3D family.
+- [x] DONE 2026-09-11 — **Residual gaps** (`5356973`): two test assertions the
+  latency change had invalidated (both since executed and passing), the
+  `update_generation_if_active` doc comment, `LITEGEN__SERVER__PUBLIC_BASE_URL`
+  documented in `Dockerfile`/`docker-compose.yml`, the SDK polling-timeout
+  error no longer says "video" for a 3D job, and two README/matrix overclaims.
+
+**Behaviour change to know about:** async request logs now record the
+**terminal** latency rather than submit latency, so `/v1/stats` percentiles for
+a video- or 3D-heavy tenant reflect time-to-usable-result (minutes) instead of
+submit time (milliseconds).
+
+**Report-only findings** (deliberately not fixed): F6 the submit/terminal
+insert race (self-healing), F9 quota not released when an async job ends
+failed/cancelled (pre-existing, inherited from video), F13 model-viewer fetches
+Draco/KTX2 decoders from gstatic (unreachable today), F16 `created` semantics
+differ between router and DB paths (matches video), F19 Single Mode 3D job not
+abortable, F25 no regression test for the cancel-while-polling fix, F26/F27
+pure refactors (`resolve_app_model3d_store` duplication, `Model3dJob` copied
+from `VideoJob`).
+
+**Known gaps:** F2/F3/F11 shipped without regression tests (they need a
+secrets key, an `app_storage_credentials` row, a webhook receiver, and fault
+injection that the 3D harness does not have); no real vendor adapter ships
+(Meshy/Tripo3D/Stability/Rodin remain deferred).
