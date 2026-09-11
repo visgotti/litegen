@@ -4,8 +4,8 @@ import React, { useEffect, useEffectEvent, useImperativeHandle, useRef, useState
 // resetTurntableRotation, cameraOrbit, …) against the installed version.
 import type { ModelViewerElement } from '@google/model-viewer';
 import {
-  canPreviewMesh, classifyViewerError, describeViewerError, loadEventMatches, retrySrc,
-  type Dimensions, type ViewerErrorReason,
+  canPreviewMesh, classifyViewerError, describeViewerError, loadEventMatches, matchResourceStatus, retrySrc,
+  type Dimensions, type ResourceStatusEntry, type ViewerErrorReason,
 } from './model3d-assets';
 
 export type ViewerBackground = 'dark' | 'light' | 'checker';
@@ -76,31 +76,20 @@ function hasWebGL2(): boolean {
 type FallbackReason = 'import' | 'webgl' | 'format' | 'load' | 'parse';
 
 /**
- * The HTTP status of the most recent resource-timing entry for `url`, or null
- * when unknown: no entry yet, or a cross-origin request without
- * `Timing-Allow-Origin` (most object storage does not send it), which reports
- * as status 0 per the Resource Timing spec. Reads browser telemetry about the
- * request model-viewer already made — issues no request of its own, so a
- * presigned/signed mesh URL is never fetched twice. See `classifyViewerError`
- * for why this is the only signal that can tell a download failure from a
- * parse failure in the installed model-viewer version.
+ * Resolves a mesh URL to the exact absolute form Chromium records it under in
+ * a `PerformanceResourceTiming` entry's `name`. Verified empirically (see the
+ * Task 17B report) that this RETAINS the URL fragment — `retrySrc`'s
+ * `#retry-N` cache-buster included — rather than stripping it. That is
+ * useful here: matching on the exact resolved URL (fragment and all) means a
+ * stale entry from an EARLIER attempt at the same mesh can never match a
+ * later one, since `retrySrc` gives every attempt a distinct fragment.
  */
-function latestResponseStatus(url: string): number | null {
-  if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') return null;
-  let bare: string;
+function resolveUrl(url: string): string {
   try {
-    bare = new URL(url.split('#')[0], typeof location !== 'undefined' ? location.href : undefined).href;
+    return new URL(url, typeof location !== 'undefined' ? location.href : undefined).href;
   } catch {
-    return null;
+    return url;
   }
-  const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
-  for (let i = entries.length - 1; i >= 0; i--) {
-    if (entries[i].name === bare) {
-      const status = (entries[i] as unknown as { responseStatus?: number }).responseStatus;
-      return typeof status === 'number' && status > 0 ? status : null;
-    }
-  }
-  return null;
 }
 
 /** The one failure presentation for every way the viewer can't show a mesh:
@@ -199,6 +188,13 @@ export default function ModelViewer({
   const [ready, setReady] = useState(() => !!customElements.get('model-viewer'));
   const [failed, setFailed] = useState(false);
   const elRef = useRef<ModelViewerElement | null>(null);
+  // The current attempt's mesh-request status, captured live by a scoped
+  // PerformanceObserver (see the effect below) rather than a one-shot read of
+  // the global performance buffer — see matchResourceStatus's doc comment for
+  // why. Reset whenever viewSrc changes so a PREVIOUS attempt's entry can
+  // never leak into this one's classification.
+  const statusRef = useRef<{ resolvedSrc: string; status: number | null }>({ resolvedSrc: '', status: null });
+  const observerRef = useRef<PerformanceObserver | null>(null);
   // Load state is keyed by src and derived during render, so a new src reads
   // as "loading" immediately without a reset effect.
   const [load, setLoad] = useState<LoadState>(() => loadingState(src));
@@ -243,7 +239,15 @@ export default function ModelViewer({
   });
 
   const handleError = useEffectEvent((detail: unknown) => {
-    const reason = classifyViewerError(detail, latestResponseStatus(viewSrc));
+    // Entries can be recorded by the browser slightly before the observer's
+    // callback microtask actually runs; drain anything pending before
+    // reading the captured status so a same-tick race can't read stale null.
+    const observer = observerRef.current;
+    if (observer) {
+      const drained = matchResourceStatus(observer.takeRecords() as unknown as ResourceStatusEntry[], statusRef.current.resolvedSrc);
+      if (drained !== null) statusRef.current.status = drained;
+    }
+    const reason = classifyViewerError(detail, statusRef.current.status);
     const message = describeViewerError(detail, reason);
     setLoad({ src, status: 'error', progress: 0, message, reason });
     onError?.(message);
@@ -279,6 +283,54 @@ export default function ModelViewer({
       el.removeEventListener('load', onLoadEvent);
       el.removeEventListener('error', onErrorEvent);
       el.removeEventListener('progress', onProgressEvent);
+    };
+  }, [showElement]);
+
+  // A new attempt (new src, or a retry's new #retry-N fragment) must start
+  // with no captured status — otherwise a fast failure that races ahead of
+  // any timing entry for THIS attempt would read the previous attempt's.
+  useEffect(() => {
+    statusRef.current = { resolvedSrc: resolveUrl(viewSrc), status: null };
+  }, [viewSrc]);
+
+  // Captures the mesh request's HTTP status live, scoped to this element's
+  // lifetime — not the global performance.getEntriesByType('resource')
+  // buffer (see matchResourceStatus's doc comment for why that buffer is
+  // unusable here). buffered:false on purpose: a backlog of entries from
+  // BEFORE this observer existed is exactly what must not be matched.
+  useEffect(() => {
+    if (!showElement) return;
+    if (typeof PerformanceObserver === 'undefined'
+      || !PerformanceObserver.supportedEntryTypes?.includes('resource')) {
+      // No Resource Timing Level 2 support (e.g. Safari at this writing):
+      // statusRef.current.status stays null, so classifyViewerError always
+      // gets 'load' — the safe default, never a wrong 'parse'.
+      return;
+    }
+    const observer = new PerformanceObserver(list => {
+      const status = matchResourceStatus(list.getEntries() as unknown as ResourceStatusEntry[], statusRef.current.resolvedSrc);
+      if (status !== null) statusRef.current.status = status;
+    });
+    observer.observe({ type: 'resource', buffered: false });
+    observerRef.current = observer;
+    // One-time safety net, not a recurring buffer scan: a tiny/cached mesh
+    // (the corrupt fixture is 100 bytes) can finish — and have its timing
+    // entry recorded — before this effect runs, since React's passive
+    // effects and the custom element's own reactive src update are both
+    // asynchronous. This catches only an entry for the EXACT current attempt
+    // (statusRef.current.resolvedSrc, just set by the reset effect above),
+    // read once at observer-attach time — not the ongoing, capped-buffer
+    // read this whole approach replaced.
+    if (typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
+      const already = matchResourceStatus(
+        performance.getEntriesByType('resource') as unknown as ResourceStatusEntry[],
+        statusRef.current.resolvedSrc,
+      );
+      if (already !== null) statusRef.current.status = already;
+    }
+    return () => {
+      observer.disconnect();
+      observerRef.current = null;
     };
   }, [showElement]);
 

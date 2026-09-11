@@ -9,6 +9,7 @@ import {
   validAssets,
   classifyViewerError,
   describeViewerError,
+  matchResourceStatus,
   formatBytes,
   formatDimensions,
   isBrowserImage,
@@ -289,11 +290,19 @@ describe('classifyViewerError', () => {
     expect(classifyViewerError({ type: 'loadfailure' }, 500)).toBe('load');
   });
 
-  it('is a download failure for an opaque cross-origin status (0)', () => {
-    // The common case for object storage that does not send
-    // Timing-Allow-Origin: the resource loaded fine, but we cannot tell, so
-    // this must default to the safe choice (Retry stays available).
+  it('is a download failure for status 0 (the request never got a response)', () => {
+    // three.js's FileLoader (which <model-viewer> uses) fetches in `cors`
+    // mode, so a response that actually reached the app already passed CORS
+    // and reports its real status here even cross-origin — 0 is not "no
+    // Timing-Allow-Origin header", it means the request itself failed
+    // (network error, CORS rejection, or no entry at all).
     expect(classifyViewerError({ type: 'loadfailure' }, 0)).toBe('load');
+  });
+
+  it('is a download failure when Resource Timing Level 2 is unsupported (e.g. Safari)', () => {
+    // No responseStatus field to read means the caller passes null, same as
+    // "no entry" — always the safe default, never a wrong 'parse'.
+    expect(classifyViewerError({ type: 'loadfailure' }, null)).toBe('load');
   });
 
   it('is a parse failure when the bytes were received (2xx/3xx) but the load still failed', () => {
@@ -308,6 +317,49 @@ describe('classifyViewerError', () => {
     expect(classifyViewerError({ type: 'something-new' }, 200)).toBe('load');
     expect(classifyViewerError(undefined, 200)).toBe('load');
     expect(classifyViewerError(null, 200)).toBe('load');
+  });
+});
+
+describe('matchResourceStatus', () => {
+  const SRC = 'https://cdn.example/out/mesh.glb';
+  const RETRY_SRC = 'https://cdn.example/out/mesh.glb#retry-1';
+
+  it('is null with no entries', () => {
+    expect(matchResourceStatus([], SRC)).toBeNull();
+  });
+
+  it('finds the status of the one matching entry', () => {
+    expect(matchResourceStatus([{ name: SRC, responseStatus: 200 }], SRC)).toBe(200);
+  });
+
+  it('rejects entries for a different URL', () => {
+    expect(matchResourceStatus([{ name: 'https://cdn.example/other.glb', responseStatus: 200 }], SRC)).toBeNull();
+  });
+
+  it('rejects an entry for a different retry attempt of the same mesh', () => {
+    // Chromium retains the #retry-N fragment in a resource-timing entry's
+    // name, so a stale entry from a DIFFERENT attempt at the same mesh must
+    // not match this one — an exact match, not a same-base-URL match.
+    expect(matchResourceStatus([{ name: SRC, responseStatus: 200 }], RETRY_SRC)).toBeNull();
+    expect(matchResourceStatus([{ name: RETRY_SRC, responseStatus: 200 }], SRC)).toBeNull();
+  });
+
+  it('takes the most recent matching entry when there are several', () => {
+    expect(matchResourceStatus(
+      [{ name: SRC, responseStatus: 200 }, { name: SRC, responseStatus: 404 }],
+      SRC,
+    )).toBe(404);
+  });
+
+  it('is null for a matching entry with no responseStatus field (Resource Timing Level 2 unsupported)', () => {
+    expect(matchResourceStatus([{ name: SRC }], SRC)).toBeNull();
+  });
+
+  it('ignores a non-matching entry after a real match rather than overwriting it with null', () => {
+    expect(matchResourceStatus(
+      [{ name: SRC, responseStatus: 200 }, { name: 'https://cdn.example/other.glb' }],
+      SRC,
+    )).toBe(200);
   });
 });
 
