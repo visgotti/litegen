@@ -222,89 +222,94 @@ export default function ModelPreview({
       aria-label="3D model inspector"
     >
       <div className="mp-toolbar" role="group" aria-label="Viewer controls">
-        <button
-          type="button"
-          className="btn btn-secondary mp-btn"
-          aria-pressed={autoRotate}
-          data-testid={`${testId}-autorotate`}
-          disabled={viewerFailed}
-          onClick={() => setAutoRotate(v => !v)}
-        >
-          <RotateCw size={14} aria-hidden="true" />Auto-rotate
-        </button>
-        <button
-          type="button"
-          className="btn btn-secondary mp-btn"
-          data-testid={`${testId}-reset`}
-          disabled={viewerFailed}
-          onClick={() => viewerRef.current?.resetCamera()}
-        >
-          <LocateFixed size={14} aria-hidden="true" />Reset camera
-        </button>
-        <label className="mp-exposure">
-          <Sun size={14} aria-hidden="true" />
-          <span>Exposure</span>
-          <input
-            type="range"
-            min={EXPOSURE_MIN}
-            max={EXPOSURE_MAX}
-            step={0.05}
-            value={exposure}
-            disabled={viewerFailed}
-            aria-valuetext={exposure.toFixed(2)}
-            data-testid={`${testId}-exposure`}
-            onChange={e => setExposure(Number(e.target.value))}
-          />
-          <output aria-hidden="true">{exposure.toFixed(2)}</output>
-        </label>
-        <div className="mp-seg" role="group" aria-label="Background">
-          {BACKGROUND_OPTIONS.map(o => (
-            <button
-              key={o.value}
-              type="button"
-              className="btn btn-secondary mp-btn"
-              aria-pressed={background === o.value}
-              aria-label={`${o.label} background`}
-              data-testid={`${testId}-bg-${o.value}`}
-              disabled={viewerFailed}
-              onClick={() => setBackground(o.value)}
-            >
-              <span className={`mp-swatch mp-swatch--${o.value}`} aria-hidden="true" />
-              {o.label}
-            </button>
-          ))}
-        </div>
-        <span className="mp-spacer" />
-        {canFullscreen && (
+        <div className="mp-toolbar-group">
           <button
             type="button"
             className="btn btn-secondary mp-btn"
-            aria-pressed={isFullscreen}
-            aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
-            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-            data-testid={`${testId}-fullscreen`}
+            aria-pressed={autoRotate}
+            data-testid={`${testId}-autorotate`}
             disabled={viewerFailed}
-            onClick={toggleFullscreen}
+            onClick={() => setAutoRotate(v => !v)}
           >
-            {isFullscreen ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}
+            <RotateCw size={14} aria-hidden="true" />Auto-rotate
           </button>
-        )}
-        <button
-          type="button"
-          className="btn btn-secondary mp-btn"
-          title={meshUrl}
-          data-testid={`${testId}-copy-url`}
-          data-copy-state={copyState}
-          onClick={copyMeshUrl}
-        >
-          {copyState === 'copied'
-            ? <Check size={14} aria-hidden="true" />
-            : <Copy size={14} aria-hidden="true" />}
-          {copyLabel}
-        </button>
-        <span className="mp-sr" role="status" aria-live="polite">
-          {copyState === 'copied' ? 'Mesh URL copied' : copyState === 'failed' ? 'Could not copy the mesh URL' : ''}
-        </span>
+          <button
+            type="button"
+            className="btn btn-secondary mp-btn"
+            data-testid={`${testId}-reset`}
+            disabled={viewerFailed}
+            onClick={() => viewerRef.current?.resetCamera()}
+          >
+            <LocateFixed size={14} aria-hidden="true" />Reset camera
+          </button>
+          <label className="mp-exposure">
+            <Sun size={14} aria-hidden="true" />
+            <span>Exposure</span>
+            <input
+              type="range"
+              min={EXPOSURE_MIN}
+              max={EXPOSURE_MAX}
+              step={0.05}
+              value={exposure}
+              disabled={viewerFailed}
+              aria-valuetext={exposure.toFixed(2)}
+              data-testid={`${testId}-exposure`}
+              onChange={e => setExposure(Number(e.target.value))}
+            />
+            <output aria-hidden="true">{exposure.toFixed(2)}</output>
+          </label>
+        </div>
+        <div className="mp-toolbar-group">
+          <div className="mp-seg" role="group" aria-label="Background">
+            {BACKGROUND_OPTIONS.map(o => (
+              <button
+                key={o.value}
+                type="button"
+                className="btn btn-secondary mp-btn"
+                aria-pressed={background === o.value}
+                aria-label={`${o.label} background`}
+                data-testid={`${testId}-bg-${o.value}`}
+                disabled={viewerFailed}
+                onClick={() => setBackground(o.value)}
+              >
+                <span className={`mp-swatch mp-swatch--${o.value}`} aria-hidden="true" />
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="mp-toolbar-group mp-toolbar-actions">
+          {canFullscreen && (
+            <button
+              type="button"
+              className="btn btn-secondary mp-btn"
+              aria-pressed={isFullscreen}
+              aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+              title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+              data-testid={`${testId}-fullscreen`}
+              disabled={viewerFailed}
+              onClick={toggleFullscreen}
+            >
+              {isFullscreen ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn btn-secondary mp-btn"
+            title={meshUrl}
+            data-testid={`${testId}-copy-url`}
+            data-copy-state={copyState}
+            onClick={copyMeshUrl}
+          >
+            {copyState === 'copied'
+              ? <Check size={14} aria-hidden="true" />
+              : <Copy size={14} aria-hidden="true" />}
+            {copyLabel}
+          </button>
+          <span className="mp-sr" role="status" aria-live="polite">
+            {copyState === 'copied' ? 'Mesh URL copied' : copyState === 'failed' ? 'Could not copy the mesh URL' : ''}
+          </span>
+        </div>
       </div>
 
       <div className="mp-stage">

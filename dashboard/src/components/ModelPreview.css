@@ -41,11 +41,27 @@
 }
 
 /* ─── Toolbar ─────────────────────────────────────────────────────── */
+/* Three groups — view controls, background, actions — each wraps as a unit
+   via its own nowrap row, so a narrow inspector drops a whole group to the
+   next line instead of orphaning one button (e.g. "Copy mesh URL") away from
+   its neighbours. `.mp-toolbar-actions` gets `margin-left: auto` so it sits
+   flush right whenever all three groups fit on one row. */
 .mp .mp-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  gap: 8px 12px;
+}
+
+.mp .mp-toolbar-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 6px 8px;
+}
+
+.mp .mp-toolbar-actions {
+  margin-left: auto;
 }
 
 .mp .mp-btn {
@@ -133,10 +149,6 @@
 .mp .mp-swatch--light { background: #f0f3f6; }
 .mp .mp-swatch--checker {
   background: repeating-conic-gradient(#8b949e 0% 25%, #30363d 0% 50%) 50% / 6px 6px;
-}
-
-.mp .mp-spacer {
-  flex: 1 1 auto;
 }
 
 /* ─── Stage ───────────────────────────────────────────────────────── */

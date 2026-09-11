@@ -49,15 +49,18 @@ export const Failed: Story = {
 };
 
 /**
- * `done` with no mesh asset. The live fan-out converts this to an error tile
- * ("completed without a mesh asset"); this is the tile's own fallback if a
- * mesh-less `done` ever reaches it.
+ * `done` with no mesh asset. The live fan-out already converts this to an
+ * error tile before it reaches `ResultTile3D` (see `CompletedWithoutMeshAsError`
+ * below), but the component renders its own error state for it too — a
+ * completed job without a mesh is a provider contract violation, not a muted
+ * "no mesh" status, regardless of what upstream state it arrives in.
  */
 export const DoneWithoutMesh: Story = {
   args: { tile: { ...base, status: 'done', assets: [], latencyMs: 4200, costUsd: 0 } },
 };
 
-/** What the live fan-out produces for the same contract violation. */
+/** What the live fan-out actually produces for the same contract violation —
+ *  the same visual and test id as `DoneWithoutMesh` above. */
 export const CompletedWithoutMeshAsError: Story = {
   args: { tile: { ...base, status: 'error', error: 'completed without a mesh asset', latencyMs: 4200, costUsd: 0 } },
 };

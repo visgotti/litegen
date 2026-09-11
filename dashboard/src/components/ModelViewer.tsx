@@ -3,7 +3,10 @@ import React, { useEffect, useEffectEvent, useImperativeHandle, useRef, useState
 // below, but it makes tsc check every element API used here (getDimensions,
 // resetTurntableRotation, cameraOrbit, …) against the installed version.
 import type { ModelViewerElement } from '@google/model-viewer';
-import { canPreviewMesh, describeViewerError, loadEventMatches, retrySrc, type Dimensions } from './model3d-assets';
+import {
+  canPreviewMesh, classifyViewerError, describeViewerError, loadEventMatches, retrySrc,
+  type Dimensions, type ViewerErrorReason,
+} from './model3d-assets';
 
 export type ViewerBackground = 'dark' | 'light' | 'checker';
 
@@ -37,6 +40,8 @@ interface LoadState {
   status: 'loading' | 'loaded' | 'error';
   progress: number;
   message: string;
+  /** Only meaningful when status === 'error'. */
+  reason?: ViewerErrorReason;
 }
 
 const loadingState = (src: string): LoadState => ({ src, status: 'loading', progress: 0, message: '' });
@@ -68,7 +73,35 @@ function hasWebGL2(): boolean {
   return webgl2Support;
 }
 
-type FallbackReason = 'import' | 'webgl' | 'format' | 'load';
+type FallbackReason = 'import' | 'webgl' | 'format' | 'load' | 'parse';
+
+/**
+ * The HTTP status of the most recent resource-timing entry for `url`, or null
+ * when unknown: no entry yet, or a cross-origin request without
+ * `Timing-Allow-Origin` (most object storage does not send it), which reports
+ * as status 0 per the Resource Timing spec. Reads browser telemetry about the
+ * request model-viewer already made — issues no request of its own, so a
+ * presigned/signed mesh URL is never fetched twice. See `classifyViewerError`
+ * for why this is the only signal that can tell a download failure from a
+ * parse failure in the installed model-viewer version.
+ */
+function latestResponseStatus(url: string): number | null {
+  if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') return null;
+  let bare: string;
+  try {
+    bare = new URL(url.split('#')[0], typeof location !== 'undefined' ? location.href : undefined).href;
+  } catch {
+    return null;
+  }
+  const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i].name === bare) {
+      const status = (entries[i] as unknown as { responseStatus?: number }).responseStatus;
+      return typeof status === 'number' && status > 0 ? status : null;
+    }
+  }
+  return null;
+}
 
 /** The one failure presentation for every way the viewer can't show a mesh:
  *  the mesh is still downloadable, so it degrades to a link rather than an
@@ -210,8 +243,9 @@ export default function ModelViewer({
   });
 
   const handleError = useEffectEvent((detail: unknown) => {
-    const message = describeViewerError(detail);
-    setLoad({ src, status: 'error', progress: 0, message });
+    const reason = classifyViewerError(detail, latestResponseStatus(viewSrc));
+    const message = describeViewerError(detail, reason);
+    setLoad({ src, status: 'error', progress: 0, message, reason });
     onError?.(message);
   });
 
@@ -302,7 +336,19 @@ export default function ModelViewer({
     return <MeshFallback src={src} testId={testId} reason="import" message={IMPORT_FAILED_MESSAGE} />;
   }
   if (current.status === 'error') {
-    return <MeshFallback src={src} testId={testId} reason="load" message={current.message} onRetry={retry} />;
+    const reason = current.reason ?? 'load';
+    // A parse failure re-fetches the exact same bytes and fails the same
+    // way, so Retry (the fragment-busting cache-buster) cannot help — offer
+    // download only.
+    return (
+      <MeshFallback
+        src={src}
+        testId={testId}
+        reason={reason}
+        message={current.message}
+        onRetry={reason === 'load' ? retry : undefined}
+      />
+    );
   }
   if (!ready) {
     return <span data-testid={testId ? `${testId}-loading` : undefined} style={{ color: '#8b949e' }}>loading viewer…</span>;
@@ -325,6 +371,9 @@ export default function ModelViewer({
           'camera-orbit': CAMERA_ORBIT,
           'camera-target': CAMERA_TARGET,
           'field-of-view': FIELD_OF_VIEW,
+          // The idle hand-gesture hint overlays compact tiles; the toolbar and
+          // auto-rotate already make interactivity obvious without it.
+          'interaction-prompt': 'none',
           // A number, not a string: React 19 assigns this as the element's
           // `exposure` property (it exists on the upgraded element), and the
           // renderer uses the property value as-is.
