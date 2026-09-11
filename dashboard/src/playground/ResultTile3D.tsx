@@ -8,7 +8,8 @@ interface Props { tile: ResultTileState; onRerun: (modelId: string) => void; }
  *  `ModelPreview` inspector: several live canvases each with a full toolbar
  *  would crowd the grid, and the single-mode panel is where inspection lives. */
 export default function ResultTile3D({ tile, onRerun }: Props) {
-  const mesh = meshOf(tile.assets ?? [], tile.url)?.url;
+  const meshAsset = meshOf(tile.assets ?? [], tile.url);
+  const mesh = meshAsset?.url;
   const poster = previewOf(tile.assets ?? [])?.url;
   return (
     <div className="pg-tile" data-testid={`pg-tile-${tile.modelId}`}>
@@ -27,7 +28,7 @@ export default function ResultTile3D({ tile, onRerun }: Props) {
         ) : tile.status === 'error' ? (
           <span className="pg-tile-error" data-testid={`pg-tile-error-${tile.modelId}`}>⚠ {tile.error}</span>
         ) : mesh ? (
-          <ModelViewer src={mesh} poster={poster} testId={`pg-tile-mesh-${tile.modelId}`} style={{ height: 240 }} />
+          <ModelViewer src={mesh} poster={poster} format={meshAsset?.format} testId={`pg-tile-mesh-${tile.modelId}`} style={{ height: 240 }} />
         ) : (
           <span className="pg-tile-status">no mesh</span>
         )}
