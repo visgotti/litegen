@@ -53,9 +53,12 @@ function specOperations(): Set<string> {
 
 function facadeOperations(): Set<string> {
   const src = readFileSync(FACADE_PATH, "utf8");
-  // Matches: request("POST", "/v1/...")  and  request<T>("GET", `/v1/.../${id}`).
+  // Matches: request("POST", "/v1/...")  and  request<T>("GET", `/v1/.../${id}`),
+  // with the method literal in either quote style — client.ts writes some calls
+  // as request('GET', ...), and a double-quote-only pattern silently reported
+  // those covered endpoints as "uncovered".
   // The leading-slash requirement excludes method arrays like ["GET","HEAD"].
-  const re = /"(GET|POST|PUT|PATCH|DELETE)"\s*,\s*[`"](\/[^`"]+)[`"]/g;
+  const re = /['"](GET|POST|PUT|PATCH|DELETE)['"]\s*,\s*[`"'](\/[^`"']+)[`"']/g;
   const ops = new Set<string>();
   let m: RegExpExecArray | null;
   while ((m = re.exec(src)) !== null) {
