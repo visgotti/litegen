@@ -45,5 +45,9 @@ export default {
       snapshot: (spec, _body, { ours }) => openapiExcerpt(spec, { paths: [ENDPOINT], ours }),
     },
   ],
-  acknowledged: [],
+  // ideogram-v4 stays unacknowledged on purpose: add later (it needs a v4
+  // request branch — new path, `text_prompt`).
+  acknowledged: [
+    { id: 'p-image-ideogram', reason: 'skipped 2026-09-11: P-Image is a budget tier on /v1/text-to-image/{model}; it needs its own request branch' },
+  ],
 };

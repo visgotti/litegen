@@ -44,6 +44,9 @@ export default {
     'recraft/recraftv2': 'recraftv2',
     'recraft/recraftv4_1': 'recraftv4_1',
     'recraft/recraftv4_1_pro': 'recraftv4_1_pro',
+    'recraft/recraftv4_1_vector': 'recraftv4_1_vector',
+    'recraft/recraftv4_1_pro_vector': 'recraftv4_1_pro_vector',
+    'recraft/recraftv2_vector': 'recraftv2_vector',
   },
   sources: [
     {
@@ -82,6 +85,21 @@ export default {
       pattern: /_raster$/,
       reason:
         'explicit-raster spelling of the undecorated id (docs: every model not ending in _vector is raster); only the OpenAPI enum lists these, the docs model tables do not',
+    },
+    // recraftv4, recraftv4_vector, recraftv4_pro, recraftv4_pro_vector — not recraftv4_1*.
+    {
+      pattern: /^recraftv4(?:_pro)?(?:_vector)?$/,
+      reason: 'skipped 2026-09-11: the V4 (non-.1) generation; V4.1 is carried',
+    },
+    // recraftv4_1_utility, _utility_vector, _utility_pro, _utility_pro_vector.
+    {
+      pattern: /^recraftv4_1_utility(?:_pro)?(?:_vector)?$/,
+      reason: 'skipped 2026-09-11: the V4.1 utility variants (the predictability-tuned twins of V4.1, same prices); not carried',
+    },
+    // recraftv4_styles, _styles_vector, _styles_pro, _styles_pro_vector.
+    {
+      pattern: /^recraftv4_styles(?:_pro)?(?:_vector)?$/,
+      reason: 'skipped 2026-09-11: the V4 Styles family always requires a style (style_id or style references), a workflow we do not expose',
     },
   ],
 };

@@ -27,9 +27,7 @@ export default {
     'luma/photon-flash-1': 'photon-flash-1',
     'luma/dream-machine': 'ray-2',
     'luma/ray-2': 'ray-2',
-    'luma/ray-3': 'ray-3',
     'luma/ray-flash-2': 'ray-flash-2',
-    'luma/ray-hdr-3': 'ray-hdr-3',
   },
   sources: [
     // The guide posts to /generations; the reference names the same operation /generations/video.

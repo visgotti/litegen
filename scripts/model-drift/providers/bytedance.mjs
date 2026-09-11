@@ -81,6 +81,12 @@ function requestDigest(md, ours) {
   return out.join('\n') + '\n';
 }
 
+/** Model ids in a model-list first cell: [model-id](console link), sometimes "(also supports: other-id)". */
+const rowIds = (first) => {
+  const also = first.match(/also supports:\s*([^)]*)\)/i)?.[1].split(/,|\band\b/) ?? [];
+  return [...[...first.matchAll(/\[([^\]]+)\]\(/g)].map((m) => m[1]), ...also].map((s) => s.trim());
+};
+
 const paramNames = (md) => section(md, '### Request body').flatMap((l) => l.match(/^\*\*([\w.[\]]+)\*\*\s+`/)?.[1] ?? []);
 
 const apiPage = (key, code) => ({
@@ -95,36 +101,35 @@ const apiPage = (key, code) => ({
 export default {
   provider: 'bytedance',
   models: {
+    'bytedance/seedream-5-0-lite-260128': 'seedream-5-0-lite-260128',
+    'bytedance/seedream-4-5-251128': 'seedream-4-5-251128',
     'bytedance/seedream-4-0-250828': 'seedream-4-0-250828',
-    'bytedance/seedream-3-0-t2i-250415': 'seedream-3-0-t2i-250415',
     'bytedance/doubao-seedance-1-0-pro-250528': 'seedance-1-0-pro-250528',
-    'bytedance/doubao-seedance-1-0-lite-i2v-250428': 'seedance-1-0-lite-i2v-250428',
+    'bytedance/seedance-1-0-pro-fast-251015': 'seedance-1-0-pro-fast-251015',
+    'bytedance/dreamina-seedance-2-0-mini-260615': 'dreamina-seedance-2-0-mini-260615',
   },
   sources: [
     {
       key: 'model-list',
       url: `${DOCS}/1330310`,
       expect: 'html',
-      // First cell: [model-id](console link), sometimes "(also supports: other-id)".
       extract: (_html, body) => {
         const md = pageMarkdown(body);
         return ['# Video generation', '# Image generation']
           .flatMap((h) => section(md, h))
           .filter((l) => l.startsWith('|'))
-          .flatMap((l) => {
-            const first = cells(l)[0] ?? '';
-            const also = first.match(/also supports:\s*([^)]*)\)/i)?.[1].split(/,|\band\b/) ?? [];
-            return [...[...first.matchAll(/\[([^\]]+)\]\(/g)].map((m) => m[1]), ...also].map((s) => s.trim());
-          });
+          .flatMap((l) => rowIds(cells(l)[0] ?? ''));
       },
       // Our models' rows without the rate-limit column (quota changes are not typings).
+      // A row counts as ours when any of its ids is (seedream-5-0-lite-260128 is an
+      // "also supports" id on the seedream-5-0-260128 row).
       snapshot: (_html, body, { ours }) => {
         const md = pageMarkdown(body);
         const rows = ['# Video generation', '# Image generation'].flatMap((h) =>
           section(md, h)
             .filter((l) => l.startsWith('|'))
             .map(cells)
-            .filter((c) => ours.some((id) => (c[0] ?? '').includes(`[${id}]`)))
+            .filter((c) => rowIds(c[0] ?? '').some((id) => ours.includes(id)))
             .map((c) => `| ${c.slice(0, h === '# Video generation' ? 3 : 2).join(' | ')} |`),
         );
         return rows.join('\n') + '\n';
@@ -171,5 +176,30 @@ export default {
       },
     },
   ],
-  acknowledged: [],
+  acknowledged: [
+    {
+      id: 'seedance-1-5-pro-251215',
+      reason: 'skipped 2026-09-11: in the fourth deprecation batch, deactivated 2026-11-11 (replacement dreamina-seedance-2-0-mini-260615, carried)',
+    },
+    {
+      id: 'dreamina-seedance-2-0-260128',
+      reason: 'skipped 2026-09-11: optional; the Seedance 2.0 series needs a USD 30 BytePlus balance to activate (2.0 mini is carried)',
+    },
+    {
+      id: 'dreamina-seedance-2-0-fast-260128',
+      reason: 'skipped 2026-09-11: optional; the Seedance 2.0 series needs a USD 30 BytePlus balance to activate (2.0 mini is carried)',
+    },
+    {
+      id: 'dreamina-seedance-2-5-260628',
+      reason: 'skipped 2026-09-11: image-to-video only accepts ratio `adaptive`; skip for now',
+    },
+    {
+      id: 'dola-seedream-5-0-pro-260628',
+      reason: 'skipped 2026-09-11: non-lite Seedream 5.0 (pro) is optional; seedream-5-0-lite-260128 is carried',
+    },
+    {
+      id: 'seedream-5-0-260128',
+      reason: 'skipped 2026-09-11: non-lite Seedream 5.0 is optional; seedream-5-0-lite-260128 is carried',
+    },
+  ],
 };

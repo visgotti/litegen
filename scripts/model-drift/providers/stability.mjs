@@ -94,6 +94,7 @@ export default {
   models: {
     'stability/sd3-large': 'sd3.5-large',
     'stability/sd3-turbo': 'sd3.5-large-turbo',
+    'stability/sd3.5-medium': 'sd3.5-medium',
     'stability/core': 'core',
     'stability/ultra': 'ultra',
     'stability/sdxl': 'stable-diffusion-xl-1024-v1-0',
@@ -119,8 +120,14 @@ export default {
       },
     },
   ],
-  acknowledged: ['sd3-large', 'sd3-large-turbo', 'sd3-medium'].map((id) => ({
-    id,
-    reason: 'SD3.0 API deprecated 2025-04-17; calls are re-routed to the sd3.5-* equivalent (the sd3 `model` description and the platform changelog say so)',
-  })),
+  acknowledged: [
+    ...['sd3-large', 'sd3-large-turbo', 'sd3-medium'].map((id) => ({
+      id,
+      reason: 'SD3.0 API deprecated 2025-04-17; calls are re-routed to the sd3.5-* equivalent (the sd3 `model` description and the platform changelog say so)',
+    })),
+    {
+      id: 'sd3.5-flash',
+      reason: 'skipped 2026-09-11: the sd3 `model` description prices it, but the `model` enum does not list it — revisit when the enum does',
+    },
+  ],
 };

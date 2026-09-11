@@ -764,12 +764,14 @@ mod tests {
 
     /// The `/v2beta/stable-image/generate/sd3` `model` enum is
     /// `sd3.5-large | sd3.5-large-turbo | sd3.5-medium`. `sd3-large` and
-    /// `sd3-turbo` are no longer members.
+    /// `sd3-turbo` are no longer members; `stability/sd3.5-medium` sends its
+    /// own value.
     #[tokio::test]
     async fn sd3_catalog_ids_map_to_the_current_sd35_model_values() {
         for (catalog_id, expected) in [
             ("stability/sd3-large", "sd3.5-large"),
             ("stability/sd3-turbo", "sd3.5-large-turbo"),
+            ("stability/sd3.5-medium", "sd3.5-medium"),
         ] {
             let server = MockServer::start().await;
             mock_v2(&server, "sd3").await;

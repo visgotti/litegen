@@ -59,6 +59,12 @@ fn no_retired_model_ids_are_advertised() {
         ("runway/gen-3", "gen3a_turbo removed from the API 2026-07-30"),
         ("runway/gen-3-turbo", "gen3a_turbo removed from the API 2026-07-30"),
         ("bfl/flux-pro", "no /v1/flux-pro endpoint in api.bfl.ai/openapi.json"),
+        // 2026-09-11 model-drift decisions (docs/superpowers/2026-09-11-model-drift-decisions.md):
+        ("leonardo/veo3", "Leonardo retired Veo 3 (VEO3) 2026-06-29; replacement leonardo/veo3.1"),
+        ("luma/ray-3", "not in the Dream Machine model enum (ray-2 | ray-flash-2); ray-3.2 is Luma Agents API only"),
+        ("luma/ray-hdr-3", "not in the Dream Machine model enum (ray-2 | ray-flash-2); ray-3.2 is Luma Agents API only"),
+        ("bytedance/seedream-3-0-t2i-250415", "BytePlus deactivated it 2026-05-13; replacement bytedance/seedream-5-0-lite-260128"),
+        ("bytedance/doubao-seedance-1-0-lite-i2v-250428", "BytePlus deactivated it 2026-05-13; replacement bytedance/seedance-1-0-pro-fast-251015"),
     ];
     let mut still_present = Vec::new();
     for (id, why) in retired {
@@ -324,20 +330,6 @@ fn vidu_q1_duration_and_resolution_match_the_model_map() {
         }
         other => panic!("viduq1 resolution is {other:?}"),
     }
-}
-
-/// The Hunyuan video adapter only ever calls `SubmitImageToVideoJob`, which
-/// needs a driving image. vclm does expose `SubmitTextToVideoJob`, but we do
-/// not implement it — so the catalog must not promise text-to-video.
-#[test]
-fn hunyuan_video_advertises_only_what_the_adapter_implements() {
-    let reg = registry();
-    let schema = reg.get("hunyuan/hunyuan-video").expect("hunyuan-video missing");
-    assert!(
-        !schema.capabilities.text_to_video,
-        "the adapter has no SubmitTextToVideoJob path"
-    );
-    assert!(schema.capabilities.image_to_video);
 }
 
 /// Nova Reel's `TEXT_VIDEO` task supports `durationSeconds: 6` only; longer
@@ -910,77 +902,6 @@ fn hunyuan_image_extra_allowlist_names_only_submit_hunyuan_image_job_parameters(
             "hunyuan-image allowlists {key:?}, which is not a SubmitHunyuanImageJob parameter"
         );
     }
-}
-
-/// Same rule for the video adapter's action. `SubmitImageToVideoJob` has no
-/// `Resolution` parameter, so allowlisting it guarantees `UnknownParameter`.
-/// @see <https://cloud.tencent.com/document/product/1616/130567> (2026-09-11)
-#[test]
-fn hunyuan_video_extra_allowlist_names_only_submit_image_to_video_job_parameters() {
-    const PARAMS: [&str; 21] = [
-        "Model",
-        "Image",
-        "ImageTail",
-        "Prompt",
-        "NegativePrompt",
-        "Duration",
-        "Mode",
-        "CfgScale",
-        "Sound",
-        "LogoAdd",
-        "LogoParam",
-        "MultiShot",
-        "ShotType",
-        "MultiPrompt",
-        "ElementList",
-        "StaticMask",
-        "DynamicMasks",
-        "CameraControl",
-        "CallbackUrl",
-        "VoiceList",
-        "ExternalTaskId",
-    ];
-    let reg = registry();
-    let schema = reg
-        .get("hunyuan/hunyuan-video")
-        .expect("hunyuan-video missing");
-    for key in &schema.extra_allowlist {
-        assert!(
-            PARAMS.contains(&key.as_str()),
-            "hunyuan-video allowlists {key:?}, which is not a SubmitImageToVideoJob parameter"
-        );
-    }
-}
-
-/// `SubmitImageToVideoJob` takes no resolution (quality is `Mode`: std|pro)
-/// and the adapter never reads `resolution`, so the `[540p, 720p]` enum was a
-/// control that validated and was then silently dropped.
-/// @see <https://cloud.tencent.com/document/product/1616/130567> (2026-09-11)
-#[test]
-fn hunyuan_video_does_not_advertise_a_resolution_param() {
-    let reg = registry();
-    let schema = reg
-        .get("hunyuan/hunyuan-video")
-        .expect("hunyuan-video missing");
-    assert!(
-        !schema.params.contains_key("resolution"),
-        "hunyuan-video advertises resolution, which SubmitImageToVideoJob does not take and the adapter never sends"
-    );
-}
-
-/// `SubmitImageToVideoJob.Prompt`: "不能超过2500个字符" (at most 2500 characters).
-/// @see <https://cloud.tencent.com/document/product/1616/130567> (2026-09-11)
-#[test]
-fn hunyuan_video_prompt_limit_matches_submit_image_to_video_job() {
-    let reg = registry();
-    let schema = reg
-        .get("hunyuan/hunyuan-video")
-        .expect("hunyuan-video missing");
-    assert_eq!(
-        schema.prompt.max_length,
-        Some(2500),
-        "SubmitImageToVideoJob caps Prompt at 2500 characters"
-    );
 }
 
 // ─── Ideogram: vendor facts re-read 2026-09-11 (model-drift) ────────────────
@@ -1953,5 +1874,816 @@ fn stability_sd3_turbo_advertises_every_sd3_aspect_ratio() {
             allowed.iter().any(|a| a == ar),
             "stability/sd3-turbo omits {ar:?}, which /generate/sd3 accepts for sd3.5-large-turbo"
         );
+    }
+}
+
+// ─── bytedance: 2026-09-11 drift decisions applied ──────────────────────────
+
+/// Seedream 5.0 lite and 4.5 (the vendor's successors to the deactivated
+/// Seedream 3.0) take text-to-image and up to 14 reference images, have no
+/// `seed` (the Image generation API documents none), and their WxH sizes need
+/// total pixels >= 3686400 (2560x1440) at an aspect ratio in [1/16, 16] — so no
+/// side can be under sqrt(3686400/16) = 480, a stricter floor than 4.0's 240.
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1541523> (2026-09-11)
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1330310> (2026-09-11)
+#[test]
+fn bytedance_seedream_5_0_lite_and_4_5_are_advertised_with_their_size_floor() {
+    use litegen::capabilities::schema::SizeSpec;
+    let reg = registry();
+    for id in ["bytedance/seedream-5-0-lite-260128", "bytedance/seedream-4-5-251128"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing from the catalog"));
+        assert!(
+            schema.capabilities.text_to_image && schema.capabilities.image_to_image,
+            "{id}: text-to-image and (multi-)reference image-to-image"
+        );
+        assert!(
+            schema.params.get("seed").is_none(),
+            "{id}: the Image generation API has no seed parameter"
+        );
+        match schema.params.get("size") {
+            Some(ParamSpec::Size(SizeSpec::Freeform(f))) => {
+                assert_eq!((f.min_width, f.min_height), (480, 480), "{id}: pixel floor 3686400 at ratio 1/16..16");
+                assert_eq!((f.max_width, f.max_height), (16384, 16384), "{id}: pixel cap 16777216 at ratio 1/16..16");
+            }
+            other => panic!("{id} size is {other:?}, expected a freeform WxH size"),
+        }
+        let refs = schema.ref_inputs.as_ref().unwrap_or_else(|| panic!("{id} declares no ref_inputs"));
+        assert_eq!(refs.max_total, 14, "{id}: up to 14 reference images");
+    }
+}
+
+/// Seedance 1.0 Pro Fast, the vendor's successor to the deactivated Seedance
+/// 1.0 Lite: text-to-video and first-frame image-to-video only (no
+/// first-and-last-frame mode), duration [2, 12] s, resolution 480p/720p/1080p.
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1520757> (2026-09-11)
+#[test]
+fn bytedance_seedance_1_0_pro_fast_is_first_frame_only() {
+    let id = "bytedance/seedance-1-0-pro-fast-251015";
+    let reg = registry();
+    let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing from the catalog"));
+    assert!(schema.capabilities.text_to_video && schema.capabilities.image_to_video);
+    let roles = &schema.ref_inputs.as_ref().expect("seedance-1-0-pro-fast declares no ref_inputs").roles;
+    assert!(roles.contains_key("first_frame"), "first-frame image-to-video is supported");
+    assert!(
+        !roles.contains_key("last_frame"),
+        "1.0 pro fast has no first-and-last-frame mode; a last_frame role promises one"
+    );
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Float(f)) => assert_eq!((f.min, f.max), (Some(2.0), Some(12.0)), "duration [2, 12]"),
+        other => panic!("{id} duration_seconds is {other:?}"),
+    }
+    assert_eq!(enum_values(&reg, id, "resolution"), ["480p", "720p", "1080p"]);
+}
+
+/// Dreamina Seedance 2.0 mini: text-to-video plus first / first-and-last-frame
+/// image-to-video, 480p/720p only, duration [4, 15] s, and no `seed` (seed is
+/// documented for Seedance 1.5 pro / 1.0 pro / 1.0 pro fast only). The 2.0
+/// series' omni-reference roles are not advertised: the adapter only sends
+/// image_url blocks tagged first_frame / last_frame.
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1520757> (2026-09-11)
+#[test]
+fn bytedance_seedance_2_0_mini_advertises_only_frame_roles_and_its_bounds() {
+    let id = "bytedance/dreamina-seedance-2-0-mini-260615";
+    let reg = registry();
+    let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing from the catalog"));
+    assert!(schema.capabilities.text_to_video && schema.capabilities.image_to_video);
+    let mut roles: Vec<&str> = schema
+        .ref_inputs
+        .as_ref()
+        .expect("seedance-2-0-mini declares no ref_inputs")
+        .roles
+        .keys()
+        .map(String::as_str)
+        .collect();
+    roles.sort_unstable();
+    assert_eq!(roles, ["first_frame", "last_frame"], "no reference_image/_video/_audio roles");
+    assert_eq!(enum_values(&reg, id, "resolution"), ["480p", "720p"], "2.0 mini has no 1080p/4k");
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Float(f)) => assert_eq!((f.min, f.max), (Some(4.0), Some(15.0)), "duration [4, 15]"),
+        other => panic!("{id} duration_seconds is {other:?}"),
+    }
+    assert!(schema.params.get("seed").is_none(), "seed is not a 2.0-series parameter");
+}
+
+// ─── kling: 2026-09-11 drift decisions applied ──────────────────────────────
+
+/// Kling Image 2.1 on POST /v1/images/generations (`model_name` kling-v2-1):
+/// text + image input, eight aspect ratios including 21:9, prompt at most
+/// 2500 characters; `image_fidelity` is kling-v1/v1-5 only.
+/// @see https://kling.ai/document-api/api/image/2-1/image-generation.md (2026-09-11)
+/// @see https://kling.ai/document-api/guides/capability-map/image.md (2026-09-11)
+#[test]
+fn kling_image_2_1_matches_the_image_2_1_contract() {
+    let reg = registry();
+    let schema = reg.get("kling/kling-v2-1").expect("kling/kling-v2-1 missing");
+    assert!(schema.capabilities.text_to_image && schema.capabilities.image_to_image);
+    assert_eq!(schema.prompt.max_length, Some(2500), "Image 2.1 prompt limit");
+    let mut got = aspect_ratios(&reg, "kling/kling-v2-1");
+    got.sort();
+    let mut want: Vec<String> = ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    want.sort();
+    assert_eq!(got, want, "Image 2.1 aspect ratios");
+    assert!(
+        !schema.extra_allowlist.iter().any(|k| k == "image_fidelity" || k == "human_fidelity"),
+        "image_fidelity / human_fidelity are kling-v1/v1-5 only"
+    );
+}
+
+/// Kling 2.5 Turbo and 2.6 on the legacy text2video / image2video endpoints:
+/// text and image input, 5 or 10 s (advertised as a 5-10 range), text2video
+/// aspect ratios 16:9 | 9:16 | 1:1. cfg_scale ("kling-v2.x models do not
+/// support this parameter") and camera_control ("Not Supported") must not be
+/// allowlisted; `sound` (native audio) is a 2.6 capability only.
+/// @see https://kling.ai/document-api/api/video/1-6/text-to-video.md (2026-09-11)
+/// @see https://kling.ai/document-api/api/video/2-1/image-to-video.md (2026-09-11)
+/// @see https://kling.ai/document-api/guides/capability-map/video.md (2026-09-11)
+#[test]
+fn kling_v2_5_turbo_and_v2_6_video_match_the_capability_map() {
+    let reg = registry();
+    for id in ["kling/video-kling-v2-5-turbo", "kling/video-kling-v2-6"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(
+            schema.capabilities.text_to_video && schema.capabilities.image_to_video,
+            "{id}: text and image input"
+        );
+        match schema.params.get("duration_seconds") {
+            Some(ParamSpec::Float(f)) => {
+                assert_eq!(f.min, Some(5.0), "{id}: 5 or 10 s");
+                assert_eq!(f.max, Some(10.0), "{id}: 5 or 10 s");
+            }
+            other => panic!("{id} duration_seconds is {other:?}"),
+        }
+        let mut got = aspect_ratios(&reg, id);
+        got.sort();
+        let mut want: Vec<String> = ["16:9", "9:16", "1:1"].iter().map(|s| s.to_string()).collect();
+        want.sort();
+        assert_eq!(got, want, "{id} aspect ratios");
+        for key in ["cfg_scale", "camera_control"] {
+            assert!(
+                !schema.extra_allowlist.iter().any(|k| k == key),
+                "{id} allowlists {key}, which Kling 2.5 Turbo / 2.6 do not support"
+            );
+        }
+        assert!(schema.extra_allowlist.iter().any(|k| k == "mode"), "{id}: mode selects 720p/1080p");
+    }
+    let has_sound = |id: &str| reg.get(id).unwrap().extra_allowlist.iter().any(|k| k == "sound");
+    assert!(has_sound("kling/video-kling-v2-6"), "Kling 2.6 documents native audio (sound)");
+    assert!(!has_sound("kling/video-kling-v2-5-turbo"), "Kling 2.5 Turbo has no native audio");
+}
+
+// ─── hunyuan: 2026-09-11 drift decisions applied ────────────────────────────
+
+/// SubmitHunyuanToVideoJob generates "根据输入的文本或图片" (from text or an
+/// image): Prompt is its only required member and Image is optional, so the
+/// row is text- and image-to-video and must not require a first frame.
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/vclm/v20240523/client.go> (2026-09-11)
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-cli/master/tccli/services/vclm/v20240523/api.json> (2026-09-11)
+#[test]
+fn hunyuan_video_is_text_and_image_to_video() {
+    let reg = registry();
+    let schema = reg.get("hunyuan/hunyuan-video").expect("hunyuan-video missing");
+    assert!(schema.capabilities.text_to_video, "SubmitHunyuanToVideoJob takes a prompt alone");
+    assert!(schema.capabilities.image_to_video, "SubmitHunyuanToVideoJob takes an optional Image");
+    let first = schema
+        .ref_inputs
+        .as_ref()
+        .and_then(|r| r.roles.get("first_frame"))
+        .expect("hunyuan-video declares no first_frame role");
+    assert!(!first.required && first.min_count == 0, "Image is optional");
+    assert_eq!(first.max_count, 1, "Image is a single image");
+}
+
+/// `SubmitHunyuanToVideoJob.Prompt`: "最多支持200个 utf-8 字符" (at most 200 characters).
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/vclm/v20240523/models.go> (2026-09-11)
+#[test]
+fn hunyuan_video_prompt_limit_matches_submit_hunyuan_to_video_job() {
+    let reg = registry();
+    let schema = reg.get("hunyuan/hunyuan-video").expect("hunyuan-video missing");
+    assert_eq!(schema.prompt.max_length, Some(200), "SubmitHunyuanToVideoJob caps Prompt at 200 characters");
+}
+
+/// `SubmitHunyuanToVideoJob.Resolution`: "目前仅支持720p视频分辨率，默认720p" (720p only).
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/vclm/v20240523/models.go> (2026-09-11)
+#[test]
+fn hunyuan_video_resolution_is_720p_only() {
+    let reg = registry();
+    assert_eq!(
+        enum_values(&reg, "hunyuan/hunyuan-video", "resolution"),
+        vec!["720p".to_string()],
+        "SubmitHunyuanToVideoJob supports 720p only"
+    );
+}
+
+/// The adapter merges every allowlisted extra key into the request verbatim,
+/// and Tencent fails an undefined parameter (UnknownParameter).
+/// SubmitHunyuanToVideoJob takes exactly these five.
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/vclm/v20240523/models.go> (2026-09-11)
+#[test]
+fn hunyuan_video_extra_allowlist_names_only_submit_hunyuan_to_video_job_parameters() {
+    const PARAMS: [&str; 5] = ["Prompt", "Image", "Resolution", "LogoAdd", "LogoParam"];
+    let reg = registry();
+    let schema = reg.get("hunyuan/hunyuan-video").expect("hunyuan-video missing");
+    for key in &schema.extra_allowlist {
+        assert!(
+            PARAMS.contains(&key.as_str()),
+            "hunyuan-video allowlists {key:?}, which is not a SubmitHunyuanToVideoJob parameter"
+        );
+    }
+}
+
+// ─── leonardo: 2026-09-11 drift decisions applied ───────────────────────────
+
+/// Veo 3.1 (`VEO3_1`): "duration ... Set to 4, 6, or 8", "resolution ... Set
+/// to RESOLUTION_720 and RESOLUTION_1080".
+/// @see <https://docs.leonardo.ai/v1.0/docs/veo-31> (read 2026-09-11)
+#[test]
+fn leonardo_veo3_1_matches_the_veo_3_1_contract() {
+    let reg = registry();
+    let schema = reg.get("leonardo/veo3.1").expect("veo3.1 missing");
+    assert!(schema.capabilities.image_to_video);
+    assert_eq!(
+        enum_values(&reg, "leonardo/veo3.1", "resolution"),
+        vec!["720p".to_string(), "1080p".to_string()],
+        "Veo 3.1 renders at 720p or 1080p"
+    );
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Float(f)) => {
+            assert_eq!(f.min, Some(4.0), "Veo 3.1: 4, 6 or 8 s");
+            assert_eq!(f.max, Some(8.0), "Veo 3.1: 4, 6 or 8 s");
+        }
+        other => panic!("veo3.1 duration_seconds is {other:?}"),
+    }
+}
+
+/// Kling 2.5 Turbo (`KLING2_5`): "resolution ... Set to RESOLUTION_1080",
+/// "duration ... Set to 5 or 10"; Leonardo's model schema caps its prompt at
+/// 2500 characters.
+/// @see <https://docs.leonardo.ai/v1.0/docs/kling-2-5-turbo> (read 2026-09-11)
+/// @see <https://docs.leonardo.ai/reference/creategeneration> — Kling2_5GenerationRequest, prompt maxLength 2500 (read 2026-09-11)
+#[test]
+fn leonardo_kling2_5_matches_the_kling_2_5_turbo_contract() {
+    let reg = registry();
+    let schema = reg.get("leonardo/kling2.5").expect("kling2.5 missing");
+    assert!(schema.capabilities.image_to_video);
+    assert_eq!(
+        enum_values(&reg, "leonardo/kling2.5", "resolution"),
+        vec!["1080p".to_string()],
+        "Kling 2.5 Turbo is 1080p only"
+    );
+    assert_eq!(schema.prompt.max_length, Some(2500), "Kling 2.5 Turbo prompt limit");
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Float(f)) => {
+            assert_eq!(f.min, Some(5.0), "Kling 2.5 Turbo: 5 or 10 s");
+            assert_eq!(f.max, Some(10.0), "Kling 2.5 Turbo: 5 or 10 s");
+        }
+        other => panic!("kling2.5 duration_seconds is {other:?}"),
+    }
+}
+
+// ─── vidu: 2026-09-11 drift decisions applied ───────────────────────────────
+
+/// viduq3-turbo is in the `model` values of all four endpoints the adapter
+/// routes between (text2video, img2video, start-end2video, reference2video),
+/// so it advertises both modes and all three ref roles. reference2video takes
+/// 3-16s (the others 1-16s), so 3-16s is the range every endpoint accepts.
+/// @see <https://platform.vidu.com/docs/model-map.md>
+/// @see <https://platform.vidu.com/docs/reference-to-video.md>, read 2026-09-11
+#[test]
+fn vidu_q3_turbo_serves_every_endpoint_the_adapter_routes_to() {
+    let reg = registry();
+    let schema = reg.get("vidu/viduq3-turbo").expect("vidu/viduq3-turbo missing");
+    assert!(schema.capabilities.text_to_video, "viduq3-turbo is a text2video model");
+    assert!(schema.capabilities.image_to_video, "viduq3-turbo is an img2video model");
+    let roles = &schema
+        .ref_inputs
+        .as_ref()
+        .expect("vidu/viduq3-turbo declares no ref_inputs")
+        .roles;
+    for role in ["first_frame", "last_frame", "reference"] {
+        assert!(roles.contains_key(role), "vidu/viduq3-turbo is missing the {role} role");
+    }
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Float(f)) => {
+            assert_eq!(f.min, Some(3.0), "reference2video takes viduq3-turbo from 3s");
+            assert_eq!(f.max, Some(16.0), "q3 models go to 16s");
+        }
+        other => panic!("viduq3-turbo duration_seconds is {other:?}"),
+    }
+    assert_eq!(
+        enum_values(&reg, "vidu/viduq3-turbo", "resolution"),
+        vec!["540p".to_string(), "720p".to_string(), "1080p".to_string()],
+        "viduq3-turbo resolutions"
+    );
+}
+
+/// viduq3-pro is accepted by text2video, img2video and start-end2video, but
+/// by neither reference2video `model` list, so it must not declare a
+/// `reference` role (the adapter sends any reference ref to reference2video).
+/// @see <https://platform.vidu.com/docs/reference-to-video.md>
+/// @see <https://platform.vidu.com/docs/start-end-to-video.md>, read 2026-09-11
+#[test]
+fn vidu_q3_pro_has_no_reference_to_video_mode() {
+    let reg = registry();
+    let schema = reg.get("vidu/viduq3-pro").expect("vidu/viduq3-pro missing");
+    assert!(schema.capabilities.text_to_video, "viduq3-pro is a text2video model");
+    assert!(schema.capabilities.image_to_video, "viduq3-pro is an img2video model");
+    let roles = &schema
+        .ref_inputs
+        .as_ref()
+        .expect("vidu/viduq3-pro declares no ref_inputs")
+        .roles;
+    assert!(roles.contains_key("first_frame") && roles.contains_key("last_frame"));
+    assert!(
+        !roles.contains_key("reference"),
+        "vidu/viduq3-pro declares a reference role; reference2video does not accept viduq3-pro"
+    );
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Float(f)) => {
+            assert_eq!(f.min, Some(1.0), "viduq3-pro accepts 1s clips");
+            assert_eq!(f.max, Some(16.0), "q3 models go to 16s");
+        }
+        other => panic!("viduq3-pro duration_seconds is {other:?}"),
+    }
+}
+
+/// q3 models take `audio` (native audio-video, default true) and do not take
+/// `bgm` ("BGM does not available in q3 models").
+/// @see <https://platform.vidu.com/docs/text-to-video.md>
+/// @see <https://platform.vidu.com/docs/image-to-video.md>, read 2026-09-11
+#[test]
+fn vidu_q3_models_allowlist_audio_but_not_bgm() {
+    let reg = registry();
+    for id in ["vidu/viduq3-turbo", "vidu/viduq3-pro"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(
+            schema.extra_allowlist.iter().any(|k| k == "audio"),
+            "{id} extra_allowlist is missing audio: {:?}",
+            schema.extra_allowlist
+        );
+        assert!(
+            !schema.extra_allowlist.iter().any(|k| k == "bgm"),
+            "{id} allowlists bgm, which q3 models do not support"
+        );
+    }
+}
+
+/// viduq2-pro-fast is only in img2video's and start-end2video's `model`
+/// values: no text-to-video, no reference role, a required start frame, and
+/// no aspect_ratio (neither endpoint takes one). 720p / 1080p only, and 1-8s
+/// (start-end2video's ceiling; img2video goes to 10s).
+/// @see <https://platform.vidu.com/docs/image-to-video.md>
+/// @see <https://platform.vidu.com/docs/start-end-to-video.md>, read 2026-09-11
+#[test]
+fn vidu_q2_pro_fast_is_image_to_video_only() {
+    let reg = registry();
+    let schema = reg.get("vidu/viduq2-pro-fast").expect("vidu/viduq2-pro-fast missing");
+    assert!(
+        !schema.capabilities.text_to_video,
+        "text2video does not accept viduq2-pro-fast"
+    );
+    assert!(schema.capabilities.image_to_video);
+    let ri = schema
+        .ref_inputs
+        .as_ref()
+        .expect("vidu/viduq2-pro-fast declares no ref_inputs");
+    let first = ri.roles.get("first_frame").expect("viduq2-pro-fast declares no first_frame role");
+    assert!(
+        first.required && first.min_count == 1,
+        "both viduq2-pro-fast endpoints need the start frame: {first:?}"
+    );
+    assert!(
+        !ri.roles.contains_key("reference"),
+        "reference2video does not accept viduq2-pro-fast"
+    );
+    assert!(
+        aspect_ratios(&reg, "vidu/viduq2-pro-fast").is_empty(),
+        "img2video / start-end2video take no aspect_ratio"
+    );
+    assert_eq!(
+        enum_values(&reg, "vidu/viduq2-pro-fast", "resolution"),
+        vec!["720p".to_string(), "1080p".to_string()],
+        "viduq2-pro-fast resolutions (no 540p)"
+    );
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Float(f)) => {
+            assert_eq!(f.min, Some(1.0), "viduq2-pro-fast accepts 1s clips");
+            assert_eq!(f.max, Some(8.0), "start-end2video caps viduq2-pro-fast at 8s");
+        }
+        other => panic!("viduq2-pro-fast duration_seconds is {other:?}"),
+    }
+}
+
+// ─── pixverse: 2026-09-11 drift decisions applied ───────────────────────────
+
+/// V6 and C1 (PixVerse's two recommended models) serve text/, img/ and
+/// transition/generate with "v6/c1 : 1~15" second durations, the extended
+/// aspect-ratio list "16:9, 4:3, 1:1, 3:4, 9:16, 2:3, 3:2, 21:9", and
+/// `generate_audio_switch` ("Supported in v5.5/v5.6/v6/c1 models").
+/// @see <https://docs.platform.pixverse.ai/text-to-video-generation-13016634e0.md>
+/// @see <https://docs.platform.pixverse.ai/capability-matrix-2144288m0.md>, read 2026-09-11
+#[test]
+fn pixverse_v6_and_c1_are_carried_with_their_documented_contract() {
+    let reg = registry();
+    for id in ["pixverse/v6", "pixverse/c1"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(schema.capabilities.text_to_video, "{id} serves text/generate");
+        assert!(schema.capabilities.image_to_video, "{id} serves img/generate");
+        match schema.params.get("duration_seconds") {
+            Some(ParamSpec::Float(f)) => {
+                assert_eq!(f.min, Some(1.0), "{id} takes 1-15s");
+                assert_eq!(f.max, Some(15.0), "{id} takes 1-15s");
+            }
+            other => panic!("{id} duration_seconds is {other:?}"),
+        }
+        let ratios = aspect_ratios(&reg, id);
+        for ar in ["2:3", "3:2", "21:9"] {
+            assert!(
+                ratios.contains(&ar.to_string()),
+                "{id} does not advertise {ar:?}, a v6/c1 aspect ratio"
+            );
+        }
+        assert!(
+            schema.extra_allowlist.iter().any(|k| k == "generate_audio_switch"),
+            "{id} extra_allowlist is missing generate_audio_switch: {:?}",
+            schema.extra_allowlist
+        );
+    }
+}
+
+/// `generate_multi_clip_switch` is "Supported in v5.5/v6 models"; C1 does
+/// multi-clip from the prompt and has no such switch.
+/// @see <https://docs.platform.pixverse.ai/text-to-video-generation-13016634e0.md>
+/// @see <https://docs.platform.pixverse.ai/capability-matrix-2144288m0.md>, read 2026-09-11
+#[test]
+fn pixverse_multi_clip_switch_is_allowlisted_on_v6_not_c1() {
+    let reg = registry();
+    let has = |id: &str| {
+        reg.get(id)
+            .unwrap_or_else(|| panic!("{id} missing"))
+            .extra_allowlist
+            .iter()
+            .any(|k| k == "generate_multi_clip_switch")
+    };
+    assert!(has("pixverse/v6"), "pixverse/v6 supports generate_multi_clip_switch");
+    assert!(
+        !has("pixverse/c1"),
+        "pixverse/c1 allowlists generate_multi_clip_switch, which PixVerse documents for v5.5/v6 only"
+    );
+}
+
+// ─── minimax: 2026-09-11 drift decisions applied ────────────────────────────
+
+/// MiniMax-Hailuo-2.3-Fast is in the image-to-video `model` enum only (not
+/// text-to-video, not first & last frame), and the i2v request requires
+/// `first_frame_image`. It takes 768P / 1080P (6 or 10 s, 10 s at 768P only)
+/// and `fast_pretreatment`.
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-i2v.md>
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-t2v.md>, read 2026-09-11
+#[test]
+fn minimax_hailuo_2_3_fast_is_image_to_video_only() {
+    let reg = registry();
+    let id = "minimax/MiniMax-Hailuo-2.3-Fast";
+    let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+    assert!(
+        !schema.capabilities.text_to_video,
+        "{id} advertises text-to-video; the t2v model enum has no MiniMax-Hailuo-2.3-Fast"
+    );
+    assert!(schema.capabilities.image_to_video);
+    let ri = schema.ref_inputs.as_ref().unwrap_or_else(|| panic!("{id} declares no ref_inputs"));
+    let first = ri.roles.get("first_frame").unwrap_or_else(|| panic!("{id} declares no first_frame role"));
+    assert!(
+        first.required && first.min_count == 1 && first.max_count == 1,
+        "first_frame_image is required, exactly one image: {first:?}"
+    );
+    assert!(
+        !ri.roles.contains_key("last_frame"),
+        "{id} declares a last_frame role, but fl2v only accepts MiniMax-Hailuo-02"
+    );
+    assert_eq!(
+        enum_values(&reg, id, "resolution"),
+        vec!["768P".to_string(), "1080P".to_string()],
+        "{id} resolutions"
+    );
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Float(f)) => {
+            assert_eq!(f.min, Some(6.0), "{id} takes 6 or 10 s");
+            assert_eq!(f.max, Some(10.0), "{id} takes 6 or 10 s");
+        }
+        other => panic!("{id} duration_seconds is {other:?}"),
+    }
+    assert!(
+        schema.extra_allowlist.iter().any(|k| k == "fast_pretreatment"),
+        "{id} extra_allowlist is missing fast_pretreatment: {:?}",
+        schema.extra_allowlist
+    );
+}
+
+// ─── recraft: 2026-09-11 drift decisions applied ────────────────────────────
+
+/// The three vector (SVG) models are carried, and none declares a pixel
+/// `size`: for vector models the Appendix lists aspects only (`w:h`, no WxH),
+/// which an enumerated WxH size cannot express.
+/// @see <https://www.recraft.ai/docs/api-reference/appendix.md> ("List of supported image sizes"), read 2026-09-11
+#[test]
+fn recraft_vector_models_are_carried_without_a_pixel_size() {
+    let reg = registry();
+    for id in [
+        "recraft/recraftv4_1_vector",
+        "recraft/recraftv4_1_pro_vector",
+        "recraft/recraftv2_vector",
+    ] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(schema.capabilities.text_to_image, "{id} is a text-to-image model");
+        assert!(
+            !schema.params.contains_key("size"),
+            "{id} declares a size; Recraft vector models take aspect ratios only"
+        );
+        assert!(
+            matches!(schema.params.get("seed"), Some(ParamSpec::Seed(_))),
+            "{id} declares no seed param (random_seed applies to all models)"
+        );
+        assert!(schema.tags.iter().any(|t| t == "vector"), "{id} is not tagged vector");
+    }
+}
+
+/// Per-generation rules for the vector models: V4.1 Vector / Pro Vector take
+/// 10000-char prompts, no negative_prompt ("V2 / V3 models") and no curated
+/// style (styles via style_id); V2 Vector takes 1000-char prompts,
+/// negative_prompt, and the V2 Vector curated styles (default `Vector art`).
+/// @see <https://www.recraft.ai/docs/api-reference/appendix.md> ("Maximum prompt length")
+/// @see <https://www.recraft.ai/docs/api-reference/endpoints.md> (Generate image → Parameters)
+/// @see <https://www.recraft.ai/docs/api-reference/styles.md> ("Recraft V2 Vector"), read 2026-09-11
+#[test]
+fn recraft_vector_models_follow_their_generation_rules() {
+    let reg = registry();
+    for id in ["recraft/recraftv4_1_vector", "recraft/recraftv4_1_pro_vector"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert_eq!(schema.prompt.max_length, Some(10000), "{id} prompt max_length");
+        assert!(
+            !schema.params.contains_key("negative_prompt"),
+            "{id} declares negative_prompt, a V2 / V3 parameter"
+        );
+        assert!(!schema.params.contains_key("style"), "{id} advertises a curated `style`");
+        assert!(
+            schema.extra_allowlist.iter().any(|k| k == "style_id"),
+            "{id} must allowlist style_id, its only style input"
+        );
+    }
+    let id = "recraft/recraftv2_vector";
+    let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+    assert_eq!(schema.prompt.max_length, Some(1000), "{id} prompt max_length");
+    assert!(schema.params.contains_key("negative_prompt"), "{id} should declare negative_prompt");
+    let styles = enum_values(&reg, id, "style");
+    for s in ["Vector art", "Icon", "Line art"] {
+        assert!(styles.contains(&s.to_string()), "{id} does not offer the {s:?} style");
+    }
+    match schema.params.get("style") {
+        Some(ParamSpec::String(s)) => {
+            assert_eq!(s.default.as_deref(), Some("Vector art"), "{id} default style")
+        }
+        other => panic!("{id} style is {other:?}"),
+    }
+}
+
+// ─── openai: 2026-09-11 drift decisions applied ─────────────────────────────
+
+/// GPT Image 2.5 Sunburst and Flare (snapshots `*-2026-09-08`): both take
+/// images/generations and images/edits (inpainting a listed feature), add the
+/// `xhigh` and `max` quality settings on top of GPT Image 2's
+/// `low|medium|high|auto` (default `auto`), and share gpt-image-2's custom
+/// sizes (both edges multiples of 16, neither above 3840).
+/// @see <https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst> (2026-09-11)
+/// @see <https://developers.openai.com/api/docs/models/gpt-image-2.5-flare> (2026-09-11)
+/// @see <https://developers.openai.com/api/docs/guides/image-generation> ("Size and quality options", 2026-09-11)
+#[test]
+fn openai_gpt_image_2_5_models_advertise_xhigh_and_max_quality() {
+    let reg = registry();
+    for id in [
+        "openai/gpt-image-2.5-sunburst",
+        "openai/gpt-image-2.5-flare",
+    ] {
+        let schema = reg
+            .get(id)
+            .unwrap_or_else(|| panic!("{id} missing from the catalog"));
+        assert!(
+            schema.capabilities.text_to_image
+                && schema.capabilities.image_to_image
+                && schema.capabilities.inpainting,
+            "{id}: images/generations plus images/edits (with mask inpainting)"
+        );
+        assert_eq!(
+            enum_values(&reg, id, "quality"),
+            ["auto", "low", "medium", "high", "xhigh", "max"],
+            "{id}: the GPT Image 2.5 quality settings"
+        );
+        match schema.params.get("size") {
+            Some(ParamSpec::Size(litegen::capabilities::schema::SizeSpec::Freeform(f))) => {
+                assert_eq!(f.multiple_of, Some(16), "{id}: edges are multiples of 16");
+                assert_eq!(
+                    (f.max_width, f.max_height),
+                    (3840, 3840),
+                    "{id}: neither edge may exceed 3840"
+                );
+            }
+            other => panic!("{id} size is {other:?}, expected a freeform WxH size"),
+        }
+        assert_eq!(
+            schema.prompt.max_length,
+            Some(32000),
+            "{id}: 32000 characters for the GPT image models"
+        );
+    }
+}
+
+// ─── bfl: 2026-09-11 drift decisions applied ────────────────────────────────
+
+/// FLUX.2 [max] (`POST /v1/flux-2-max`) takes the same `Flux2Inputs` body as
+/// FLUX.2 [pro]: text-to-image plus `input_image` editing, and `disable_pup`
+/// to turn off the prompt upsampling [pro] and [max] apply by default.
+/// @see <https://api.bfl.ai/openapi.json> (/v1/flux-2-max, 2026-09-11)
+#[test]
+fn bfl_flux_2_max_is_advertised_with_the_flux2_request_shape() {
+    let id = "bfl/flux-2-max";
+    let reg = registry();
+    let schema = reg
+        .get(id)
+        .unwrap_or_else(|| panic!("{id} missing from the catalog"));
+    assert!(
+        schema.capabilities.text_to_image && schema.capabilities.image_to_image,
+        "{id}: generate or edit"
+    );
+    assert!(
+        schema
+            .ref_inputs
+            .as_ref()
+            .is_some_and(|r| r.roles.contains_key("init")),
+        "{id}: the edit base is sent as `input_image`"
+    );
+    assert!(
+        schema.extra_allowlist.iter().any(|k| k == "disable_pup"),
+        "{id}: Flux2Inputs documents disable_pup"
+    );
+    assert!(
+        matches!(schema.params.get("size"), Some(ParamSpec::Size(_))),
+        "{id}: FLUX.2 takes width/height"
+    );
+}
+
+/// FLUX.2 [klein] 9B (`POST /v1/flux-2-klein-9b`) takes `Flux2KleinInputs`:
+/// "like Pro but max 4 images", and without `disable_pup` ([klein] "does not
+/// include prompt upsampling").
+/// @see <https://api.bfl.ai/openapi.json> (/v1/flux-2-klein-9b, 2026-09-11)
+/// @see <https://docs.bfl.ml/flux_2/flux2_overview.md> (2026-09-11)
+#[test]
+fn bfl_flux_2_klein_9b_is_advertised_without_prompt_upsampling_controls() {
+    let id = "bfl/flux-2-klein-9b";
+    let reg = registry();
+    let schema = reg
+        .get(id)
+        .unwrap_or_else(|| panic!("{id} missing from the catalog"));
+    assert!(
+        schema.capabilities.text_to_image && schema.capabilities.image_to_image,
+        "{id}: generate or edit"
+    );
+    assert!(
+        !schema.extra_allowlist.iter().any(|k| k == "disable_pup"),
+        "{id}: Flux2KleinInputs has no disable_pup"
+    );
+    let refs = schema
+        .ref_inputs
+        .as_ref()
+        .unwrap_or_else(|| panic!("{id} declares no ref_inputs"));
+    assert!(
+        refs.max_total <= 4,
+        "{id}: [klein] takes at most 4 input images"
+    );
+}
+
+// ─── stability: 2026-09-11 drift decisions applied ──────────────────────────
+
+/// SD 3.5 Medium runs on `/v2beta/stable-image/generate/sd3` (`model:
+/// sd3.5-medium`, a member of that route's `model` enum): text-to-image, or
+/// image-to-image with `image` + `strength` (0-1), and the route's
+/// `aspect_ratio` enum.
+/// @see <https://api.stability.ai/v2alpha/openapi> (2026-09-11)
+#[test]
+fn stability_sd3_5_medium_is_advertised_on_the_sd3_route() {
+    const SD3_RATIOS: [&str; 9] = [
+        "21:9", "16:9", "3:2", "5:4", "1:1", "4:5", "2:3", "9:16", "9:21",
+    ];
+    let id = "stability/sd3.5-medium";
+    let reg = registry();
+    let schema = reg
+        .get(id)
+        .unwrap_or_else(|| panic!("{id} missing from the catalog"));
+    assert!(
+        schema.capabilities.text_to_image && schema.capabilities.image_to_image,
+        "{id}: the sd3 route's text-to-image and image-to-image modes"
+    );
+    let allowed = aspect_ratios(&reg, id);
+    assert_eq!(
+        allowed.len(),
+        SD3_RATIOS.len(),
+        "{id}: every sd3 aspect ratio"
+    );
+    for ar in &allowed {
+        assert!(
+            SD3_RATIOS.contains(&ar.as_str()),
+            "{id} allows {ar:?}, not in the sd3 aspect_ratio enum"
+        );
+    }
+    match schema.params.get("strength") {
+        Some(ParamSpec::Float(f)) => {
+            assert_eq!((f.min, f.max), (Some(0.0), Some(1.0)), "{id}: strength 0-1")
+        }
+        other => panic!("{id} strength is {other:?}, expected Float"),
+    }
+}
+
+// ─── replicate: 2026-09-11 drift decisions applied ──────────────────────────
+
+/// `black-forest-labs/flux-1.1-pro` input: `aspect_ratio` enum `custom | 1:1 |
+/// 16:9 | 3:2 | 2:3 | 4:5 | 5:4 | 9:16 | 3:4 | 4:3` (no 21:9 / 9:21; `custom`
+/// only unlocks width/height, which the adapter never sends), no guidance or
+/// steps input, and its only image input is `image_prompt` (Redux), which the
+/// adapter does not send — so text-to-image only.
+/// @see <https://replicate.com/black-forest-labs/flux-1.1-pro/api/schema> (2026-09-11)
+#[test]
+fn replicate_flux_1_1_pro_matches_the_model_input_schema() {
+    const FLUX_1_1_PRO_RATIOS: [&str; 9] = [
+        "1:1", "16:9", "3:2", "2:3", "4:5", "5:4", "9:16", "3:4", "4:3",
+    ];
+    let id = "replicate/flux-1.1-pro";
+    let reg = registry();
+    let schema = reg
+        .get(id)
+        .unwrap_or_else(|| panic!("{id} missing from the catalog"));
+    assert!(schema.capabilities.text_to_image, "{id}: text-to-image");
+    assert!(
+        !schema.capabilities.image_to_image && schema.ref_inputs.is_none(),
+        "{id}: the adapter's `image` input is not in this model's schema"
+    );
+    let allowed = aspect_ratios(&reg, id);
+    assert!(!allowed.is_empty(), "{id} declares no aspect ratios");
+    for ar in &allowed {
+        assert!(
+            FLUX_1_1_PRO_RATIOS.contains(&ar.as_str()),
+            "{id} allows {ar:?}, not in flux-1.1-pro's aspect_ratio enum"
+        );
+    }
+    for param in ["guidance_scale", "steps", "negative_prompt"] {
+        assert!(
+            schema.params.get(param).is_none(),
+            "{id} declares `{param}`, which black-forest-labs/flux-1.1-pro does not take"
+        );
+    }
+}
+
+// ─── fal: 2026-09-11 drift decisions applied ────────────────────────────────
+
+/// `fal-ai/flux-2` (FLUX.2 [dev]) input: `guidance_scale` 0-20 (default
+/// 2.5), `num_inference_steps` 4-50 (default 28), and `image_size` width and
+/// height 512-2048. Text-to-image only: editing is the separate
+/// `fal-ai/flux-2/edit` endpoint.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2> (2026-09-11)
+#[test]
+fn fal_flux_2_matches_the_endpoint_input_schema() {
+    let id = "fal/flux-2";
+    let reg = registry();
+    let schema = reg
+        .get(id)
+        .unwrap_or_else(|| panic!("{id} missing from the catalog"));
+    assert!(
+        schema.capabilities.text_to_image && !schema.capabilities.image_to_image,
+        "{id}: fal-ai/flux-2 has no image input"
+    );
+    match schema.params.get("guidance_scale") {
+        Some(ParamSpec::Float(f)) => assert_eq!(
+            (f.min, f.max, f.default),
+            (Some(0.0), Some(20.0), Some(2.5)),
+            "{id}: guidance_scale 0-20, default 2.5"
+        ),
+        other => panic!("{id} guidance_scale is {other:?}, expected Float"),
+    }
+    match schema.params.get("steps") {
+        Some(ParamSpec::Int(i)) => assert_eq!(
+            (i.min, i.max, i.default),
+            (Some(4), Some(50), Some(28)),
+            "{id}: num_inference_steps 4-50, default 28"
+        ),
+        other => panic!("{id} steps is {other:?}, expected Int"),
+    }
+    match schema.params.get("size") {
+        Some(ParamSpec::Size(litegen::capabilities::schema::SizeSpec::Freeform(f))) => {
+            assert_eq!(
+                (f.min_width, f.max_width, f.min_height, f.max_height),
+                (512, 2048, 512, 2048),
+                "{id}: width and height between 512 and 2048"
+            );
+        }
+        other => panic!("{id} size is {other:?}, expected a freeform WxH size"),
     }
 }

@@ -24,6 +24,39 @@ models:
     extra_allowlist: [output_format, style_preset]
     tags: [text-to-image, image-to-image]
 
+  # SD 3.5 Medium on the same /v2beta/stable-image/generate/sd3 route and body
+  # as sd3-large (`model: sd3.5-medium`; text-to-image, or image-to-image with
+  # `image` + `strength`), so the typings mirror sd3-large.
+  # @see https://api.stability.ai/v2alpha/openapi (/v2beta/stable-image/generate/sd3, re-read 2026-09-11)
+  - id: stability/sd3.5-medium
+    provider: stability
+    media_type: image
+    display_name: Stable Diffusion 3.5 Medium
+    description: Stable Diffusion 3.5 Medium (2.5B parameters) — a balance of
+      prompt accuracy and image quality for fast generation.
+    # "`sd3.5-medium` requires 3.5 credits per generation" (the sd3 `model`
+    # description); 1 credit = $0.01 (re-read 2026-09-11).
+    # @see https://platform.stability.ai/pricing
+    pricing: { base_cost_usd: 0.035 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      negative_prompt: { kind: string, max_length: 10000 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["1:1", "16:9", "9:16", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"]
+        default: "1:1"
+      strength: { kind: float, min: 0.0, max: 1.0 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image } }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: [output_format, style_preset]
+    tags: [text-to-image, image-to-image]
+
   - id: stability/sd3-turbo
     provider: stability
     media_type: image
@@ -88,7 +121,12 @@ models:
     media_type: image
     display_name: Stable Diffusion XL
     description: High-quality general purpose image generation.
-    pricing: { base_cost_usd: 0.002 }
+    # "When specifying 30 steps or fewer, generation costs 0.9 credits" ($0.009;
+    # the default is 30 steps), re-read 2026-09-11. Above 30 steps the cost is
+    # 0.9 * (steps / 30), so our 50-step max is 1.5 credits.
+    # @see https://platform.stability.ai/pricing
+    # @see https://platform.stability.ai/docs/api-reference#tag/SDXL-1.0 (SDXL 1.0 Pricing)
+    pricing: { base_cost_usd: 0.009 }
     capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
     prompt: { required: true, max_length: 2000 }
     params:

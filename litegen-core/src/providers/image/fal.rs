@@ -71,6 +71,10 @@ impl FalProvider {
         match native {
             "flux-schnell" => "fal-ai/flux/schnell",
             "flux-dev" => "fal-ai/flux/dev",
+            // FLUX.2 [dev] text-to-image. Without this arm the id fell back to
+            // FLUX.1 [dev] below and billed as a different model.
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2>
+            "flux-2" => "fal-ai/flux-2",
             "flux-pro" => "fal-ai/flux-pro/v1.1",
             "sdxl" | "sdxl-lightning" => "fal-ai/fast-sdxl",
             "sd35-medium" | "sd3.5-medium" => "fal-ai/stable-diffusion-v35-medium",
@@ -553,5 +557,46 @@ mod tests {
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
         assert_eq!(body["prompt"], "a minimalist fox logo");
         assert_eq!(body["style"], "vector_illustration");
+    }
+
+    /// `fal/flux-2` is FLUX.2 [dev] at `fal-ai/flux-2`. Unknown ids fall back
+    /// to `fal-ai/flux/dev`, so without its own arm the request silently ran
+    /// on FLUX.1 [dev]. Its input takes `guidance_scale`, `num_inference_steps`
+    /// and `image_size` like the other FLUX endpoints.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2>
+    #[tokio::test]
+    async fn flux_2_posts_to_the_flux_2_endpoint() {
+        let server = MockServer::start().await;
+        let image_server = MockServer::start().await;
+        let image_url = format!("{}/output.png", image_server.uri());
+
+        Mock::given(method("POST"))
+            .and(path("/fal-ai/flux-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "images": [{ "url": image_url, "content_type": "image/png" }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"FAKEPNG".to_vec()))
+            .mount(&image_server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("fal/flux-2");
+        let base = make_base("a neon city at night", "fal/flux-2");
+        let output = provider
+            .generate(&schema, &base, &make_extras(), &empty_materialized())
+            .await
+            .expect("generate");
+        assert_eq!(output.data, b"FAKEPNG");
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].url.path(), "/fal-ai/flux-2");
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["guidance_scale"], 3.5);
+        assert_eq!(body["num_inference_steps"], 28);
+        assert_eq!(body["image_size"]["width"], 1024);
     }
 }

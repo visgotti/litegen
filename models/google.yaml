@@ -19,7 +19,10 @@ models:
     media_type: image
     display_name: Gemini 3.1 Flash Image (Nano Banana 2)
     description: Google's current general-purpose image model (GA 2026-05-28).
-    pricing: { base_cost_usd: 0.02 }
+    # Standard tier: $60 per 1M image output tokens; a 1K image (1024x1024, 1120
+    # tokens) is $0.067 — the default request (no imageSize). Verified 2026-09-11.
+    # @see https://ai.google.dev/gemini-api/docs/pricing
+    pricing: { base_cost_usd: 0.067 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 8000 }
     params:
@@ -41,7 +44,10 @@ models:
     media_type: image
     display_name: Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite)
     description: Fastest, cheapest Nano Banana 2 tier.
-    pricing: { base_cost_usd: 0.01 }
+    # Standard tier: $30 per 1M image output tokens; a 1K image (1120 tokens) is
+    # $0.0336. Verified 2026-09-11.
+    # @see https://ai.google.dev/gemini-api/docs/pricing
+    pricing: { base_cost_usd: 0.034 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 8000 }
     params:
@@ -85,7 +91,10 @@ models:
     media_type: image
     display_name: Gemini 3 Pro (image)
     description: Gemini 3 Pro image generation.
-    pricing: { base_cost_usd: 0.05 }
+    # Standard tier: $120 per 1M image output tokens; a 1K/2K image (1120 tokens)
+    # is $0.134 (4K: $0.24). Verified 2026-09-11.
+    # @see https://ai.google.dev/gemini-api/docs/pricing
+    pricing: { base_cost_usd: 0.134 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 8000 }
     params:

@@ -4,7 +4,9 @@ models:
     media_type: image
     display_name: Flux Pro (Fal)
     description: Flux Pro hosted on Fal.
-    pricing: { base_cost_usd: 0.05 }
+    # "$0.04 per megapixels": the default 1 MP request (re-read 2026-09-11).
+    # @see https://fal.ai/models/fal-ai/flux-pro/v1.1/llms.txt
+    pricing: { base_cost_usd: 0.04 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
@@ -44,6 +46,39 @@ models:
         max_height: 2048
         multiple_of: 8
     extra_allowlist: []
+    tags: [text-to-image]
+
+  # fal-ai/flux-2 is FLUX.2 [dev] text-to-image (BFL hosts no [dev] API).
+  # Input: prompt, guidance_scale 0-20 (default 2.5), seed, num_inference_steps
+  # 4-50 (default 28), image_size (width and height 512-2048), num_images,
+  # acceleration, enable_prompt_expansion, sync_mode, enable_safety_checker,
+  # output_format. No image input: editing is the separate fal-ai/flux-2/edit.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-2 (re-read 2026-09-11)
+  - id: fal/flux-2
+    provider: fal
+    media_type: image
+    display_name: FLUX.2 [dev] (Fal)
+    description: Black Forest Labs FLUX.2 dev text-to-image on Fal.
+    # "$0.012 per megapixels": the default 1 MP request (re-read 2026-09-11).
+    # @see https://fal.ai/models/fal-ai/flux-2/llms.txt
+    pricing: { base_cost_usd: 0.012 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 5000 }
+    params:
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      guidance_scale: { kind: float, min: 0.0, max: 20.0, default: 2.5 }
+      steps: { kind: int, min: 4, max: 50, default: 28 }
+      # "The width and height must be between 512 and 2048 pixels."
+      size:
+        kind: size
+        mode: freeform
+        min_width: 512
+        max_width: 2048
+        min_height: 512
+        max_height: 2048
+    # acceleration none|regular|high; output_format jpeg|png|webp. Not
+    # sync_mode: it returns a data URI instead of the URL the adapter fetches.
+    extra_allowlist: [acceleration, enable_prompt_expansion, output_format]
     tags: [text-to-image]
 
   - id: fal/flux-schnell
@@ -96,7 +131,9 @@ models:
     provider: fal
     media_type: image
     display_name: SD 3.5 Medium (Fal)
-    pricing: { base_cost_usd: 0.025 }
+    # "$0.02 per megapixels": the default 1 MP request (re-read 2026-09-11).
+    # @see https://fal.ai/models/fal-ai/stable-diffusion-v35-medium/llms.txt
+    pricing: { base_cost_usd: 0.02 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
@@ -142,7 +179,10 @@ models:
     provider: fal
     media_type: video
     display_name: Fal Video (generic)
-    pricing: { base_cost_usd: 0.20 }
+    # "$0.02 per videos" on both LTX endpoints the adapter calls
+    # (fal-ai/ltx-video and fal-ai/ltx-video/image-to-video), re-read 2026-09-11.
+    # @see https://fal.ai/models/fal-ai/ltx-video/llms.txt
+    pricing: { base_cost_usd: 0.02 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2000 }
     params:

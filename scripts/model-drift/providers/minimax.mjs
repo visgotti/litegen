@@ -14,6 +14,7 @@ export default {
     'minimax/image-01': 'image-01',
     'minimax/MiniMax-Hailuo-02': 'MiniMax-Hailuo-02',
     'minimax/MiniMax-Hailuo-2.3': 'MiniMax-Hailuo-2.3',
+    'minimax/MiniMax-Hailuo-2.3-Fast': 'MiniMax-Hailuo-2.3-Fast',
     'minimax/T2V-01-Director': 'T2V-01-Director',
     'minimax/S2V-01': 'S2V-01',
   },
@@ -32,5 +33,12 @@ export default {
       extract: /\/docs\/api-reference\/(?:image|video)[\w-]*\.md/g,
     },
   ],
-  acknowledged: [],
+  // MiniMax-H3 / H3-Max stay unacknowledged on purpose (add later: V2 API).
+  acknowledged: [
+    { id: 'T2V-01', reason: 'skipped 2026-09-11: first generation (*-01), superseded and unpriced' },
+    { id: 'I2V-01', reason: 'skipped 2026-09-11: first generation (*-01), superseded and unpriced' },
+    { id: 'I2V-01-Director', reason: 'skipped 2026-09-11: first generation (*-01), superseded and unpriced' },
+    { id: 'I2V-01-live', reason: 'skipped 2026-09-11: first generation (*-01), superseded and unpriced' },
+    { id: 'image-01-live', reason: 'skipped 2026-09-11: its difference from image-01 (carried) is undocumented' },
+  ],
 };
