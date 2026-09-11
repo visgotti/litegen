@@ -1,0 +1,46 @@
+model `string` `Required`
+prompt `string`
+image `string / string[]`
+size `string`
+  [Seedream 4.0]
+  * Method 1: Specify the resolution of the generated image, and describe its aspect ratio, shape, or purpose in the prompt using natural language. You let the model determine the width and height.
+  Optional values: `1K`, `2K`, `4K`
+  * Method 2: Specify the width and height of the generated image in pixels:
+  Default value: `2048x2048`
+  * Total pixels range: [`1280x720=921,600`, `4096x4096=16,777,216`]
+  * Aspect ratio range: [1/16, 16]
+  |Resolution |Aspect ratio |Width and Height Pixel Values |
+  |---|---|---|
+  |1K |1:1 |1024x1024 |
+  ||4:3 |1152x864 |
+  ||3:4 |864x1152 |
+  ||16:9 |1280x720 |
+  ||9:16 |720x1280 |
+  ||3:2 |1248x832 |
+  ||2:3 |832x1248 |
+  ||21:9 |1512x648 |
+  |2K |1:1 |2048x2048 |
+  ||4:3 |2304x1728 |
+  ||3:4 |1728x2304 |
+  ||16:9 |2848x1600 |
+  ||9:16 |1600x2848 |
+  ||3:2 |2496x1664 |
+  ||2:3 |1664x2496 |
+  ||21:9 |3136x1344 |
+  |4K |1:1 |4096x4096 |
+  ||3:4 |3520x4704 |
+  ||4:3 |4704x3520 |
+  ||16:9 |5504x3040 |
+  ||9:16 |3040x5504 |
+  ||2:3 |3328x4992 |
+  ||3:2 |4992x3328 |
+  ||21:9 |6240x2656 |
+optimize_prompt_options `object`
+mode `string` `Default: standard`
+output_format `string` `Default: jpeg`
+response_format `string` `Default: url`
+sequential_image_generation `string` `Default: disabled`
+sequential_image_generation_options `object`
+max_images `integer` `Default: 15`
+stream `boolean` `Default: false`
+watermark `boolean` `Default: true`

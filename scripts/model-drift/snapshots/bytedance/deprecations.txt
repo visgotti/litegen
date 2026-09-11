@@ -1,0 +1,4 @@
+# Third batch of model deprecations (March 17, 2026)
+notified / deprecated / deactivated: March 17, 2026 / March 23, 2026 / May 13, 2026
+| bytedance-seedance-1-0-lite-i2v-250428 | bytedance-seedance-1-0-pro-fast-251015 | dreamina-seedance-2-0-fast-260128 |
+| bytedance-seedream-3-0-t2i-250415 | dola-seedream-5-0-lite-260128 | dola-seedream-5-0-lite-260128 |

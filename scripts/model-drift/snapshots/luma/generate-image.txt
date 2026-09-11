@@ -1,0 +1,120 @@
+{
+  "POST /generations/image (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "16:9",
+        "enum": [
+          "1:1",
+          "16:9",
+          "9:16",
+          "4:3",
+          "3:4",
+          "21:9",
+          "9:21"
+        ],
+        "type": "string"
+      },
+      "callback_url": {
+        "format": "uri",
+        "type": "string"
+      },
+      "character_ref": {
+        "properties": {
+          "identity0": {
+            "properties": {
+              "images": {
+                "items": {
+                  "format": "uri",
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "format": {
+        "default": "jpg",
+        "enum": [
+          "jpg",
+          "png"
+        ],
+        "type": "string"
+      },
+      "generation_type": {
+        "default": "image",
+        "enum": [
+          "image"
+        ],
+        "type": "string"
+      },
+      "image_ref": {
+        "items": {
+          "properties": {
+            "url": {
+              "format": "uri",
+              "type": "string"
+            },
+            "weight": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "model": {
+        "default": "photon-1",
+        "enum": [
+          "photon-1",
+          "photon-flash-1"
+        ],
+        "type": "string"
+      },
+      "modify_image_ref": {
+        "properties": {
+          "url": {
+            "format": "uri",
+            "type": "string"
+          },
+          "weight": {
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "style_ref": {
+        "items": {
+          "properties": {
+            "url": {
+              "format": "uri",
+              "type": "string"
+            },
+            "weight": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "sync": {
+        "default": false,
+        "type": "boolean"
+      },
+      "sync_timeout": {
+        "default": 60,
+        "type": "number"
+      }
+    },
+    "required": [
+      "model"
+    ],
+    "type": "object"
+  }
+}

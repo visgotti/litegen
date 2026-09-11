@@ -1,0 +1,91 @@
+openapi: 3.1.0
+info:
+  license:
+    name: MIT
+  version: 1.0.0
+servers:
+  - url: https://api.minimax.io
+security:
+  - bearerAuth: []
+paths:
+  /v1/video_generation:
+    post:
+      tags:
+        - Video
+      operationId: videoGeneration
+      parameters:
+        - name: Content-Type
+          in: header
+          required: true
+          schema:
+            type: string
+            enum:
+              - application/json
+            default: application/json
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoGenerationReq'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoGenerationResp'
+components:
+  schemas:
+    VideoGenerationReq:
+      type: object
+      required:
+        - model
+        - first_frame_image
+      properties:
+        model:
+          type: string
+          enum:
+            - MiniMax-Hailuo-2.3
+            - MiniMax-Hailuo-2.3-Fast
+            - MiniMax-Hailuo-02
+            - I2V-01-Director
+            - I2V-01-live
+            - I2V-01
+        first_frame_image:
+          type: string
+        prompt:
+          type: string
+        prompt_optimizer:
+          type: boolean
+        fast_pretreatment:
+          type: boolean
+        duration:
+          type: integer
+        resolution:
+          type: string
+          enum:
+            - 512P
+            - 720P
+            - 768P
+            - 1080P
+        callback_url:
+          type: string
+    VideoGenerationResp:
+      type: object
+      properties:
+        task_id:
+          type: string
+        base_resp:
+          $ref: '#/components/schemas/BaseResp'
+    BaseResp:
+      type: object
+      properties:
+        status_code:
+          type: integer
+        status_msg:
+          type: string
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

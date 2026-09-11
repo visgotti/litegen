@@ -1,0 +1,135 @@
+{
+  "POST /generations-image-to-video (application/json)": {
+    "properties": {
+      "duration": {
+        "nullable": true,
+        "type": "integer"
+      },
+      "elements": {
+        "items": {
+          "nullable": false,
+          "properties": {
+            "akUUID": {
+              "nullable": false,
+              "type": "string"
+            },
+            "weight": {
+              "default": 1,
+              "nullable": true,
+              "type": "number"
+            }
+          },
+          "required": [
+            "akUUID"
+          ],
+          "type": "object"
+        },
+        "nullable": true,
+        "type": "array"
+      },
+      "endFrameImage": {
+        "nullable": true,
+        "properties": {
+          "id": {
+            "nullable": false,
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "GENERATED",
+              "UPLOADED"
+            ],
+            "nullable": false,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type"
+        ],
+        "type": "object"
+      },
+      "frameInterpolation": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "height": {
+        "nullable": true,
+        "type": "integer"
+      },
+      "imageId": {
+        "nullable": false,
+        "type": "string"
+      },
+      "imageType": {
+        "enum": [
+          "GENERATED",
+          "UPLOADED"
+        ],
+        "nullable": false,
+        "type": "string"
+      },
+      "isPublic": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "model": {
+        "default": "MOTION2",
+        "enum": [
+          "MOTION2",
+          "VEO3",
+          "MOTION2FAST",
+          "VEO3FAST",
+          "KLING2_1",
+          "KLING2_5"
+        ],
+        "nullable": true
+      },
+      "negativePrompt": {
+        "nullable": true,
+        "type": "string"
+      },
+      "prompt": {
+        "nullable": false,
+        "type": "string"
+      },
+      "promptEnhance": {
+        "nullable": true,
+        "type": "boolean"
+      },
+      "promptEnhanceInstruction": {
+        "nullable": true,
+        "type": "string"
+      },
+      "resolution": {
+        "enum": [
+          "RESOLUTION_480",
+          "RESOLUTION_720",
+          "RESOLUTION_1080"
+        ],
+        "nullable": true
+      },
+      "seed": {
+        "nullable": true,
+        "type": "integer"
+      },
+      "styleIds": {
+        "items": {
+          "type": "string"
+        },
+        "nullable": true,
+        "type": "array"
+      },
+      "width": {
+        "nullable": true,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "prompt",
+      "imageId",
+      "imageType"
+    ],
+    "type": "object"
+  }
+}

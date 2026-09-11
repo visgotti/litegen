@@ -1,0 +1,128 @@
+# parameters
++ **modelId** (Required) – The model ID to use. For Amazon Nova Reel, this is "amazon.nova-reel-v1:1"
++ **modelInput** (Required) – Defines all of the video generation parameters specific to the Amazon Nova Reel model. For more information, see [Video generation input parameters](#video-gen-input-params).
++ **outputDataConfig** (Required) – Defines where the generated video should be saved. The value must have the following structure:
++ **text** (Required) – A text prompt to generate the video. Must be 1-512 characters in length.
++ **images** (Optional) – A single JPEG or PNG image that is used as the starting keyframe of the output video. This input image is used along with the text prompt to generate the video. The image must be formatted as a base64 string or stored in an Amazon S3 bucket.
++ **durationSeconds** (Required) - Duration of the output video. 6 is the only supported value currently.
++ **fps** (Required)- Frame rate of the output video. 24 is the only supported value currently.
++ **dimension** (Required) - Width and height of the output video. "1280x720" is the only supported value currently.
++ **seed** (Optional) – Determines the initial noise setting for the generation process. Changing the seed value while leaving all other parameters the same will produce a totally new video that still adheres to your prompt, dimensions, and other settings. It is common to experiment with a variety of seed values to find the perfect image.
++ **format** (Required) - Must match the format of the input image. Either "png" or "jpeg".
++ **source** (Required)
++ **text** (Required) – A text prompt to generate the video. Must be 1-4000 characters in length.
++ **durationSeconds** (Required) - Duration of the output video. A multiple of 6 between 12 and 120, inclusive.
++ **fps** (Required)- Frame rate of the output video. 24 is the only supported value currently.
++ **dimension** (Required) - Width and height of the output video. "1280x720" is the only supported value currently.
++ **seed** (Optional) – Determines the initial noise setting for the generation process. Changing the seed value while leaving all other parameters the same will produce a totally new image that still adheres to your prompt, dimensions, and other settings. It is common to experiment with a variety of seed values to find the perfect image.
++ **shots** (Required) - Contains information about the text prompts and input images that are used for video generation.
++ **text** (Required) – A text prompt to generate the video. Must be 1-512 characters in length.
++ **image** (Optional) – Contains information about the input image that is used for this shot. The image can be provided as either a base64 string in the `bytes` field or as an Amazon S3 URI in the `s3Location` field.
++ **fps** (Required)- Frame rate of the output video. 24 is the only supported value currently.
++ **dimension** (Required) - Width and height of the output video. "1280x720" is the only supported value currently.
++ **seed** (Optional) – Determines the initial noise setting for the generation process. Changing the seed value while leaving all other parameters the same will produce a totally new image that still adheres to your prompt, dimensions, and other settings. It is common to experiment with a variety of seed values to find the perfect image.
+
+# request structures
+{
+    "taskType": "TEXT_VIDEO",
+    "textToVideoParams": {
+        "text": {{string}},
+        "images": {{ImageSource[] (list containing a single ImageSource)}}
+    },
+    "videoGenerationConfig": {
+        "durationSeconds": {{int}},
+        "fps": {{int}},
+        "dimension": {{string}}, 
+        "seed": {{int}}
+    }
+}
+
+{
+    "format": "png" | "jpeg"
+    "source": {
+        "bytes": {{string (base64 encoded image)}}
+    }
+}
+
+{
+    "taskType": "MULTI_SHOT_AUTOMATED",
+    "multiShotAutomatedParams": {
+        "text": {{string}},
+    },
+    "videoGenerationConfig": {
+        "durationSeconds": {{int}},
+        "fps": {{int}},
+        "dimension": {{string}}, 
+        "seed": {{int}}
+    }
+}
+
+model_input = {
+  "taskType": "MULTI_SHOT_MANUAL",
+  "multiShotManualParams": {
+    "shots": [
+      {
+        "text": "{{Information for shot 1}}"
+      },
+      {
+        "text": "{{Information for shot 2}}",
+        "image": {
+          "format": "png", # Must be "png" or "jpeg"
+          "source": {
+            "bytes": "<base64 image string>"
+          },
+        },
+      },
+      {
+        "text": "{{Information for shot 3}}",
+        "image": {
+            "format": "png",  # Must be "png" or "jpeg"
+            "source": {
+                "s3Location": {
+                    "uri": "<S3 URI string>",
+                    "bucketOwner": "<S3 bucket owner string>" # Optional
+                }
+            }
+        }
+      },
+    ]
+  },
+  "videoGenerationConfig": {
+        "fps": {{int}},
+        "dimension": {{string}}, 
+        "seed": {{int}}
+    }
+}
+
+response = bedrock_runtime.get_async_invoke(
+    invocationArn="arn:AWS:bedrock:us-east-1:{{account-id}}:async-invoke/{{invocation-id}}"
+)
+
+status = response["status"]
+print(f"Status: {status}")
+
+invocations_details = bedrock_runtime.list_async_invokes(
+    maxResults=10,  # (Optional)
+    statusEquals="InProgress",  # (Optional) Can be "Completed", "InProgress", or "Failed". Omit this argument to list all jobs, regardless of status.
+    # Note: There are other supported arguments not demonstrated here.
+)
+
+print(json.dumps(invocations_details, indent=2, default=str))
+
+{
+    "schemaVersion": string,
+    "shots": [{
+            "status": enum, // where success is generation + upload
+            "location": string,
+            "failureType": enum,
+            "failureMessage": string,
+        },
+        ...
+    ],
+    "fullVideo": {
+        "status": enum, // where success is generation + upload
+        "location": string,
+        "failureType": enum,
+        "failureMessage": string,
+    }
+}

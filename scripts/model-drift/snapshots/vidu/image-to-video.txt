@@ -1,0 +1,15 @@
+model | String | Required | viduq3-pro-fast viduq3-turbo viduq3-pro viduq2-pro-fast viduq2-pro viduq2-turbo viduq1 viduq1-classic vidu2.0
+images | Array\[String\] | Required | data:image/png;base64,{base64_encode}
+prompt | String | Optional | 
+voice_id | String | Optional | 
+is_rec | Bool | Optional | true: false
+bgm | Bool | Optional | 
+audio | Bool | Optional | 
+audio_type | String | Optional | 
+duration | Int | Optional | 
+seed | Int | Optional | 
+resolution | String | Optional | 
+movement_amplitude | String | Optional | auto auto small medium large
+payload | String | Optional | 
+off_peak | Bool | Optional | false true false true false
+callback_url | String | Optional | callback_url
