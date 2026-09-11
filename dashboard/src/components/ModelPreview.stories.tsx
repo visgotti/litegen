@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import ModelPreview from './ModelPreview';
 import {
-  CUBE_MESH, FULL_ASSETS, ICOSPHERE_MESH, MISSING_MESH, PREVIEW, TEXTURE, fixtureUrl,
+  CORRUPT_MESH, CUBE_MESH, FULL_ASSETS, ICOSPHERE_MESH, MISSING_MESH, PREVIEW, TEXTURE, fixtureUrl,
 } from '../story-fixtures';
 
 /**
@@ -61,6 +61,15 @@ export const CheckerBackground: Story = {
  *  controls disable, and copy-URL and the asset links stay usable. */
 export const MeshLoadFailure: Story = {
   args: { assets: [MISSING_MESH, PREVIEW] },
+};
+
+/** A GLB that downloads fine but fails to parse (corrupt JSON chunk): the
+ *  inspector shows the `parse` fallback (download only, no Retry — refetching
+ *  the same bytes would fail the same way), while treating the error like any
+ *  other: viewer-only controls disable, copy-URL and the asset list stay
+ *  usable. */
+export const MeshParseFailure: Story = {
+  args: { assets: [CORRUPT_MESH, PREVIEW] },
 };
 
 /** An OBJ mesh: known up front not to render in `<model-viewer>`, so the

@@ -146,9 +146,55 @@ export function isBrowserImage(format: string): boolean {
   return IMAGE_FORMATS.has(format.toLowerCase());
 }
 
-/** User-facing explanation for a `<model-viewer>` `error` event's detail. */
-export function describeViewerError(detail: unknown): string {
+/** 'load': a download/network/HTTP failure — a second attempt might succeed,
+ *  so Retry is offered. 'parse': the bytes arrived but the file is not valid
+ *  glTF — Retry re-fetches the exact same bytes and fails the same way, so it
+ *  is withheld. */
+export type ViewerErrorReason = 'load' | 'parse';
+
+/**
+ * Classifies a `<model-viewer>` `error` event as a download failure or a
+ * parse failure.
+ *
+ * This cannot be done from `detail` alone. Verified against the installed
+ * `@google/model-viewer` 4.3.1 in a real browser (see model3d-assets.test.ts
+ * and the Task 17B report): `CachingGLTFLoader.preload()` swallows the real
+ * cause of a failed load — an `HttpError` for a 404, a `RangeError` such as
+ * "Invalid typed array length" for a corrupt GLB — logging it with
+ * `console.error` and substituting an empty glTF instance. The `error` event
+ * this component sees always carries the SAME generic
+ * `sourceError: TypeError: Cannot read properties of undefined (reading
+ * 'scene')`, thrown later when that empty instance is cloned, for both
+ * failure modes and for every glTF-level parse error, not just this one.
+ *
+ * The one signal that does discriminate is outside `detail`:
+ * `PerformanceResourceTiming.responseStatus` for the same request (Resource
+ * Timing Level 2), passed in by the caller — reading it needs `performance`,
+ * which does not belong in a pure helper. It reports whether the browser
+ * actually received a response for the mesh, with no extra request of our
+ * own (so a presigned/signed mesh URL is never fetched twice). A 2xx/3xx
+ * status means the bytes arrived, so a `loadfailure` after that is a parse
+ * failure. Anything else — no entry (also the common case for a cross-origin
+ * mesh host that does not send `Timing-Allow-Origin`, which most object
+ * storage does not), status 0, or a 4xx/5xx — is treated as a download
+ * failure so Retry stays available. This also keeps `webglcontextlost` (a
+ * failure unrelated to the fetch, which can occur long after a successful
+ * load) as `load` rather than misreading a stale successful timing entry.
+ */
+export function classifyViewerError(detail: unknown, responseStatus: number | null): ViewerErrorReason {
   const type = (detail as { type?: unknown } | null | undefined)?.type;
+  if (type !== 'loadfailure') return 'load';
+  return typeof responseStatus === 'number' && responseStatus >= 200 && responseStatus < 400 ? 'parse' : 'load';
+}
+
+/** User-facing explanation for a `<model-viewer>` `error` event's detail.
+ *  `reason` is `classifyViewerError`'s result for the same event, so the
+ *  message matches whether Retry is offered. */
+export function describeViewerError(detail: unknown, reason: ViewerErrorReason = 'load'): string {
+  const type = (detail as { type?: unknown } | null | undefined)?.type;
+  if (reason === 'parse') {
+    return "The mesh file isn't a valid glTF.";
+  }
   if (type === 'loadfailure') {
     return 'The mesh file could not be loaded — it may be missing (404) or corrupt.';
   }
