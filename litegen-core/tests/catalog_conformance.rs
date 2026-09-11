@@ -73,6 +73,81 @@ fn no_retired_model_ids_are_advertised() {
     );
 }
 
+/// Carried models whose vendor has announced a shutdown date: (catalog id,
+/// shutdown date, what happens). They stay advertised while the vendor still
+/// serves them; from the day after the date, `models_past_their_announced_shutdown_are_removed`
+/// fails until the row is removed from `models/*.yaml` (and its entry from
+/// `scripts/model-drift/providers/<p>.mjs`) and the id moves to
+/// `no_retired_model_ids_are_advertised`. The weekly `/model-drift` run adds
+/// entries here as vendors announce shutdowns.
+const SCHEDULED_SHUTDOWNS: &[(&str, &str, &str)] = &[
+    // @see https://kling.ai/document-api/api/image/2-0/image-generation.md
+    ("kling/kling-v2", "2026-09-15", "Kling retires Image 2.0; successor kling/kling-v2-1"),
+    ("kling/kling-v1-5", "2026-09-15", "Kling retires Image 1.5; successor kling/kling-v2-1"),
+    ("kling/video-kling-v1-6", "2026-09-15", "Kling retires Video 1.6; successors video-kling-v2-5-turbo / -v2-6"),
+    ("kling/video-kling-v2-1", "2026-09-15", "Kling retires Video 2.1; successors video-kling-v2-5-turbo / -v2-6"),
+    // @see https://developers.openai.com/api/docs/deprecations
+    ("openai/sora", "2026-09-24", "OpenAI shuts down the Videos API and Sora 2; no replacement"),
+    ("openai/sora-2-pro", "2026-09-24", "OpenAI shuts down the Videos API and Sora 2; no replacement"),
+    ("openai/gpt-image-1", "2026-10-23", "OpenAI shuts down gpt-image-1; replacement openai/gpt-image-2"),
+    // @see https://docs.aws.amazon.com/bedrock/latest/userguide/model-lifecycle.html
+    ("bedrock/amazon.nova-canvas-v1:0", "2026-09-30", "Bedrock end of life for Nova Canvas; no Amazon successor"),
+    ("bedrock/amazon.nova-reel-v1:1", "2026-09-30", "Bedrock end of life for Nova Reel; no Amazon successor"),
+    // @see https://ai.google.dev/gemini-api/docs/deprecations
+    ("google/gemini-2.5-flash-image", "2026-10-02", "Google shuts down gemini-2.5-flash-image; successor google/gemini-3.1-flash-image"),
+];
+
+/// Strictly after the shutdown date: on the date itself the vendor still serves it.
+fn overdue(today: chrono::NaiveDate, shutdown: &str) -> bool {
+    let date = chrono::NaiveDate::parse_from_str(shutdown, "%Y-%m-%d")
+        .unwrap_or_else(|e| panic!("shutdown date {shutdown:?} is not YYYY-MM-DD: {e}"));
+    today > date
+}
+
+#[test]
+fn overdue_starts_the_day_after_the_shutdown_date() {
+    let d = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+    assert!(!overdue(d("2026-09-14"), "2026-09-15"));
+    assert!(!overdue(d("2026-09-15"), "2026-09-15"));
+    assert!(overdue(d("2026-09-16"), "2026-09-15"));
+    assert!(overdue(d("2027-01-01"), "2026-12-31"));
+}
+
+#[test]
+fn models_past_their_announced_shutdown_are_removed() {
+    let reg = registry();
+    let today = chrono::Utc::now().date_naive();
+    let still_advertised: Vec<String> = SCHEDULED_SHUTDOWNS
+        .iter()
+        .filter(|(id, date, _)| overdue(today, date) && reg.get(id).is_some())
+        .map(|(id, date, why)| format!("  {id}: shut down {date} ({why})"))
+        .collect();
+    assert!(
+        still_advertised.is_empty(),
+        "models past their vendor shutdown date are still advertised. Remove each from \
+         models/*.yaml and scripts/model-drift/providers/<p>.mjs, then move it from \
+         SCHEDULED_SHUTDOWNS to no_retired_model_ids_are_advertised:\n{}",
+        still_advertised.join("\n")
+    );
+}
+
+/// Once a scheduled model is removed, its entry must move to the retired list,
+/// so SCHEDULED_SHUTDOWNS never silently guards nothing.
+#[test]
+fn scheduled_shutdowns_name_models_still_in_the_catalog() {
+    let reg = registry();
+    let gone: Vec<&str> = SCHEDULED_SHUTDOWNS
+        .iter()
+        .filter(|(id, _, _)| reg.get(id).is_none())
+        .map(|(id, _, _)| *id)
+        .collect();
+    assert!(
+        gone.is_empty(),
+        "these SCHEDULED_SHUTDOWNS entries are no longer in the catalog; move them to \
+         no_retired_model_ids_are_advertised: {gone:?}"
+    );
+}
+
 /// Replacements for the retired ids must actually be present, or the fix
 /// silently reduced the catalog instead of migrating it.
 #[test]

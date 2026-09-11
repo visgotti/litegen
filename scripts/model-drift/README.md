@@ -36,6 +36,10 @@ No API keys are needed. Every source is a public spec or docs page.
   Check the vendor's changelog or deprecations page. Retired means remove or
   replace the model. Renamed means fix the mapping, and the adapter too if it
   sends the old id.
+- **An announced, future shutdown:** add it to `SCHEDULED_SHUTDOWNS` in
+  `litegen-core/tests/catalog_conformance.rs`. The model stays advertised
+  while the vendor still serves it. From the day after the date, the test
+  fails until the model is removed.
 - **`changed`**: a source's snapshot differs from the committed one. Run
   `git diff scripts/model-drift/snapshots/` to see what changed upstream, such
   as new enum values, new bounds or new endpoints. Compare that against the
