@@ -1628,6 +1628,11 @@ modules next to the code they constrain.
   Bedrock's `MULTI_SHOT_*` task types. These are feature work, not conformance
   bugs — nothing currently shipped is broken by their absence. The audit
   sections above enumerate them.
+  ✅ (2026-09-11, "feat(model-drift): weekly provider model drift check")
+  Detection is now continuous rather than a one-off audit: `scripts/model-drift/`
+  diffs every vendor's published models and request schemas against
+  `models/*.yaml` weekly (`/model-drift` in Claude Code). Adding the models
+  themselves remains per-model product work.
 - **Re-hosting auth-gated outputs** (Veo `video.uri`, Bedrock `s3Uri`). Already
   a tracked cross-provider follow-up, and the right fix is shared plumbing
   rather than two more per-adapter downloads.
