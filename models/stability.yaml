@@ -37,7 +37,9 @@ models:
       seed: { kind: seed, min: 0, max: 4294967294 }
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["1:1"]
+        # The /generate/sd3 aspect_ratio enum applies to every sd3.5 model, turbo included
+        # (https://api.stability.ai/v2alpha/openapi).
+        allowed: ["1:1", "16:9", "9:16", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"]
         default: "1:1"
     extra_allowlist: [output_format]
     tags: [text-to-image, fast]
@@ -94,10 +96,12 @@ models:
       seed: { kind: seed, min: 0, max: 4294967294 }
       steps: { kind: int, min: 10, max: 50, default: 30 }
       guidance_scale: { kind: float, min: 0.0, max: 35.0, default: 7.0 }
+      # The SDXL 1.0 engine accepts only these eight dimension pairs; 512x512 is
+      # not one (https://platform.stability.ai/docs/api-reference#tag/SDXL-1.0).
       size:
         kind: size
         mode: enum
-        values: [[512,512],[1024,1024]]
+        values: [[1024,1024],[1152,896],[896,1152],[1216,832],[1344,768],[768,1344],[1536,640],[640,1536]]
     ref_inputs:
       max_total: 2
       default_role: init

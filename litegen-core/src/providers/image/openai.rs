@@ -66,10 +66,14 @@ impl OpenAiProvider {
     ///   `CreateImageRequest.size` description: the GPT image models take
     ///   `1024x1024`, `1536x1024` and `1024x1536`; `gpt-image-2` additionally
     ///   takes arbitrary `WIDTHxHEIGHT` with both dimensions divisible by 16, an
-    ///   aspect ratio between 1:3 and 3:1, and a `3840x2160` ceiling. The
+    ///   aspect ratio between 1:3 and 3:1, neither edge above 3840, and
+    ///   655,360..=8,294,400 total pixels, so `2160x3840` (4K portrait) is
+    ///   legal and `512x512` is not. The
     ///   `dall-e-*` arms are retained only for operators who point
     ///   `model_mapping` at a legacy deployment; both models were shut down on
     ///   2026-05-12.
+    /// @see <https://developers.openai.com/api/docs/guides/image-generation>
+    ///   ("GPT Image 2 settings", re-read 2026-09-11) — the edge and pixel limits.
     fn normalize_size(size: &str, model: &str) -> String {
         let parts: Vec<&str> = size.split('x').collect();
         let (w, h) = if parts.len() == 2 {
@@ -102,12 +106,17 @@ impl OpenAiProvider {
             .to_string();
         }
 
-        // gpt-image-2 accepts arbitrary in-range, 16-aligned sizes.
+        // gpt-image-2 accepts arbitrary 16-aligned sizes within its edge and
+        // total-pixel limits. The old `h <= 2160` cap rejected documented
+        // portrait sizes such as 2160x3840, and the old 256 floor let sizes
+        // below the 655,360-pixel minimum through.
+        let pixels = u64::from(w) * u64::from(h);
         if model.starts_with("gpt-image-2")
             && w % 16 == 0
             && h % 16 == 0
-            && (256..=3840).contains(&w)
-            && (256..=2160).contains(&h)
+            && w <= 3840
+            && h <= 3840
+            && (655_360..=8_294_400).contains(&pixels)
         {
             let ratio = w as f64 / h as f64;
             if (1.0 / 3.0..=3.0).contains(&ratio) {
@@ -782,6 +791,29 @@ mod tests {
             "unknown id resolved to the retired {resolved:?}"
         );
         assert_eq!(resolved, "some-future-model", "native id should pass through");
+    }
+
+    /// gpt-image-2 `size` rules (image generation guide, "GPT Image 2
+    /// settings", re-read 2026-09-11): edges <= 3840 and multiples of 16,
+    /// long:short <= 3:1, 655,360..=8,294,400 total pixels. `2160x3840` is a
+    /// listed size, but the old 2160 height cap snapped it to `1024x1536`;
+    /// `512x512` is under the pixel floor, but the old 256 floor forwarded it.
+    #[test]
+    fn gpt_image_2_sizes_follow_the_documented_constraints() {
+        for listed in ["1024x1024", "2048x2048", "2048x1152", "3840x2160", "2160x3840"] {
+            assert_eq!(
+                OpenAiProvider::normalize_size(listed, "gpt-image-2"),
+                listed,
+                "{listed} is a listed gpt-image-2 size and must pass through"
+            );
+        }
+        for out_of_range in ["512x512", "3840x3840"] {
+            assert_ne!(
+                OpenAiProvider::normalize_size(out_of_range, "gpt-image-2"),
+                out_of_range,
+                "{out_of_range} breaks the pixel limits and must not be forwarded verbatim"
+            );
+        }
     }
 
     #[tokio::test]

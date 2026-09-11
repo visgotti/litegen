@@ -105,6 +105,26 @@ impl ReplicateProvider {
         }
     }
 
+    /// The `(guidance, steps)` input field names of a Replicate model. Models
+    /// spell these controls differently, and an input key that a model's schema
+    /// does not declare never reaches it — so the generic names silently dropped
+    /// the caller's values on BFL's FLUX models and on SD3.
+    ///
+    /// @see <https://replicate.com/black-forest-labs/flux-dev/api/schema> — `guidance`, `num_inference_steps`
+    /// @see <https://replicate.com/black-forest-labs/flux-pro/api/schema> — `guidance`, `steps` (deprecated)
+    /// @see <https://replicate.com/stability-ai/stable-diffusion-3/api/schema> — `cfg`, `steps`
+    /// @see <https://replicate.com/stability-ai/sdxl/versions> — `guidance_scale`, `num_inference_steps`
+    fn input_field_names(owner_name: &str) -> (&'static str, &'static str) {
+        match owner_name {
+            "black-forest-labs/flux-pro" => ("guidance", "steps"),
+            "black-forest-labs/flux-dev" => ("guidance", "num_inference_steps"),
+            "stability-ai/stable-diffusion-3" => ("cfg", "steps"),
+            // stability-ai/sdxl, and black-forest-labs/flux-schnell (whose
+            // steps field is `num_inference_steps`; it has no guidance input).
+            _ => ("guidance_scale", "num_inference_steps"),
+        }
+    }
+
     /// Poll a prediction to completion via `GET {api_base}/predictions/{id}`,
     /// reading the `status` field (`succeeded` / `failed` / `canceled`).
     ///
@@ -258,12 +278,14 @@ impl ImageProvider for ReplicateProvider {
             input["negative_prompt"] = Value::String(np.to_string());
         }
 
+        let (guidance_field, steps_field) = Self::input_field_names(&owner_name);
+
         if let Some(gc) = extras.guidance_scale {
-            input["guidance_scale"] = json!(gc);
+            input[guidance_field] = json!(gc);
         }
 
         if let Some(steps) = extras.steps {
-            input["num_inference_steps"] = Value::Number(steps.into());
+            input[steps_field] = Value::Number(steps.into());
         }
 
         if let Some(strength) = extras.strength {
@@ -563,7 +585,89 @@ mod tests {
         assert_eq!(body["input"]["prompt"], "a futuristic city");
         assert_eq!(body["input"]["aspect_ratio"], "1:1");
         assert_eq!(body["input"]["seed"], 123);
-        assert_eq!(body["input"]["guidance_scale"], 3.5);
+        // flux-dev's guidance field is `guidance`, not `guidance_scale`.
+        assert_eq!(body["input"]["guidance"], 3.5);
+        assert!(body["input"].get("guidance_scale").is_none());
         assert_eq!(body["input"]["num_inference_steps"], 28);
+    }
+
+    /// Replicate models name guidance and step count differently, and an input
+    /// key a model's schema does not declare never reaches it. The generic
+    /// `guidance_scale` / `num_inference_steps` therefore dropped the caller's
+    /// values on FLUX (`guidance`) and on SD3 (`cfg`, `steps`).
+    /// @see <https://replicate.com/black-forest-labs/flux-dev/api/schema>
+    /// @see <https://replicate.com/black-forest-labs/flux-pro/api/schema>
+    /// @see <https://replicate.com/stability-ai/stable-diffusion-3/api/schema>
+    #[tokio::test]
+    async fn guidance_and_steps_use_each_models_own_input_names() {
+        for (catalog_id, slug, guidance_key, steps_key) in [
+            (
+                "replicate/flux-dev",
+                "black-forest-labs/flux-dev",
+                "guidance",
+                "num_inference_steps",
+            ),
+            (
+                "replicate/flux-pro",
+                "black-forest-labs/flux-pro",
+                "guidance",
+                "steps",
+            ),
+            (
+                "replicate/sd3",
+                "stability-ai/stable-diffusion-3",
+                "cfg",
+                "steps",
+            ),
+        ] {
+            let server = MockServer::start().await;
+            // An already-succeeded prediction skips the 2s polling loop.
+            Mock::given(method("POST"))
+                .and(path(format!("/v1/models/{slug}/predictions")))
+                .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                    "id": "pred-1",
+                    "status": "succeeded",
+                    "output": [format!("{}/img.png", server.uri())]
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/img.png"))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(b"PNG".to_vec()))
+                .mount(&server)
+                .await;
+
+            let provider = make_provider(&format!("{}/v1", server.uri()));
+            let schema = ref_schema(catalog_id);
+            let base = make_base("a lighthouse at dusk", catalog_id);
+            provider
+                .generate(&schema, &base, &make_extras(), &empty_materialized())
+                .await
+                .expect("generate");
+
+            let received = server.received_requests().await.unwrap();
+            let post = received
+                .iter()
+                .find(|r| r.method == wiremock::http::Method::POST)
+                .unwrap();
+            let body: Value = serde_json::from_slice(&post.body).unwrap();
+            let input = &body["input"];
+            assert_eq!(
+                input[guidance_key], 3.5,
+                "{catalog_id}: guidance belongs in `{guidance_key}`: {input}"
+            );
+            assert_eq!(
+                input[steps_key], 28,
+                "{catalog_id}: steps belong in `{steps_key}`: {input}"
+            );
+            for generic in ["guidance_scale", "num_inference_steps"] {
+                if generic != guidance_key && generic != steps_key {
+                    assert!(
+                        input.get(generic).is_none(),
+                        "{catalog_id} declares no `{generic}` input: {input}"
+                    );
+                }
+            }
+        }
     }
 }

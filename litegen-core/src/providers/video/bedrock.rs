@@ -135,21 +135,24 @@ impl VideoProvider for BedrockVideoProvider {
 
         let mut t2v = json!({ "text": base.prompt });
         // Optional starting keyframe (base64 PNG/JPEG, must be 1280x720 per docs).
+        // `format` "Must match the format of the input image": base64 of a
+        // JPEG always starts with "/9j/" (the FF D8 FF marker).
         for r in &materialized.refs {
             if let MaterializedRefForm::Base64(b64) = &r.form {
-                t2v["images"] = json!([{ "format": "png", "source": { "bytes": b64 } }]);
+                let format = if b64.starts_with("/9j/") { "jpeg" } else { "png" };
+                t2v["images"] = json!([{ "format": format, "source": { "bytes": b64 } }]);
                 break;
             }
         }
-        let mut video_config = json!({});
+        // TEXT_VIDEO marks durationSeconds, fps and dimension Required, and fps
+        // and dimension each have exactly one supported value (24, "1280x720"),
+        // so send them even when the caller left them out.
+        let mut video_config = json!({
+            "fps": extras.fps.unwrap_or(24),
+            "dimension": extras.resolution.as_deref().unwrap_or("1280x720"),
+        });
         if extras.duration_seconds > 0.0 {
             video_config["durationSeconds"] = Value::Number((extras.duration_seconds as i64).into());
-        }
-        if let Some(fps) = extras.fps {
-            video_config["fps"] = Value::Number(fps.into());
-        }
-        if let Some(dim) = extras.resolution.as_deref() {
-            video_config["dimension"] = Value::String(dim.to_string());
         }
         if let Some(seed) = base.seed {
             video_config["seed"] = Value::Number(seed.max(0).into());
@@ -361,6 +364,46 @@ mod tests {
         assert_eq!(body["modelId"], "amazon.nova-reel-v1:1");
         assert_eq!(body["modelInput"]["taskType"], "TEXT_VIDEO");
         assert_eq!(body["outputDataConfig"]["s3OutputDataConfig"]["s3Uri"], "s3://my-bucket/litegen/");
+    }
+
+    /// `fps` and `dimension` are Required in TEXT_VIDEO's videoGenerationConfig
+    /// (24 and "1280x720" are the only supported values), and a keyframe's
+    /// `format` "Must match the format of the input image".
+    /// @see <https://docs.aws.amazon.com/nova/latest/userguide/video-gen-access.html>
+    #[tokio::test]
+    async fn always_sends_required_fps_and_dimension_and_matches_keyframe_format() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/async-invoke"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "invocationArn": "arn:aws:bedrock:us-east-1:123456789012:async-invoke/def"
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("bedrock/amazon.nova-reel-v1:1");
+        let base = make_base("a lighthouse at dusk", "bedrock/amazon.nova-reel-v1:1");
+        // Caller sent neither fps nor resolution.
+        let extras = VideoExtras { duration_seconds: 6.0, aspect_ratio: None, resolution: None, fps: None, extra: None };
+        // Base64 of a JPEG begins with "/9j/".
+        let materialized = MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "first_frame".into(),
+                form: MaterializedRefForm::Base64("/9j/4AAQSkZJRgABAQAAAQABAAD".into()),
+            }],
+            cleanup: Cleanup::empty(),
+        };
+
+        provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        let config = &body["modelInput"]["videoGenerationConfig"];
+        assert_eq!(config["fps"], 24);
+        assert_eq!(config["dimension"], "1280x720");
+        assert_eq!(config["durationSeconds"], 6);
+        assert_eq!(body["modelInput"]["textToVideoParams"]["images"][0]["format"], "jpeg");
     }
 
     #[tokio::test]

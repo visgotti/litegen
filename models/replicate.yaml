@@ -9,11 +9,13 @@ models:
     prompt: { required: true, max_length: 5000 }
     params:
       seed: { kind: seed, min: 0, max: 4294967294 }
-      guidance_scale: { kind: float, min: 1.5, max: 5.0, default: 3.0 }
-      steps: { kind: int, min: 1, max: 50, default: 25 }
+      # The model's field is `guidance`, 2-5 (https://replicate.com/black-forest-labs/flux-pro/api/schema).
+      # No steps: the model marks `steps` deprecated.
+      guidance_scale: { kind: float, min: 2.0, max: 5.0, default: 3.0 }
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["1:1","16:9","21:9","2:3","3:2","4:5","5:4","9:16","9:21","3:4","4:3"]
+        # flux-pro's enum has no 21:9 / 9:21 (https://replicate.com/black-forest-labs/flux-pro/api/schema)
+        allowed: ["1:1","16:9","2:3","3:2","4:5","5:4","9:16","3:4","4:3"]
         default: "1:1"
     extra_allowlist: [safety_tolerance, output_format, output_quality]
     tags: [text-to-image, premium]
@@ -102,8 +104,9 @@ models:
     params:
       negative_prompt: { kind: string, max_length: 5000 }
       seed: { kind: seed, min: 0, max: 4294967294 }
-      steps: { kind: int, min: 10, max: 50, default: 28 }
-      guidance_scale: { kind: float, min: 0.0, max: 10.0, default: 4.5 }
+      # The model's fields are `steps` (1-28) and `cfg` (default 3.5) (https://replicate.com/stability-ai/stable-diffusion-3/api/schema)
+      steps: { kind: int, min: 10, max: 28, default: 28 }
+      guidance_scale: { kind: float, min: 0.0, max: 10.0, default: 3.5 }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["1:1","16:9","9:16","21:9","9:21","2:3","3:2","4:5","5:4"]
@@ -117,21 +120,19 @@ models:
     display_name: Replicate Video (generic)
     description: Generic Replicate video endpoint.
     pricing: { base_cost_usd: 0.30 }
-    capabilities: { text_to_video: true, image_to_video: true }
+    # The pinned AnimateDiff version's input is exactly {prompt, n_prompt, seed,
+    # steps, guidance_scale, motion_module, path}: no image input, so no
+    # image_to_video and no ref_inputs; no duration/frame input, so no
+    # duration_seconds (it was declared "for intent/pricing", but pricing is flat
+    # and the value was never forwarded)
+    # (https://replicate.com/lucataco/animate-diff/versions/beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa377e48a9f).
+    capabilities: { text_to_video: true }
     prompt: { required: true, max_length: 2000 }
     params:
       negative_prompt: { kind: string, max_length: 2000 }
-      duration_seconds: { kind: float, min: 2.0, max: 10.0 }
       seed: { kind: seed, min: 0, max: 4294967294 }
-    ref_inputs:
-      max_total: 1
-      default_role: init
-      provider_format: { form: url }
-      roles:
-        init: { required: false, min_count: 0, max_count: 1 }
-    # AnimateDiff (the resolved backing model) accepts steps/guidance_scale as
-    # diffusion controls; allow them through `extra` so they reach the model.
-    # `duration_seconds` is declared above for intent/pricing but is NOT forwarded
-    # to AnimateDiff (it hardcodes the frame count and rejects fps/num_frames).
-    extra_allowlist: [version, steps, guidance_scale]
-    tags: [text-to-video, image-to-video]
+    # steps/guidance_scale reach AnimateDiff through `extra`. `version` is not
+    # allowlisted: extra keys land in `input`, which has no `version`; pin a
+    # different version with a `model_mapping` override instead.
+    extra_allowlist: [steps, guidance_scale]
+    tags: [text-to-video]

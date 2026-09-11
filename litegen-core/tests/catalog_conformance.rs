@@ -1284,3 +1284,599 @@ fn luma_video_aspect_ratios_are_the_full_documented_enum() {
         assert_eq!(got, want, "{id} aspect ratios");
     }
 }
+
+// ─── OpenAI: gpt-image-2 size bounds, re-read 2026-09-11 (model-drift) ─────
+
+/// gpt-image-2 `size`: max edge <= 3840, both edges multiples of 16,
+/// long:short <= 3:1, and 655,360..=8,294,400 total pixels; `2160x3840`
+/// (4K portrait) is a listed size. The catalog capped height at 2160, which
+/// rejected that size, and floored edges at 256, where no 3:1 size reaches the
+/// pixel minimum (480 is the smallest edge that can: 480x1440 = 691,200 px).
+/// @see <https://developers.openai.com/api/docs/guides/image-generation> ("GPT Image 2 settings", 2026-09-11)
+#[test]
+fn openai_gpt_image_2_size_bounds_match_the_documented_constraints() {
+    let reg = registry();
+    let schema = reg.get("openai/gpt-image-2").expect("openai/gpt-image-2 missing");
+    match schema.params.get("size") {
+        Some(ParamSpec::Size(litegen::capabilities::schema::SizeSpec::Freeform(f))) => {
+            assert_eq!(f.max_width, 3840, "max edge is 3840: {f:?}");
+            assert_eq!(f.max_height, 3840, "2160x3840 is a listed size: {f:?}");
+            assert_eq!(f.min_width, 480, "no edge under 480 reaches 655,360 px within 3:1: {f:?}");
+            assert_eq!(f.min_height, 480, "no edge under 480 reaches 655,360 px within 3:1: {f:?}");
+            assert_eq!(f.multiple_of, Some(16), "both edges must be multiples of 16: {f:?}");
+        }
+        other => panic!("gpt-image-2 size is {other:?}, expected a freeform Size"),
+    }
+}
+
+// ─── ByteDance: vendor facts re-read 2026-09-11 (model-drift) ───────────────
+
+/// Seedream 4.0 WxH sizes: total pixels in [921600, 16777216] and aspect
+/// ratio in [1/16, 16]. Every pair in BytePlus's own 1K/2K/4K size table (and
+/// the page's "valid example" 1600x600) must fit the declared box — the old
+/// 4096 cap rejected every non-square 4K size.
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1541523> (read 2026-09-11)
+#[test]
+fn bytedance_seedream_4_0_size_box_admits_every_documented_size() {
+    const SIZES: [(u32, u32); 25] = [
+        (1024, 1024), (1152, 864), (864, 1152), (1280, 720), (720, 1280),
+        (1248, 832), (832, 1248), (1512, 648),
+        (2048, 2048), (2304, 1728), (1728, 2304), (2848, 1600), (1600, 2848),
+        (2496, 1664), (1664, 2496), (3136, 1344),
+        (4096, 4096), (3520, 4704), (4704, 3520), (5504, 3040), (3040, 5504),
+        (3328, 4992), (4992, 3328), (6240, 2656),
+        (1600, 600),
+    ];
+    let reg = registry();
+    let schema = reg
+        .get("bytedance/seedream-4-0-250828")
+        .expect("seedream-4-0 missing");
+    match schema.params.get("size") {
+        Some(ParamSpec::Size(litegen::capabilities::schema::SizeSpec::Freeform(f))) => {
+            for (w, h) in SIZES {
+                assert!(
+                    (f.min_width..=f.max_width).contains(&w)
+                        && (f.min_height..=f.max_height).contains(&h),
+                    "seedream-4-0 rejects the documented size {w}x{h} (box {}..={} x {}..={})",
+                    f.min_width, f.max_width, f.min_height, f.max_height
+                );
+            }
+        }
+        other => panic!("seedream-4-0 size is {other:?}, expected a freeform box"),
+    }
+}
+
+/// The Image generation API has no `seed` parameter for Seedream 4.0 (seed was
+/// a Seedream 3.0 / SeedEdit 3.0 option). Advertising one promises
+/// reproducibility the vendor never delivers.
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1541523> (read 2026-09-11)
+#[test]
+fn bytedance_seedream_4_0_declares_no_seed() {
+    let reg = registry();
+    let schema = reg
+        .get("bytedance/seedream-4-0-250828")
+        .expect("seedream-4-0 missing");
+    assert!(
+        !schema.params.contains_key("seed"),
+        "seedream-4-0 advertises a seed that the Image generation API does not take"
+    );
+}
+
+/// "Seedream 5.0 pro supports up to 10 reference images. Seedream 5.0 lite,
+/// 4.5, and 4.0 support up to 14 reference images."
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1541523> (read 2026-09-11)
+#[test]
+fn bytedance_seedream_4_0_accepts_14_reference_images() {
+    let reg = registry();
+    let ri = reg
+        .get("bytedance/seedream-4-0-250828")
+        .expect("seedream-4-0 missing")
+        .ref_inputs
+        .as_ref()
+        .expect("seedream-4-0 declares no ref_inputs");
+    assert_eq!(ri.max_total, 14, "Seedream 4.0 takes up to 14 reference images");
+    assert_eq!(
+        ri.roles.get("init").map(|r| r.max_count),
+        Some(14),
+        "the init role must allow all 14"
+    );
+}
+
+/// "Dreamina Seedance 1.0 pro: Default 5; supports [2, 12]."
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1520757> (read 2026-09-11)
+#[test]
+fn bytedance_seedance_1_0_pro_duration_range_matches_the_api() {
+    let reg = registry();
+    let schema = reg
+        .get("bytedance/doubao-seedance-1-0-pro-250528")
+        .expect("seedance-1-0-pro missing");
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Float(f)) => {
+            assert_eq!(f.min, Some(2.0), "Seedance 1.0 pro accepts 2s");
+            assert_eq!(f.max, Some(12.0), "Seedance 1.0 pro tops out at 12s");
+            assert_eq!(f.default, Some(5.0), "vendor default is 5s");
+        }
+        other => panic!("seedance-1-0-pro duration_seconds is {other:?}"),
+    }
+}
+
+/// `seed` ([-1, 2147483647]) is a documented Seedance 1.0 pro request field;
+/// the catalog declared none, so a caller could not ask for a repeatable video.
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1520757> (read 2026-09-11)
+#[test]
+fn bytedance_seedance_1_0_pro_declares_a_seed_param() {
+    let reg = registry();
+    let schema = reg
+        .get("bytedance/doubao-seedance-1-0-pro-250528")
+        .expect("seedance-1-0-pro missing");
+    match schema.params.get("seed") {
+        Some(ParamSpec::Seed(s)) => assert_eq!(s.max, 2_147_483_647, "Seedance seed max"),
+        other => panic!("seedance-1-0-pro seed is {other:?}, expected a seed param"),
+    }
+}
+
+/// Extras are merged into the request body, where the documented field is
+/// `camera_fixed`; `camerafixed` was the legacy `--camerafixed` prompt flag and
+/// means nothing as a body field.
+/// @see <https://docs.byteplus.com/en/docs/ModelArk/1520757> (read 2026-09-11)
+#[test]
+fn bytedance_seedance_1_0_pro_allowlists_the_camera_fixed_body_field() {
+    let reg = registry();
+    let schema = reg
+        .get("bytedance/doubao-seedance-1-0-pro-250528")
+        .expect("seedance-1-0-pro missing");
+    assert!(
+        schema.extra_allowlist.iter().any(|k| k == "camera_fixed"),
+        "camera_fixed is the documented body field"
+    );
+    assert!(
+        !schema.extra_allowlist.iter().any(|k| k == "camerafixed"),
+        "camerafixed is not a body field"
+    );
+}
+
+// ─── Leonardo: vendor facts re-read 2026-09-11 (model-drift) ────────────────
+
+/// Motion 2.0 has no duration parameter — the v1 image-to-video `duration`
+/// lists values only for VEO3/VEO3FAST/KLING2_5 — and its resolutions are
+/// 480p and 720p (RESOLUTION_480 / RESOLUTION_720) only.
+/// @see <https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration> (read 2026-09-11)
+/// @see <https://docs.leonardo.ai/docs/motion-20> (read 2026-09-11)
+#[test]
+fn leonardo_motion2_matches_the_motion_2_0_contract() {
+    let reg = registry();
+    let schema = reg.get("leonardo/motion2").expect("motion2 missing");
+    assert!(
+        !schema.params.contains_key("duration_seconds"),
+        "Motion 2.0 takes no duration; advertising 4-10s promises a control that does not exist"
+    );
+    assert_eq!(
+        enum_values(&reg, "leonardo/motion2", "resolution"),
+        vec!["480p".to_string(), "720p".to_string()],
+        "Motion 2.0 renders at 480p or 720p only"
+    );
+}
+
+/// Kling 2.1 Pro: "resolution ... Set to RESOLUTION_1080", "duration ... Set
+/// to 5 or 10"; Leonardo's model schema caps its prompt at 2500 characters.
+/// @see <https://docs.leonardo.ai/v1.0/docs/kling-2-1-pro> (read 2026-09-11)
+/// @see <https://docs.leonardo.ai/reference/creategeneration> — Kling2_1GenerationRequest, prompt maxLength 2500 (read 2026-09-11)
+#[test]
+fn leonardo_kling2_1_matches_the_kling_2_1_pro_contract() {
+    let reg = registry();
+    let schema = reg.get("leonardo/kling2.1").expect("kling2.1 missing");
+    assert_eq!(
+        enum_values(&reg, "leonardo/kling2.1", "resolution"),
+        vec!["1080p".to_string()],
+        "Kling 2.1 Pro is 1080p only"
+    );
+    assert_eq!(schema.prompt.max_length, Some(2500), "Kling 2.1 Pro prompt limit");
+    match schema.params.get("duration_seconds") {
+        Some(ParamSpec::Float(f)) => {
+            assert_eq!(f.min, Some(5.0), "Kling 2.1 Pro: 5 or 10 s");
+            assert_eq!(f.max, Some(10.0), "Kling 2.1 Pro: 5 or 10 s");
+        }
+        other => panic!("kling2.1 duration_seconds is {other:?}"),
+    }
+}
+
+// ─── fal: vendor facts re-read 2026-09-11 (model-drift) ─────────────────────
+
+/// `fal-ai/flux-pro/v1.1` (FLUX1.1 [pro]) takes `prompt`, `image_size`,
+/// `num_images`, `seed`, `safety_tolerance`, `output_format`,
+/// `enhance_prompt` and `sync_mode` — no `guidance_scale` and no
+/// `num_inference_steps`. The catalog advertised both (FLUX.1 [pro] controls),
+/// so a caller could set values the endpoint never reads.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux-pro/v1.1> (2026-09-11)
+#[test]
+fn fal_flux_pro_declares_no_steps_or_guidance() {
+    let reg = registry();
+    let schema = reg.get("fal/flux-pro").expect("fal/flux-pro missing");
+    for param in ["steps", "guidance_scale"] {
+        assert!(
+            !schema.params.contains_key(param),
+            "fal/flux-pro declares `{param}`, which fal-ai/flux-pro/v1.1 does not take"
+        );
+    }
+}
+
+/// `fal-ai/flux/dev` `guidance_scale` is 1-20. The catalog allowed values down
+/// to 0, which the endpoint rejects.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux/dev> (2026-09-11)
+#[test]
+fn fal_flux_dev_guidance_scale_is_inside_the_endpoint_range() {
+    let reg = registry();
+    let schema = reg.get("fal/flux-dev").expect("fal/flux-dev missing");
+    match schema.params.get("guidance_scale") {
+        Some(ParamSpec::Float(f)) => {
+            let min = f.min.expect("fal/flux-dev guidance_scale declares no min");
+            let max = f.max.expect("fal/flux-dev guidance_scale declares no max");
+            assert!(
+                min >= 1.0,
+                "guidance_scale min {min} is below fal's minimum of 1"
+            );
+            assert!(
+                max <= 20.0,
+                "guidance_scale max {max} is above fal's maximum of 20"
+            );
+        }
+        other => panic!("fal/flux-dev guidance_scale is {other:?}, expected Float"),
+    }
+}
+
+/// `fal-ai/fast-sdxl` `num_inference_steps` is 1-50 with default 25. The
+/// catalog allowed up to 100 (rejected) and defaulted to 50, twice fal's
+/// default step count.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/fast-sdxl> (2026-09-11)
+#[test]
+fn fal_fast_sdxl_steps_match_the_endpoint() {
+    let reg = registry();
+    let schema = reg.get("fal/sdxl").expect("fal/sdxl missing");
+    match schema.params.get("steps") {
+        Some(ParamSpec::Int(i)) => {
+            assert!(
+                i.min.is_some_and(|m| m >= 1),
+                "steps min {:?} is below fal's 1",
+                i.min
+            );
+            assert!(
+                i.max.is_some_and(|m| m <= 50),
+                "steps max {:?} is above fal's 50",
+                i.max
+            );
+            assert_eq!(i.default, Some(25), "fal-ai/fast-sdxl defaults to 25 steps");
+        }
+        other => panic!("fal/sdxl steps is {other:?}, expected Int"),
+    }
+}
+
+/// `fal-ai/stable-diffusion-v35-medium` `num_inference_steps` defaults to 40;
+/// the catalog said 28.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/stable-diffusion-v35-medium> (2026-09-11)
+#[test]
+fn fal_sd35_medium_steps_default_is_the_endpoint_default() {
+    let reg = registry();
+    let schema = reg.get("fal/sd35-medium").expect("fal/sd35-medium missing");
+    match schema.params.get("steps") {
+        Some(ParamSpec::Int(i)) => {
+            assert_eq!(
+                i.default,
+                Some(40),
+                "fal-ai/stable-diffusion-v35-medium defaults to 40 steps"
+            );
+            assert!(
+                i.min.is_some_and(|m| m >= 1),
+                "steps min {:?} is below fal's 1",
+                i.min
+            );
+            assert!(
+                i.max.is_some_and(|m| m <= 50),
+                "steps max {:?} is above fal's 50",
+                i.max
+            );
+        }
+        other => panic!("fal/sd35-medium steps is {other:?}, expected Int"),
+    }
+}
+
+/// Recraft V3 on fal caps `prompt` at 1000 characters (`maxLength: 1000`, on
+/// both `fal-ai/recraft-v3` and its successor id
+/// `fal-ai/recraft/v3/text-to-image`). The catalog allowed 5000.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v3/text-to-image> (2026-09-11)
+#[test]
+fn fal_recraft_v3_prompt_limit_is_1000_characters() {
+    let reg = registry();
+    let schema = reg.get("fal/recraft-v3").expect("fal/recraft-v3 missing");
+    assert_eq!(
+        schema.prompt.max_length,
+        Some(1000),
+        "fal's Recraft V3 prompt maxLength is 1000"
+    );
+}
+
+/// `fal-ai/aura-flow` `num_inference_steps` is 20-50 with default 50. The
+/// catalog allowed 10-19 (rejected) and defaulted to 25.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/aura-flow> (2026-09-11)
+#[test]
+fn fal_aura_flow_steps_match_the_endpoint() {
+    let reg = registry();
+    let schema = reg.get("fal/auraflow").expect("fal/auraflow missing");
+    match schema.params.get("steps") {
+        Some(ParamSpec::Int(i)) => {
+            assert!(
+                i.min.is_some_and(|m| m >= 20),
+                "steps min {:?} is below fal's 20",
+                i.min
+            );
+            assert!(
+                i.max.is_some_and(|m| m <= 50),
+                "steps max {:?} is above fal's 50",
+                i.max
+            );
+            assert_eq!(i.default, Some(50), "fal-ai/aura-flow defaults to 50 steps");
+        }
+        other => panic!("fal/auraflow steps is {other:?}, expected Int"),
+    }
+}
+
+/// `fal/video` runs `fal-ai/ltx-video` (text) or `fal-ai/ltx-video/image-to-video`
+/// (image). Neither input schema has a duration or frame-count field, and the
+/// adapter never forwards `duration_seconds` to them, so a declared 2-10 s
+/// range promised a control that does nothing.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-video> (2026-09-11)
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/ltx-video/image-to-video> (2026-09-11)
+#[test]
+fn fal_video_does_not_advertise_a_duration() {
+    let reg = registry();
+    let schema = reg.get("fal/video").expect("fal/video missing");
+    assert!(
+        !schema.params.contains_key("duration_seconds"),
+        "fal/video declares duration_seconds, but LTX Video on fal takes no duration"
+    );
+}
+
+// ─── Replicate: vendor facts re-read 2026-09-11 (model-drift) ───────────────
+
+/// `black-forest-labs/flux-pro` `aspect_ratio` enum is
+/// `custom, 1:1, 16:9, 3:2, 2:3, 4:5, 5:4, 9:16, 3:4, 4:3` — no `21:9` or
+/// `9:21` (flux-dev and flux-schnell have those; flux-pro does not).
+/// @see <https://replicate.com/black-forest-labs/flux-pro/api/schema> (2026-09-11)
+#[test]
+fn replicate_flux_pro_aspect_ratios_are_in_the_flux_pro_enum() {
+    const FLUX_PRO_RATIOS: [&str; 9] = [
+        "1:1", "16:9", "3:2", "2:3", "4:5", "5:4", "9:16", "3:4", "4:3",
+    ];
+    let reg = registry();
+    let allowed = aspect_ratios(&reg, "replicate/flux-pro");
+    assert!(
+        !allowed.is_empty(),
+        "replicate/flux-pro declares no aspect ratios"
+    );
+    for ar in allowed {
+        assert!(
+            FLUX_PRO_RATIOS.contains(&ar.as_str()),
+            "replicate/flux-pro allows {ar:?}, not in black-forest-labs/flux-pro's aspect_ratio enum"
+        );
+    }
+}
+
+/// `black-forest-labs/flux-pro` takes guidance as `guidance`, 2-5 (default
+/// 3). The catalog allowed down to 1.5.
+/// @see <https://replicate.com/black-forest-labs/flux-pro/api/schema> (2026-09-11)
+#[test]
+fn replicate_flux_pro_guidance_is_inside_the_guidance_input_range() {
+    let reg = registry();
+    let schema = reg
+        .get("replicate/flux-pro")
+        .expect("replicate/flux-pro missing");
+    match schema.params.get("guidance_scale") {
+        Some(ParamSpec::Float(f)) => {
+            let min = f
+                .min
+                .expect("replicate/flux-pro guidance_scale declares no min");
+            let max = f
+                .max
+                .expect("replicate/flux-pro guidance_scale declares no max");
+            assert!(
+                min >= 2.0,
+                "guidance min {min} is below flux-pro's minimum of 2"
+            );
+            assert!(
+                max <= 5.0,
+                "guidance max {max} is above flux-pro's maximum of 5"
+            );
+        }
+        other => panic!("replicate/flux-pro guidance_scale is {other:?}, expected Float"),
+    }
+}
+
+/// `black-forest-labs/flux-pro` marks `steps` (and `interval`)
+/// `"deprecated": true`, described only as "Deprecated". Advertising steps
+/// offers a control the model no longer honours.
+/// @see <https://replicate.com/black-forest-labs/flux-pro/api/schema> (2026-09-11)
+#[test]
+fn replicate_flux_pro_does_not_advertise_the_deprecated_steps() {
+    let reg = registry();
+    let schema = reg
+        .get("replicate/flux-pro")
+        .expect("replicate/flux-pro missing");
+    assert!(
+        !schema.params.contains_key("steps"),
+        "replicate/flux-pro declares steps, which black-forest-labs/flux-pro marks deprecated"
+    );
+}
+
+/// `stability-ai/stable-diffusion-3` takes step count as `steps`, 1-28. The
+/// catalog allowed up to 50.
+/// @see <https://replicate.com/stability-ai/stable-diffusion-3/api/schema> (2026-09-11)
+#[test]
+fn replicate_sd3_steps_stay_inside_the_steps_input_range() {
+    let reg = registry();
+    let schema = reg.get("replicate/sd3").expect("replicate/sd3 missing");
+    match schema.params.get("steps") {
+        Some(ParamSpec::Int(i)) => {
+            assert!(
+                i.min.is_some_and(|m| m >= 1),
+                "steps min {:?} is below SD3's 1",
+                i.min
+            );
+            assert!(
+                i.max.is_some_and(|m| m <= 28),
+                "steps max {:?} is above SD3's 28",
+                i.max
+            );
+        }
+        other => panic!("replicate/sd3 steps is {other:?}, expected Int"),
+    }
+}
+
+/// `stability-ai/stable-diffusion-3` takes guidance as `cfg`, 0-20, default
+/// 3.5. The catalog's default was 4.5.
+/// @see <https://replicate.com/stability-ai/stable-diffusion-3/api/schema> (2026-09-11)
+#[test]
+fn replicate_sd3_guidance_default_is_the_cfg_default() {
+    let reg = registry();
+    let schema = reg.get("replicate/sd3").expect("replicate/sd3 missing");
+    match schema.params.get("guidance_scale") {
+        Some(ParamSpec::Float(f)) => {
+            assert_eq!(f.default, Some(3.5), "SD3's cfg defaults to 3.5");
+            assert!(
+                f.min.is_some_and(|m| m >= 0.0),
+                "cfg min {:?} is below 0",
+                f.min
+            );
+            assert!(
+                f.max.is_some_and(|m| m <= 20.0),
+                "cfg max {:?} is above 20",
+                f.max
+            );
+        }
+        other => panic!("replicate/sd3 guidance_scale is {other:?}, expected Float"),
+    }
+}
+
+/// `replicate/video` runs `lucataco/animate-diff` at a pinned version whose
+/// input is exactly `prompt, n_prompt, seed, steps, guidance_scale,
+/// motion_module, path` — there is no image input. The catalog advertised
+/// image-to-video with an `init` ref, which the adapter sent as `init_image`
+/// and the model ignored.
+/// @see <https://replicate.com/lucataco/animate-diff/versions/beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa377e48a9f> (2026-09-11)
+#[test]
+fn replicate_video_is_text_to_video_only() {
+    let reg = registry();
+    let schema = reg.get("replicate/video").expect("replicate/video missing");
+    assert!(
+        !schema.capabilities.image_to_video,
+        "replicate/video advertises image_to_video, but AnimateDiff has no image input"
+    );
+    assert!(
+        schema.ref_inputs.is_none(),
+        "replicate/video declares ref_inputs, but AnimateDiff has no image input"
+    );
+    assert!(schema.capabilities.text_to_video);
+}
+
+/// The pinned AnimateDiff version has no duration, fps or frame-count input
+/// (its clip length is fixed), and the adapter never forwards
+/// `duration_seconds`, so a declared 2-10 s range promised a control that does
+/// nothing.
+/// @see <https://replicate.com/lucataco/animate-diff/versions/beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa377e48a9f> (2026-09-11)
+#[test]
+fn replicate_video_does_not_advertise_a_duration() {
+    let reg = registry();
+    let schema = reg.get("replicate/video").expect("replicate/video missing");
+    assert!(
+        !schema.params.contains_key("duration_seconds"),
+        "replicate/video declares duration_seconds, but AnimateDiff takes no duration"
+    );
+}
+
+/// `extra` keys are merged into the prediction's `input`, so every allowlisted
+/// key must be an AnimateDiff input. `version` is not one (a different version
+/// is pinned through `model_mapping`).
+/// @see <https://replicate.com/lucataco/animate-diff/versions/beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa377e48a9f> (2026-09-11)
+#[test]
+fn replicate_video_extra_allowlist_names_only_animate_diff_inputs() {
+    const ANIMATE_DIFF_INPUTS: [&str; 7] = [
+        "prompt",
+        "n_prompt",
+        "seed",
+        "steps",
+        "guidance_scale",
+        "motion_module",
+        "path",
+    ];
+    let reg = registry();
+    let schema = reg.get("replicate/video").expect("replicate/video missing");
+    for key in &schema.extra_allowlist {
+        assert!(
+            ANIMATE_DIFF_INPUTS.contains(&key.as_str()),
+            "replicate/video allowlists extra.{key}, which AnimateDiff's input does not declare"
+        );
+    }
+}
+
+// ─── Stability: vendor facts re-read 2026-09-11 (model-drift) ───────────────
+
+/// SDXL 1.0 (`stable-diffusion-xl-1024-v1-0`) text-to-image takes `height` &
+/// `width` only as one of 1024x1024, 1152x896, 896x1152, 1216x832, 1344x768,
+/// 768x1344, 1536x640, 640x1536. The catalog offered 512x512 — not in the set,
+/// and the Playground's default for this model because it was listed first.
+/// @see <https://platform.stability.ai/docs/api-reference#tag/SDXL-1.0> (2026-09-11)
+#[test]
+fn stability_sdxl_sizes_are_the_sdxl_1_0_dimension_set() {
+    const SDXL_1_0_SIZES: [(u32, u32); 8] = [
+        (1024, 1024),
+        (1152, 896),
+        (896, 1152),
+        (1216, 832),
+        (1344, 768),
+        (768, 1344),
+        (1536, 640),
+        (640, 1536),
+    ];
+    let reg = registry();
+    let schema = reg.get("stability/sdxl").expect("stability/sdxl missing");
+    match schema.params.get("size") {
+        Some(ParamSpec::Size(litegen::capabilities::schema::SizeSpec::Enum(e))) => {
+            for wh in &e.values {
+                assert!(
+                    SDXL_1_0_SIZES.contains(wh),
+                    "stability/sdxl allows {wh:?}, which the SDXL 1.0 engine rejects"
+                );
+            }
+            for wh in &SDXL_1_0_SIZES {
+                assert!(
+                    e.values.contains(wh),
+                    "stability/sdxl omits {wh:?}, a documented SDXL 1.0 size"
+                );
+            }
+            assert_eq!(
+                e.values.first(),
+                Some(&(1024, 1024)),
+                "1024x1024 is the documented default and the first-listed size is the Playground default"
+            );
+        }
+        other => panic!("stability/sdxl size is {other:?}, expected an enum Size"),
+    }
+}
+
+/// `/v2beta/stable-image/generate/sd3`'s `aspect_ratio` enum
+/// (21:9, 16:9, 3:2, 5:4, 1:1, 4:5, 2:3, 9:16, 9:21) applies to every `model`
+/// value, `sd3.5-large-turbo` included; the route documents no per-model
+/// restriction. The catalog offered sd3-turbo 1:1 only.
+/// @see <https://api.stability.ai/v2alpha/openapi> (2026-09-11)
+#[test]
+fn stability_sd3_turbo_advertises_every_sd3_aspect_ratio() {
+    const V2_RATIOS: [&str; 9] = [
+        "21:9", "16:9", "3:2", "5:4", "1:1", "4:5", "2:3", "9:16", "9:21",
+    ];
+    let reg = registry();
+    let allowed = aspect_ratios(&reg, "stability/sd3-turbo");
+    for ar in V2_RATIOS {
+        assert!(
+            allowed.iter().any(|a| a == ar),
+            "stability/sd3-turbo omits {ar:?}, which /generate/sd3 accepts for sd3.5-large-turbo"
+        );
+    }
+}

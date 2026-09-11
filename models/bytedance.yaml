@@ -10,21 +10,32 @@ models:
     pricing: { base_cost_usd: 0.03 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 3000 }
+    # No `seed`: the Image generation API has no seed parameter for Seedream 4.0
+    # (it was a Seedream 3.0 / SeedEdit 3.0 option, both deactivated).
+    # @see https://docs.byteplus.com/en/docs/ModelArk/1541523
     params:
-      seed: { kind: seed, min: 0, max: 2147483647 }
+      # BytePlus rule for WxH: total pixels in [921600 (1280x720), 16777216
+      # (4096x4096)] AND aspect ratio in [1/16, 16]. A WxH box cannot express
+      # that, so these are the rule's extremes — 240 = sqrt(921600/16),
+      # 16384 = sqrt(16777216*16) — and every size in the vendor's 1K/2K/4K
+      # table (up to 6240x2656) fits. The vendor rejects sizes that pass the
+      # box but break the pixel range (e.g. 800x800).
+      # @see https://docs.byteplus.com/en/docs/ModelArk/1541523
       size:
         kind: size
         mode: freeform
-        min_width: 512
-        max_width: 4096
-        min_height: 512
-        max_height: 4096
+        min_width: 240
+        max_width: 16384
+        min_height: 240
+        max_height: 16384
     ref_inputs:
-      max_total: 6
+      # "Seedream 5.0 lite, 4.5, and 4.0 support up to 14 reference images."
+      # @see https://docs.byteplus.com/en/docs/ModelArk/1541523
+      max_total: 14
       default_role: init
       provider_format: { form: base64 }
       roles:
-        init: { required: false, min_count: 0, max_count: 6 }
+        init: { required: false, min_count: 0, max_count: 14 }
     extra_allowlist: [watermark, response_format]
     tags: [text-to-image, image-to-image]
 
@@ -58,7 +69,12 @@ models:
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 3000 }
     params:
-      duration_seconds: { kind: float, min: 3.0, max: 12.0, default: 5.0 }
+      # "Dreamina Seedance 1.0 pro: Default 5; supports [2, 12]."
+      # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
+      duration_seconds: { kind: float, min: 2.0, max: 12.0, default: 5.0 }
+      # seed: [-1, 2147483647], supported by Seedance 1.0 pro (-1 = random;
+      # omit it instead). @see https://docs.byteplus.com/en/docs/ModelArk/1520757
+      seed: { kind: seed, min: 0, max: 2147483647 }
       resolution:
         kind: string
         enum_values: [480p, 720p, 1080p]
@@ -72,7 +88,10 @@ models:
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [watermark, camerafixed, callback_url]
+    # Extras are merged into the request body, where the documented field is
+    # `camera_fixed` (`camerafixed` was the legacy `--camerafixed` prompt flag).
+    # @see https://docs.byteplus.com/en/docs/ModelArk/1520757
+    extra_allowlist: [watermark, camera_fixed, callback_url]
     tags: [text-to-video, image-to-video]
 
   - id: bytedance/doubao-seedance-1-0-lite-i2v-250428
