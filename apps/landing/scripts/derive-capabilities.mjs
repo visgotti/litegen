@@ -3,10 +3,10 @@
  *
  * deriveCapabilities() reduces a /v1/models ModelInfo[] into the per-provider
  * input-packet vocabulary the diagram streams (Core-3: text / image / multi)
- * plus the set of output modalities it produces (image and/or video — many
- * providers do both). FALLBACK_CAPABILITIES is the baked snapshot used when no
- * gateway is reachable, and is the single source for the committed
- * capabilities.generated.ts (renderGeneratedTs renders it).
+ * plus the set of output modalities it produces (image, video, and/or
+ * model3d — many providers do more than one). FALLBACK_CAPABILITIES is the
+ * baked snapshot used when no gateway is reachable, and is the single source
+ * for the committed capabilities.generated.ts (renderGeneratedTs renders it).
  */
 
 /** @typedef {{ text: boolean, image: boolean, multi: boolean }} InputVocab */
@@ -80,8 +80,9 @@ ${entries.join('\n')}
  * Baked snapshot derived from the shipped models/*.yaml registry. Used only when
  * no gateway is reachable AND no committed snapshot exists yet. Keep in sync with
  * the registry if you change it offline; the live sync overrides this anyway.
- * Vocab rule: text = any t2i|t2v; image = accepts any ref; multi = max_images>=2.
- * Outputs: image = ships any image model; video = ships any video model.
+ * Vocab rule: text = any t2i|t2v|t2-3d; image = accepts any ref; multi = max_images>=2.
+ * Outputs: image = ships any image model; video = ships any video model;
+ * model3d = ships any model3d model.
  */
 export const FALLBACK_CAPABILITIES = {
   // image hemisphere

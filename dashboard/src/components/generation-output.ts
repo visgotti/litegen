@@ -16,16 +16,29 @@ import { extensionOf, isBrowserImage } from './model3d-assets';
 export const POLL_INTERVAL_MS = 3000;
 
 /**
- * Consecutive 404s tolerated before giving up (~60 s at 3 s). A 404 right
- * after submit is expected — the handler spawns the generation insert after
- * it has sent the HTTP response — so it is retried. A 404 that persists is
- * not "not persisted yet" any more (the insert failed, or the row is in
- * another org), and polling it forever would hide that behind a spinner.
+ * Consecutive 404s tolerated before giving up (~60 s at 3 s). The spawned
+ * backend task awaits `insert_generation` before this artifact is ever
+ * visible (see `generate_video` / `generate_3d` in `handlers/mod.rs`), so by
+ * the time the client can poll, the row should already exist; the retry
+ * budget is a safety margin for scheduling jitter, not evidence of a race. A
+ * 404 that persists past the budget means the insert failed (it is wrapped
+ * in `let _ =` and its error discarded) or the row is in another org, and
+ * polling it forever would hide that behind a spinner.
  */
 export const MAX_NOT_FOUND_POLLS = 20;
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 const IN_FLIGHT = new Set(['pending', 'processing']);
+
+/**
+ * Consecutive transient errors (5xx, a request timeout/rate limit, or no
+ * HTTP status at all — a network error) tolerated before giving up on a
+ * minutes-long 3D/video poll. Unlike a 404, these say nothing about whether
+ * the generation row exists — just that one request in a long-running poll
+ * loop hiccupped — so the caller keeps showing the last known generation
+ * with a "reconnecting…" note instead of discarding it.
+ */
+export const MAX_TRANSIENT_ERROR_STREAK = 3;
 
 export function isTerminalStatus(status: string): boolean {
   return TERMINAL.has(status);
@@ -37,16 +50,48 @@ export type PollResult =
   | { kind: 'error'; httpStatus?: number };
 
 /**
+ * Whether an HTTP status observed while polling is worth retrying quietly: a
+ * 5xx, a request timeout (408) or rate limit (429), or no HTTP status at all
+ * (a network error / a request that never got a response). A 404 is
+ * deliberately excluded — it has its own bounded retry via
+ * `MAX_NOT_FOUND_POLLS` and a distinct meaning (see above). Any other 4xx is
+ * a real client-side problem and is never retried.
+ */
+export function isTransientError(httpStatus: number | undefined): boolean {
+  if (httpStatus === undefined) return true;
+  if (httpStatus === 408 || httpStatus === 429) return true;
+  return httpStatus >= 500 && httpStatus < 600;
+}
+
+/**
+ * The transient-error streak to carry into the next poll. Increments on a
+ * transient error; resets to 0 on a successful poll or on any error that
+ * isn't transient (a 404 keeps its own separate streak via `notFoundStreak`,
+ * and a non-transient error stops polling outright, so its reset here is
+ * moot but keeps the counter honest for a caller that inspects it anyway).
+ */
+export function nextTransientStreak(result: PollResult, prevStreak: number): number {
+  if (result.kind === 'error' && isTransientError(result.httpStatus)) return prevStreak + 1;
+  return 0;
+}
+
+/**
  * Whether to schedule another poll after `result`. `notFoundStreak` is the
- * number of consecutive 404s, including this one.
+ * number of consecutive 404s, including this one; `transientStreak` is the
+ * number of consecutive transient errors (see `isTransientError`), including
+ * this one — typically produced by `nextTransientStreak`.
  *
  * Only a known in-flight status keeps polling: an unrecognised status stops,
- * so a status added server-side later cannot turn into an unbounded poll loop.
- * Every error other than a 404 is final (the caller renders it).
+ * so a status added server-side later cannot turn into an unbounded poll
+ * loop. A 404 keeps polling within its own budget. A transient error keeps
+ * polling within `MAX_TRANSIENT_ERROR_STREAK`. Every other error — a
+ * non-transient 4xx, or a streak that has run out — is final and the caller
+ * renders it.
  */
-export function shouldKeepPolling(result: PollResult, notFoundStreak = 0): boolean {
+export function shouldKeepPolling(result: PollResult, notFoundStreak = 0, transientStreak = 0): boolean {
   if (result.kind === 'generation') return IN_FLIGHT.has(result.status);
-  return result.httpStatus === 404 && notFoundStreak < MAX_NOT_FOUND_POLLS;
+  if (result.httpStatus === 404) return notFoundStreak < MAX_NOT_FOUND_POLLS;
+  return isTransientError(result.httpStatus) && transientStreak < MAX_TRANSIENT_ERROR_STREAK;
 }
 
 /** The HTTP status carried by a thrown `LiteGenAPIError`, if any. Duck-typed

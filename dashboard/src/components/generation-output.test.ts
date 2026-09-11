@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { RequestArtifact } from '@litegen/sdk';
 import {
   MAX_NOT_FOUND_POLLS,
+  MAX_TRANSIENT_ERROR_STREAK,
   httpStatusOf,
   isTerminalStatus,
+  isTransientError,
+  nextTransientStreak,
   resolvesViaGeneration,
   shouldKeepPolling,
   videoResultIsImage,
@@ -31,7 +34,7 @@ describe('shouldKeepPolling', () => {
     expect(shouldKeepPolling({ kind: 'generation', status: 'exploded' })).toBe(false);
   });
 
-  it('keeps polling on a 404 — the row insert is spawned after the HTTP response', () => {
+  it('keeps polling on a 404 within the retry budget — a safety margin for scheduling jitter', () => {
     expect(shouldKeepPolling({ kind: 'error', httpStatus: 404 }, 1)).toBe(true);
     expect(shouldKeepPolling({ kind: 'error', httpStatus: 404 }, MAX_NOT_FOUND_POLLS - 1)).toBe(true);
   });
@@ -41,12 +44,51 @@ describe('shouldKeepPolling', () => {
     expect(shouldKeepPolling({ kind: 'error', httpStatus: 404 }, MAX_NOT_FOUND_POLLS + 5)).toBe(false);
   });
 
-  it.each([400, 401, 403, 500, 502, 503])('stops on any other HTTP error (%s)', httpStatus => {
-    expect(shouldKeepPolling({ kind: 'error', httpStatus }, 1)).toBe(false);
+  it.each([500, 502, 503, 408, 429, undefined])(
+    'keeps polling a transient error (%s) while the streak is under the cap',
+    httpStatus => {
+      expect(shouldKeepPolling({ kind: 'error', httpStatus }, 0, 1)).toBe(true);
+      expect(shouldKeepPolling({ kind: 'error', httpStatus }, 0, MAX_TRANSIENT_ERROR_STREAK - 1)).toBe(true);
+    },
+  );
+
+  it('stops once the transient-error streak reaches the cap (3rd consecutive)', () => {
+    expect(shouldKeepPolling({ kind: 'error', httpStatus: 500 }, 0, MAX_TRANSIENT_ERROR_STREAK)).toBe(false);
+    expect(shouldKeepPolling({ kind: 'error' }, 0, MAX_TRANSIENT_ERROR_STREAK)).toBe(false);
   });
 
-  it('stops on a non-HTTP failure (network error, no status)', () => {
-    expect(shouldKeepPolling({ kind: 'error' }, 0)).toBe(false);
+  it.each([400, 401, 403])('stops immediately on a non-transient 4xx (%s)', httpStatus => {
+    expect(shouldKeepPolling({ kind: 'error', httpStatus }, 0, 1)).toBe(false);
+  });
+});
+
+describe('isTransientError', () => {
+  it.each([500, 502, 503, 408, 429, undefined])('treats %s as transient', httpStatus => {
+    expect(isTransientError(httpStatus)).toBe(true);
+  });
+
+  it.each([400, 401, 403, 404])('does not treat %s as transient (404 has its own retry path)', httpStatus => {
+    expect(isTransientError(httpStatus)).toBe(false);
+  });
+});
+
+describe('nextTransientStreak', () => {
+  it('increments on consecutive transient errors', () => {
+    expect(nextTransientStreak({ kind: 'error', httpStatus: 500 }, 0)).toBe(1);
+    expect(nextTransientStreak({ kind: 'error', httpStatus: 500 }, 1)).toBe(2);
+    expect(nextTransientStreak({ kind: 'error' }, 2)).toBe(3);
+  });
+
+  it('a successful poll resets the streak to 0', () => {
+    expect(nextTransientStreak({ kind: 'generation', status: 'processing' }, 2)).toBe(0);
+  });
+
+  it('a non-transient error resets the streak to 0', () => {
+    expect(nextTransientStreak({ kind: 'error', httpStatus: 400 }, 2)).toBe(0);
+  });
+
+  it('a 404 resets the transient streak (it has its own separate streak)', () => {
+    expect(nextTransientStreak({ kind: 'error', httpStatus: 404 }, 2)).toBe(0);
   });
 });
 
