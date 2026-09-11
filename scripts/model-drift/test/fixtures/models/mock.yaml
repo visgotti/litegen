@@ -1,0 +1,4 @@
+models:
+  - id: mock/image-gen
+    provider: mock
+    media_type: image

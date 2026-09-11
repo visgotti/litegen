@@ -1,0 +1,22 @@
+{
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/gen": { "post": { "requestBody": { "content": { "application/json": { "schema": {
+      "oneOf": [
+        { "title": "Alpha", "properties": { "model": { "const": "alpha" }, "ratio": { "enum": ["1:1"], "description": "prose that changes weekly" } } },
+        { "$ref": "#/components/schemas/Beta" }
+      ],
+      "discriminator": { "propertyName": "model" }
+    } } } } } },
+    "/v1/usage": { "post": { "requestBody": { "content": { "application/json": { "schema": {
+      "properties": { "model": { "enum": ["historic-model"] } }
+    } } } } } },
+    "/v1/edit": { "post": { "requestBody": { "content": { "multipart/form-data": { "schema": {
+      "properties": { "model": { "$ref": "#/components/schemas/EditModel" }, "size": { "enum": ["1024x1024", "auto"], "example": "auto" } }
+    } } } } } }
+  },
+  "components": { "schemas": {
+    "Beta": { "properties": { "model": { "enum": ["beta", "beta-fast"] }, "duration": { "minimum": 2, "maximum": 10 } } },
+    "EditModel": { "anyOf": [ { "type": "string" }, { "type": "string", "enum": ["gamma", "gamma-mini"] } ] }
+  } }
+}
