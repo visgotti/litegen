@@ -60,7 +60,9 @@ models:
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [motion_mode, generate_audio_switch, negative_prompt]
+    # No generate_audio_switch: "Supported in v5.5/v5.6/v6/c1 models".
+    # https://docs.platform.pixverse.ai/text-to-video-generation-13016634e0.md
+    extra_allowlist: [motion_mode, negative_prompt]
     tags: [text-to-video, image-to-video]
 
   - id: pixverse/v3.5
