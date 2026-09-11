@@ -8,7 +8,8 @@
 //  • model-ids: "Refer to Commonly Used API Values" — image-model UUIDs (the
 //    snapshot keeps the names beside them, so a new UUID in the report can be
 //    looked up) and video `model` values, including ones the reference enum
-//    lags on (VEO3_1, which the v1 Veo 3.1 guide sends to image-to-video).
+//    lags on (VEO3_1 and VEO3_1FAST, which the v1 Veo 3.1 guide sends to
+//    image-to-video).
 //  • generations: the v1 image reference; its only model id is the `modelId`
 //    default, the snapshot is the request schema.
 //  • deprecations (index): retirements are announced on this page while the
@@ -60,6 +61,7 @@ export default {
     'leonardo/diffusion-xl': '1e60896f-3c26-4296-8ecc-53e2afecc132',
     'leonardo/motion2': 'MOTION2',
     'leonardo/veo3.1': 'VEO3_1',
+    'leonardo/veo3.1-fast': 'VEO3_1FAST',
     'leonardo/kling2.1': 'KLING2_1',
     'leonardo/kling2.5': 'KLING2_5',
   },
@@ -105,7 +107,6 @@ export default {
       extract: (md, body) => openapiModelIds(embedded(md, body), { paths: ['/generations'] }),
     },
   ],
-  // VEO3_1FAST is left unacknowledged on purpose (visible in the weekly report).
   acknowledged: [
     {
       id: 'VEO3',

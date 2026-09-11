@@ -1,0 +1,214 @@
+## fal-ai/ltx-2.3/image-to-video — active image-to-video
+{
+  "POST /fal-ai/ltx-2.3/image-to-video (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "auto",
+        "enum": [
+          "auto",
+          "16:9",
+          "9:16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "default": 6,
+        "enum": [
+          6,
+          8,
+          10
+        ],
+        "type": "integer"
+      },
+      "end_image_url": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "fps": {
+        "default": 25,
+        "enum": [
+          24,
+          25,
+          48,
+          50
+        ],
+        "type": "integer"
+      },
+      "generate_audio": {
+        "default": true,
+        "type": "boolean"
+      },
+      "image_url": {
+        "type": "string"
+      },
+      "prompt": {
+        "maxLength": 5000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "resolution": {
+        "default": "1080p",
+        "enum": [
+          "1080p",
+          "1440p",
+          "2160p"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt",
+      "image_url"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/ltx-2.3/text-to-video — active text-to-video
+{
+  "POST /fal-ai/ltx-2.3/text-to-video (application/json)": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "16:9",
+        "enum": [
+          "16:9",
+          "9:16"
+        ],
+        "type": "string"
+      },
+      "duration": {
+        "default": 6,
+        "enum": [
+          6,
+          8,
+          10
+        ],
+        "type": "integer"
+      },
+      "fps": {
+        "default": 25,
+        "enum": [
+          24,
+          25,
+          48,
+          50
+        ],
+        "type": "integer"
+      },
+      "generate_audio": {
+        "default": true,
+        "type": "boolean"
+      },
+      "prompt": {
+        "maxLength": 5000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "resolution": {
+        "default": "1080p",
+        "enum": [
+          "1080p",
+          "1440p",
+          "2160p"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/ltx-video — active text-to-video
+{
+  "POST /fal-ai/ltx-video (application/json)": {
+    "properties": {
+      "guidance_scale": {
+        "default": 3,
+        "exclusiveMinimum": 1,
+        "maximum": 10,
+        "type": "number"
+      },
+      "negative_prompt": {
+        "default": "low quality, worst quality, deformed, distorted, disfigured, motion smear, motion artifacts, fused fingers, bad anatomy, weird hand, ugly",
+        "type": "string"
+      },
+      "num_inference_steps": {
+        "default": 30,
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/ltx-video/image-to-video — active image-to-video
+{
+  "POST /fal-ai/ltx-video/image-to-video (application/json)": {
+    "properties": {
+      "guidance_scale": {
+        "default": 3,
+        "exclusiveMinimum": 1,
+        "maximum": 10,
+        "type": "number"
+      },
+      "image_url": {
+        "type": "string"
+      },
+      "negative_prompt": {
+        "default": "low quality, worst quality, deformed, distorted, disfigured, motion smear, motion artifacts, fused fingers, bad anatomy, weird hand, ugly",
+        "type": "string"
+      },
+      "num_inference_steps": {
+        "default": 30,
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "prompt",
+      "image_url"
+    ],
+    "type": "object"
+  }
+}
