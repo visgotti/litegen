@@ -281,10 +281,22 @@ pub fn read(bytes: &[u8]) -> Result<Mesh, MeshError> {
         match kw {
             "v" => {
                 let p = xyz(&mut tokens, lineno)?;
-                match tokens.count() {
+                // Collected, not counted: `tokens.count()` consumes the
+                // iterator without looking at it, so `v 0 0 0 xyzzy` was the
+                // one place in this reader where a junk token returned Ok. The
+                // `vt` arm below already parses its optional component for
+                // exactly this reason.
+                let rest: Vec<&str> = tokens.collect();
+                match rest.len() {
                     // `w` is a rational-surface weight; for polygonal geometry it
-                    // is always 1 and means nothing, so it is read and dropped.
-                    0 | 1 => {}
+                    // is always 1 and means nothing, so it is parsed (to reject
+                    // garbage) and then dropped.
+                    0 => {}
+                    1 => {
+                        rest[0].parse::<f32>().map_err(|_| {
+                            malformed(lineno, format!("w `{}` is not a number", rest[0]))
+                        })?;
+                    }
                     // The MeshLab-style `v x y z r g b [a]` extension. The IR has
                     // no per-vertex colour field, so there is nowhere to put it
                     // and no target that could carry it — and silently dropping
@@ -545,11 +557,17 @@ pub fn write(mesh: &Mesh) -> Result<Vec<u8>, MeshError> {
         // a bogus keyword line; `#` would comment out everything after it.
         // Mangling those two characters beats refusing to convert geometry over
         // metadata.
+        // Backslash is mangled for the same reason: OBJ treats a trailing `\`
+        // as a line continuation, so a name ending in one — a Windows path used
+        // as a glTF node name is exactly this shape — produced a file our own
+        // reader then rejected. Trim BEFORE sanitising, or trimming a trailing
+        // space re-exposes the backslash the sanitiser just neutralised.
         let safe: String = raw
+            .trim()
             .chars()
-            .map(|c| if c == '#' || c.is_control() { '_' } else { c })
+            .map(|c| if c == '#' || c == '\\' || c.is_control() { '_' } else { c })
             .collect();
-        let safe = safe.trim();
+        let safe = safe.as_str();
         if !safe.is_empty() {
             put(&mut out, format_args!("o {safe}\n"));
         }
