@@ -117,7 +117,8 @@ Gaps worth naming:
 
 ## 4. Recommended design: `output_formats` as a declared, enforced set
 
-**Adopt.** Not conversion — declaration plus enforcement.
+**Adopt.** ✅ **Shipped 2026-09-12** (`7465c8b`), with local conversion layered
+on top in `fa3bdde`. Not conversion alone — declaration plus enforcement.
 
 - Replace the scalar `output_format` with **`output_formats: Vec<String>`**,
   backed by a new `ParamSpec::StringArray { enum_values, max_items, default }`.
@@ -162,6 +163,22 @@ external tool, no service and no licence: they are triangle geometry plus a
 handful of optional attributes. `litegen-core/src/mesh/` does it, imports
 nothing from the rest of litegen (enforced by a test), and is unit-tested
 directly plus across the full N×N conversion matrix.
+
+✅ **Shipped 2026-09-12** (`a09fcaa`, `fa3bdde`). `litegen-core/src/mesh/` plus
+the seam at `proxy/model3d_convert.rs`; 1,178 tests green. Worth knowing before
+you touch it:
+
+- The adversarial pass found **11 confirmed bugs** in the first cut, all with
+  reproductions. The worst: a 244-byte GLB declaring `"count": 4000000000`
+  made Rust's allocator **abort the process** — uncatchable, from vendor bytes
+  on the poll path. Others: accessors bounded against the buffer rather than
+  the bufferView (reading the index array as geometry); a present-but-float
+  `"indices": 1.0` silently treated as absent, reversing winding so models
+  rendered inside out; a 120 MB PLY header line costing 361 MB RSS. Any future
+  codec change should be reviewed the same way — this is untrusted input.
+- Conversion runs on a **blocking thread**, never inline on the runtime.
+- A format the vendor DID return is never replaced by ours: its export can
+  carry material detail the geometry-only IR does not model.
 
 The consequence worth noticing: a **one-format-per-job vendor can now serve
 four formats.** Rodin's `geometry_file_format` is a scalar, but one GLB is all
@@ -241,10 +258,13 @@ retired the Edify NIM preview 2025-06-06 and current status is unconfirmed.
 
 ## 6. Recommended order of acquisition
 
-1. **Nothing** — build the `output_formats` param against the mock first; it is
-   the only subject that can test the delivered-vs-requested guard.
+1. ✅ **Nothing** — `output_formats` and local conversion are built and tested
+   against the mock, which is the only subject that can exercise both arms of
+   the delivered-vs-requested guard. Done 2026-09-12.
 2. **fal.ai** — key already in hand; unlocks Tripo/Rodin/Hunyuan/Trellis behind
-   one adapter. Accept the per-slug `match`.
+   one adapter. Accept the per-slug `match`. **Start here.** Note that local
+   conversion has already removed the main objection to a GLB-only slug: a fal
+   model declaring `output_formats: [glb]` now delivers obj, stl and ply too.
 3. **Meshy** — the only vendor that makes a multi-format bundle contract natural.
 4. **Stability** — key already in hand, but it needs the sync-adapter shim first.
 5. **Tripo direct** — only if per-format convert billing is acceptable.
