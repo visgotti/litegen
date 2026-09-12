@@ -5199,7 +5199,17 @@
                                     "string",
                                     "null"
                                 ],
-                                "description": "Desired mesh container: \"glb\" | \"obj\" | \"fbx\" | \"usdz\". Default \"glb\"."
+                                "description": "Superseded by `output_formats`; a value here is folded into it. Kept so\nclients written against the scalar keep working for one release."
+                            },
+                            "output_formats": {
+                                "type": [
+                                    "array",
+                                    "null"
+                                ],
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Desired mesh containers, e.g. `[\"glb\", \"fbx\"]`. Every format asked for\nhere is guaranteed present on a `completed` generation or the generation\nfails \u2014 see `missing_model3d_formats`. Defaults to the model's declared\ndefault, and to `[\"glb\"]` when it declares none."
                             },
                             "pbr": {
                                 "type": [
@@ -6284,6 +6294,27 @@
                     {
                         "allOf": [
                             {
+                                "$ref": "#/components/schemas/ParamSpecStringArray"
+                            },
+                            {
+                                "type": "object",
+                                "required": [
+                                    "kind"
+                                ],
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                            "string_array"
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "allOf": [
+                            {
                                 "$ref": "#/components/schemas/SizeSpec"
                             },
                             {
@@ -6545,6 +6576,45 @@
                             "string",
                             "null"
                         ]
+                    }
+                }
+            },
+            "ParamSpecStringArray": {
+                "type": "object",
+                "description": "A param whose value is a SET of enum members rather than one of them.\n\nExists for `output_formats`, where the vendors genuinely disagree on\ncardinality: Meshy emits every requested container from one job, Rodin's\n`geometry_file_format` is a scalar so only one is reachable, and Stability\nemits GLB with no choice at all. `max_items` is how a model states which of\nthose it is, so an unsatisfiable request fails in validation rather than\nafter the vendor has been billed.",
+                "properties": {
+                    "default": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Applied when the caller omits the param entirely. Empty means the\nresolver falls back to `glb`."
+                    },
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "enum_values": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "max_items": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "description": "Upper bound on how many members one request may ask for. `None` means\n\"as many as are declared\".",
+                        "minimum": 0
                     }
                 }
             },
@@ -7850,8 +7920,12 @@
                                 ]
                             },
                             "duration_seconds": {
-                                "type": "number",
-                                "format": "double"
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double",
+                                "description": "Absent means the model's own `duration_seconds` default (resolved by\n`resolve_duration_seconds`), not a fixed 5s: models whose minimum is\nhigher (fal/ltx-2.3, bedrock nova-reel) rejected every request that\nomitted it."
                             },
                             "fps": {
                                 "type": [
