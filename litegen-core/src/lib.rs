@@ -3,6 +3,7 @@ pub mod auth;
 pub mod capabilities;
 pub mod config;
 pub mod db;
+pub mod mesh;
 pub mod observability;
 pub mod providers;
 pub mod proxy;
