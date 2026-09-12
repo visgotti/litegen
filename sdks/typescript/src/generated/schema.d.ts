@@ -2330,8 +2330,18 @@ export interface components {
         /** @enum {string} */
         Model3dAssetKind: "mesh" | "texture" | "preview";
         Model3dGenerationRequest: components["schemas"]["BaseGenerationRequest"] & {
-            /** @description Desired mesh container: "glb" | "obj" | "fbx" | "usdz". Default "glb". */
+            /**
+             * @description Superseded by `output_formats`; a value here is folded into it. Kept so
+             *     clients written against the scalar keep working for one release.
+             */
             output_format?: string | null;
+            /**
+             * @description Desired mesh containers, e.g. `["glb", "fbx"]`. Every format asked for
+             *     here is guaranteed present on a `completed` generation or the generation
+             *     fails — see `missing_model3d_formats`. Defaults to the model's declared
+             *     default, and to `["glb"]` when it declares none.
+             */
+            output_formats?: string[] | null;
             /** @description PBR materials, where the model supports them. */
             pbr?: boolean | null;
             /** @description Auto-rig / emit a skeleton, where supported. */
@@ -2656,6 +2666,9 @@ export interface components {
         }) | (components["schemas"]["ParamSpecString"] & {
             /** @enum {string} */
             kind: "string";
+        }) | (components["schemas"]["ParamSpecStringArray"] & {
+            /** @enum {string} */
+            kind: "string_array";
         }) | (components["schemas"]["SizeSpec"] & {
             /** @enum {string} */
             kind: "size";
@@ -2712,6 +2725,31 @@ export interface components {
             label?: string | null;
             max_length?: number | null;
             pattern?: string | null;
+        };
+        /**
+         * @description A param whose value is a SET of enum members rather than one of them.
+         *
+         *     Exists for `output_formats`, where the vendors genuinely disagree on
+         *     cardinality: Meshy emits every requested container from one job, Rodin's
+         *     `geometry_file_format` is a scalar so only one is reachable, and Stability
+         *     emits GLB with no choice at all. `max_items` is how a model states which of
+         *     those it is, so an unsatisfiable request fails in validation rather than
+         *     after the vendor has been billed.
+         */
+        ParamSpecStringArray: {
+            /**
+             * @description Applied when the caller omits the param entirely. Empty means the
+             *     resolver falls back to `glb`.
+             */
+            default?: string[];
+            description?: string | null;
+            enum_values?: string[];
+            label?: string | null;
+            /**
+             * @description Upper bound on how many members one request may ask for. `None` means
+             *     "as many as are declared".
+             */
+            max_items?: number | null;
         };
         PasswordReset: {
             /** Format: date-time */
