@@ -178,6 +178,25 @@ impl FalModel3dProvider {
             return None;
         }
         let offers = |f: &str| spec.format_values.iter().any(|v| v.eq_ignore_ascii_case(f));
+
+        // A container litegen CANNOT derive has to come from the vendor itself,
+        // so it wins over the GLB preference below. Getting this backwards is
+        // not a missed optimisation: asking for glb when the caller wanted fbx
+        // delivers a glb, and the completion guard then fails a generation the
+        // vendor was perfectly capable of fulfilling — after it was billed.
+        //
+        // At most one such format can be here. `vendor_jobs_needed` counts each
+        // non-derivable format as its own vendor job, so a request naming two
+        // is rejected in validation against this endpoint's `max_items`.
+        if let Some(native_only) = requested
+            .iter()
+            .find(|r| crate::mesh::MeshFormat::parse(r).is_none() && offers(r))
+        {
+            return Some(native_only.clone());
+        }
+
+        // Otherwise GLB: it is the conversion source, and the only container in
+        // the derivable set carrying both UVs and colour.
         if offers(DEFAULT_MODEL3D_FORMAT) {
             return Some(DEFAULT_MODEL3D_FORMAT.to_string());
         }
@@ -772,10 +791,28 @@ mod tests {
             FalModel3dProvider::vendor_format(&rodin, &["obj".into(), "stl".into()]),
             Some("glb".to_string()),
         );
+    }
+
+    #[test]
+    fn a_format_we_cannot_derive_is_asked_of_the_vendor_instead_of_glb() {
+        // Rodin CAN emit fbx and litegen cannot derive it, so the vendor has to
+        // be the one to produce it. Preferring glb here would deliver a glb for
+        // a request that said fbx, and the completion guard would then fail a
+        // generation the vendor could have fulfilled — after it was billed.
+        let rodin = FalModel3dProvider::resolve_spec("fal/hyper3d-rodin");
         assert_eq!(
             FalModel3dProvider::vendor_format(&rodin, &["fbx".into()]),
+            Some("fbx".to_string()),
+        );
+        assert_eq!(
+            FalModel3dProvider::vendor_format(&rodin, &["usdz".into()]),
+            Some("usdz".to_string()),
+        );
+        // But a derivable format still sources from glb, because glb carries
+        // more than obj or stl can.
+        assert_eq!(
+            FalModel3dProvider::vendor_format(&rodin, &["obj".into(), "stl".into()]),
             Some("glb".to_string()),
-            "even when the caller named a native format we can't derive from",
         );
     }
 
