@@ -49,6 +49,27 @@ const MAX_HEADER_BYTES: usize = 1 << 20;
 /// one in a header is just a bigger blast radius for no benefit.
 const MAX_NAME_CHARS: usize = 256;
 
+/// How much of an offending token an error message may quote.
+///
+/// Error text goes to logs, to the operator, and potentially into a response,
+/// so an unbounded quote makes the input's size the error's size. The realistic
+/// case is not an attack: it is a vendor returning a minified JSON or HTML
+/// error page where a mesh was expected, which then comes back as a
+/// `NotThisFormat` whose Display string is the entire page.
+const MAX_QUOTED: usize = 80;
+
+/// Quote a header token for an error message, truncated on a char boundary.
+fn quoted(s: &str) -> String {
+    if s.len() <= MAX_QUOTED {
+        return format!("{s:?}");
+    }
+    let mut end = MAX_QUOTED;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{:?}… ({} bytes)", &s[..end], s.len())
+}
+
 fn not_ply(detail: impl Into<String>) -> MeshError {
     MeshError::NotThisFormat { expected: super::MeshFormat::Ply, detail: detail.into() }
 }
@@ -251,11 +272,25 @@ fn parse_header(bytes: &[u8]) -> Result<Header, MeshError> {
                 "no end_header within the first {MAX_HEADER_BYTES} bytes"
             )));
         }
-        let (raw, next) = match bytes[pos..].iter().position(|b| *b == b'\n') {
+        // Search only within the header budget, not to the end of the file.
+        // Bounding `pos` alone does not bound the WORK: a file that opens with
+        // `ply` and then never emits another newline makes both the scan below
+        // and the UTF-8 check that follows it run over the whole remainder
+        // before `pos` has a chance to exceed the cap. Measured at 120 MB of
+        // input: 0.57 s and 361 MB resident, on the poll path, from bytes a
+        // vendor supplied.
+        let window_end = bytes.len().min(pos.saturating_add(MAX_HEADER_BYTES));
+        let (raw, next) = match bytes[pos..window_end].iter().position(|b| *b == b'\n') {
             Some(k) => (&bytes[pos..pos + k], pos + k + 1),
+            None if window_end < bytes.len() => {
+                return Err(bad(format!(
+                    "header line {} exceeds the {MAX_HEADER_BYTES}-byte limit",
+                    lineno + 1
+                )));
+            }
             // A final line with no newline can only be a truncated header: the
             // body, if any, starts after end_header's own newline.
-            None => (&bytes[pos..], bytes.len()),
+            None => (&bytes[pos..window_end], bytes.len()),
         };
         pos = next;
         lineno += 1;
@@ -269,7 +304,7 @@ fn parse_header(bytes: &[u8]) -> Result<Header, MeshError> {
             // The magic is the whole first line, not a prefix: `plyfile` is not
             // a PLY file and must not be mistaken for a truncated one.
             if line != "ply" {
-                return Err(not_ply(format!("first line is {line:?}, expected \"ply\"")));
+                return Err(not_ply(format!("first line is {}, expected \"ply\"", quoted(line))));
             }
             continue;
         }
@@ -331,7 +366,7 @@ fn parse_header(bytes: &[u8]) -> Result<Header, MeshError> {
                         ))
                     }
                     other => {
-                        return Err(not_ply(format!("unknown PLY encoding {other:?}")));
+                        return Err(not_ply(format!("unknown PLY encoding {}", quoted(other))));
                     }
                 });
             }
@@ -369,6 +404,12 @@ fn parse_header(bytes: &[u8]) -> Result<Header, MeshError> {
                         .ok_or_else(|| bad(format!("unknown list item type {it:?}")))?;
                     // A float count or a float index is not a thing any reader
                     // can act on, and silently truncating one would be a guess.
+                    //
+                    // The ITEM type has to be checked too, not just the count:
+                    // without it `property list uchar float vertex_indices`
+                    // parsed happily and `read_face` truncated 0.9 to vertex 0
+                    // — the exact guess this rejection exists to prevent, made
+                    // silently, on geometry.
                     if c.is_float() {
                         return Err(bad(format!(
                             "list count type is {}; it must be an integer type",
@@ -392,7 +433,7 @@ fn parse_header(bytes: &[u8]) -> Result<Header, MeshError> {
             // ignoring whatever layout information it carried, and the layout is
             // the one thing we cannot afford to be wrong about.
             other => {
-                return Err(bad(format!("unknown header directive {other:?} on line {lineno}")));
+                return Err(bad(format!("unknown header directive {} on line {lineno}", quoted(other))));
             }
         }
     }
@@ -760,6 +801,18 @@ fn plan_face(elem: &Element) -> Result<usize, MeshError> {
     for (i, p) in elem.props.iter().enumerate() {
         if matches!(p.name.as_str(), "vertex_indices" | "vertex_index" | "vertex_indexes") {
             return match p.kind {
+                // The ITEM type matters as much as the count type: without this
+                // check `property list uchar float vertex_indices` parsed
+                // happily and the reader truncated 0.9 to vertex 0 — the exact
+                // silent guess the count-type rejection exists to prevent, made
+                // on geometry. Checked here rather than at property-parse time
+                // so that a coordinate wrongly declared as a list still gets its
+                // own, more specific diagnosis.
+                Kind::List { item, .. } if item.is_float() => Err(bad(format!(
+                    "face property '{}' has {} items; vertex indices must be an integer type",
+                    p.name,
+                    item.name()
+                ))),
                 Kind::List { .. } => Ok(i),
                 Kind::Scalar(_) => Err(bad(format!(
                     "face property '{}' is a scalar; it must be a list",
