@@ -246,3 +246,122 @@ models:
     # generate_audio: boolean, default true (same price either way).
     extra_allowlist: [generate_audio]
     tags: [text-to-video, image-to-video]
+
+  # ─── 3D (mesh) ──────────────────────────────────────────────────────────────
+  #
+  # Every field below was read from that endpoint's own OpenAPI document at
+  # https://fal.ai/api/openapi/queue/openapi.json?endpoint_id={slug} (2026-09-12),
+  # and the prices from https://fal.ai/models/{slug}/llms.txt the same day.
+  #
+  # `output_formats` declares only what the VENDOR emits. litegen derives
+  # obj/stl/ply locally from any glb (see litegen-core/src/mesh/), so the
+  # advertised, accepted set is wider than these enums — which is why a
+  # glb-only endpoint is still worth having.
+
+  - id: fal/hyper3d-rodin
+    provider: fal
+    media_type: model3d
+    display_name: Hyper3D Rodin (Fal)
+    description: Deemos Rodin via Fal. Text- or image-to-3D, and the only fal 3D endpoint that lets you pick the container.
+    # "$0.4 per generations". The HighPack addon costs triple; it is an
+    # extra_allowlist passthrough, so the quote here is the base.
+    pricing:
+      base_cost_usd: 0.4
+      variable_pricing: { addons_highpack_multiplier: 3 }
+    capabilities: { text_to_3d: true, image_to_3d: true }
+    prompt: { required: false, max_length: 4000 }
+    params:
+      output_formats:
+        kind: string_array
+        # geometry_file_format is a SCALAR on fal's side, so max_items is 1:
+        # one container per vendor job. litegen still delivers four, deriving
+        # obj/stl/ply from the glb it asks for.
+        enum_values: [glb, usdz, fbx, obj, stl]
+        max_items: 1
+        default: [glb]
+        label: Output formats
+      pbr:
+        kind: bool
+        default: true
+        label: PBR materials
+        description: Off sends Rodin's `material=Shaded` — flat shading, not "no material".
+      seed:
+        kind: seed
+        min: 0
+        # Rodin's schema says `maximum: 65535`, not the u32 the rest of fal
+        # takes. A larger value is a 422, so it is rejected here instead.
+        max: 65535
+    ref_inputs:
+      max_total: 5
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 5 }
+    # quality (high|medium|low|extra-low), tier, use_hyper, TAPose,
+    # condition_mode, bbox_condition, addons — no canonical param maps to any of
+    # these without distorting it, so they stay explicit passthroughs.
+    extra_allowlist: [quality, tier, use_hyper, TAPose, condition_mode, bbox_condition, addons]
+    tags: [3d, mesh, rodin]
+
+  - id: fal/trellis
+    provider: fal
+    media_type: model3d
+    display_name: TRELLIS (Fal)
+    description: Microsoft TRELLIS via Fal. Image-to-3D only, GLB only — litegen derives obj/stl/ply from it.
+    # "$0.02 per generations" — the cheapest 3D endpoint in the catalog.
+    pricing: { base_cost_usd: 0.02 }
+    capabilities: { image_to_3d: true }
+    # TrellisInput marks `image_url` REQUIRED and has no prompt field at all.
+    prompt: { required: false, max_length: 4000 }
+    params:
+      output_formats:
+        kind: string_array
+        enum_values: [glb]
+        max_items: 1
+        default: [glb]
+        label: Output formats
+        description: TRELLIS emits glb; obj, stl and ply are derived by litegen.
+      seed: { kind: seed, min: 0, max: 4294967295 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: [mesh_simplify, texture_size, ss_guidance_strength, ss_sampling_steps, slat_guidance_strength, slat_sampling_steps]
+    tags: [3d, mesh, trellis]
+
+  - id: fal/hunyuan3d-v2
+    provider: fal
+    media_type: model3d
+    display_name: Hunyuan3D v2 (Fal)
+    description: Tencent Hunyuan3D v2 via Fal. Image-to-3D only, GLB only — litegen derives obj/stl/ply from it.
+    # "$0.16 per generations", and the docs state a textured mesh is charged
+    # three times a white mesh.
+    pricing:
+      base_cost_usd: 0.16
+      variable_pricing: { textured_mesh_multiplier: 3 }
+    capabilities: { image_to_3d: true }
+    prompt: { required: false, max_length: 4000 }
+    params:
+      output_formats:
+        kind: string_array
+        enum_values: [glb]
+        max_items: 1
+        default: [glb]
+        label: Output formats
+        description: Hunyuan3D emits glb; obj, stl and ply are derived by litegen.
+      texture:
+        kind: bool
+        default: false
+        label: Textured mesh
+        description: Sends `textured_mesh`. Tencent charges 3x for a textured mesh.
+      seed: { kind: seed, min: 0, max: 4294967295 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: [num_inference_steps, guidance_scale, octree_resolution]
+    tags: [3d, mesh, hunyuan]
