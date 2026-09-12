@@ -682,6 +682,7 @@ pub async fn generate_3d(
             let model = response.model.clone();
             let provider = response.provider.clone();
             let provider_job_id = state.router.get_model3d_provider_job_id(&id).await;
+            let stage_context = state.router.get_model3d_stage_context(&id).await;
             let key_id = key_ctx.as_ref().and_then(|c| c.key_id);
             let org_id = key_ctx.as_ref().and_then(|c| c.org_id.clone());
             let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
@@ -703,9 +704,16 @@ pub async fn generate_3d(
                 // between the insert above and this write. Unguarded, the write
                 // lands second and replaces the terminal metadata — assets and
                 // all — leaving a `completed` row with no mesh.
-                if let Err(e) = db.update_generation_metadata_if_active(
-                    &id, &serde_json::json!({ "requested_formats": requested_formats }),
-                ).await {
+                let mut meta = serde_json::json!({ "requested_formats": requested_formats });
+                // The adapter's own continuation state — fal's status_url and
+                // response_url, Meshy's preview task id. The poller rebuilds the
+                // handle from this row and cannot reach the router's in-memory
+                // job map, so an adapter that needs more than a job id to poll
+                // with only works if this is written here.
+                if let Some(ctx) = stage_context {
+                    meta["stage_context"] = ctx;
+                }
+                if let Err(e) = db.update_generation_metadata_if_active(&id, &meta).await {
                     tracing::warn!(generation_id = %id, error = %e, "failed to record requested 3d formats");
                 }
                 if let Err(e) = db.insert_request_artifact(&artifact).await {

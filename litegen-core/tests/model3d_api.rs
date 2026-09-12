@@ -1006,3 +1006,59 @@ async fn omitting_the_param_still_promises_glb() {
         .collect();
     assert_eq!(formats, ["glb"], "{last}");
 }
+
+#[tokio::test]
+async fn an_adapters_stage_context_reaches_the_row_so_the_poller_can_use_it() {
+    // The poller rebuilds the provider handle FROM THE ROW — it cannot see the
+    // router's in-memory job map — so an adapter needing more than a job id to
+    // poll with (fal's status_url/response_url, Meshy's preview task id) only
+    // works if submit persists this. poller.rs has always read
+    // `metadata.stage_context`; nothing wrote it until now, which made every
+    // multi-stage adapter story rest on a field that was read-only in practice.
+    let (app, db) = harness::app_with_mock_3d().await;
+    let id = harness::submit(&app, "mock/mesh-3d", "a fox").await;
+
+    // The row insert and the metadata write are both spawned at submit.
+    let mut row = None;
+    for _ in 0..200 {
+        if let Ok(Some(g)) = db.get_generation(&id).await {
+            if g.metadata.is_some() { row = Some(g); break; }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let row = row.expect("submit never wrote the generation metadata");
+    let meta = row.metadata.unwrap();
+
+    // The mock is single-stage, so it sets no stage_context — what must hold is
+    // that the promise is recorded and the key is absent rather than null.
+    assert_eq!(meta["requested_formats"], serde_json::json!(["glb"]), "{meta}");
+    assert!(meta.get("stage_context").is_none(), "a single-stage adapter writes none: {meta}");
+}
+
+#[tokio::test]
+async fn a_mid_flight_poll_does_not_erase_what_submit_recorded() {
+    // Mid-flight progress updates must pass `None` for metadata, or every poll
+    // would wipe requested_formats and stage_context — and the completion guard
+    // would silently fall back to the GLB floor for the rest of the job.
+    let (app, db) = harness::app_with_mock_3d().await;
+    let resp = harness::submit_with(&app, serde_json::json!({
+        "model": "mock/all-params-3d",
+        "prompt": "a fox",
+        "output_formats": ["glb", "obj"],
+    })).await;
+    let id = harness::json_body(resp).await["id"].as_str().unwrap().to_string();
+
+    for _ in 0..200 {
+        if db.get_generation(&id).await.ok().flatten().and_then(|g| g.metadata).is_some() { break; }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    // One poll short of terminal — the mock needs three.
+    let r = app.clone().oneshot(
+        Request::get(format!("/v1/models3d/{id}")).body(Body::empty()).unwrap(),
+    ).await.unwrap();
+    assert_ne!(harness::json_body(r).await["status"], "completed");
+
+    let meta = db.get_generation(&id).await.unwrap().unwrap().metadata.expect("metadata survived");
+    assert_eq!(meta["requested_formats"], serde_json::json!(["glb", "obj"]), "{meta}");
+}

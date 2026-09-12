@@ -856,6 +856,17 @@ impl ProxyRouter {
         self.model3d_jobs.read().await.get(local_id).map(|j| j.handle.provider_job_id.clone())
     }
 
+    /// The provider's opaque continuation state for a submitted 3D generation.
+    ///
+    /// Persisted onto the row alongside `provider_job_id`, because the poller
+    /// rebuilds the handle from the row and cannot see this map — a restart, or
+    /// simply the poller winning the race, would otherwise hand the adapter a
+    /// handle missing whatever it needs to poll with. `poller.rs` has always
+    /// read `metadata.stage_context`; until now nothing wrote it.
+    pub async fn get_model3d_stage_context(&self, local_id: &str) -> Option<serde_json::Value> {
+        self.model3d_jobs.read().await.get(local_id).and_then(|j| j.handle.stage_context.clone())
+    }
+
     pub async fn has_model3d_provider(&self, name: &str) -> bool {
         self.registry.model3d_provider_for(name).await.is_some()
     }
