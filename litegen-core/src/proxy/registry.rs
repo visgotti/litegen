@@ -36,6 +36,7 @@ use crate::providers::video::mock::MockVideoProvider;
 use crate::providers::video::openai::OpenAiVideoProvider;
 use crate::providers::video::replicate::ReplicateVideoProvider;
 use crate::providers::video::runway::RunwayProvider;
+use crate::providers::model3d::fal::FalModel3dProvider;
 use crate::providers::model3d::mock::MockModel3dProvider;
 use crate::providers::Model3dProvider;
 use crate::providers::{
@@ -453,6 +454,7 @@ fn build_model3d_provider(
     }
     match name {
         "mock" => configured!(MockModel3dProvider),
+        "fal" => configured!(FalModel3dProvider),
         _ => None,
     }
 }
@@ -476,7 +478,7 @@ pub const VIDEO_PROVIDERS: &[&str] = &[
 /// Canonical list of providers with a 3D implementation. Mirrors
 /// [`build_model3d_provider`]. Real vendors (Meshy, Tripo3D, Stability, Rodin)
 /// land here in phase 2.
-pub const MODEL3D_PROVIDERS: &[&str] = &["mock"];
+pub const MODEL3D_PROVIDERS: &[&str] = &["mock", "fal"];
 
 /// Build the provider catalog that drives the dashboard credential form. Each
 /// entry says which media a provider serves, which credential fields to collect,
