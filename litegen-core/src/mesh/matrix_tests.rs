@@ -288,3 +288,107 @@ fn format_parsing_round_trips_and_rejects_what_we_cannot_convert() {
         assert_eq!(MeshFormat::parse(s), None, "{s:?} must not parse");
     }
 }
+
+// ─── Regressions from the adversarial review ────────────────────────────────
+//
+// Each of these was reproduced with a concrete input before it was fixed.
+// They live here rather than in a codec's own tests because each is an instance
+// of a rule that holds for EVERY codec: bounded work, bounded error text, no
+// silent guessing, and write/read agreement.
+
+#[test]
+fn a_header_line_that_never_ends_is_refused_without_scanning_the_file() {
+    // PLY bounded `pos` but not the WORK: the newline search and the UTF-8
+    // check both ran over the whole remainder before `pos` could exceed the
+    // cap. Measured at 120 MB of input: 0.57 s and 361 MB resident — on the
+    // poll path, from bytes a vendor supplied. 8 MB here is enough to fail
+    // loudly on the old code without making the suite slow.
+    let mut bytes = b"ply\nformat ascii 1.0\n".to_vec();
+    bytes.extend(std::iter::repeat_n(b'C', 8 * 1024 * 1024));
+    let started = std::time::Instant::now();
+    let err = read(&bytes, MeshFormat::Ply).unwrap_err();
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "took {:?} — the header cap is not bounding the work", started.elapsed(),
+    );
+    assert!(matches!(err, MeshError::Malformed(_)), "{err:?}");
+}
+
+#[test]
+fn an_error_message_never_quotes_an_unbounded_amount_of_input() {
+    // The realistic trigger is not an attack: it is a vendor returning a
+    // minified JSON or HTML error page where a mesh was expected, which came
+    // back as an error whose Display string was the entire page — and error
+    // text goes to logs, to operators, and potentially into a response.
+    let blob: Vec<u8> = std::iter::repeat_n(b'x', 2 * 1024 * 1024).collect();
+    for f in MeshFormat::ALL {
+        if let Err(e) = read(&blob, f) {
+            let rendered = e.to_string();
+            assert!(
+                rendered.len() < 4096,
+                "{f} rendered a {}-byte error for a {}-byte input",
+                rendered.len(), blob.len(),
+            );
+        }
+    }
+}
+
+#[test]
+fn ply_refuses_float_vertex_indices_instead_of_truncating_them() {
+    // `property list uchar float vertex_indices` parsed happily and truncated
+    // 0.9 to vertex 0 — a silent guess, made on geometry.
+    let src = b"ply\nformat ascii 1.0\n\
+element vertex 3\nproperty float x\nproperty float y\nproperty float z\n\
+element face 1\nproperty list uchar float vertex_indices\n\
+end_header\n0 0 0\n1 0 0\n0 1 0\n3 0.9 1.9 2.9\n";
+    let err = read(src, MeshFormat::Ply).unwrap_err();
+    assert!(matches!(err, MeshError::Malformed(_)), "{err:?}");
+    assert!(err.to_string().contains("integer"), "{err}");
+}
+
+#[test]
+fn obj_rejects_a_junk_token_on_a_vertex_line() {
+    // `tokens.count()` consumed the iterator without parsing it, so this was
+    // the one place in the OBJ reader where garbage returned Ok.
+    for src in [
+        &b"v 0 0 0 xyzzy\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"[..],
+        &b"v 0 0 0 1..2\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"[..],
+    ] {
+        assert!(read(src, MeshFormat::Obj).is_err(), "accepted {:?}", String::from_utf8_lossy(src));
+    }
+    // The legitimate 4th component still works: `w` is a rational-surface
+    // weight, meaningless for polygonal geometry but legal to write.
+    let ok = b"v 0 0 0 1\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    assert_eq!(read(ok, MeshFormat::Obj).unwrap().triangle_count(), 1);
+    // `nan` IS accepted here, deliberately: Rust parses it as a valid f32, and
+    // `w` is discarded rather than stored, so it cannot reach the geometry. The
+    // non-finite guard in `Mesh::validate` is what covers x/y/z.
+    let nan_w = b"v 0 0 0 nan\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    assert_eq!(read(nan_w, MeshFormat::Obj).unwrap().triangle_count(), 1);
+}
+
+#[test]
+fn every_writer_produces_a_file_its_own_reader_accepts_for_any_mesh_name() {
+    // A glTF node name is arbitrary vendor-supplied UTF-8. A Windows path used
+    // as one ends in a backslash, which OBJ reads as a line continuation — so
+    // `convert(glb, obj)` emitted a file our own reader then refused.
+    let base = Mesh {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        indices: vec![0, 1, 2],
+        ..Default::default()
+    };
+    let names = [
+        r"C:\models\thing\", "\\", "foo\\ ", "a#b", "with\ttab", "with\nnewline",
+        "  padded  ", "", "ünïcødé", "end_header", "solid", "ply",
+    ];
+    for name in names {
+        let mut m = base.clone();
+        m.name = Some(name.to_string());
+        for f in MeshFormat::ALL {
+            let bytes = write(&m, f).unwrap_or_else(|e| panic!("write {f} with name {name:?}: {e}"));
+            let back = read(&bytes, f)
+                .unwrap_or_else(|e| panic!("{f} refused its own output for name {name:?}: {e}"));
+            assert_eq!(back.triangle_count(), 1, "{f} / {name:?}");
+        }
+    }
+}
