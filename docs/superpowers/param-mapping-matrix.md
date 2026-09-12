@@ -150,7 +150,7 @@ mistake this document exists to prevent.
 | litegen param | ParamSpec | Validator rule | Meshy | Tripo3D | Stability | Rodin | Proof |
 |---|---|---|---|---|---|---|---|
 | `prompt` | PromptSpec | required, length | `prompt` | `prompt` | — (image only) | — | ⬜ |
-| `output_formats` | StringArray enum + max_items | deliverable set; vendor-jobs ≤ max_items | `target_formats` ✅ (glb\|obj\|fbx\|stl\|usdz\|3mf; omitted ⇒ all but 3mf) | separate billed convert task; `quad` forces FBX ✅ | fixed GLB, no param ✅ | `geometry_file_format` ✅ (scalar: glb\|usdz\|fbx\|obj\|stl, default glb) | ✅ vendor field names verified 2026-09-12 against each vendor's own API reference; NOT yet exercised against a live call |
+| `output_formats` | StringArray enum + max_items | deliverable set; vendor-jobs ≤ max_items | `target_formats` ✅ (glb\|obj\|fbx\|stl\|usdz\|3mf; omitted ⇒ all but 3mf) | separate billed convert task; `quad` forces FBX ✅ | fixed GLB, no param ✅ | `geometry_file_format` ✅ (scalar: glb\|usdz\|fbx\|obj\|stl, default glb) | ✅ **PROVEN LIVE 2026-09-12** on fal (`fal/trellis`, real billed run) — see below |
 | `symmetry` ⚠️ | String enum | enum off/auto/on | `symmetry_mode` — **deprecated by Meshy** | — | — | — | ⚠️ we are the only consumer of a param its one vendor deprecated |
 | `texture` | Bool | supported-or-drop | `should_texture` | `texture` (unconfirmed) | — | `material` | ⬜ |
 | `pbr` | Bool | supported-or-drop | (texture_* maps) | `pbr` | — | `material=PBR` | ⬜ |
@@ -158,6 +158,40 @@ mistake this document exists to prevent.
 | `topology` | String enum | enum triangle/quad | `topology` | `quad` (bool) | `remesh` | `mesh_mode` | ⬜ |
 | `rig` | Bool | supported-or-drop | (separate endpoint — unconfirmed) | `rig` (unconfirmed) | — | — | ⬜ |
 | `seed` | Seed | range | — | `model_seed` | `seed` | — | ⬜ |
+
+### Proof: one real billed run, fal `fal/trellis`, 2026-09-12
+
+The first end-to-end evidence that any of this works against a vendor rather
+than a mock. `fal/trellis` is **image-to-3D and emits GLB only** — the exact case
+the design was built for.
+
+Request: `output_formats: [glb, obj, stl, ply]` against fal's own example image.
+Quoted $0.02, charged $0.02, terminal in ~20s (`IN_QUEUE` → `IN_PROGRESS` →
+`COMPLETED`). Result — four containers from a one-container vendor:
+
+| format | bytes | source | content-type served |
+|---|---|---|---|
+| glb | 1,819,360 | fal, verbatim | `model/gltf-binary` |
+| obj | 1,325,575 | derived locally | `model/obj` |
+| stl | 829,584 | derived locally | `model/stl` |
+| ply | 421,179 | derived locally | `application/octet-stream` |
+
+Structurally validated after download, not merely non-empty:
+
+- **16,590 triangles and 12,824 vertices, identical across obj, stl and ply.**
+- glb: `glTF` magic, version 2, declared length == actual length.
+- obj: no `mtllib`/`usemtl` — the self-contained rule holds, so rehost renaming
+  cannot break a sidecar reference.
+- stl: binary, `84 + 50n` exact, and its header does **not** begin with `solid`
+  — the guard against naive ASCII-detection elsewhere.
+- ply: `binary_little_endian`, vertex and face counts matching the header.
+
+`ply` is served as `application/octet-stream` deliberately: PLY has no IANA
+registration, and inventing one would be worse — the same call made for `fbx`.
+
+Still unproven by this run: Rodin and Hunyuan3D (not exercised), the `textures`
+array (Rodin-only), and the 422/`error_type` paths, which need a deliberately
+invalid request to trigger.
 
 **`output_formats` is not like the other rows.** Every other param is a hint the
 vendor may ignore; this one is a PROMISE — whatever survives validation must be
