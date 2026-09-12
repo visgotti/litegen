@@ -51,6 +51,49 @@ export default function ParamField({ name, spec, models, totalSelected, value, o
       );
       break;
     }
+    case 'string_array': {
+      // A set, not a choice — `output_formats` is the only one today, and every
+      // member ticked here is a container the generation is required to deliver
+      // or fail. Checkboxes rather than a multi-select: a native multi-select
+      // hides the unselected options behind a scroll and needs ctrl-click to
+      // deselect, which is a poor way to present a promise the caller pays for.
+      const ev = (s.enum_values as string[]) ?? [];
+      const max = s.max_items as number | undefined;
+      const chosen = Array.isArray(value) ? (value as string[]) : [];
+      // At the cap, the unticked boxes are disabled rather than silently
+      // dropping a click — the backend would reject the request with
+      // `param_too_many`, and finding that out after submitting is worse.
+      const atCap = max != null && chosen.length >= max;
+      control = (
+        <div className="pg-param-set" data-testid={tid}>
+          {ev.map(o => {
+            const on = chosen.includes(o);
+            return (
+              <label key={o} className="pg-param-set-item">
+                <input
+                  type="checkbox"
+                  data-testid={`${tid}-${o}`}
+                  checked={on}
+                  disabled={!on && atCap}
+                  onChange={e => onChange(
+                    // Filter from enum_values rather than pushing/splicing, so
+                    // the submitted order always matches the declared order.
+                    ev.filter(x => (x === o ? e.target.checked : chosen.includes(x))),
+                  )}
+                />
+                {o}
+              </label>
+            );
+          })}
+          {max != null && max < ev.length && (
+            <span className="pg-param-set-cap" data-testid={`${tid}-cap`}>
+              up to {max}
+            </span>
+          )}
+        </div>
+      );
+      break;
+    }
     case 'aspect_ratio': {
       const allowed = (s.allowed as string[]) ?? [];
       control = (
