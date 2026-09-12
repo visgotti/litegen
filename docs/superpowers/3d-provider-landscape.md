@@ -148,15 +148,43 @@ Gaps worth naming:
   Related: nothing in the tree ever *writes* `stage_context` — `poller.rs:208`
   reads it and every producer sets `None`.
 
-### Rejected: server-side format conversion
+### Adopted: local conversion for glb / obj / stl / ply
 
-Considered and declined, for three independent reasons:
+Initially declined, then reversed. The fact that changed it: **the models
+litegen is most likely to ship first are GLB-only.** fal is the cheapest first
+adapter (key already in hand, fronts Tripo/Rodin/Hunyuan/Trellis/Meshy), most
+fal 3D slugs emit one container, and Stability emits GLB with no choice at all.
+Without conversion, `output_formats` on exactly those models could only ever be
+`["glb"]` — the param would be dead weight where it matters most.
+
+These four containers can be read and written completely, in-process, with no
+external tool, no service and no licence: they are triangle geometry plus a
+handful of optional attributes. `litegen-core/src/mesh/` does it, imports
+nothing from the rest of litegen (enforced by a test), and is unit-tested
+directly plus across the full N×N conversion matrix.
+
+The consequence worth noticing: a **one-format-per-job vendor can now serve
+four formats.** Rodin's `geometry_file_format` is a scalar, but one GLB is all
+we need — obj, stl and ply are derived locally. The `max_items` rule becomes
+"what the vendor must produce", not "what the caller may ask for":
+
+> vendor_needs = (requested formats that are NOT derivable) + (1 source, if any
+> requested format IS derivable) — and that must be ≤ `max_items`.
+
+So Rodin with `max_items: 1` accepts `[glb, obj, stl]` (one GLB, three
+deliverables) and correctly rejects `[glb, fbx]` (two vendor jobs). It also
+means we never pay Tripo's per-format convert credits for a container we can
+produce ourselves.
+
+### Still rejected: fbx, usdz, and cross-vendor conversion
 
 1. **FBX writing is legally encumbered.** The Autodesk FBX SDK license is the
-   only complete path; open writers are incomplete. (Sourced from Unity's
+   only complete path; open writers produce files that fail to load in the DCC
+   tools that are the entire reason to want FBX. (Sourced from Unity's
    republication of the ALSA — grounds to avoid, not legal advice.)
-2. **OBJ and glTF are multi-file**, and our rehost scheme renames siblings, which
-   breaks the internal references (see gap 5 above).
+2. **USDZ needs USD tooling** — it is a zip of USD crates. And for its main use
+   (iOS AR Quick Look) `<model-viewer>` generates it client-side from the GLB
+   (**unverified** — second-hand from model-viewer's FAQ).
 3. **Cross-vendor convert leaks the asset.** Meshy's convert endpoint does accept
    a `model_url` at 1 credit, and Tripo's accepts a public model link — so it is
    *technically* available. It would mean shipping a Stability-generated mesh to
@@ -164,9 +192,12 @@ Considered and declined, for three independent reasons:
    satisfy a promise the caller could have been told up front was unavailable.
    That is a product decision, not an engineering one.
 
-USDZ specifically does not need a pipeline: `<model-viewer>` generates it
-client-side for AR from the GLB (**unverified** — second-hand from
-model-viewer's FAQ).
+**Textures stay out of scope in v1.** Every texture-bearing target needs sidecar
+files, and rehosting keys each file independently, so a sidecar reference inside
+a mesh would not resolve (gap 5 above). Conversion is geometry, normals, UVs and
+a flat base colour — and the lossiness is documented per target rather than
+hidden: STL keeps positions and facet normals and nothing else; OBJ drops
+colour; PLY drops UVs.
 
 ---
 
