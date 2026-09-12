@@ -82,7 +82,14 @@ export function extensionOf(url: string): string {
  * renders. A listed mesh always wins over the fallback.
  */
 export function meshOf(assets: Model3dAsset[], fallbackUrl?: string | null): Model3dAsset | null {
-  const listed = assets.find(a => a.kind === 'mesh');
+  const meshes = assets.filter(a => a.kind === 'mesh');
+  // A generation can now carry one mesh per requested container, and the viewer
+  // renders glTF only — so taking the first would show "unsupported format" for
+  // a generation that did deliver a perfectly good glb, purely because the
+  // adapter happened to push the obj first. Mirrors
+  // `Model3dGenerationResponse::mesh()` on the backend, which picks the same
+  // asset for `result_url`.
+  const listed = meshes.find(a => canPreviewMesh(a.format)) ?? meshes[0];
   if (listed) return listed;
   if (!fallbackUrl) return null;
   return { kind: 'mesh', url: fallbackUrl, format: extensionOf(fallbackUrl) };
