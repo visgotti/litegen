@@ -346,7 +346,11 @@ pub struct VideoGenerationPollResult {
 /// Extra 3D-specific parameters extracted from a validated request.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Model3dExtras {
-    pub output_format: Option<String>,
+    /// Containers this generation is committed to producing. Never empty —
+    /// resolved through `ModelSchema::resolve_output_formats`, so an adapter can
+    /// map it straight onto the vendor's field without re-deriving a default.
+    /// Every entry must come back as a `Mesh` file or the generation fails.
+    pub output_formats: Vec<String>,
     pub texture: Option<bool>,
     pub pbr: Option<bool>,
     pub target_polycount: Option<u32>,

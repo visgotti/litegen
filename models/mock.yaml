@@ -297,12 +297,13 @@ models:
     capabilities: { text_to_3d: true, image_to_3d: true }
     prompt: { required: true, max_length: 4000 }
     params:
-      output_format:
-        kind: string
+      output_formats:
+        kind: string_array
         enum_values: [glb]
-        default: glb
-        label: Output format
-        description: Mesh container. The mock only emits glb.
+        max_items: 1
+        default: [glb]
+        label: Output formats
+        description: Mesh containers. This model only emits glb.
       texture: { kind: bool, default: true, label: Textures }
       target_polycount:
         kind: int
@@ -328,11 +329,16 @@ models:
     capabilities: { text_to_3d: true, image_to_3d: true, multiview_to_3d: true }
     prompt: { required: true, max_length: 4000 }
     params:
-      output_format:
-        kind: string
-        enum_values: [glb, obj, fbx, usdz]
-        default: glb
-        label: Output format
+      # glb, obj and stl are what the mock can genuinely write. fbx and usdz
+      # were declared here before and never produced — a model must not
+      # advertise a container its provider cannot emit.
+      output_formats:
+        kind: string_array
+        enum_values: [glb, obj, stl]
+        max_items: 3
+        default: [glb]
+        label: Output formats
+        description: Mesh containers to produce. Every one asked for is delivered or the generation fails.
       texture: { kind: bool, default: true, label: Textures }
       pbr: { kind: bool, default: false, label: PBR materials }
       rig: { kind: bool, default: false, label: Auto-rig }
@@ -376,5 +382,26 @@ models:
     capabilities: { text_to_3d: true }
     prompt: { required: true, max_length: 1000 }
     params: {}
+    extra_allowlist: []
+    tags: [mock, test]
+
+  - id: mock/partial-3d
+    provider: mock
+    media_type: model3d
+    display_name: Mock Partial-Delivery 3D
+    description: >-
+      Reports `completed` while returning only glb, whatever was asked for —
+      the way a real vendor under-delivers when a convert step is skipped.
+      Request `[glb, obj]` and the generation must FAIL, at every observer.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_3d: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      output_formats:
+        kind: string_array
+        enum_values: [glb, obj, stl]
+        max_items: 3
+        default: [glb]
+        label: Output formats
     extra_allowlist: []
     tags: [mock, test]

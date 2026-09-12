@@ -2,6 +2,14 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+/// The container every 3D model is required to be able to emit, and what a
+/// caller gets when nothing narrower was declared or asked for.
+///
+/// It is the only universal: every vendor with a public 3D API can produce GLB,
+/// whereas FBX, USDZ, OBJ and STL are each missing from at least one of them.
+/// It is also the only container the dashboard viewer renders.
+pub const DEFAULT_MODEL3D_FORMAT: &str = "glb";
+
 // ─── Generation Request / Response ──────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -151,7 +159,13 @@ pub struct VideoGenerationResponse {
 pub struct Model3dGenerationRequest {
     #[serde(flatten)]
     pub base: BaseGenerationRequest,
-    /// Desired mesh container: "glb" | "obj" | "fbx" | "usdz". Default "glb".
+    /// Desired mesh containers, e.g. `["glb", "fbx"]`. Every format asked for
+    /// here is guaranteed present on a `completed` generation or the generation
+    /// fails — see `missing_model3d_formats`. Defaults to the model's declared
+    /// default, and to `["glb"]` when it declares none.
+    #[serde(default)] pub output_formats: Option<Vec<String>>,
+    /// Superseded by `output_formats`; a value here is folded into it. Kept so
+    /// clients written against the scalar keep working for one release.
     #[serde(default)] pub output_format: Option<String>,
     /// Generate textures (vs. bare geometry).
     #[serde(default)] pub texture: Option<bool>,
@@ -218,10 +232,46 @@ pub struct Model3dGenerationResponse {
 }
 
 impl Model3dGenerationResponse {
-    /// The single required mesh asset, if present.
+    /// The canonical mesh asset, if present.
+    ///
+    /// GLB wins whenever it is there. A generation may now carry one mesh per
+    /// requested container, and this backs the `result_url` column — without
+    /// the preference, whichever file the adapter happened to push first would
+    /// become the canonical URL, which for a Meshy-shaped bundle is arbitrary.
+    /// GLB is the one container every vendor emits and the only one the
+    /// dashboard viewer can render.
     pub fn mesh(&self) -> Option<&Model3dAsset> {
-        self.assets.iter().find(|a| a.kind == Model3dAssetKind::Mesh)
+        let meshes = || self.assets.iter().filter(|a| a.kind == Model3dAssetKind::Mesh);
+        meshes()
+            .find(|a| a.format.eq_ignore_ascii_case(DEFAULT_MODEL3D_FORMAT))
+            .or_else(|| meshes().next())
     }
+
+    /// Distinct mesh containers present, lowercased — the delivered half of the
+    /// requested-vs-delivered guard.
+    pub fn delivered_formats(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for a in self.assets.iter().filter(|a| a.kind == Model3dAssetKind::Mesh) {
+            let f = a.format.to_ascii_lowercase();
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        }
+        out
+    }
+}
+
+/// Formats that were asked for but never arrived.
+///
+/// Comparison is case-insensitive because `format` is a free-form string filled
+/// in by each adapter, and a vendor answering `"GLB"` is a spelling difference,
+/// not a missing file.
+pub fn missing_model3d_formats(requested: &[String], delivered: &[String]) -> Vec<String> {
+    requested
+        .iter()
+        .filter(|r| !delivered.iter().any(|d| d.eq_ignore_ascii_case(r)))
+        .cloned()
+        .collect()
 }
 
 // ─── Shared Types ───────────────────────────────────────────────────────────
