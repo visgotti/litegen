@@ -3,6 +3,7 @@ pub mod router;
 pub mod cache;
 pub mod storage;
 pub mod materializer;
+pub mod model3d_convert;
 pub mod webhook;
 pub mod poller;
 pub mod circuit_breaker;

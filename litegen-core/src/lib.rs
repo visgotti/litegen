@@ -4,6 +4,7 @@ pub mod capabilities;
 pub mod config;
 pub mod db;
 pub mod management;
+pub mod mesh;
 pub mod observability;
 pub mod providers;
 pub mod proxy;
