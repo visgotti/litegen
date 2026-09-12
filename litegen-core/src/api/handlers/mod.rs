@@ -626,7 +626,9 @@ pub async fn generate_3d(
     };
 
     let extras = Model3dExtras {
-        output_format: validated.request.output_format.clone(),
+        output_formats: validated.schema.resolve_output_formats(
+            validated.request.output_formats.as_deref(),
+        ),
         texture: validated.request.texture,
         pbr: validated.request.pbr,
         target_polycount: validated.request.target_polycount,
@@ -683,12 +685,29 @@ pub async fn generate_3d(
             let key_id = key_ctx.as_ref().and_then(|c| c.key_id);
             let org_id = key_ctx.as_ref().and_then(|c| c.org_id.clone());
             let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
+            let requested_formats = extras.output_formats.clone();
             tokio::spawn(async move {
                 let _ = db.log_request(&id, &model, &provider, "pending", "model3d", cost, latency, None, None, org_id.as_deref(), app_id.as_deref()).await;
                 let _ = db.insert_generation(
                     &id, key_id.as_ref(), &model, &provider, "model3d",
                     provider_job_id.as_deref(), cost, org_id.as_deref(), app_id.as_deref(),
                 ).await;
+                // The containers promised to this caller, recorded on the row so
+                // the poller and the row-answered path can enforce them — neither
+                // can reach the router's in-memory job map, and the row outlives
+                // it anyway. `insert_generation` takes no metadata, so this is a
+                // second statement; a lost write degrades to the GLB floor in
+                // `row_requested_formats`, never to "no guard at all".
+                //
+                // Guarded, because a fast client can poll this job to completion
+                // between the insert above and this write. Unguarded, the write
+                // lands second and replaces the terminal metadata — assets and
+                // all — leaving a `completed` row with no mesh.
+                if let Err(e) = db.update_generation_metadata_if_active(
+                    &id, &serde_json::json!({ "requested_formats": requested_formats }),
+                ).await {
+                    tracing::warn!(generation_id = %id, error = %e, "failed to record requested 3d formats");
+                }
                 if let Err(e) = db.insert_request_artifact(&artifact).await {
                     tracing::warn!(error = %e, request_id = %artifact.request_id, "Failed to store 3d artifact");
                 }
@@ -793,7 +812,13 @@ pub async fn get_3d_status(
             // written — whichever path observed completion first.
             if resp.status == GenerationStatus::Completed {
                 if resp.mesh().is_some() {
-                    if persist_model3d_result(&state, &resp).await {
+                    // Same source the poller reads, so both observers persist the
+                    // same promise. `get_model3d_status` has already enforced it
+                    // against the router's copy; this carries it onto the row.
+                    let requested = row.as_ref().map(row_requested_formats).unwrap_or_else(
+                        || vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()],
+                    );
+                    if persist_model3d_result(&state, &resp, &requested).await {
                         dispatch_3d_webhook(&state, row.as_ref(), &resp).await;
                     }
                 } else {
@@ -937,9 +962,20 @@ pub async fn estimate_3d_cost(
 /// Returns whether THIS call terminalised the row. `false` means the row was
 /// already terminal (the poller, or a cancel, got there first) or the write
 /// failed — in both cases the caller must not dispatch a webhook.
-pub(crate) async fn persist_model3d_result(state: &AppState, resp: &Model3dGenerationResponse) -> bool {
+pub(crate) async fn persist_model3d_result(
+    state: &AppState,
+    resp: &Model3dGenerationResponse,
+    requested_formats: &[String],
+) -> bool {
     let mesh_url = resp.mesh().map(|m| m.url.clone());
-    let meta = serde_json::json!({ "assets": resp.assets });
+    // `metadata` is REPLACED, not merged (see `Database::update_generation_metadata`),
+    // so the requested formats have to be re-stated here or the terminal write
+    // erases what submit recorded — and `model3d_response_from_row` would then
+    // fall back to the GLB floor and under-enforce for every row it answers.
+    let meta = serde_json::json!({
+        "assets": resp.assets,
+        "requested_formats": requested_formats,
+    });
     // ONE guarded, atomic UPDATE. Split across two statements, a transient
     // failure of the second left the row permanently `completed` with metadata
     // NULL — out of the poller's window, with the router job dropped — so every
@@ -987,6 +1023,21 @@ pub(crate) fn usage_from_row_cost(cost_usd: f64) -> UsageInfo {
 
 /// Rebuild a `Model3dGenerationResponse` from a persisted row (used once the
 /// poller has terminalised a job and the router no longer tracks it).
+/// The containers a persisted generation promised its caller.
+///
+/// Falls back to GLB when the row predates the field or its metadata write was
+/// lost. That floor is deliberate: GLB is required of every 3D model, so the
+/// guard still means something on an old row instead of silently becoming a
+/// no-op — it just cannot know about any additional container that was asked
+/// for.
+pub(crate) fn row_requested_formats(gen: &crate::types::Generation) -> Vec<String> {
+    gen.metadata.as_ref()
+        .and_then(|m| m.get("requested_formats"))
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()])
+}
+
 pub(crate) fn model3d_response_from_row(gen: &crate::types::Generation) -> Model3dGenerationResponse {
     let assets = gen.metadata.as_ref()
         .and_then(|m| m.get("assets"))
@@ -1010,7 +1061,7 @@ pub(crate) fn model3d_response_from_row(gen: &crate::types::Generation) -> Model
     } else {
         (gen.status, gen.error_message.clone(), assets)
     };
-    Model3dGenerationResponse {
+    let mut resp = Model3dGenerationResponse {
         id: gen.id.clone(),
         status,
         model: gen.model.clone(),
@@ -1022,7 +1073,14 @@ pub(crate) fn model3d_response_from_row(gen: &crate::types::Generation) -> Model
         // poll carries the same triple a router-answered one does.
         usage: Some(usage_from_row_cost(gen.cost_usd)),
         created: gen.created_at.timestamp(),
-    }
+    };
+    // Third and last observer of completion. The mesh guard above answers "is
+    // there a mesh at all"; this answers "is every mesh the caller was promised
+    // there" — the row-answered path must reach the same verdict the poller and
+    // `get_3d_status` did, or which observer won the race would decide whether
+    // the generation succeeded.
+    crate::proxy::router::enforce_requested_formats(&mut resp, &row_requested_formats(gen));
+    resp
 }
 
 // ─── Models ─────────────────────────────────────────────────────────────────
@@ -1138,10 +1196,11 @@ fn extract_sizes(s: &crate::capabilities::ModelSchema) -> Vec<String> {
 /// `output_formats` is derived from the model's declared `output_format`
 /// enum_values, so a model advertises exactly the formats it can emit.
 fn extract_output_formats(s: &crate::capabilities::ModelSchema) -> Vec<String> {
-    match s.params.get("output_format") {
-        Some(crate::capabilities::ParamSpec::String(sp)) => sp.enum_values.clone(),
-        _ => Vec::new(),
-    }
+    // Goes through `output_formats_spec` so both the canonical plural and the
+    // superseded scalar spelling advertise correctly. Reading one variant
+    // directly is how this silently returned `[]` for every 3D model the day
+    // the spec kind changed.
+    s.output_formats_spec().map(|sp| sp.enum_values).unwrap_or_default()
 }
 
 /// `max_polycount` mirrors the upper bound of the `target_polycount` param.
@@ -4633,15 +4692,23 @@ mod model3d_completion_contract_tests {
         let submitted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let id = submitted["id"].as_str().unwrap().to_string();
 
-        // The submit handler writes the `pending` log row from a spawned task;
-        // wait for it so this test is about the terminal update alone.
-        let mut logged = false;
+        // The submit handler writes BOTH the `pending` log row and the
+        // generation row from one spawned task; wait for both so this test is
+        // about the terminal update alone. Waiting only for the log row leaves a
+        // race: `fail_model3d_row` guards on `update_generation_if_active`, which
+        // reports `Missing` for a generation row that has not landed yet and
+        // therefore never touches the log — the assertion below then sees the
+        // row still `pending` for a reason that has nothing to do with the
+        // contract under test.
+        let mut ready = false;
         for _ in 0..200 {
             let (logs, _) = db.get_request_logs(1, 100).await.unwrap();
-            if logs.iter().any(|l| l.id == id) { logged = true; break; }
+            let has_log = logs.iter().any(|l| l.id == id);
+            let has_gen = db.get_generation(&id).await.ok().flatten().is_some();
+            if has_log && has_gen { ready = true; break; }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        assert!(logged, "the submit handler never wrote a request log for {id}");
+        assert!(ready, "the submit handler never wrote the log and generation rows for {id}");
 
         let resp = app.oneshot(
             Request::get(format!("/v1/models3d/{id}")).body(Body::empty()).unwrap(),

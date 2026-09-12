@@ -107,6 +107,15 @@ pub async fn submit(app: &Router, model: &str, prompt: &str) -> String {
     json_body(resp).await["id"].as_str().unwrap().to_string()
 }
 
+/// Submit with an explicit body, for the params `submit` does not take.
+pub async fn submit_with(app: &Router, body: serde_json::Value) -> axum::response::Response {
+    app.clone().oneshot(
+        Request::post("/v1/models3d/generations")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string())).unwrap(),
+    ).await.unwrap()
+}
+
 pub async fn poll_until_terminal(app: &Router, id: &str) -> serde_json::Value {
     for _ in 0..10 {
         let resp = app.clone().oneshot(

@@ -26,6 +26,38 @@ fn fnv1a(s: &str) -> u64 {
 }
 
 /// Build a valid GLB containing a single indexed, materialised cube.
+/// The unit cube's 8 corners, before the prompt-seeded scale jitter.
+#[rustfmt::skip]
+pub const CUBE_CORNERS: [[f32; 3]; POSITION_COUNT] = [
+    [-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [-1.0, 1.0, -1.0],
+    [-1.0, -1.0,  1.0], [1.0, -1.0,  1.0], [1.0, 1.0,  1.0], [-1.0, 1.0,  1.0],
+];
+
+/// Counter-clockwise when seen from OUTSIDE the cube. glTF culls back faces by
+/// default (and defines the front face by CCW winding), so an inside-out mesh
+/// renders as the far interior walls with inverted lighting in every viewer — a
+/// cube's silhouette survives that, which is why it is invisible in a screenshot
+/// and immediate the moment anything depends on face orientation (shadows,
+/// section views, a correctly-wound vendor mesh beside it).
+/// `wound_counter_clockwise_when_seen_from_outside` pins every triangle.
+///
+/// @see <https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#meshes-overview>
+#[rustfmt::skip]
+pub const CUBE_INDICES: [u16; INDEX_COUNT] = [
+    0, 2, 1,  0, 3, 2, // -Z
+    4, 5, 6,  4, 6, 7, // +Z
+    0, 5, 4,  0, 1, 5, // -Y
+    3, 6, 2,  3, 7, 6, // +Y
+    0, 7, 3,  0, 4, 7, // -X
+    1, 6, 5,  1, 2, 6, // +X
+];
+
+/// The prompt-seeded scale jitter, shared by every container the mock writes so
+/// a caller asking for glb AND obj gets the same cube twice, not two cubes.
+pub fn cube_scale(prompt: &str) -> f32 {
+    0.45 + (((fnv1a(prompt) >> 24) & 0xff) as f32 / 255.0) * 0.10
+}
+
 pub fn generate_cube_glb(prompt: &str) -> Vec<u8> {
     let h = fnv1a(prompt);
 
@@ -35,13 +67,10 @@ pub fn generate_cube_glb(prompt: &str) -> Vec<u8> {
     let r = 0.15 + ((h & 0xff) as f32 / 255.0) * 0.8;
     let g = 0.15 + (((h >> 8) & 0xff) as f32 / 255.0) * 0.8;
     let b = 0.15 + (((h >> 16) & 0xff) as f32 / 255.0) * 0.8;
-    let scale = 0.45 + (((h >> 24) & 0xff) as f32 / 255.0) * 0.10;
+    let scale = cube_scale(prompt);
 
     // ─── BIN chunk: 8 positions (f32x3) then 36 indices (u16) ───────────────
-    let corners: [[f32; 3]; POSITION_COUNT] = [
-        [-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [-1.0, 1.0, -1.0],
-        [-1.0, -1.0,  1.0], [1.0, -1.0,  1.0], [1.0, 1.0,  1.0], [-1.0, 1.0,  1.0],
-    ];
+    let corners = CUBE_CORNERS;
     let mut bin: Vec<u8> = Vec::with_capacity(POSITION_COUNT * 12 + INDEX_COUNT * 2);
     let mut min = [f32::MAX; 3];
     let mut max = [f32::MIN; 3];
@@ -55,25 +84,7 @@ pub fn generate_cube_glb(prompt: &str) -> Vec<u8> {
     }
     let positions_len = bin.len(); // 96
 
-    // Counter-clockwise when seen from OUTSIDE the cube. glTF culls back faces
-    // by default (and defines the front face by CCW winding), so an inside-out
-    // mesh renders as the far interior walls with inverted lighting in every
-    // viewer — a cube's silhouette survives that, which is why it is invisible
-    // in a screenshot and immediate the moment anything depends on face
-    // orientation (shadows, section views, a correctly-wound vendor mesh beside
-    // it). `wound_counter_clockwise_when_seen_from_outside` pins every triangle.
-    //
-    // @see <https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#meshes-overview>
-    #[rustfmt::skip]
-    const INDICES: [u16; INDEX_COUNT] = [
-        0, 2, 1,  0, 3, 2, // -Z
-        4, 5, 6,  4, 6, 7, // +Z
-        0, 5, 4,  0, 1, 5, // -Y
-        3, 6, 2,  3, 7, 6, // +Y
-        0, 7, 3,  0, 4, 7, // -X
-        1, 6, 5,  1, 2, 6, // +X
-    ];
-    for i in INDICES {
+    for i in CUBE_INDICES {
         bin.extend_from_slice(&i.to_le_bytes());
     }
     let indices_len = bin.len() - positions_len; // 72

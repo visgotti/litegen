@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::capabilities::schema::*;
+use crate::types::DEFAULT_MODEL3D_FORMAT;
 
 #[derive(Debug, Error)]
 pub enum LoadError {
@@ -57,6 +58,66 @@ fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadError> {
                 m.id, k, KNOWN_PARAMS
             )));
         }
+    }
+
+    // `output_formats` sanity.
+    //
+    // These are the checks that keep a 3D model from advertising a container it
+    // cannot emit — the failure mode this param exists to close. A wrong-kinded
+    // spec is rejected outright rather than silently ignored, because
+    // `ModelSchema::output_formats_spec` reads a mismatch as "no spec", which
+    // would quietly disable format validation for the model.
+    if let Some(spec) = m.params.get("output_formats") {
+        let ParamSpec::StringArray(s) = spec else {
+            return Err(bad(format!(
+                "model '{}' output_formats must be kind: string_array", m.id
+            )));
+        };
+        if s.enum_values.is_empty() {
+            return Err(bad(format!(
+                "model '{}' output_formats declares no enum_values", m.id
+            )));
+        }
+        if !s.enum_values.iter().any(|v| v == DEFAULT_MODEL3D_FORMAT) {
+            return Err(bad(format!(
+                "model '{}' output_formats must include '{}' — it is the only container \
+                 every 3D vendor can emit, and the one callers get by default",
+                m.id, DEFAULT_MODEL3D_FORMAT
+            )));
+        }
+        if let Some(max) = s.max_items {
+            if max == 0 {
+                return Err(bad(format!("model '{}' output_formats max_items is 0", m.id)));
+            }
+            if max > s.enum_values.len() {
+                return Err(bad(format!(
+                    "model '{}' output_formats max_items {} exceeds the {} declared enum_values",
+                    m.id, max, s.enum_values.len()
+                )));
+            }
+            if s.default.len() > max {
+                return Err(bad(format!(
+                    "model '{}' output_formats default has {} entries but max_items is {}",
+                    m.id, s.default.len(), max
+                )));
+            }
+        }
+        for d in &s.default {
+            if !s.enum_values.contains(d) {
+                return Err(bad(format!(
+                    "model '{}' output_formats default '{}' is not in enum_values", m.id, d
+                )));
+            }
+        }
+    }
+
+    // The two spellings mean the same thing; carrying both leaves which one
+    // wins to `output_formats_spec` rather than to the reader.
+    if m.params.contains_key("output_formats") && m.params.contains_key("output_format") {
+        return Err(bad(format!(
+            "model '{}' declares both output_formats and the superseded output_format; \
+             keep only output_formats", m.id
+        )));
     }
 
     // SizeSpec::Freeform sanity

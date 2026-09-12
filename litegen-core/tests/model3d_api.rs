@@ -158,10 +158,15 @@ async fn model_schema_endpoint_serves_a_populated_params_map_for_3d() {
     let schema: serde_json::Value = harness::json_body(resp).await;
     assert_eq!(schema["media_type"], "model3d");
     let params = schema["params"].as_object().expect("params map");
-    for key in ["output_format", "texture", "pbr", "rig", "symmetry", "topology", "target_polycount"] {
+    for key in ["output_formats", "texture", "pbr", "rig", "symmetry", "topology", "target_polycount"] {
         assert!(params.contains_key(key), "3D schema must expose '{key}': {:?}", params.keys());
     }
     assert_eq!(params["target_polycount"]["label"], "Target polycount");
+    // The Playground and aipix both render the format control off this spec, so
+    // the cardinality has to be on the wire, not only in the validator.
+    assert_eq!(params["output_formats"]["kind"], "string_array");
+    assert_eq!(params["output_formats"]["max_items"], 3);
+    assert_eq!(params["output_formats"]["enum_values"], serde_json::json!(["glb", "obj", "stl"]));
 }
 
 #[tokio::test]
@@ -833,4 +838,138 @@ async fn a_write_to_a_row_that_does_not_exist_yet_is_not_a_lost_race() {
     ).await.unwrap();
     assert_eq!(missing, GenerationWrite::Missing);
     assert!(missing.owns_outcome(), "the caller still owns the request log and the webhook");
+}
+
+// ─── output_formats end to end ──────────────────────────────────────────────
+//
+// The param's whole value is that it is a PROMISE, so these tests are about the
+// promise being kept or the generation failing — never a quiet downgrade.
+
+#[tokio::test]
+async fn asking_for_several_containers_returns_one_mesh_per_container() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let resp = harness::submit_with(&app, serde_json::json!({
+        "model": "mock/all-params-3d",
+        "prompt": "a fox",
+        "output_formats": ["glb", "obj", "stl"],
+    })).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let id = harness::json_body(resp).await["id"].as_str().unwrap().to_string();
+
+    let last = harness::poll_until_terminal(&app, &id).await;
+    assert_eq!(last["status"], "completed", "{last}");
+
+    let meshes: Vec<&serde_json::Value> = last["assets"].as_array().unwrap()
+        .iter().filter(|a| a["kind"] == "mesh").collect();
+    let mut formats: Vec<&str> = meshes.iter().map(|m| m["format"].as_str().unwrap()).collect();
+    formats.sort_unstable();
+    assert_eq!(formats, ["glb", "obj", "stl"], "{last}");
+
+    // Every container is a distinct key ending in its own extension — the
+    // documented `model.<ext>` shape, not `model_1.obj`.
+    for m in &meshes {
+        let url = m["url"].as_str().unwrap();
+        let ext = m["format"].as_str().unwrap();
+        assert!(url.ends_with(&format!("/model.{ext}")), "unexpected key for {ext}: {url}");
+    }
+    // …and each one is real, distinct content rather than the glb three times.
+    let sizes: std::collections::HashSet<u64> =
+        meshes.iter().map(|m| m["size_bytes"].as_u64().unwrap()).collect();
+    assert_eq!(sizes.len(), 3, "the three containers must not be byte-identical: {last}");
+}
+
+#[tokio::test]
+async fn the_canonical_result_url_is_the_glb_whatever_order_they_arrive_in() {
+    // `result_url` backs every cross-modal consumer, so it must not depend on
+    // which container the adapter happened to push first.
+    let (app, db) = harness::app_with_mock_3d().await;
+    let resp = harness::submit_with(&app, serde_json::json!({
+        "model": "mock/all-params-3d",
+        "prompt": "a fox",
+        "output_formats": ["stl", "obj", "glb"],
+    })).await;
+    let id = harness::json_body(resp).await["id"].as_str().unwrap().to_string();
+    assert_eq!(harness::poll_until_terminal(&app, &id).await["status"], "completed");
+
+    let gen = db.get_generation(&id).await.unwrap().expect("generation row");
+    assert!(
+        gen.result_url.as_deref().is_some_and(|u| u.ends_with("/model.glb")),
+        "result_url must be the glb: {:?}", gen.result_url,
+    );
+}
+
+#[tokio::test]
+async fn a_provider_that_under_delivers_fails_the_generation() {
+    // mock/partial-3d reports success while returning only glb — the way a real
+    // vendor under-delivers when a convert step is skipped. The caller asked for
+    // obj too, so this is a paid generation they cannot use: it must fail.
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let resp = harness::submit_with(&app, serde_json::json!({
+        "model": "mock/partial-3d",
+        "prompt": "a fox",
+        "output_formats": ["glb", "obj"],
+    })).await;
+    let id = harness::json_body(resp).await["id"].as_str().unwrap().to_string();
+
+    let last = harness::poll_until_terminal(&app, &id).await;
+    assert_eq!(last["status"], "failed", "a partial delivery is not a success: {last}");
+    assert!(
+        last["error"].as_str().is_some_and(|e| e.contains("obj")),
+        "the error must name the container that never arrived: {last}",
+    );
+    assert!(last.get("assets").is_none(), "a failed generation carries no assets: {last}");
+}
+
+#[tokio::test]
+async fn the_row_answered_path_reaches_the_same_verdict_as_the_live_poll() {
+    // Three observers enforce this contract independently. If the row-answered
+    // path disagreed, whichever observer won the race would decide whether the
+    // generation succeeded.
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let resp = harness::submit_with(&app, serde_json::json!({
+        "model": "mock/partial-3d",
+        "prompt": "a fox",
+        "output_formats": ["glb", "obj"],
+    })).await;
+    let id = harness::json_body(resp).await["id"].as_str().unwrap().to_string();
+    assert_eq!(harness::poll_until_terminal(&app, &id).await["status"], "failed");
+
+    // The router has dropped the job by now, so this is answered from the row.
+    let resp = app.clone().oneshot(
+        Request::get(format!("/v1/models3d/{id}")).body(Body::empty()).unwrap(),
+    ).await.unwrap();
+    let again = harness::json_body(resp).await;
+    assert_eq!(again["status"], "failed", "the row-answered path must agree: {again}");
+}
+
+#[tokio::test]
+async fn a_container_the_model_cannot_emit_is_rejected_at_submit() {
+    // Before the vendor is billed, not after.
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let resp = harness::submit_with(&app, serde_json::json!({
+        "model": "mock/mesh-3d",
+        "prompt": "a fox",
+        "output_formats": ["fbx"],
+    })).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let err = harness::json_body(resp).await;
+    assert!(
+        serde_json::to_string(&err).unwrap().contains("fbx"),
+        "the rejection must name the format: {err}",
+    );
+}
+
+#[tokio::test]
+async fn omitting_the_param_still_promises_glb() {
+    // The guard must mean something on every generation, not only the ones that
+    // named a format.
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let id = harness::submit(&app, "mock/mesh-3d", "a fox").await;
+    let last = harness::poll_until_terminal(&app, &id).await;
+    assert_eq!(last["status"], "completed", "{last}");
+    let formats: Vec<&str> = last["assets"].as_array().unwrap().iter()
+        .filter(|a| a["kind"] == "mesh")
+        .map(|a| a["format"].as_str().unwrap())
+        .collect();
+    assert_eq!(formats, ["glb"], "{last}");
 }

@@ -454,7 +454,85 @@ pub fn validate_model3d(
         };
     }
 
-    string_param!(req.output_format, "output_format");
+    // `output_formats` — the one param whose validated value becomes a promise.
+    //
+    // Whatever survives here is enforced again at every completion observer, so
+    // an unsatisfiable request has to die now, before the vendor is billed.
+    // The superseded scalar folds in first so the two spellings cannot disagree.
+    if req.output_formats.is_none() {
+        req.output_formats = req.output_format.take().map(|f| vec![f]);
+    } else {
+        // Both sent. The plural is canonical; say so rather than silently
+        // discarding one of them.
+        if req.output_format.take().is_some() {
+            dropped.push("output_format".into());
+        }
+    }
+
+    if let Some(requested) = req.output_formats.as_mut() {
+        // Case-fold and de-duplicate before checking. `["glb", "GLB"]` is one
+        // container asked for twice, not a request for two.
+        let mut seen: Vec<String> = Vec::new();
+        for f in requested.iter() {
+            let f = f.trim().to_ascii_lowercase();
+            if !f.is_empty() && !seen.contains(&f) {
+                seen.push(f);
+            }
+        }
+        *requested = seen;
+
+        if requested.is_empty() {
+            return Err(ValidationError::new(
+                "param_out_of_range",
+                "output_formats must name at least one format",
+                Some("output_formats"),
+            ));
+        }
+
+        match schema.output_formats_spec() {
+            Some(spec) => {
+                for f in requested.iter() {
+                    if !spec.enum_values.iter().any(|v| v.eq_ignore_ascii_case(f)) {
+                        return Err(ValidationError::new(
+                            "param_enum_mismatch",
+                            format!(
+                                "output_format '{}' not supported by '{}'; supported: {:?}",
+                                f, schema.id, spec.enum_values
+                            ),
+                            Some("output_formats"),
+                        ));
+                    }
+                }
+                // The cardinality check is what separates a Meshy-shaped model
+                // (one job, many containers) from a Rodin-shaped one (a scalar
+                // vendor field, so only ever one).
+                if let Some(max) = spec.max_items {
+                    if requested.len() > max {
+                        return Err(ValidationError::new(
+                            "param_too_many",
+                            format!(
+                                "'{}' emits at most {} format(s) per generation; {} requested",
+                                schema.id, max, requested.len()
+                            ),
+                            Some("output_formats"),
+                        ));
+                    }
+                }
+            }
+            None => {
+                if strict {
+                    return Err(ValidationError::new(
+                        "param_unsupported",
+                        format!("output_formats not supported by '{}'", schema.id),
+                        Some("output_formats"),
+                    ));
+                }
+                dropped.push("output_formats".into());
+                req.output_formats = None;
+            }
+        }
+    }
+
     string_param!(req.symmetry, "symmetry");
     string_param!(req.topology, "topology");
     bool_param!(req.texture, "texture");

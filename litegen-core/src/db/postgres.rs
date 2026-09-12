@@ -129,6 +129,22 @@ impl DatabaseStore for PostgresDatabase {
         Ok(())
     }
 
+    async fn update_generation_metadata_if_active(
+        &self,
+        id: &str,
+        metadata: &serde_json::Value,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE generations SET metadata = $1 \
+             WHERE id = $2 AND status IN ('pending', 'processing')",
+        )
+        .bind(serde_json::to_string(metadata).unwrap_or_else(|_| "null".into()))
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn update_generation_if_active(
         &self,
         id: &str,

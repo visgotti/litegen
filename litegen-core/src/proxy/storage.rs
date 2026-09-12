@@ -262,7 +262,54 @@ pub const MODEL3D_PATH_PREFIX: &str = "litegen/3d";
 /// than `ImageStore::store`, whose S3 impl would save a `.glb` as `.png`.
 pub fn model3d_asset_key(path_prefix: Option<&str>, generation_id: &str, name: &str, ext: &str) -> String {
     let prefix = path_prefix.unwrap_or(MODEL3D_PATH_PREFIX).trim_matches('/');
+    let ext = sanitize_model3d_format(ext);
     format!("{prefix}/{generation_id}/{name}.{ext}")
+}
+
+/// Normalise a provider-supplied container name into something safe to put in a
+/// storage key and a public URL.
+///
+/// `Model3dFile.format` is a free-form string filled in by each adapter from
+/// whatever the vendor said, and it is interpolated straight into an object key
+/// — so a value containing `/` or `..` would rewrite the key's path. Lowercases
+/// (vendors are inconsistent about `GLB` vs `glb`, and a case difference would
+/// otherwise read as a second distinct container), and keeps only
+/// `[a-z0-9]`. An empty or fully-rejected value becomes `bin`, which is wrong
+/// but inert, rather than producing a key that ends in a bare dot.
+pub fn sanitize_model3d_format(format: &str) -> String {
+    let cleaned: String = format
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(16)
+        .collect();
+    if cleaned.is_empty() { "bin".to_string() } else { cleaned }
+}
+
+/// The content type to store a 3D asset under.
+///
+/// Derived from the container rather than taken from the adapter, so two
+/// adapters cannot tag the same format differently — the browser viewer and any
+/// CDN in front of the bucket both key off this. The provider's own value is
+/// the fallback for formats not listed here (textures and previews, mostly).
+///
+/// `fbx` and `ply` are deliberately absent: neither has an IANA registration,
+/// and inventing one would be worse than `application/octet-stream`.
+pub fn model3d_content_type<'a>(format: &str, provider_value: &'a str) -> &'a str {
+    match format {
+        "glb" => "model/gltf-binary",
+        "gltf" => "model/gltf+json",
+        "obj" => "model/obj",
+        "mtl" => "model/mtl",
+        "stl" => "model/stl",
+        "3mf" => "model/3mf",
+        "usdz" => "model/vnd.usdz+zip",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => provider_value,
+    }
 }
 
 /// Process-global byte store backing [`LocalModel3dStorage`].

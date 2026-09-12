@@ -159,6 +159,25 @@ pub trait DatabaseStore: Send + Sync {
         Ok(GenerationWrite::Written)
     }
 
+    /// Replace a generation's `metadata` ONLY while the row is still in flight.
+    ///
+    /// Exists because `metadata` is replaced wholesale, and the submit path
+    /// records `requested_formats` from a spawned task: a fast client can poll
+    /// a 3D job to completion between that task's row insert and its metadata
+    /// write, and the unguarded write then lands second and erases the assets
+    /// the terminal write had just stored — a `completed` row with no mesh,
+    /// which every observer correctly reports as a failure.
+    ///
+    /// The default implementation is the unguarded write, correct enough for
+    /// in-memory test doubles; SQLite and Postgres both override it.
+    async fn update_generation_metadata_if_active(
+        &self,
+        id: &str,
+        metadata: &serde_json::Value,
+    ) -> Result<(), sqlx::Error> {
+        self.update_generation_metadata(id, metadata).await
+    }
+
     /// Fetch a generation by its local ID.
     async fn get_generation(&self, id: &str) -> Result<Option<Generation>, sqlx::Error>;
 

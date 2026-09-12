@@ -36,6 +36,21 @@ struct TrackedJob<H> {
     usage: Option<UsageInfo>,
 }
 
+/// An in-flight 3D job.
+///
+/// Carries the containers promised to the caller at submit time alongside the
+/// handle, rather than on `Model3dGenerationHandle`, so no adapter can forget
+/// to populate them: the router stamps this from the validated extras at the
+/// one point a job is tracked, and every observer of completion reads it back
+/// from here. It is also written into `metadata.requested_formats` on the
+/// terminal row, because the row outlives this map.
+#[derive(Clone)]
+struct Model3dJob {
+    handle: Model3dGenerationHandle,
+    usage: Option<UsageInfo>,
+    requested_formats: Vec<String>,
+}
+
 /// The main proxy router that resolves model routes, applies routing
 /// strategies (fallback, weighted, lowest-cost, lowest-latency), caching, and retries.
 pub struct ProxyRouter {
@@ -48,7 +63,7 @@ pub struct ProxyRouter {
     /// In-flight video generation jobs, keyed by the locally-generated `litegen-vid-...` ID.
     video_jobs: Arc<tokio::sync::RwLock<HashMap<String, TrackedJob<VideoGenerationHandle>>>>,
     /// In-flight 3D generation jobs, keyed by the local `litegen-3d-...` ID.
-    model3d_jobs: Arc<tokio::sync::RwLock<HashMap<String, TrackedJob<Model3dGenerationHandle>>>>,
+    model3d_jobs: Arc<tokio::sync::RwLock<HashMap<String, Model3dJob>>>,
     /// Storage for re-hosted 3D assets (S3 when configured, local otherwise).
     pub model3d_store: Arc<dyn crate::proxy::storage::ImageStorage>,
     /// Circuit breaker tracking consecutive failures per provider.
@@ -686,10 +701,19 @@ impl ProxyRouter {
             cost_source: CostSource::Estimated,
         });
 
+        // An empty set would silently disable the completion guard, so it is
+        // floored at GLB rather than trusted. The handler always resolves a
+        // non-empty list; this catches extras assembled by some other caller.
+        let requested_formats = if extras.output_formats.is_empty() {
+            vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()]
+        } else {
+            extras.output_formats.clone()
+        };
+
         let local_id = format!("litegen-3d-{}", uuid::Uuid::new_v4());
         self.model3d_jobs.write().await.insert(
             local_id.clone(),
-            TrackedJob { handle, usage: usage_info.clone() },
+            Model3dJob { handle, usage: usage_info.clone(), requested_formats },
         );
 
         Ok(Model3dGenerationResponse {
@@ -725,7 +749,7 @@ impl ProxyRouter {
             let jobs = self.model3d_jobs.read().await;
             jobs.get(id).cloned()
         };
-        let TrackedJob { handle, usage } =
+        let Model3dJob { handle, usage, requested_formats } =
             job.ok_or_else(|| ProxyError::NotFound(format!("3d job '{}' not found", id)))?;
 
         let provider = self
@@ -767,7 +791,7 @@ impl ProxyRouter {
             self.model3d_jobs.write().await.remove(id);
         }
 
-        Ok(Model3dGenerationResponse {
+        let mut resp = Model3dGenerationResponse {
             id: id.to_string(),
             status: poll.status,
             model: handle.model.clone(),
@@ -778,7 +802,9 @@ impl ProxyRouter {
             // The triple quoted at submit, not `None` — see `get_video_status`.
             usage,
             created: chrono::Utc::now().timestamp(),
-        })
+        };
+        enforce_requested_formats(&mut resp, &requested_formats);
+        Ok(resp)
     }
 
     /// Drop an in-flight 3D job WITHOUT polling it.
@@ -1249,17 +1275,20 @@ async fn build_image_results(
 /// BYO bucket apply to meshes exactly as it does to images.
 ///
 /// The mesh is always keyed `model.<ext>`, so a client can construct the primary
-/// URL without parsing the asset list. Additional files of the same kind get a
-/// numeric suffix so keys never collide.
+/// URL without parsing the asset list. Keys are uniqued per `(stem, format)`,
+/// not per stem: a generation that was asked for glb AND fbx returns two meshes
+/// whose extensions already distinguish them, and suffixing the second to
+/// `model_1.fbx` would break the documented `model.<ext>` promise for every
+/// container but the first one the adapter happened to push.
 pub async fn rehost_model3d_files(
     store: &Arc<dyn crate::proxy::storage::ImageStorage>,
     path_prefix: Option<&str>,
     generation_id: &str,
     files: &[crate::providers::Model3dFile],
 ) -> Result<Vec<Model3dAsset>, crate::proxy::storage::ImageStoreError> {
-    use crate::proxy::storage::model3d_asset_key;
+    use crate::proxy::storage::{model3d_asset_key, model3d_content_type, sanitize_model3d_format};
 
-    let mut seen: HashMap<&'static str, u32> = HashMap::new();
+    let mut seen: HashMap<(&'static str, String), u32> = HashMap::new();
     let mut assets = Vec::with_capacity(files.len());
 
     for f in files {
@@ -1268,19 +1297,22 @@ pub async fn rehost_model3d_files(
             Model3dAssetKind::Texture => "texture",
             Model3dAssetKind::Preview => "preview",
         };
-        let n = seen.entry(stem).or_insert(0);
+        // The vendor's spelling reaches a storage key and a public URL, so it is
+        // normalised here rather than trusted.
+        let format = sanitize_model3d_format(&f.format);
+        let n = seen.entry((stem, format.clone())).or_insert(0);
         let name = if *n == 0 { stem.to_string() } else { format!("{stem}_{n}") };
         *n += 1;
 
-        let key = model3d_asset_key(path_prefix, generation_id, &name, &f.format);
+        let key = model3d_asset_key(path_prefix, generation_id, &name, &format);
         let url = store
-            .put(&key, &bytes::Bytes::from(f.bytes.clone()), &f.content_type)
+            .put(&key, &bytes::Bytes::from(f.bytes.clone()), model3d_content_type(&format, &f.content_type))
             .await?;
 
         assets.push(Model3dAsset {
             kind: f.kind,
             url,
-            format: f.format.clone(),
+            format,
             size_bytes: Some(f.bytes.len() as u64),
             polycount: f.polycount,
             width: f.width,
@@ -1288,6 +1320,44 @@ pub async fn rehost_model3d_files(
         });
     }
     Ok(assets)
+}
+
+/// Demote a `completed` 3D response that is missing a container the caller was
+/// promised.
+///
+/// A partial delivery is a failure, not a degraded success: the caller asked for
+/// `["glb", "fbx"]` because something downstream needs the fbx, and reporting
+/// `completed` would bill them for a result they cannot use. Assets are cleared
+/// for the same reason the mesh guard clears them — a failed generation must not
+/// look half-usable.
+///
+/// This runs at EVERY observer of completion. There are three
+/// (`get_model3d_status` here, the poller, and `model3d_response_from_row`), and
+/// a check in fewer than all of them means the observer that wins the race
+/// decides whether the generation succeeded.
+pub fn enforce_requested_formats(resp: &mut Model3dGenerationResponse, requested: &[String]) {
+    if resp.status != GenerationStatus::Completed {
+        return;
+    }
+    let delivered = resp.delivered_formats();
+    // No mesh at all is the mesh guard's diagnosis, not this one. Both are true
+    // of an empty result, but "reported success without a mesh asset" says what
+    // actually happened; "did not return glb" reads as a format quibble about a
+    // generation that produced nothing. Leaving it to the caller-side guard also
+    // keeps that error string — which consumers match on — stable.
+    if delivered.is_empty() {
+        return;
+    }
+    let missing = crate::types::missing_model3d_formats(requested, &delivered);
+    if missing.is_empty() {
+        return;
+    }
+    resp.status = GenerationStatus::Failed;
+    resp.error = Some(format!(
+        "provider did not return the requested format(s): {}",
+        missing.join(", ")
+    ));
+    resp.assets.clear();
 }
 
 // ─── Proxy Error ────────────────────────────────────────────────────────────

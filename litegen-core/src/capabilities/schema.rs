@@ -83,6 +83,27 @@ pub struct ParamSpecString {
     #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
 
+/// A param whose value is a SET of enum members rather than one of them.
+///
+/// Exists for `output_formats`, where the vendors genuinely disagree on
+/// cardinality: Meshy emits every requested container from one job, Rodin's
+/// `geometry_file_format` is a scalar so only one is reachable, and Stability
+/// emits GLB with no choice at all. `max_items` is how a model states which of
+/// those it is, so an unsatisfiable request fails in validation rather than
+/// after the vendor has been billed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct ParamSpecStringArray {
+    #[serde(default)] pub enum_values: Vec<String>,
+    /// Upper bound on how many members one request may ask for. `None` means
+    /// "as many as are declared".
+    #[serde(default)] pub max_items: Option<usize>,
+    /// Applied when the caller omits the param entirely. Empty means the
+    /// resolver falls back to `glb`.
+    #[serde(default)] pub default: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ParamSpecAspectRatio {
     pub allowed: Vec<String>,
@@ -106,6 +127,7 @@ pub enum ParamSpec {
     Int(ParamSpecInt),
     Float(ParamSpecFloat),
     String(ParamSpecString),
+    StringArray(ParamSpecStringArray),
     Size(SizeSpec),
     AspectRatio(ParamSpecAspectRatio),
     Seed(ParamSpecSeed),
@@ -199,6 +221,60 @@ pub struct ModelSchema {
     #[serde(default)] pub tags: Vec<String>,
 }
 
+impl ModelSchema {
+    /// The model's `output_formats` spec, normalising the superseded scalar
+    /// `output_format` spelling into the plural shape.
+    ///
+    /// A legacy scalar spec becomes `max_items: 1` — which is the honest
+    /// reading, since a model declaring the scalar could only ever emit one
+    /// container per job.
+    pub fn output_formats_spec(&self) -> Option<ParamSpecStringArray> {
+        match self.params.get("output_formats") {
+            Some(ParamSpec::StringArray(s)) => return Some(s.clone()),
+            // A wrong-kinded `output_formats` is a catalog bug, not a missing
+            // param. The loader rejects it at boot; refuse to guess here.
+            Some(_) => return None,
+            None => {}
+        }
+        match self.params.get("output_format") {
+            Some(ParamSpec::String(s)) => Some(ParamSpecStringArray {
+                enum_values: s.enum_values.clone(),
+                max_items: Some(1),
+                default: s.default.clone().into_iter().collect(),
+                label: s.label.clone(),
+                description: s.description.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// The containers a generation on this model is actually committed to
+    /// producing, given what the caller asked for (already validated).
+    ///
+    /// Never empty: a model that declares no `output_formats` and a caller who
+    /// names none still get GLB, which is what makes the delivered-vs-requested
+    /// guard meaningful on every 3D model rather than only the ones whose yaml
+    /// opted in.
+    pub fn resolve_output_formats(&self, requested: Option<&[String]>) -> Vec<String> {
+        let lower = |v: &[String]| -> Vec<String> {
+            v.iter().map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty()).collect()
+        };
+        if let Some(r) = requested {
+            let r = lower(r);
+            if !r.is_empty() {
+                return r;
+            }
+        }
+        if let Some(spec) = self.output_formats_spec() {
+            let d = lower(&spec.default);
+            if !d.is_empty() {
+                return d;
+            }
+        }
+        vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()]
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ModelsFile {
     pub models: Vec<ModelSchema>,
@@ -220,6 +296,13 @@ pub const KNOWN_PARAMS: &[&str] = &[
     "fps",
     // 3D (model3d). First-class rather than extra_allowlist passthrough so the
     // aipix input panel and the litegen Playground both render real controls.
+    //
+    // `output_formats` (plural, StringArray) is canonical. `output_format`
+    // (scalar String) is the superseded spelling, still accepted so that a
+    // deployment pointing at its own models dir — the visgotti instance does —
+    // keeps loading across the release that introduces the plural. Resolution
+    // order lives in `output_formats_spec`.
+    "output_formats",
     "output_format",
     "texture",
     "pbr",
