@@ -90,13 +90,19 @@ fn every_module_file_is_declared() {
 
 #[test]
 fn the_only_third_party_crate_in_reach_is_serde_json_and_only_for_gltf() {
-    // std-only is the rule; glb.rs is the one exception, because the glTF JSON
-    // chunk is genuinely JSON and hand-rolling a parser for it would be worse
-    // than the dependency. Everything else must not acquire one quietly: a new
-    // crate here is a new supply-chain surface on the path that parses
-    // untrusted vendor bytes.
+    // std-only is the rule for the code that parses untrusted vendor bytes: a
+    // new crate there is a new supply-chain surface on the poll path. glb.rs is
+    // the one production exception, because the glTF JSON chunk is genuinely
+    // JSON and hand-rolling a parser for it would be worse than the dependency.
+    //
+    // `matrix_tests.rs` is exempt for a different reason: its GLB regressions
+    // construct glTF documents field by field — a hand-built file with one
+    // field deliberately broken is the only way to test a case our own writer
+    // would never produce. That is fixture construction, not a dependency the
+    // module carries.
+    const EXEMPT: &[&str] = &["glb.rs", "matrix_tests.rs", SELF];
     for name in MODULE_FILES {
-        if *name == "glb.rs" || *name == SELF {
+        if EXEMPT.contains(name) {
             continue;
         }
         let src = std::fs::read_to_string(module_dir().join(name)).unwrap();

@@ -899,25 +899,58 @@ async fn the_canonical_result_url_is_the_glb_whatever_order_they_arrive_in() {
 }
 
 #[tokio::test]
-async fn a_provider_that_under_delivers_fails_the_generation() {
+async fn a_provider_that_under_delivers_an_underivable_format_fails_the_generation() {
     // mock/partial-3d reports success while returning only glb — the way a real
-    // vendor under-delivers when a convert step is skipped. The caller asked for
-    // obj too, so this is a paid generation they cannot use: it must fail.
+    // vendor under-delivers when a convert step is skipped. fbx is the case that
+    // still matters: obj/stl/ply are derived locally when a vendor omits them,
+    // so only a container litegen cannot produce itself can go missing. The
+    // caller paid for an fbx they cannot have, so this must fail.
     let (app, _db) = harness::app_with_mock_3d().await;
     let resp = harness::submit_with(&app, serde_json::json!({
         "model": "mock/partial-3d",
         "prompt": "a fox",
-        "output_formats": ["glb", "obj"],
+        "output_formats": ["glb", "fbx"],
     })).await;
     let id = harness::json_body(resp).await["id"].as_str().unwrap().to_string();
 
     let last = harness::poll_until_terminal(&app, &id).await;
     assert_eq!(last["status"], "failed", "a partial delivery is not a success: {last}");
     assert!(
-        last["error"].as_str().is_some_and(|e| e.contains("obj")),
+        last["error"].as_str().is_some_and(|e| e.contains("fbx")),
         "the error must name the container that never arrived: {last}",
     );
     assert!(last.get("assets").is_none(), "a failed generation carries no assets: {last}");
+}
+
+#[tokio::test]
+async fn a_format_the_provider_omitted_is_derived_rather_than_failed() {
+    // The other half of the same contract, and the reason conversion exists:
+    // mock/partial-3d returns ONLY glb, and the caller still gets their obj.
+    // This is the GLB-only vendor case — fal, Replicate, Stability — where
+    // without derivation `output_formats` could only ever mean ["glb"].
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let resp = harness::submit_with(&app, serde_json::json!({
+        "model": "mock/mesh-3d",
+        "prompt": "a fox",
+        "output_formats": ["glb", "obj", "stl", "ply"],
+    })).await;
+    assert_eq!(resp.status(), StatusCode::OK, "a glb-only model must accept derivable formats");
+    let id = harness::json_body(resp).await["id"].as_str().unwrap().to_string();
+
+    let last = harness::poll_until_terminal(&app, &id).await;
+    assert_eq!(last["status"], "completed", "{last}");
+    let mut formats: Vec<&str> = last["assets"].as_array().unwrap().iter()
+        .filter(|a| a["kind"] == "mesh")
+        .map(|a| a["format"].as_str().unwrap())
+        .collect();
+    formats.sort_unstable();
+    assert_eq!(formats, ["glb", "obj", "ply", "stl"], "{last}");
+    // Derived files are stored and served exactly like native ones.
+    for a in last["assets"].as_array().unwrap().iter().filter(|a| a["kind"] == "mesh") {
+        let ext = a["format"].as_str().unwrap();
+        assert!(a["url"].as_str().unwrap().ends_with(&format!("/model.{ext}")), "{a}");
+        assert!(a["size_bytes"].as_u64().unwrap() > 0, "{a}");
+    }
 }
 
 #[tokio::test]
@@ -929,7 +962,7 @@ async fn the_row_answered_path_reaches_the_same_verdict_as_the_live_poll() {
     let resp = harness::submit_with(&app, serde_json::json!({
         "model": "mock/partial-3d",
         "prompt": "a fox",
-        "output_formats": ["glb", "obj"],
+        "output_formats": ["glb", "fbx"],
     })).await;
     let id = harness::json_body(resp).await["id"].as_str().unwrap().to_string();
     assert_eq!(harness::poll_until_terminal(&app, &id).await["status"], "failed");

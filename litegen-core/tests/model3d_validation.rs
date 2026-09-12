@@ -103,17 +103,50 @@ fn a_format_the_model_cannot_emit_is_rejected_in_both_modes() {
 }
 
 #[test]
-fn asking_for_more_containers_than_the_model_emits_is_rejected() {
-    // Rodin's shape: `geometry_file_format` is a scalar, so only one container
-    // is reachable per job however many the model can produce overall.
+fn max_items_bounds_what_the_PROVIDER_must_produce_not_what_may_be_asked_for() {
+    // Rodin's shape: `geometry_file_format` is a scalar, so it emits exactly one
+    // container per job. That no longer caps the CALLER, because obj/stl/ply are
+    // derived locally from the one glb — which is the whole point of local
+    // conversion. Four deliverables, one vendor job.
     let schema = schema_with(HashMap::from([
-        ("output_formats".to_string(), formats_param(&["glb", "obj", "stl"], Some(1))),
+        ("output_formats".to_string(), formats_param(&["glb"], Some(1))),
     ]));
     let mut r = req(true);
-    r.output_formats = Some(vec!["glb".into(), "obj".into()]);
+    r.output_formats = Some(vec!["glb".into(), "obj".into(), "stl".into(), "ply".into()]);
+    let out = validate_model3d(&schema, r).expect("derivable formats cost one vendor job");
+    assert_eq!(out.request.output_formats.as_deref().unwrap().len(), 4);
+
+    // But a container we CANNOT derive has to come from the vendor itself, so
+    // glb + fbx genuinely is two jobs and a scalar-field vendor cannot do it.
+    let schema = schema_with(HashMap::from([
+        ("output_formats".to_string(), formats_param(&["glb", "fbx"], Some(1))),
+    ]));
+    let mut r = req(true);
+    r.output_formats = Some(vec!["glb".into(), "fbx".into()]);
     let err = validate_model3d(&schema, r).unwrap_err();
     assert_eq!(err.code, "param_too_many");
     assert_eq!(err.param.as_deref(), Some("output_formats"));
+}
+
+#[test]
+fn a_derivable_format_is_accepted_even_when_the_model_does_not_emit_it() {
+    // The GLB-only vendor case — fal, Replicate, Stability. Without this,
+    // `output_formats` on exactly those models could only ever mean ["glb"].
+    let schema = schema_with(HashMap::from([
+        ("output_formats".to_string(), formats_param(&["glb"], None)),
+    ]));
+    let mut r = req(true);
+    r.output_formats = Some(vec!["stl".into()]);
+    let out = validate_model3d(&schema, r).expect("stl is derivable from glb");
+    assert_eq!(out.request.output_formats.as_deref(), Some(&["stl".to_string()][..]));
+
+    // A format nobody can produce is still refused, and the message lists what
+    // is actually deliverable rather than only what the vendor emits.
+    let mut r = req(true);
+    r.output_formats = Some(vec!["usdz".into()]);
+    let err = validate_model3d(&schema, r).unwrap_err();
+    assert_eq!(err.code, "param_enum_mismatch");
+    assert!(err.message.contains("stl"), "must advertise the derivable set: {}", err.message);
 }
 
 #[test]
@@ -184,10 +217,11 @@ fn a_legacy_scalar_spec_still_validates_the_plural_request() {
     let out = validate_model3d(&schema, r).unwrap();
     assert_eq!(out.request.output_formats.as_deref(), Some(&["obj".to_string()][..]));
 
-    // ...and the scalar spec means one container per job, so two is too many.
+    // ...and the scalar spec means the VENDOR emits one container per job. glb
+    // plus obj is still one job, because the obj is derived from the glb.
     let mut r = req(true);
     r.output_formats = Some(vec!["glb".into(), "obj".into()]);
-    assert_eq!(validate_model3d(&schema, r).unwrap_err().code, "param_too_many");
+    assert!(validate_model3d(&schema, r).is_ok(), "one vendor job, two deliverables");
 }
 
 #[test]
