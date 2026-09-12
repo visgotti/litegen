@@ -68,6 +68,16 @@ export function defaultForSpec(spec: ParamSpec): unknown {
       const ev = (s.enum_values as string[]) ?? [];
       return (s.default as string) ?? (ev.length ? ev[0] : '');
     }
+    case 'string_array': {
+      // The spec's `default` is already an array here. Fall back to the first
+      // declared value rather than to everything: each extra container is a
+      // file the caller pays for and a format the generation can now fail on,
+      // so ticking them all by default would opt everyone into both.
+      const d = s.default as string[] | undefined;
+      if (Array.isArray(d) && d.length) return d;
+      const ev = (s.enum_values as string[]) ?? [];
+      return ev.length ? [ev[0]] : [];
+    }
     case 'aspect_ratio': {
       const allowed = (s.allowed as string[]) ?? [];
       return (s.default as string) ?? (allowed[0] ?? '');
@@ -107,6 +117,17 @@ function mergeSpec(a: AnySpec, b: AnySpec): AnySpec {
   }
   if (Array.isArray(a.allowed) && Array.isArray(b.allowed)) {
     out.allowed = intersect(a.allowed as string[], b.allowed as string[]);
+  }
+  if (a.kind === 'string_array' && b.kind === 'string_array') {
+    // Most-restrictive wins, same as numeric bounds: offering a cap one of the
+    // selected models cannot honour would let a Compare run be rejected at
+    // submit with `param_too_many`.
+    out.max_items = minDefined(a.max_items as number, b.max_items as number);
+    // `enum_values` was intersected above, so a default carried over from `a`
+    // can now name a container no longer on offer.
+    if (Array.isArray(out.default) && Array.isArray(out.enum_values)) {
+      out.default = intersect(out.default as string[], out.enum_values as string[]);
+    }
   }
   if (a.kind === 'size' && b.kind === 'size' && a.mode === 'enum' && b.mode === 'enum') {
     const ao = (a.values as Array<[number, number]>).map(v => `${v[0]}x${v[1]}`);
@@ -155,6 +176,17 @@ export function clampToSpec(spec: AnySpec, value: unknown): unknown {
     if (typeof spec.max === 'number') v = Math.min(spec.max, v);
     return v;
   }
+  // Compare mode shares one value across models that declare different sets, so
+  // a `string_array` has to be narrowed to each model's own — otherwise picking
+  // `stl` for one model makes every other model in the run fail validation with
+  // `param_enum_mismatch` before anything is generated.
+  if (spec.kind === 'string_array' && Array.isArray(value)) {
+    const ev = (spec.enum_values as string[]) ?? [];
+    let v = (value as string[]).filter(x => ev.includes(x));
+    const max = spec.max_items as number | undefined;
+    if (max != null && v.length > max) v = v.slice(0, max);
+    return v;
+  }
   return value;
 }
 
@@ -180,7 +212,13 @@ export function buildRequestForModel(
     if ((params[name].kind === 'int' || params[name].kind === 'float') && typeof value === 'string') {
       v = Number(value);
     }
-    body[name] = clampToSpec(params[name], v);
+    v = clampToSpec(params[name], v);
+    // An empty set means "unset", not "no formats": the API rejects an
+    // explicitly empty list, and omitting the field is what makes the model's
+    // own default apply. Narrowing above can empty it out for a model whose
+    // declared set does not overlap the shared selection.
+    if (Array.isArray(v) && v.length === 0) continue;
+    body[name] = v;
   }
   return body as ImageGenerationRequest;
 }
