@@ -769,13 +769,39 @@ impl ProxyRouter {
             GenerationStatus::Completed | GenerationStatus::Failed | GenerationStatus::Cancelled
         );
 
+        // Fill in containers the vendor did not return, BEFORE rehost, so a
+        // derived file is stored and served exactly like a native one. Mirrors
+        // the poller step — whichever observer wins the race must produce the
+        // same asset list.
+        let files = if poll.status == GenerationStatus::Completed && !poll.files.is_empty() {
+            let requested = requested_formats.clone();
+            let files = poll.files.clone();
+            // CPU-bound, on a request path: off the runtime thread.
+            let (files, report) = tokio::task::spawn_blocking(move || {
+                crate::proxy::model3d_convert::synthesize_missing_formats(files, &requested)
+            })
+            .await
+            .unwrap_or_else(|e| {
+                // A panic in conversion must not take the request with it; the
+                // guard below then fails the generation for the missing format.
+                tracing::warn!(id = %id, error = %e, "3d format synthesis panicked");
+                (Vec::new(), Default::default())
+            });
+            for (fmt, why) in &report.failures {
+                tracing::warn!(id = %id, format = %fmt, reason = %why, "could not derive a requested 3d format");
+            }
+            files
+        } else {
+            poll.files.clone()
+        };
+
         // Re-host in the same call that saw completion — provider URLs expire.
-        let assets = if poll.status == GenerationStatus::Completed && !poll.files.is_empty() {
+        let assets = if poll.status == GenerationStatus::Completed && !files.is_empty() {
             rehost_model3d_files(
                 app_store.as_ref().unwrap_or(&self.model3d_store),
                 app_prefix,
                 id,
-                &poll.files,
+                &files,
             )
                 .await
                 .map_err(|e| ProxyError::ProviderError {

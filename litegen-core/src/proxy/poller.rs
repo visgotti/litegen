@@ -222,6 +222,40 @@ pub(crate) async fn poll_once(
                 // vendors expire their download URLs within minutes, so the bytes
                 // `poll` already carries must be moved to litegen-owned storage
                 // before the next poll cycle rather than deferred.
+                // Fill in containers the vendor did not return, BEFORE rehost,
+                // so derived files are stored and served exactly like native
+                // ones. Read the promise off the row first — the poller cannot
+                // see the router's in-flight job map.
+                let requested = crate::api::handlers::row_requested_formats(&gen);
+                let poll = if poll.status == GenerationStatus::Completed && !poll.files.is_empty() {
+                    let mut poll = poll;
+                    let files = std::mem::take(&mut poll.files);
+                    let requested = requested.clone();
+                    // Parsing and re-encoding a 300k-triangle mesh is real CPU
+                    // work, and this tick is shared with every other in-flight
+                    // generation — so it goes to a blocking thread rather than
+                    // stalling the runtime.
+                    let (files, report) = match tokio::task::spawn_blocking(move || {
+                        crate::proxy::model3d_convert::synthesize_missing_formats(files, &requested)
+                    }).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            // A panic in conversion must not take the poll tick
+                            // with it; the completion guard below then fails the
+                            // generation for the missing container.
+                            warn!(generation_id = %gen.id, error = %e, "poller: 3d format synthesis panicked");
+                            (Vec::new(), Default::default())
+                        }
+                    };
+                    for (fmt, why) in &report.failures {
+                        warn!(generation_id = %gen.id, format = %fmt, reason = %why, "poller: could not derive a requested 3d format");
+                    }
+                    poll.files = files;
+                    poll
+                } else {
+                    poll
+                };
+
                 let assets = if poll.status == GenerationStatus::Completed && !poll.files.is_empty() {
                     // Per-app BYO bucket (and its configured prefix) if the app set
                     // one up, else the shared global store passed in by the caller.
@@ -286,8 +320,9 @@ pub(crate) async fn poll_once(
                 // router's in-flight job map. Same reasoning as the mesh guard
                 // above — a partial delivery is a paid generation the caller
                 // cannot use, so it takes the terminal `Failed` tail (and thus
-                // the webhook) rather than being reported as success.
-                let requested = crate::api::handlers::row_requested_formats(&gen);
+                // the webhook) rather than being reported as success. `requested`
+                // is the same binding the synthesis step above read, so what is
+                // enforced here is exactly what was attempted there.
                 let missing = if poll.status == GenerationStatus::Completed {
                     let delivered: Vec<String> = assets.as_ref().map(|a| {
                         a.iter()

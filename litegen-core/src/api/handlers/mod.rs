@@ -1200,7 +1200,14 @@ fn extract_output_formats(s: &crate::capabilities::ModelSchema) -> Vec<String> {
     // superseded scalar spelling advertise correctly. Reading one variant
     // directly is how this silently returned `[]` for every 3D model the day
     // the spec kind changed.
-    s.output_formats_spec().map(|sp| sp.enum_values).unwrap_or_default()
+    //
+    // Advertises what the model can DELIVER, including containers litegen
+    // derives locally — the validator accepts exactly this set, and a
+    // capability list narrower than what the API accepts would send clients
+    // looking for a vendor that emits obj when we can make one from the glb.
+    s.output_formats_spec()
+        .map(|sp| crate::proxy::model3d_convert::deliverable_formats(&sp.enum_values))
+        .unwrap_or_default()
 }
 
 /// `max_polycount` mirrors the upper bound of the `target_polycount` param.

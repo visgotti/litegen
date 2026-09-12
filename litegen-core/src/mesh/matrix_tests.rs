@@ -392,3 +392,272 @@ fn every_writer_produces_a_file_its_own_reader_accepts_for_any_mesh_name() {
         }
     }
 }
+
+// ─── GLB hardening regressions ──────────────────────────────────────────────
+//
+// GLB is the container every vendor emits, so its reader is the one that
+// actually faces untrusted bytes. These construct GLB files byte-by-byte rather
+// than going through `write`, because each reproduces a case our own writer
+// would never produce — which is exactly why the reader has to handle it.
+
+/// Assemble a GLB from a JSON document and an optional BIN chunk.
+fn glb_bytes(doc: &serde_json::Value, bin: Option<&[u8]>) -> Vec<u8> {
+    let mut json = serde_json::to_vec(doc).unwrap();
+    while !json.len().is_multiple_of(4) {
+        json.push(b' ');
+    }
+    let mut bin = bin.map(|b| b.to_vec()).unwrap_or_default();
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+    let has_bin = !bin.is_empty();
+    let total = 12 + 8 + json.len() + if has_bin { 8 + bin.len() } else { 0 };
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(&0x4654_6C67u32.to_le_bytes()); // "glTF"
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+    out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0x4E4F_534Au32.to_le_bytes()); // "JSON"
+    out.extend_from_slice(&json);
+    if has_bin {
+        out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0x004E_4942u32.to_le_bytes()); // "BIN\0"
+        out.extend_from_slice(&bin);
+    }
+    out
+}
+
+/// One triangle: 3 VEC3 positions then 3 u32 indices.
+fn triangle_bin() -> Vec<u8> {
+    let mut bin = Vec::new();
+    for p in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
+        for c in p {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    for i in [0u32, 1, 2] {
+        bin.extend_from_slice(&i.to_le_bytes());
+    }
+    bin
+}
+
+fn triangle_doc() -> serde_json::Value {
+    serde_json::json!({
+        "asset": { "version": "2.0" },
+        "scene": 0,
+        "scenes": [{ "nodes": [0] }],
+        "nodes": [{ "mesh": 0 }],
+        "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 }, "indices": 1 }] }],
+        "accessors": [
+            { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+              "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] },
+            { "bufferView": 1, "componentType": 5125, "count": 3, "type": "SCALAR" },
+        ],
+        "bufferViews": [
+            { "buffer": 0, "byteOffset": 0,  "byteLength": 36 },
+            { "buffer": 0, "byteOffset": 36, "byteLength": 12 },
+        ],
+        "buffers": [{ "byteLength": 48 }],
+    })
+}
+
+#[test]
+fn the_glb_fixture_itself_is_valid() {
+    // Everything below is this document with one field broken, so it has to
+    // parse cleanly first — otherwise the tests would pass for the wrong reason.
+    let m = read(&glb_bytes(&triangle_doc(), Some(&triangle_bin())), MeshFormat::Glb).unwrap();
+    assert_eq!(m.triangle_count(), 1);
+    assert_eq!(m.positions.len(), 3);
+}
+
+#[test]
+fn a_tiny_file_cannot_make_us_allocate_without_bound() {
+    // A 244-byte GLB declaring 4 billion elements asked for a 48 GB Vec, and
+    // Rust's allocation-failure handler ABORTS the process — so this was a
+    // remote kill from vendor bytes on the poll path, with MAX_INPUT_BYTES
+    // offering no protection at all. The count must be validated against what
+    // the backing view can actually hold, before anything is reserved.
+    let no_view = serde_json::json!({
+        "asset": { "version": "2.0" },
+        "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }],
+        "accessors": [{ "componentType": 5126, "count": 20_000_001u64, "type": "VEC3" }],
+        "buffers": [],
+    });
+    let bytes = glb_bytes(&no_view, None);
+    assert!(bytes.len() < 1024, "the point is that the INPUT is tiny: {}", bytes.len());
+    let started = std::time::Instant::now();
+    assert!(read(&bytes, MeshFormat::Glb).is_err(), "20M zero-filled vertices were accepted");
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(250),
+        "took {:?} — it allocated before rejecting", started.elapsed(),
+    );
+
+    // The same defect reached through a real bufferView: a count far larger
+    // than the view's bytes.
+    let mut doc = triangle_doc();
+    doc["accessors"][0]["count"] = serde_json::json!(500_000_000u64);
+    assert!(
+        read(&glb_bytes(&doc, Some(&triangle_bin())), MeshFormat::Glb).is_err(),
+        "a count larger than its bufferView was accepted",
+    );
+}
+
+#[test]
+fn the_four_billion_count_that_aborted_the_process_is_refused() {
+    // The reviewer measured this exact input killing the process: Rust's
+    // allocation-failure handler ABORTS, so it was not catchable — a remote
+    // kill from vendor bytes. If this regresses, the test binary dies rather
+    // than failing, which is itself the signal.
+    let doc = serde_json::json!({
+        "asset": { "version": "2.0" },
+        "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }],
+        "accessors": [{ "componentType": 5126, "count": 4_000_000_000u64, "type": "VEC3" }],
+        "buffers": [],
+    });
+    assert!(read(&glb_bytes(&doc, None), MeshFormat::Glb).is_err());
+
+    // And the same count behind a real bufferView, where the reader does have
+    // a buffer to bound against but the reservation came first.
+    let mut doc = triangle_doc();
+    doc["accessors"][0]["count"] = serde_json::json!(4_000_000_000u64);
+    assert!(read(&glb_bytes(&doc, Some(&triangle_bin())), MeshFormat::Glb).is_err());
+}
+
+#[test]
+fn instancing_cannot_amplify_a_small_file_without_bound() {
+    // Geometry is re-read per node instance, so N nodes pointing at one mesh
+    // multiply the vertex count by N from a file that never grows. Measured at
+    // 484x before the cap.
+    let mut doc = triangle_doc();
+    doc["nodes"] = serde_json::Value::Array(
+        (0..4000).map(|_| serde_json::json!({ "mesh": 0 })).collect(),
+    );
+    doc["scenes"] = serde_json::json!([{ "nodes": (0..4000).collect::<Vec<_>>() }]);
+    let bytes = glb_bytes(&doc, Some(&triangle_bin()));
+    // Either it refuses, or it stays proportionate — but it must not blow up.
+    if let Ok(m) = read(&bytes, MeshFormat::Glb) {
+        assert!(
+            m.positions.len() <= 4000 * 3,
+            "read {} positions from {} bytes", m.positions.len(), bytes.len(),
+        );
+    }
+}
+
+#[test]
+fn an_accessor_may_not_read_past_its_own_buffer_view() {
+    // Bounding against the BUFFER rather than the VIEW meant a corrupt file
+    // read its neighbour's bytes — usually the index array — and returned
+    // plausible wrong geometry instead of an error.
+    let mut doc = triangle_doc();
+    doc["bufferViews"][0]["byteLength"] = serde_json::json!(12); // one vertex, not three
+    assert!(
+        read(&glb_bytes(&doc, Some(&triangle_bin())), MeshFormat::Glb).is_err(),
+        "an accessor read 24 bytes past its declared view",
+    );
+}
+
+#[test]
+fn a_present_but_unreadable_field_is_an_error_not_a_default() {
+    // serde_json's as_u64 rejects any number parsed as f64, so `24.0` from a
+    // Python-side exporter was enough to make a present field look ABSENT and
+    // silently take the default branch.
+    //
+    // The worst instance: a float `indices` made the reader ignore the index
+    // accessor and synthesise a sequential list, so a file saying [2,1,0] read
+    // as [0,1,2] — reversed winding, model inside out.
+    let cases: &[(&str, serde_json::Value)] = &[
+        ("indices", serde_json::json!(1.0)),
+        ("mesh", serde_json::json!(0.0)),
+    ];
+    for (field, bad) in cases {
+        let mut doc = triangle_doc();
+        match *field {
+            "indices" => doc["meshes"][0]["primitives"][0]["indices"] = bad.clone(),
+            "mesh" => doc["nodes"][0]["mesh"] = bad.clone(),
+            _ => unreachable!(),
+        }
+        assert!(
+            read(&glb_bytes(&doc, Some(&triangle_bin())), MeshFormat::Glb).is_err(),
+            "a float `{field}` was treated as absent",
+        );
+    }
+
+    // byteStride is the other dangerous one: read as packed, an interleaved
+    // view hands back normals where positions should be.
+    let mut doc = triangle_doc();
+    doc["bufferViews"][0]["byteStride"] = serde_json::json!(12.0);
+    assert!(
+        read(&glb_bytes(&doc, Some(&triangle_bin())), MeshFormat::Glb).is_err(),
+        "a float byteStride was treated as absent",
+    );
+}
+
+#[test]
+fn a_required_extension_is_refused_however_it_is_spelled() {
+    // The guard fell through to Ok whenever `extensionsRequired` was not an
+    // array, so a string-valued one bypassed it entirely. Only a separate
+    // per-primitive Draco check caught that case; meshopt had no backstop.
+    for value in [
+        serde_json::json!("KHR_draco_mesh_compression"),
+        serde_json::json!("EXT_meshopt_compression"),
+        serde_json::json!(["EXT_meshopt_compression"]),
+        serde_json::json!(["KHR_draco_mesh_compression"]),
+    ] {
+        let mut doc = triangle_doc();
+        doc["extensionsRequired"] = value.clone();
+        assert!(
+            read(&glb_bytes(&doc, Some(&triangle_bin())), MeshFormat::Glb).is_err(),
+            "extensionsRequired {value} was ignored",
+        );
+    }
+
+    // And a bufferView carrying meshopt data: the extension only has to appear
+    // in extensionsRequired when its fallback buffer is NOT the BIN chunk, so a
+    // file can declare it in extensionsUsed alone and have its placeholder
+    // bytes read as geometry.
+    let mut doc = triangle_doc();
+    doc["extensionsUsed"] = serde_json::json!(["EXT_meshopt_compression"]);
+    doc["bufferViews"][0]["extensions"] =
+        serde_json::json!({ "EXT_meshopt_compression": { "buffer": 0, "byteLength": 36, "mode": "ATTRIBUTES" } });
+    assert!(
+        read(&glb_bytes(&doc, Some(&triangle_bin())), MeshFormat::Glb).is_err(),
+        "meshopt placeholder bytes were read as geometry",
+    );
+}
+
+#[test]
+fn triangle_strips_and_fans_are_not_silently_dropped() {
+    // A mesh mixing a strip with a list returned Ok carrying only the list — a
+    // half-missing model, with no signal. Strip->list and fan->list are
+    // mechanical and lossless, so converting is right; refusing would also be
+    // defensible. Dropping silently is not.
+    //
+    // 5 vertices, so a strip yields 3 triangles and a fan yields 3.
+    let mut bin = Vec::new();
+    for p in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0]] {
+        for c in p {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    for mode in [5u64, 6] {
+        let doc = serde_json::json!({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "mesh": 0 }],
+            "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 }, "mode": mode }] }],
+            "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 5, "type": "VEC3",
+                            "min": [0.0, 0.0, 0.0], "max": [2.0, 1.0, 0.0] }],
+            "bufferViews": [{ "buffer": 0, "byteOffset": 0, "byteLength": 60 }],
+            "buffers": [{ "byteLength": 60 }],
+        });
+        match read(&glb_bytes(&doc, Some(&bin)), MeshFormat::Glb) {
+            Ok(m) => assert_eq!(m.triangle_count(), 3, "mode {mode} produced the wrong triangle count"),
+            Err(e) => {
+                // Refusing is acceptable; refusing SILENTLY is not, so the error
+                // must name the mode rather than come back as Empty.
+                assert!(!matches!(e, MeshError::Empty), "mode {mode} was dropped, then reported as empty");
+            }
+        }
+    }
+}

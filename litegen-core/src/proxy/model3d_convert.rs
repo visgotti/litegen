@@ -30,6 +30,39 @@ pub fn is_derivable(format: &str) -> bool {
     MeshFormat::parse(format).is_some()
 }
 
+/// Everything a model can actually deliver: what the vendor emits natively,
+/// plus what we can derive from it.
+///
+/// Derivation needs a readable source, so a model whose native set is entirely
+/// unreadable by us (fbx and usdz only, say) gains nothing.
+pub fn deliverable_formats(native: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = native.to_vec();
+    if native.iter().any(|n| is_derivable(n)) {
+        for d in derivable_formats() {
+            if !out.iter().any(|o| o.eq_ignore_ascii_case(&d)) {
+                out.push(d);
+            }
+        }
+    }
+    out
+}
+
+/// How many containers the VENDOR must produce to satisfy this request.
+///
+/// This is what `max_items` actually constrains. Every requested format we can
+/// derive locally comes out of one readable source, so a whole set of them
+/// costs exactly one vendor job; a format we cannot derive — fbx, usdz — has to
+/// come from the vendor itself and costs one each.
+///
+/// The pleasing consequence: Rodin, whose `geometry_file_format` is a scalar
+/// and so has `max_items: 1`, can serve `[glb, obj, stl, ply]` from a single
+/// GLB, and still correctly refuses `[glb, fbx]` — which genuinely is two jobs.
+pub fn vendor_jobs_needed(requested: &[String]) -> usize {
+    let native_only = requested.iter().filter(|r| !is_derivable(r)).count();
+    let needs_source = requested.iter().any(|r| is_derivable(r));
+    native_only + usize::from(needs_source)
+}
+
 /// What happened while filling in the missing containers.
 ///
 /// Conversion failures do NOT fail the generation here. The completion guard
@@ -253,6 +286,56 @@ mod tests {
         let (out, report) = synthesize_missing_formats(vec![shouty], &["glb".into()]);
         assert_eq!(formats_of(&out), ["GLB"]);
         assert!(report.synthesized.is_empty() && report.failures.is_empty());
+    }
+
+    #[test]
+    fn deliverable_is_native_plus_what_we_can_derive() {
+        // The GLB-only vendor — fal, Replicate, Stability. Four deliverables
+        // from a catalogue entry that declares one.
+        let d = deliverable_formats(&["glb".to_string()]);
+        for f in ["glb", "obj", "stl", "ply"] {
+            assert!(d.iter().any(|x| x == f), "{f} missing from {d:?}");
+        }
+        assert!(!d.iter().any(|x| x == "fbx"), "fbx is not derivable: {d:?}");
+    }
+
+    #[test]
+    fn a_native_set_we_cannot_read_gains_nothing() {
+        // Derivation needs a readable SOURCE. A model emitting only containers
+        // this module cannot parse has nothing to convert from, and claiming
+        // otherwise would advertise formats that could never be delivered.
+        let d = deliverable_formats(&["fbx".to_string(), "usdz".to_string()]);
+        assert_eq!(d, vec!["fbx".to_string(), "usdz".to_string()]);
+    }
+
+    #[test]
+    fn native_formats_are_never_duplicated_by_derivation() {
+        let d = deliverable_formats(&["glb".to_string(), "obj".to_string()]);
+        let mut sorted = d.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), d.len(), "{d:?}");
+    }
+
+    #[test]
+    fn vendor_jobs_counts_one_source_for_the_whole_derivable_set() {
+        // This is what `max_items` actually constrains, and why a
+        // one-format-per-job vendor like Rodin can serve four containers.
+        assert_eq!(vendor_jobs_needed(&["glb".into()]), 1);
+        assert_eq!(
+            vendor_jobs_needed(&["glb".into(), "obj".into(), "stl".into(), "ply".into()]),
+            1,
+            "derivable formats all come out of one readable source",
+        );
+        // A container we cannot derive has to come from the vendor itself.
+        assert_eq!(vendor_jobs_needed(&["fbx".into()]), 1);
+        assert_eq!(vendor_jobs_needed(&["glb".into(), "fbx".into()]), 2);
+        assert_eq!(vendor_jobs_needed(&["fbx".into(), "usdz".into()]), 2);
+        assert_eq!(
+            vendor_jobs_needed(&["glb".into(), "obj".into(), "fbx".into(), "usdz".into()]),
+            3,
+            "two native-only formats plus one source for the derivable pair",
+        );
     }
 
     #[test]
