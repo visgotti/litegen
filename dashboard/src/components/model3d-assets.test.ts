@@ -374,3 +374,32 @@ describe('copyToClipboard', () => {
     await expect(copyToClipboard('u', clipboard)).resolves.toBe(false);
   });
 });
+
+describe('meshOf with several containers', () => {
+  // A generation can now carry one mesh per requested container, because
+  // litegen derives obj/stl/ply locally from a vendor's glb.
+  const mesh = (format: string): Model3dAsset =>
+    ({ kind: 'mesh', url: `https://x/model.${format}`, format }) as Model3dAsset;
+
+  it('prefers the glb whatever order the assets arrive in', () => {
+    // The viewer renders glTF only, so taking the first would show
+    // "unsupported format" for a generation that did deliver a good glb.
+    expect(meshOf([mesh('stl'), mesh('obj'), mesh('glb')])?.format).toBe('glb');
+    expect(meshOf([mesh('glb'), mesh('obj')])?.format).toBe('glb');
+  });
+
+  it('accepts gltf as previewable too', () => {
+    expect(meshOf([mesh('stl'), mesh('gltf')])?.format).toBe('gltf');
+  });
+
+  it('falls back to the first mesh when none can be previewed', () => {
+    // Still better than null: the asset table and the download links work even
+    // when the viewer cannot render it.
+    expect(meshOf([mesh('fbx'), mesh('stl')])?.format).toBe('fbx');
+  });
+
+  it('still backfills from result_url when there are no listed meshes', () => {
+    expect(meshOf([], 'https://x/model.glb')?.format).toBe('glb');
+    expect(meshOf([])).toBeNull();
+  });
+});
