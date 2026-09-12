@@ -159,7 +159,54 @@ mistake this document exists to prevent.
 | `rig` | Bool | supported-or-drop | (separate endpoint — unconfirmed) | `rig` (unconfirmed) | — | — | ⬜ |
 | `seed` | Seed | range | — | `model_seed` | `seed` | — | ⬜ |
 
-### Proof: one real billed run, fal `fal/trellis`, 2026-09-12
+### Proof: real billed runs against fal, 2026-09-12
+
+Four generations across all three fal 3D models, plus six rejections that had to
+cost nothing. ~$0.98 quoted. Everything below was validated by downloading the
+bytes, not by trusting the sizes in the response.
+
+| run | model | mode | asked for | delivered |
+|---|---|---|---|---|
+| A | `fal/hyper3d-rodin` | image-to-3d | glb, obj, stl, ply | glb (vendor) + obj, stl, ply (derived) |
+| B | `fal/hyper3d-rodin` | **text**-to-3d | **fbx** | fbx (vendor) + **5 texture PNGs** |
+| C | `fal/hunyuan3d-v2` | image-to-3d | glb, stl | glb (vendor) + stl (derived) |
+| D | `fal/trellis` | image-to-3d | glb, obj | glb (vendor) + obj (derived) — **terminalised by the background poller, never client-polled** |
+
+**Run A** — 35,394 triangles and 23,125 vertices identical across obj, ply and
+stl; glb magic and declared length exact; obj free of `mtllib`/`usemtl`; stl
+`84+50n` and not `solid`-prefixed; ply `binary_little_endian` with matching
+header counts.
+
+**Run B is the one that matters most.** It proves three things nothing else did:
+
+- The **text-to-3D arm** works with no reference image at all.
+- A container litegen **cannot derive** is asked of the vendor. This caught a
+  real bug first: `vendor_format` preferred glb whenever the endpoint offered
+  it, so `[fbx]` would have returned a glb and the completion guard would have
+  failed a generation Rodin was perfectly capable of fulfilling — *after* it was
+  billed. The FBX that came back carries the genuine
+  `Kaydara FBX Binary \x00` header, passed through untouched.
+- **`Model3dAssetKind::Texture` is produced for the first time.** The kind has
+  been declared and consumed since 3D shipped with nothing ever filling it;
+  Rodin's `textures` array fills it, and the `(stem, format)` rehost keying
+  names them `texture.png`, `texture_1.png`, … rather than colliding.
+
+**Run C** also confirmed fal's documented **2-concurrent limit**: it sat in
+`IN_QUEUE` for ~90 s while A and B ran, surfaced correctly as `pending`.
+Note its quote is the $0.16 base — fal charges 3× for a textured mesh, which is
+recorded in the catalog's `variable_pricing` and deliberately not applied to the
+estimate, since this endpoint cannot prove the multiplier.
+
+Rejections, all at $0 and before any vendor call: `usdz` on a model that neither
+emits nor derives it (`param_enum_mismatch`, listing the deliverable set);
+`[glb, fbx]` on Rodin (`param_too_many` — 2 vendor jobs against `max_items: 1`);
+a seed above Rodin's u16 ceiling; `symmetry` in strict mode; a text-only request
+to an image-only model; an explicitly empty format list.
+
+Still unproven: the 422 and `error_type` paths, which need a request fal itself
+rejects rather than one we reject first.
+
+### Superseded: the first single-run proof, `fal/trellis`
 
 The first end-to-end evidence that any of this works against a vendor rather
 than a mock. `fal/trellis` is **image-to-3D and emits GLB only** — the exact case
