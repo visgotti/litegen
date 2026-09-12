@@ -40,11 +40,25 @@ const COMP_FLOAT: u32 = 5126;
 
 /// `primitive.mode` for a triangle list. Absent means 4.
 const MODE_TRIANGLES: u64 = 4;
+/// Mode 5: the same triangles, sharing an edge with the triangle before.
+const MODE_TRIANGLE_STRIP: u64 = 5;
+/// Mode 6: the same triangles, all sharing vertex 0.
+const MODE_TRIANGLE_FAN: u64 = 6;
 
-/// An accessor with no `bufferView` reads as zeros (spec §3.6.2.1). Elements we
-/// ever read are at most VEC4/FLOAT, so one static element covers every case and
-/// the zero path needs no allocation.
-const ZERO_ELEMENT: [u8; 16] = [0u8; 16];
+/// Ceiling on the merged model, in vertices and in indices.
+///
+/// Nothing else bounds these two arrays. Geometry is re-read once per node
+/// instance and once per primitive, so one 20k-vertex accessor reached from 500
+/// nodes is 10M merged vertices out of a 248 KB file — `super::MAX_INPUT_BYTES`
+/// caps the bytes that arrive, not the mesh they describe.
+///
+/// 4M is what a 128 MB GLB can honestly carry at the ceiling: interleaved
+/// position, normal and uv is 32 bytes a vertex, so nothing legitimate that
+/// passes `MAX_INPUT_BYTES` has more. It pins the merged arrays at roughly
+/// 180 MB, which fails loudly here instead of quietly in the allocator — whose
+/// own failure mode is to abort the process rather than return.
+const MAX_MERGED_VERTICES: usize = 4_000_000;
+const MAX_MERGED_INDICES: usize = 12_000_000;
 
 /// Extensions that may appear in `extensionsRequired` without invalidating what
 /// we extract. All of them describe materials or lights — the things this module
@@ -98,6 +112,25 @@ fn f32_le(b: &[u8], off: usize) -> f32 {
 
 fn as_usize(v: &Value) -> Option<usize> {
     usize::try_from(v.as_u64()?).ok()
+}
+
+/// An optional glTF index or byte count: absent means the caller's default,
+/// present means it must read as one.
+///
+/// `.and_then(as_usize)` folds those two cases into one `None`, and
+/// `as_u64` rejects every number serde_json parsed as a float — so a `24.0`
+/// byteStride out of a Python exporter, or an `indices: 1.0`, arrived here
+/// looking exactly like an omitted field and took the default branch. For
+/// `indices` that default is a synthesised sequential list, which turns a file
+/// saying [2,1,0] into [0,1,2]: reversed winding, model inside out, no error.
+fn index_field(v: Option<&Value>, what: &str) -> Result<Option<usize>, MeshError> {
+    match v {
+        None => Ok(None),
+        Some(v) => as_usize(v).map(Some).ok_or_else(|| {
+            let shown = v.to_string();
+            malformed(format!("{what} is {}, which is not an index", truncate(&shown, 60)))
+        }),
+    }
 }
 
 // ─── 4x4 column-major maths ─────────────────────────────────────────────────
@@ -369,8 +402,18 @@ fn parse_json(chunk: &[u8]) -> Result<Value, MeshError> {
 }
 
 fn check_required_extensions(doc: &Value) -> Result<(), MeshError> {
-    let Some(required) = doc.get("extensionsRequired").and_then(|v| v.as_array()) else {
-        return Ok(());
+    let required = match doc.get("extensionsRequired") {
+        None => return Ok(()),
+        Some(Value::Array(a)) => a,
+        // Anything else used to fall straight through to Ok, so the single
+        // string `"KHR_draco_mesh_compression"` disabled this guard entirely.
+        // Draco had a second check to catch it; meshopt had none.
+        Some(other) => {
+            return Err(malformed(format!(
+                "extensionsRequired is {}, expected an array of extension names",
+                truncate(&other.to_string(), 80)
+            )))
+        }
     };
     for ext in required {
         let name = ext.as_str().unwrap_or("<non-string>");
@@ -388,11 +431,13 @@ fn check_required_extensions(doc: &Value) -> Result<(), MeshError> {
 /// One accessor resolved down to "where the bytes are and how to step them".
 struct Accessor<'a> {
     index: usize,
-    /// The whole backing buffer; `start`/`stride` locate elements inside it.
+    /// The bytes of its `bufferView` and nothing either side of them.
+    ///
+    /// Holding the whole buffer here and bounding reads against that was how a
+    /// view declaring one vertex could serve three: the extra 24 bytes came out
+    /// of whatever the next view held — usually the index array — and the caller
+    /// got plausible wrong geometry instead of an error.
     data: &'a [u8],
-    /// True when the accessor has no `bufferView`, which the spec defines as
-    /// reading zeros.
-    zero_filled: bool,
     start: usize,
     stride: usize,
     elem_size: usize,
@@ -404,9 +449,6 @@ struct Accessor<'a> {
 
 impl Accessor<'_> {
     fn element(&self, i: usize) -> Result<&[u8], MeshError> {
-        if self.zero_filled {
-            return Ok(&ZERO_ELEMENT[..self.elem_size]);
-        }
         let off = self
             .start
             .checked_add(i.checked_mul(self.stride).ok_or_else(|| self.overrun(i))?)
@@ -417,7 +459,7 @@ impl Accessor<'_> {
 
     fn overrun(&self, i: usize) -> MeshError {
         malformed(format!(
-            "accessor {} element {i} of {} reads past the end of its {}-byte buffer",
+            "accessor {} element {i} of {} reads past the end of its {}-byte bufferView",
             self.index,
             self.count,
             self.data.len()
@@ -426,7 +468,9 @@ impl Accessor<'_> {
 
     /// `count` is attacker-controlled, so never reserve on it directly — a file
     /// declaring 4 billion elements would allocate before the first bounds check
-    /// could reject it.
+    /// could reject it. `Gltf::accessor` now proves `count` against the view's
+    /// bytes before this is ever reached; the cap stays because being wrong about
+    /// that costs the process rather than the request.
     fn capacity(&self) -> usize {
         self.count.min(4096)
     }
@@ -610,53 +654,105 @@ impl<'a> Gltf<'a> {
             .and_then(as_usize)
             .ok_or_else(|| malformed(format!("accessor {index} has no count")))?;
         let elem_size = ncomp * comp_size;
-        let acc_offset = a.get("byteOffset").and_then(as_usize).unwrap_or(0);
+        let acc_offset =
+            index_field(a.get("byteOffset"), &format!("accessor {index} byteOffset"))?.unwrap_or(0);
 
-        let Some(view_index) = a.get("bufferView").and_then(as_usize) else {
-            return Ok(Accessor {
-                index,
-                data: &[],
-                zero_filled: true,
-                start: 0,
-                stride: elem_size,
-                elem_size,
-                comp,
-                ncomp,
-                count,
-                type_name,
-            });
+        let Some(view_index) =
+            index_field(a.get("bufferView"), &format!("accessor {index} bufferView"))?
+        else {
+            // Spec §3.6.2.1 does define a view-less accessor as reading zeros,
+            // and that is exactly the accessor whose `count` no bytes anywhere
+            // bound: a 244-byte file declaring 4 billion of them asked for a
+            // 48 GB Vec and took the process down with it. Even honoured, it
+            // yields an all-zero POSITION — a model with no shape, which is not
+            // something to hand a customer.
+            return Err(unsupported(format!(
+                "accessor {index} has no bufferView, which the spec reads as zeros; \
+                 zero-filled geometry is not a deliverable model"
+            )));
         };
         let view = self
             .array("bufferViews")
             .get(view_index)
             .ok_or_else(|| malformed(format!("bufferView index {view_index} out of range")))?;
+        if view.pointer("/extensions/EXT_meshopt_compression").is_some() {
+            // A meshopt view holds a compressed stream, and the extension is
+            // only forced into `extensionsRequired` when its fallback buffer is
+            // neither a URI nor the BIN chunk — so a file whose fallback IS the
+            // BIN chunk can declare it in `extensionsUsed` alone and walk past
+            // the guard above, leaving unspecified placeholder bytes to be read
+            // as geometry.
+            return Err(unsupported(format!(
+                "bufferView {view_index} is EXT_meshopt_compression-encoded"
+            )));
+        }
         let buffer_index = view
             .get("buffer")
             .and_then(as_usize)
             .ok_or_else(|| malformed(format!("bufferView {view_index} has no buffer")))?;
-        let data = self.buffer(buffer_index)?;
-        let view_offset = view.get("byteOffset").and_then(as_usize).unwrap_or(0);
+        let buffer = self.buffer(buffer_index)?;
+        let view_offset =
+            index_field(view.get("byteOffset"), &format!("bufferView {view_index} byteOffset"))?
+                .unwrap_or(0);
+        // `byteLength` is required by the spec and is the only thing that says
+        // where this view stops. Defaulting it to "the rest of the buffer" is
+        // what let an accessor read its neighbour's bytes, so a view without one
+        // is a file we cannot bound rather than one we guess at.
+        let view_len =
+            index_field(view.get("byteLength"), &format!("bufferView {view_index} byteLength"))?
+                .ok_or_else(|| malformed(format!("bufferView {view_index} has no byteLength")))?;
+        let view_end = view_offset
+            .checked_add(view_len)
+            .ok_or_else(|| malformed(format!("bufferView {view_index} has an absurd byteOffset")))?;
+        let data = buffer.get(view_offset..view_end).ok_or_else(|| {
+            malformed(format!(
+                "bufferView {view_index} spans bytes {view_offset}..{view_end} of a {}-byte buffer",
+                buffer.len()
+            ))
+        })?;
         // Interleaved vertex buffers are the norm, not the exception: one view
         // holds POSITION, NORMAL and TEXCOORD_0 side by side and each accessor
         // steps by the shared stride from its own byteOffset.
-        let stride = match view.get("byteStride").and_then(as_usize) {
-            Some(0) | None => elem_size,
-            Some(s) if s < elem_size => {
-                return Err(malformed(format!(
-                    "bufferView {view_index} has byteStride {s}, smaller than the \
-                     {elem_size}-byte element of accessor {index}"
-                )))
-            }
-            Some(s) => s,
+        let stride =
+            match index_field(view.get("byteStride"), &format!("bufferView {view_index} byteStride"))?
+            {
+                Some(0) | None => elem_size,
+                Some(s) if s < elem_size => {
+                    return Err(malformed(format!(
+                        "bufferView {view_index} has byteStride {s}, smaller than the \
+                         {elem_size}-byte element of accessor {index}"
+                    )))
+                }
+                Some(s) => s,
+            };
+        // The spec's own inequality, checked here and not per element, because
+        // the read loops size a Vec from `count` before the first element is
+        // fetched: proving the bytes exist is what keeps `count` from being an
+        // allocation request.
+        let span = match count.checked_sub(1) {
+            None => 0,
+            Some(last) => last
+                .checked_mul(stride)
+                .and_then(|o| o.checked_add(elem_size))
+                .ok_or_else(|| {
+                    malformed(format!("accessor {index} declares an unrepresentable {count} elements"))
+                })?,
         };
-        let start = view_offset
-            .checked_add(acc_offset)
+        let need = acc_offset
+            .checked_add(span)
             .ok_or_else(|| malformed(format!("accessor {index} has an absurd byteOffset")))?;
+        if need > data.len() {
+            return Err(malformed(format!(
+                "accessor {index} reads past the end of bufferView {view_index}: {count} elements \
+                 of {elem_size} bytes at stride {stride} from offset {acc_offset} need {need} \
+                 bytes, and the view declares {}",
+                data.len()
+            )));
+        }
         Ok(Accessor {
             index,
             data,
-            zero_filled: false,
-            start,
+            start: acc_offset,
             stride,
             elem_size,
             comp,
@@ -785,7 +881,7 @@ impl Gltf<'_> {
                 .map(|mesh| Instance { mesh, world: IDENTITY })
                 .collect());
         }
-        let scene_index = self.doc.get("scene").and_then(as_usize).unwrap_or(0);
+        let scene_index = index_field(self.doc.get("scene"), "scene")?.unwrap_or(0);
         let scene = scenes
             .get(scene_index)
             .ok_or_else(|| malformed(format!("scene index {scene_index} out of range")))?;
@@ -817,7 +913,10 @@ impl Gltf<'_> {
                 )));
             }
             let world = mat_mul(&parent, &node_local_matrix(node, index)?);
-            if let Some(mesh) = node.get("mesh").and_then(as_usize) {
+            // A `mesh` that does not read as an index is this node's geometry
+            // going missing without a word, so it is the file's error and not a
+            // node that happens to carry no mesh.
+            if let Some(mesh) = index_field(node.get("mesh"), &format!("node {index} mesh"))? {
                 out.push(Instance { mesh, world });
             }
             if let Some(children) = node.get("children").and_then(|v| v.as_array()) {
@@ -844,6 +943,47 @@ struct Span {
     index_offset: usize,
     index_count: usize,
     had_normals: bool,
+}
+
+/// `TRIANGLE_STRIP` (mode 5) as the triangle list it stands for.
+///
+/// Every odd-numbered triangle swaps its first two vertices, and that swap is
+/// the entire difficulty: a strip alternates which way round its corners are
+/// written, so expanding it naively leaves every second face pointing inward and
+/// the model half-invisible under back-face culling.
+fn strip_to_triangles(seq: &[u32], where_: &str) -> Result<Vec<u32>, MeshError> {
+    if seq.len() < 3 {
+        return Err(malformed(format!(
+            "{where_} is a triangle strip of {} vertices; a strip needs at least 3",
+            seq.len()
+        )));
+    }
+    let mut out = Vec::with_capacity((seq.len() - 2) * 3);
+    for (t, w) in seq.windows(3).enumerate() {
+        if t.is_multiple_of(2) {
+            out.extend_from_slice(&[w[0], w[1], w[2]]);
+        } else {
+            out.extend_from_slice(&[w[1], w[0], w[2]]);
+        }
+    }
+    Ok(out)
+}
+
+/// `TRIANGLE_FAN` (mode 6) as the triangle list it stands for: every triangle
+/// hangs off the first vertex, in order, so the winding needs no fixing up.
+fn fan_to_triangles(seq: &[u32], where_: &str) -> Result<Vec<u32>, MeshError> {
+    if seq.len() < 3 {
+        return Err(malformed(format!(
+            "{where_} is a triangle fan of {} vertices; a fan needs at least 3",
+            seq.len()
+        )));
+    }
+    let hub = seq[0];
+    let mut out = Vec::with_capacity((seq.len() - 2) * 3);
+    for w in seq[1..].windows(2) {
+        out.extend_from_slice(&[hub, w[0], w[1]]);
+    }
+    Ok(out)
 }
 
 /// Area-weighted vertex normals, for a primitive that shipped without any while
@@ -896,7 +1036,7 @@ fn derived_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
 
 impl Gltf<'_> {
     fn base_color_of(&self, prim: &Value) -> Result<Option<[f32; 4]>, MeshError> {
-        let Some(mi) = prim.get("material").and_then(as_usize) else {
+        let Some(mi) = index_field(prim.get("material"), "primitive material")? else {
             return Ok(None);
         };
         let material = self
@@ -952,19 +1092,21 @@ impl Gltf<'_> {
                 .enumerate()
             {
                 let where_ = format!("mesh {} primitive {pi}", inst.mesh);
-                match prim.get("mode") {
-                    None => {}
-                    Some(m) => {
-                        let m = m
-                            .as_u64()
-                            .ok_or_else(|| malformed(format!("{where_} has a non-numeric mode")))?;
-                        // Points, lines and the strip/fan topologies are not a
-                        // triangle list; the IR models nothing else, so they
-                        // contribute nothing rather than being approximated.
-                        if m != MODE_TRIANGLES {
-                            continue;
-                        }
-                    }
+                let mode = match prim.get("mode") {
+                    None => MODE_TRIANGLES,
+                    Some(m) => m
+                        .as_u64()
+                        .ok_or_else(|| malformed(format!("{where_} has a non-numeric mode")))?,
+                };
+                match mode {
+                    // A strip and a fan are a triangle list written down more
+                    // compactly, and the spec says exactly which triangles they
+                    // stand for — there is nothing here to guess, so skipping
+                    // them was not caution, it was handing back half a model.
+                    MODE_TRIANGLES | MODE_TRIANGLE_STRIP | MODE_TRIANGLE_FAN => {}
+                    // Points and lines genuinely are a different topology, and
+                    // the IR models nothing but triangles.
+                    _ => continue,
                 }
                 if prim
                     .pointer("/extensions/KHR_draco_mesh_compression")
@@ -980,15 +1122,22 @@ impl Gltf<'_> {
                     .get("attributes")
                     .and_then(|v| v.as_object())
                     .ok_or_else(|| malformed(format!("{where_} has no attributes")))?;
-                let pos_acc = attrs
-                    .get("POSITION")
-                    .and_then(as_usize)
+                let pos_acc = index_field(attrs.get("POSITION"), &format!("{where_} POSITION"))?
                     .ok_or_else(|| malformed(format!("{where_} has no POSITION attribute")))?;
                 let pos_acc = self.accessor(pos_acc)?;
+                // Checked before the read, not after: the merge is what a single
+                // small accessor multiplies through, and a Vec sized past the
+                // ceiling is one the allocator may never hand back.
+                if positions.len().saturating_add(pos_acc.count) > MAX_MERGED_VERTICES {
+                    return Err(unsupported(format!(
+                        "the merged mesh passes {MAX_MERGED_VERTICES} vertices at {where_}; \
+                         the node graph instances more geometry than this converter will hold"
+                    )));
+                }
                 let local_positions = pos_acc.read_vec3("POSITION")?;
                 let vcount = local_positions.len();
 
-                let local_normals = match attrs.get("NORMAL").and_then(as_usize) {
+                let local_normals = match index_field(attrs.get("NORMAL"), &format!("{where_} NORMAL"))? {
                     None => None,
                     Some(i) => {
                         let a = self.accessor(i)?;
@@ -1002,7 +1151,7 @@ impl Gltf<'_> {
                         Some(v)
                     }
                 };
-                let local_uvs = match attrs.get("TEXCOORD_0").and_then(as_usize) {
+                let local_uvs = match index_field(attrs.get("TEXCOORD_0"), &format!("{where_} TEXCOORD_0"))? {
                     None => None,
                     Some(i) => {
                         let a = self.accessor(i)?;
@@ -1021,18 +1170,39 @@ impl Gltf<'_> {
                     }
                 };
 
-                let mut local_indices = match prim.get("indices").and_then(as_usize) {
+                // The vertex order the primitive's mode is written in; what it
+                // means as triangles is decided just below.
+                let sequence = match index_field(prim.get("indices"), &format!("{where_} indices"))? {
                     Some(i) => self.accessor(i)?.read_indices()?,
-                    // A primitive with no `indices` is a sequential triangle
-                    // list — vertex 0,1,2 is the first triangle, and so on.
+                    // A primitive with no `indices` walks its vertices in order
+                    // — for a triangle list that is 0,1,2 then 3,4,5.
                     None => {
-                        if vcount % 3 != 0 {
+                        if mode == MODE_TRIANGLES && !vcount.is_multiple_of(3) {
                             return Err(malformed(format!(
                                 "{where_} is non-indexed with {vcount} vertices, not a multiple of 3"
                             )));
                         }
                         (0..vcount as u32).collect()
                     }
+                };
+                // A strip or a fan is three indices per vertex past the first
+                // two, so the ceiling is checked against what the expansion will
+                // produce rather than after the Vec has been paid for. Indices
+                // are the array that runs away first on a strip-heavy file: the
+                // vertex ceiling above bounds them only loosely.
+                let expanded = match mode {
+                    MODE_TRIANGLES => sequence.len(),
+                    _ => sequence.len().saturating_sub(2).saturating_mul(3),
+                };
+                if indices.len().saturating_add(expanded) > MAX_MERGED_INDICES {
+                    return Err(unsupported(format!(
+                        "the merged mesh passes {MAX_MERGED_INDICES} indices at {where_}"
+                    )));
+                }
+                let mut local_indices = match mode {
+                    MODE_TRIANGLE_STRIP => strip_to_triangles(&sequence, &where_)?,
+                    MODE_TRIANGLE_FAN => fan_to_triangles(&sequence, &where_)?,
+                    _ => sequence,
                 };
                 if local_indices.len() % 3 != 0 {
                     return Err(malformed(format!(
@@ -2305,13 +2475,340 @@ mod tests {
     }
 
     #[test]
-    fn an_accessor_without_a_buffer_view_reads_as_zeros() {
-        // Spec §3.6.2.1. Degenerate, but it is what the file says, and guessing
-        // otherwise would be inventing geometry.
+    fn refuses_an_accessor_without_a_buffer_view() {
+        // Spec §3.6.2.1 reads it as zeros. Honouring that gives an all-zero
+        // POSITION — a model with no shape — and leaves `count` backed by no
+        // bytes at all, which is the hole the next test walks through.
         let (mut doc, bin) = triangle_doc();
         doc["accessors"][0].as_object_mut().unwrap().remove("bufferView");
+        let d = unwrap_unsupported(read(&pack(doc, Some(&bin))).unwrap_err());
+        assert!(d.contains("no bufferView"), "{d}");
+    }
+
+    // ── allocation ceilings ─────────────────────────────────────────────────
+
+    #[test]
+    fn a_view_less_accessor_cannot_ask_for_an_unbounded_allocation() {
+        // 244 bytes of input, 20 million elements claimed, no BIN chunk to hold
+        // them: this returned Ok having allocated 240 MB, and at 4 billion it
+        // asked for 48 GB and the allocator aborted the process.
+        let doc = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "accessors": [{"componentType": 5126, "count": 20_000_001u64, "type": "VEC3"}],
+            "buffers": []
+        });
+        let glb = pack(doc, None);
+        assert!(glb.len() < 1024, "the input has to be tiny for the point to hold");
+        let started = std::time::Instant::now();
+        assert!(read(&glb).is_err());
+        assert!(started.elapsed().as_millis() < 250, "it allocated before refusing");
+
+        // 4 billion is the one that aborted rather than returning.
+        let doc = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "accessors": [{"componentType": 5126, "count": 4_000_000_000u64, "type": "VEC3"}],
+            "buffers": []
+        });
+        assert!(read(&pack(doc, None)).is_err());
+    }
+
+    #[test]
+    fn a_count_larger_than_its_buffer_view_is_refused_before_it_is_read() {
+        let (mut doc, bin) = triangle_doc();
+        doc["accessors"][0]["count"] = Value::from(500_000_000u64);
+        let started = std::time::Instant::now();
+        let d = unwrap_malformed(read(&pack(doc, Some(&bin))).unwrap_err());
+        assert!(d.contains("reads past the end"), "{d}");
+        assert!(started.elapsed().as_millis() < 250, "it allocated before refusing");
+    }
+
+    #[test]
+    fn instancing_cannot_amplify_one_accessor_past_the_merge_ceiling() {
+        // The second vector: geometry is re-read per node instance, so a small
+        // file with many nodes pointing at one mesh merges to any size it likes.
+        let vcount = 99_999usize; // sequential indices, so a multiple of 3
+        let bin: Vec<u8> = f32s(&vec![0.5f32; vcount * 3]);
+        let instances = 45;
+        let doc = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "scenes": [{"nodes": (0..instances).collect::<Vec<_>>()}],
+            "nodes": (0..instances).map(|_| serde_json::json!({"mesh": 0})).collect::<Vec<_>>(),
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": vcount, "type": "VEC3"}
+            ],
+            "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": bin.len()}],
+            "buffers": [{"byteLength": bin.len()}]
+        });
+        let glb = pack(doc, Some(&bin));
+        assert!(glb.len() < 2 * 1024 * 1024, "{} bytes in", glb.len());
+        let d = unwrap_unsupported(read(&glb).unwrap_err());
+        assert!(d.contains(&MAX_MERGED_VERTICES.to_string()), "{d}");
+    }
+
+    // ── bufferView bounds ───────────────────────────────────────────────────
+
+    #[test]
+    fn an_accessor_may_not_read_past_its_own_buffer_view() {
+        // One vertex declared, three read: the other 24 bytes were the index
+        // array next door, handed back as geometry with no complaint.
+        let (mut doc, bin) = triangle_doc();
+        doc["bufferViews"][0]["byteLength"] = Value::from(12);
+        let d = unwrap_malformed(read(&pack(doc, Some(&bin))).unwrap_err());
+        assert!(d.contains("reads past the end") && d.contains("bufferView 0"), "{d}");
+    }
+
+    #[test]
+    fn an_interleaved_view_is_bounded_by_its_own_length_not_the_buffers() {
+        // The last element of a strided view ends at byteOffset + (count-1) *
+        // stride + size, and that is the number the view has to cover.
+        let (mut doc, bin) = triangle_doc();
+        doc["bufferViews"][0]["byteStride"] = Value::from(12);
+        doc["bufferViews"][0]["byteLength"] = Value::from(35); // one byte short
+        let d = unwrap_malformed(read(&pack(doc, Some(&bin))).unwrap_err());
+        assert!(d.contains("reads past the end"), "{d}");
+    }
+
+    #[test]
+    fn rejects_a_buffer_view_that_runs_past_its_buffer() {
+        let (mut doc, bin) = triangle_doc();
+        doc["bufferViews"][0]["byteLength"] = Value::from(4096);
+        let d = unwrap_malformed(read(&pack(doc, Some(&bin))).unwrap_err());
+        assert!(d.contains("bufferView 0 spans"), "{d}");
+    }
+
+    #[test]
+    fn rejects_a_buffer_view_with_no_byte_length() {
+        let (mut doc, bin) = triangle_doc();
+        doc["bufferViews"][0].as_object_mut().unwrap().remove("byteLength");
+        let d = unwrap_malformed(read(&pack(doc, Some(&bin))).unwrap_err());
+        assert!(d.contains("no byteLength"), "{d}");
+    }
+
+    // ── present-but-unreadable fields ───────────────────────────────────────
+
+    #[test]
+    fn a_float_valued_index_is_an_error_rather_than_an_absent_field() {
+        // serde_json's as_u64 rejects anything parsed as f64, so `1.0` out of an
+        // exporter that round-tripped its numbers through a float used to look
+        // exactly like an omitted field and take the default branch.
+        for (path, needle) in [
+            ("/meshes/0/primitives/0/indices", "indices"),
+            ("/meshes/0/primitives/0/material", "material"),
+            ("/meshes/0/primitives/0/attributes/POSITION", "POSITION"),
+            ("/nodes/0/mesh", "mesh"),
+            ("/scene", "scene"),
+            ("/accessors/0/byteOffset", "byteOffset"),
+            ("/bufferViews/0/byteOffset", "byteOffset"),
+            ("/bufferViews/0/byteStride", "byteStride"),
+            ("/bufferViews/0/byteLength", "byteLength"),
+            ("/accessors/0/bufferView", "bufferView"),
+        ] {
+            let (mut doc, bin) = triangle_doc();
+            // Several of these are absent from the fixture (`material`,
+            // `byteStride`, the byteOffsets); the case under test is what a
+            // PRESENT one that will not read as an index does.
+            match doc.pointer_mut(path) {
+                Some(v) => *v = Value::from(1.0),
+                None => {
+                    let (parent, key) = path.rsplit_once('/').unwrap();
+                    doc.pointer_mut(parent).unwrap().as_object_mut().unwrap()
+                        .insert(key.to_string(), Value::from(1.0));
+                }
+            }
+            let d = unwrap_malformed(read(&pack(doc, Some(&bin))).unwrap_err());
+            assert!(d.contains(needle) && d.contains("not an index"), "{path}: {d}");
+        }
+    }
+
+    #[test]
+    fn a_float_indices_no_longer_reverses_the_winding() {
+        // The worst of the set: the index accessor was ignored and a sequential
+        // list synthesised, so a file saying [2,1,0] read back as [0,1,2] and
+        // the model rendered inside out.
+        let (doc, mut bin) = triangle_doc();
+        let start = bin.len() - 12;
+        bin[start..].copy_from_slice(&u32s(&[2, 1, 0]));
+        assert_eq!(read(&pack(doc.clone(), Some(&bin))).unwrap().indices, vec![2, 1, 0]);
+
+        let mut doc = doc;
+        doc["meshes"][0]["primitives"][0]["indices"] = Value::from(1.0);
+        assert!(read(&pack(doc, Some(&bin))).is_err(), "winding silently reversed");
+    }
+
+    #[test]
+    fn a_float_byte_stride_no_longer_reads_normals_as_positions() {
+        // POSITION and NORMAL interleaved at stride 24: read as packed, every
+        // other vertex is a normal.
+        let mut bin = Vec::new();
+        for (p, n) in [
+            ([0.0f32, 0.0, 0.0], [0.0f32, 0.0, 1.0]),
+            ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+            ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+        ] {
+            bin.extend_from_slice(&f32s(&p));
+            bin.extend_from_slice(&f32s(&n));
+        }
+        let index_start = bin.len();
+        bin.extend_from_slice(&u32s(&[0, 1, 2]));
+        let doc = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "scenes": [{"nodes": [0]}],
+            "nodes": [{"mesh": 0}],
+            "meshes": [{"primitives": [
+                {"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2}
+            ]}],
+            "accessors": [
+                {"bufferView": 0, "byteOffset": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 0, "byteOffset": 12, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 1, "componentType": 5125, "count": 3, "type": "SCALAR"}
+            ],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": index_start, "byteStride": 24.0},
+                {"buffer": 0, "byteOffset": index_start, "byteLength": 12}
+            ],
+            "buffers": [{"byteLength": bin.len()}]
+        });
+        let d = unwrap_malformed(read(&pack(doc, Some(&bin))).unwrap_err());
+        assert!(d.contains("byteStride"), "{d}");
+    }
+
+    #[test]
+    fn a_null_valued_index_is_an_error_too() {
+        let (mut doc, bin) = triangle_doc();
+        doc["nodes"][0]["mesh"] = Value::Null;
+        assert!(matches!(read(&pack(doc, Some(&bin))), Err(MeshError::Malformed(_))));
+    }
+
+    // ── extension guards ────────────────────────────────────────────────────
+
+    #[test]
+    fn rejects_a_non_array_extensions_required() {
+        // A string fell through to Ok, disabling the guard completely. Draco had
+        // a per-primitive backstop; meshopt had none.
+        for value in [
+            serde_json::json!("EXT_meshopt_compression"),
+            serde_json::json!("KHR_draco_mesh_compression"),
+            serde_json::json!({"0": "EXT_meshopt_compression"}),
+        ] {
+            let (mut doc, bin) = triangle_doc();
+            doc["extensionsRequired"] = value.clone();
+            let d = unwrap_malformed(read(&pack(doc, Some(&bin))).unwrap_err());
+            assert!(d.contains("extensionsRequired"), "{value}: {d}");
+        }
+    }
+
+    #[test]
+    fn rejects_a_meshopt_buffer_view_declared_only_as_used() {
+        // EXT_meshopt_compression is forced into extensionsRequired only when
+        // its fallback buffer is neither a URI nor the BIN chunk, so a file
+        // whose fallback IS the BIN chunk can declare it in extensionsUsed alone
+        // and have its unspecified placeholder bytes read as geometry.
+        let (mut doc, bin) = triangle_doc();
+        doc["extensionsUsed"] = serde_json::json!(["EXT_meshopt_compression"]);
+        doc["bufferViews"][0]["extensions"] = serde_json::json!({
+            "EXT_meshopt_compression": {"buffer": 0, "byteLength": 36, "mode": "ATTRIBUTES"}
+        });
+        let d = unwrap_unsupported(read(&pack(doc, Some(&bin))).unwrap_err());
+        assert!(d.contains("EXT_meshopt_compression"), "{d}");
+    }
+
+    // ── triangle strips and fans ────────────────────────────────────────────
+
+    /// A positions-only, non-indexed primitive in one `mode`.
+    fn mode_glb(mode: u64, positions: &[[f32; 3]]) -> Vec<u8> {
+        let bin: Vec<u8> = positions.iter().flat_map(|p| f32s(p)).collect();
+        let doc = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "scenes": [{"nodes": [0]}],
+            "nodes": [{"mesh": 0}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "mode": mode}]}],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": positions.len(), "type": "VEC3"}
+            ],
+            "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": bin.len()}],
+            "buffers": [{"byteLength": bin.len()}]
+        });
+        pack(doc, Some(&bin))
+    }
+
+    /// Every facet normal of a mesh, from its winding.
+    fn facets(mesh: &Mesh) -> Vec<[f32; 3]> {
+        mesh.to_soup().iter().map(Mesh::facet_normal).collect()
+    }
+
+    #[test]
+    fn expands_a_triangle_strip_keeping_every_face_wound_the_same_way() {
+        // A quad as a strip: triangle 1 must swap its first two vertices, or it
+        // faces the opposite way from triangle 0 and renders as a hole.
+        let quad = [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]];
+        let mesh = read(&mode_glb(MODE_TRIANGLE_STRIP, &quad)).unwrap();
+        assert_eq!(mesh.indices, vec![0, 1, 2, 2, 1, 3]);
+        assert_eq!(facets(&mesh), vec![[0.0, 0.0, 1.0]; 2], "alternating faces flipped");
+    }
+
+    #[test]
+    fn expands_a_triangle_fan_around_its_first_vertex() {
+        let fan = [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]];
+        let mesh = read(&mode_glb(MODE_TRIANGLE_FAN, &fan)).unwrap();
+        assert_eq!(mesh.indices, vec![0, 1, 2, 0, 2, 3]);
+        assert_eq!(facets(&mesh), vec![[0.0, 0.0, 1.0]; 2]);
+    }
+
+    #[test]
+    fn a_strip_and_a_fan_of_five_vertices_are_three_triangles_each() {
+        let five = [
+            [0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0],
+        ];
+        for mode in [MODE_TRIANGLE_STRIP, MODE_TRIANGLE_FAN] {
+            assert_eq!(read(&mode_glb(mode, &five)).unwrap().triangle_count(), 3, "mode {mode}");
+        }
+    }
+
+    #[test]
+    fn a_strip_primitive_beside_a_list_primitive_keeps_both() {
+        // The half-missing model the module header exists to prevent: this
+        // returned Ok with only the list primitive in it.
+        let (mut doc, mut bin) = triangle_doc();
+        let strip_start = bin.len();
+        bin.extend_from_slice(&f32s(&[2.0, 0.0, 0.0, 3.0, 0.0, 0.0, 2.0, 1.0, 0.0, 3.0, 1.0, 0.0]));
+        doc["accessors"].as_array_mut().unwrap().push(serde_json::json!({
+            "bufferView": 2, "componentType": 5126, "count": 4, "type": "VEC3"
+        }));
+        doc["bufferViews"].as_array_mut().unwrap().push(serde_json::json!({
+            "buffer": 0, "byteOffset": strip_start, "byteLength": 48
+        }));
+        doc["buffers"][0]["byteLength"] = Value::from(bin.len());
+        doc["meshes"][0]["primitives"].as_array_mut().unwrap().push(serde_json::json!({
+            "attributes": {"POSITION": 2}, "mode": MODE_TRIANGLE_STRIP
+        }));
         let mesh = read(&pack(doc, Some(&bin))).unwrap();
-        assert_eq!(mesh.positions, vec![[0.0, 0.0, 0.0]; 3]);
+        assert_eq!(mesh.triangle_count(), 3, "the strip must survive the merge");
+        assert_eq!(mesh.indices, vec![0, 1, 2, 3, 4, 5, 5, 4, 6]);
+    }
+
+    #[test]
+    fn rejects_a_strip_or_fan_too_short_to_be_a_triangle() {
+        let two = [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        for mode in [MODE_TRIANGLE_STRIP, MODE_TRIANGLE_FAN] {
+            let d = unwrap_malformed(read(&mode_glb(mode, &two)).unwrap_err());
+            assert!(d.contains("at least 3"), "mode {mode}: {d}");
+        }
+    }
+
+    #[test]
+    fn still_drops_points_and_lines() {
+        let (mut doc, bin) = triangle_doc();
+        let prim = doc["meshes"][0]["primitives"][0].clone();
+        for mode in [0, 1, 2, 3] {
+            let mut other = prim.clone();
+            other["mode"] = Value::from(mode);
+            doc["meshes"][0]["primitives"] = Value::Array(vec![other, prim.clone()]);
+            let mesh = read(&pack(doc.clone(), Some(&bin))).unwrap();
+            assert_eq!(mesh.triangle_count(), 1, "mode {mode} is not a triangle");
+        }
     }
 
     // ── fuzz-ish guard ──────────────────────────────────────────────────────

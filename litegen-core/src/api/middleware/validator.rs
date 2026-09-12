@@ -491,28 +491,40 @@ pub fn validate_model3d(
 
         match schema.output_formats_spec() {
             Some(spec) => {
+                // Deliverable, not native: a container litegen can derive
+                // locally from one the vendor does emit is just as real to the
+                // caller. Without this, `output_formats` on a GLB-only model —
+                // which is most of the aggregator-hosted catalogue — could only
+                // ever be `["glb"]`.
+                let deliverable =
+                    crate::proxy::model3d_convert::deliverable_formats(&spec.enum_values);
                 for f in requested.iter() {
-                    if !spec.enum_values.iter().any(|v| v.eq_ignore_ascii_case(f)) {
+                    if !deliverable.iter().any(|v| v.eq_ignore_ascii_case(f)) {
                         return Err(ValidationError::new(
                             "param_enum_mismatch",
                             format!(
                                 "output_format '{}' not supported by '{}'; supported: {:?}",
-                                f, schema.id, spec.enum_values
+                                f, schema.id, deliverable
                             ),
                             Some("output_formats"),
                         ));
                     }
                 }
-                // The cardinality check is what separates a Meshy-shaped model
-                // (one job, many containers) from a Rodin-shaped one (a scalar
-                // vendor field, so only ever one).
+                // `max_items` bounds what the VENDOR must produce, not what the
+                // caller may ask for: every derivable format comes out of one
+                // readable source, so a whole set of them costs one vendor job.
+                // That is what lets a one-format-per-job vendor serve four
+                // containers while still refusing two that must both come from
+                // it.
                 if let Some(max) = spec.max_items {
-                    if requested.len() > max {
+                    let needed = crate::proxy::model3d_convert::vendor_jobs_needed(requested);
+                    if needed > max {
                         return Err(ValidationError::new(
                             "param_too_many",
                             format!(
-                                "'{}' emits at most {} format(s) per generation; {} requested",
-                                schema.id, max, requested.len()
+                                "'{}' emits at most {} format(s) per generation; this request \
+                                 needs {} from the provider",
+                                schema.id, max, needed
                             ),
                             Some("output_formats"),
                         ));
