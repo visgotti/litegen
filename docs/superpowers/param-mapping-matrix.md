@@ -150,14 +150,28 @@ mistake this document exists to prevent.
 | litegen param | ParamSpec | Validator rule | Meshy | Tripo3D | Stability | Rodin | Proof |
 |---|---|---|---|---|---|---|---|
 | `prompt` | PromptSpec | required, length | `prompt` | `prompt` | — (image only) | — | ⬜ |
-| `output_format` | String enum | enum_values | `model_urls.<fmt>` (response-side) | `quad`→FBX else GLB | fixed GLB | `format` | ⬜ |
+| `output_formats` | StringArray enum + max_items | deliverable set; vendor-jobs ≤ max_items | `target_formats` ✅ (glb\|obj\|fbx\|stl\|usdz\|3mf; omitted ⇒ all but 3mf) | separate billed convert task; `quad` forces FBX ✅ | fixed GLB, no param ✅ | `geometry_file_format` ✅ (scalar: glb\|usdz\|fbx\|obj\|stl, default glb) | ✅ vendor field names verified 2026-09-12 against each vendor's own API reference; NOT yet exercised against a live call |
+| `symmetry` ⚠️ | String enum | enum off/auto/on | `symmetry_mode` — **deprecated by Meshy** | — | — | — | ⚠️ we are the only consumer of a param its one vendor deprecated |
 | `texture` | Bool | supported-or-drop | `should_texture` | `texture` (unconfirmed) | — | `material` | ⬜ |
 | `pbr` | Bool | supported-or-drop | (texture_* maps) | `pbr` | — | `material=PBR` | ⬜ |
 | `target_polycount` | Int 100–300000 | range | `target_polycount` | `face_limit` | `vertex_count` | `quality` | ⬜ |
-| `symmetry` | String enum | enum off/auto/on | `symmetry_mode` | — | — | — | ⬜ |
 | `topology` | String enum | enum triangle/quad | `topology` | `quad` (bool) | `remesh` | `mesh_mode` | ⬜ |
 | `rig` | Bool | supported-or-drop | (separate endpoint — unconfirmed) | `rig` (unconfirmed) | — | — | ⬜ |
 | `seed` | Seed | range | — | `model_seed` | `seed` | — | ⬜ |
+
+**`output_formats` is not like the other rows.** Every other param is a hint the
+vendor may ignore; this one is a PROMISE — whatever survives validation must be
+present on a `completed` generation or the generation fails, enforced at all
+three observers of completion. Two consequences for this matrix:
+
+- `max_items` counts **vendor jobs, not deliverables**. litegen derives
+  glb/obj/stl/ply locally (`litegen-core/src/mesh/`), so the whole derivable set
+  costs one vendor job. Rodin's scalar field therefore satisfies
+  `[glb, obj, stl, ply]` and still correctly refuses `[glb, fbx]`.
+- Only **fbx** and **usdz** can genuinely go missing, so they are the only
+  formats where a vendor's own support actually matters. A cell claiming fbx
+  must be proven by a live call before it is ticked — the cost of being wrong is
+  a billed generation that fails.
 | ref role `init` | RefInputSpec | role declared | `image_url` (b64 ok) | `file_token`\|url | multipart `image` | multipart `images` | ⬜ |
 | ref roles `view-*` | RefInputSpec | role declared | multi-image-to-3d | multiview-to-model | — | `condition_mode` | ⬜ |
 
