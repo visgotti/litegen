@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use crate::capabilities::ModelSchema;
+use crate::providers::model3d::cube::{generate_cube_obj, generate_cube_stl};
 use crate::providers::model3d::glb::{generate_cube_glb, CUBE_TRIANGLE_COUNT};
 use crate::providers::image::visual_mock::generate_visual_image_png;
 use crate::proxy::materializer::MaterializedRequest;
@@ -28,9 +29,16 @@ const FAIL_MODEL: &str = "mock/fail-3d";
 /// with room to spare for a paused debugger.
 const FINISHED_JOB_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
+/// The model id that reports `completed` while delivering only glb, whatever
+/// was asked for. Real vendors under-deliver silently (a convert step that was
+/// skipped, a format that quietly fell back); this is the subject that proves
+/// the delivered-vs-requested guard catches it at all three observers.
+const PARTIAL_MODEL: &str = "mock/partial-3d";
+
 struct Job {
     model: String,
-    mesh: Vec<u8>,
+    /// One entry per container the caller was promised, in request order.
+    meshes: Vec<(String, Vec<u8>)>,
     preview: Vec<u8>,
     polls: AtomicU32,
     /// When this job first reported a terminal status. Set once; read by the
@@ -88,15 +96,36 @@ impl Model3dProvider for MockModel3dProvider {
         &self,
         model: &ModelSchema,
         base: &BaseGenerationRequest,
-        _extras: &Model3dExtras,
+        extras: &Model3dExtras,
         _materialized: &MaterializedRequest,
     ) -> Result<Model3dGenerationHandle, ProviderError> {
         let job_id = uuid::Uuid::new_v4().to_string();
+
+        // Honour the requested containers rather than always answering glb.
+        // A format the mock cannot write is simply not produced — which is what
+        // makes `mock/all-params-3d` a real subject for the guard instead of a
+        // model that advertises four containers and emits one.
+        let requested = if extras.output_formats.is_empty() {
+            vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()]
+        } else {
+            extras.output_formats.clone()
+        };
+        let meshes: Vec<(String, Vec<u8>)> = requested
+            .iter()
+            .filter(|f| model.id != PARTIAL_MODEL || f.as_str() == "glb")
+            .filter_map(|f| match f.as_str() {
+                "glb" => Some((f.clone(), generate_cube_glb(&base.prompt))),
+                "obj" => Some((f.clone(), generate_cube_obj(&base.prompt))),
+                "stl" => Some((f.clone(), generate_cube_stl(&base.prompt))),
+                _ => None,
+            })
+            .collect();
+
         // Bytes are rendered at submit time so the poll ramp measures polling,
         // not generation, and so a prompt that reached us is provable later.
         let job = Arc::new(Job {
             model: model.id.clone(),
-            mesh: generate_cube_glb(&base.prompt),
+            meshes,
             preview: generate_visual_image_png(&base.prompt),
             polls: AtomicU32::new(0),
             finished_at: std::sync::OnceLock::new(),
@@ -171,29 +200,37 @@ impl Model3dProvider for MockModel3dProvider {
             });
         }
 
+        let mut files: Vec<Model3dFile> = job
+            .meshes
+            .iter()
+            .map(|(format, bytes)| Model3dFile {
+                kind: Model3dAssetKind::Mesh,
+                format: format.clone(),
+                content_type: crate::proxy::storage::model3d_content_type(
+                    format,
+                    "application/octet-stream",
+                )
+                .to_string(),
+                bytes: bytes.clone(),
+                polycount: Some(CUBE_TRIANGLE_COUNT),
+                width: None,
+                height: None,
+            })
+            .collect();
+        files.push(Model3dFile {
+            kind: Model3dAssetKind::Preview,
+            format: "png".into(),
+            content_type: "image/png".into(),
+            bytes: job.preview.clone(),
+            polycount: None,
+            width: Some(512),
+            height: Some(512),
+        });
+
         Ok(Model3dGenerationPollResult {
             status: GenerationStatus::Completed,
             progress: 100,
-            files: vec![
-                Model3dFile {
-                    kind: Model3dAssetKind::Mesh,
-                    format: "glb".into(),
-                    content_type: "model/gltf-binary".into(),
-                    bytes: job.mesh.clone(),
-                    polycount: Some(CUBE_TRIANGLE_COUNT),
-                    width: None,
-                    height: None,
-                },
-                Model3dFile {
-                    kind: Model3dAssetKind::Preview,
-                    format: "png".into(),
-                    content_type: "image/png".into(),
-                    bytes: job.preview.clone(),
-                    polycount: None,
-                    width: Some(512),
-                    height: Some(512),
-                },
-            ],
+            files,
             error: None,
             metadata: meta,
         })
@@ -255,7 +292,8 @@ mod tests {
 
     fn extras() -> Model3dExtras {
         Model3dExtras {
-            output_format: None, texture: Some(true), pbr: None, target_polycount: None,
+            output_formats: vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()],
+            texture: Some(true), pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
         }
     }

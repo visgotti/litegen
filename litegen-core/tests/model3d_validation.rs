@@ -43,7 +43,8 @@ fn req(strict: bool) -> Model3dGenerationRequest {
             extra: None,
             metadata: None,
         },
-        output_format: None, texture: None, pbr: None, target_polycount: None,
+        output_formats: None, output_format: None,
+        texture: None, pbr: None, target_polycount: None,
         symmetry: None, topology: None, rig: None,
     }
 }
@@ -65,6 +66,163 @@ fn str_param(values: &[&str]) -> ParamSpec {
 
 fn bool_param() -> ParamSpec {
     ParamSpec::Bool(ParamSpecBool { default: None, label: None, description: None })
+}
+
+fn formats_param(values: &[&str], max_items: Option<usize>) -> ParamSpec {
+    ParamSpec::StringArray(ParamSpecStringArray {
+        enum_values: values.iter().map(|s| s.to_string()).collect(),
+        max_items,
+        default: vec!["glb".to_string()],
+        label: None,
+        description: None,
+    })
+}
+
+// ─── output_formats ─────────────────────────────────────────────────────────
+//
+// This param is the only one whose validated value becomes a PROMISE: whatever
+// survives here is re-checked at all three observers of completion, and a
+// generation that delivers less than this fails. So an unsatisfiable request
+// has to be rejected here, before the vendor is billed.
+
+#[test]
+fn a_format_the_model_cannot_emit_is_rejected_in_both_modes() {
+    let schema = schema_with(HashMap::from([
+        ("output_formats".to_string(), formats_param(&["glb", "obj"], Some(2))),
+    ]));
+    for strict in [true, false] {
+        let mut r = req(strict);
+        r.output_formats = Some(vec!["glb".into(), "fbx".into()]);
+        let err = validate_model3d(&schema, r).unwrap_err();
+        assert_eq!(err.code, "param_enum_mismatch", "strict={strict}");
+        assert_eq!(err.param.as_deref(), Some("output_formats"));
+        // A declared param with an unsupported VALUE is a client error in both
+        // modes — dropping it in lax mode would silently downgrade the promise.
+        assert!(err.message.contains("fbx"), "the error must name the format: {}", err.message);
+    }
+}
+
+#[test]
+fn asking_for_more_containers_than_the_model_emits_is_rejected() {
+    // Rodin's shape: `geometry_file_format` is a scalar, so only one container
+    // is reachable per job however many the model can produce overall.
+    let schema = schema_with(HashMap::from([
+        ("output_formats".to_string(), formats_param(&["glb", "obj", "stl"], Some(1))),
+    ]));
+    let mut r = req(true);
+    r.output_formats = Some(vec!["glb".into(), "obj".into()]);
+    let err = validate_model3d(&schema, r).unwrap_err();
+    assert_eq!(err.code, "param_too_many");
+    assert_eq!(err.param.as_deref(), Some("output_formats"));
+}
+
+#[test]
+fn an_explicitly_empty_list_is_rejected_rather_than_read_as_unset() {
+    let schema = schema_with(HashMap::from([
+        ("output_formats".to_string(), formats_param(&["glb"], Some(1))),
+    ]));
+    let mut r = req(true);
+    r.output_formats = Some(vec![]);
+    let err = validate_model3d(&schema, r).unwrap_err();
+    assert_eq!(err.code, "param_out_of_range");
+    assert_eq!(err.param.as_deref(), Some("output_formats"));
+}
+
+#[test]
+fn the_superseded_scalar_spelling_folds_into_the_plural() {
+    let schema = schema_with(HashMap::from([
+        ("output_formats".to_string(), formats_param(&["glb", "obj"], Some(2))),
+    ]));
+    let mut r = req(true);
+    r.output_format = Some("obj".into());
+    let out = validate_model3d(&schema, r).unwrap();
+    assert_eq!(out.request.output_formats.as_deref(), Some(&["obj".to_string()][..]));
+    assert!(out.request.output_format.is_none(), "the scalar must not survive alongside the plural");
+    assert!(out.dropped.is_empty(), "folding is not dropping: {:?}", out.dropped);
+}
+
+#[test]
+fn sending_both_spellings_keeps_the_plural_and_reports_the_scalar_dropped() {
+    let schema = schema_with(HashMap::from([
+        ("output_formats".to_string(), formats_param(&["glb", "obj"], Some(2))),
+    ]));
+    let mut r = req(true);
+    r.output_formats = Some(vec!["glb".into()]);
+    r.output_format = Some("obj".into());
+    let out = validate_model3d(&schema, r).unwrap();
+    assert_eq!(out.request.output_formats.as_deref(), Some(&["glb".to_string()][..]));
+    // Silently discarding one of two conflicting values is how a caller ends up
+    // convinced they asked for something they did not.
+    assert!(out.dropped.contains(&"output_format".to_string()), "{:?}", out.dropped);
+}
+
+#[test]
+fn formats_are_case_folded_and_deduplicated() {
+    let schema = schema_with(HashMap::from([
+        ("output_formats".to_string(), formats_param(&["glb", "obj"], Some(2))),
+    ]));
+    let mut r = req(true);
+    // `max_items` is 2 and this names three entries — it must still pass,
+    // because it is one container asked for twice plus one more.
+    r.output_formats = Some(vec!["GLB".into(), "glb".into(), " obj ".into()]);
+    let out = validate_model3d(&schema, r).unwrap();
+    assert_eq!(
+        out.request.output_formats.as_deref(),
+        Some(&["glb".to_string(), "obj".to_string()][..]),
+    );
+}
+
+#[test]
+fn a_legacy_scalar_spec_still_validates_the_plural_request() {
+    // A catalog that has not migrated yet: the model declares the old scalar
+    // `output_format`, and a client sends the new plural field.
+    let schema = schema_with(HashMap::from([
+        ("output_format".to_string(), str_param(&["glb", "obj"])),
+    ]));
+    let mut r = req(true);
+    r.output_formats = Some(vec!["obj".into()]);
+    let out = validate_model3d(&schema, r).unwrap();
+    assert_eq!(out.request.output_formats.as_deref(), Some(&["obj".to_string()][..]));
+
+    // ...and the scalar spec means one container per job, so two is too many.
+    let mut r = req(true);
+    r.output_formats = Some(vec!["glb".into(), "obj".into()]);
+    assert_eq!(validate_model3d(&schema, r).unwrap_err().code, "param_too_many");
+}
+
+#[test]
+fn a_model_with_no_format_spec_drops_in_lax_and_errors_in_strict() {
+    let schema = schema_with(HashMap::new());
+
+    let mut r = req(false);
+    r.output_formats = Some(vec!["obj".into()]);
+    let out = validate_model3d(&schema, r).unwrap();
+    assert!(out.request.output_formats.is_none());
+    assert!(out.dropped.contains(&"output_formats".to_string()), "{:?}", out.dropped);
+
+    let mut r = req(true);
+    r.output_formats = Some(vec!["obj".into()]);
+    let err = validate_model3d(&schema, r).unwrap_err();
+    assert_eq!(err.code, "param_unsupported");
+    assert_eq!(err.param.as_deref(), Some("output_formats"));
+}
+
+#[test]
+fn resolution_never_yields_an_empty_promise() {
+    // Whatever the model declares and the caller omits, something must be
+    // promised — an empty set would make the completion guard a no-op.
+    let declared = schema_with(HashMap::from([
+        ("output_formats".to_string(), formats_param(&["glb", "obj"], Some(2))),
+    ]));
+    assert_eq!(declared.resolve_output_formats(None), vec!["glb".to_string()]);
+    assert_eq!(
+        declared.resolve_output_formats(Some(&["OBJ".to_string()])),
+        vec!["obj".to_string()],
+    );
+
+    let undeclared = schema_with(HashMap::new());
+    assert_eq!(undeclared.resolve_output_formats(None), vec!["glb".to_string()]);
+    assert_eq!(undeclared.resolve_output_formats(Some(&[])), vec!["glb".to_string()]);
 }
 
 #[test]

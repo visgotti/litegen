@@ -268,19 +268,53 @@ pub(crate) async fn poll_once(
                 // `Failed` gets — a caller watching webhooks, not polling, must
                 // still learn this generation failed. Do not "simplify" this back
                 // to `reap_generation`; that would silently drop the webhook.
+                // GLB first, matching `Model3dGenerationResponse::mesh()` — with
+                // several containers delivered, `result_url` must not depend on
+                // which one the adapter happened to push first.
                 let mesh_url = assets.as_ref().and_then(|a| {
-                    a.iter()
-                        .find(|x| x.kind == crate::types::Model3dAssetKind::Mesh)
+                    let meshes = || a.iter().filter(|x| x.kind == crate::types::Model3dAssetKind::Mesh);
+                    meshes()
+                        .find(|x| x.format.eq_ignore_ascii_case(crate::types::DEFAULT_MODEL3D_FORMAT))
+                        .or_else(|| meshes().next())
                         .map(|m| m.url.clone())
                 });
                 let mesh_missing = poll.status == GenerationStatus::Completed && mesh_url.is_none();
-                if mesh_missing {
-                    warn!(generation_id = %gen.id, "poller: 3d completed without a mesh asset, failing the row");
+
+                // The second half of the same contract: every container the
+                // caller was promised at submit must be present, not merely one
+                // mesh. Read back off the row because the poller cannot see the
+                // router's in-flight job map. Same reasoning as the mesh guard
+                // above — a partial delivery is a paid generation the caller
+                // cannot use, so it takes the terminal `Failed` tail (and thus
+                // the webhook) rather than being reported as success.
+                let requested = crate::api::handlers::row_requested_formats(&gen);
+                let missing = if poll.status == GenerationStatus::Completed {
+                    let delivered: Vec<String> = assets.as_ref().map(|a| {
+                        a.iter()
+                            .filter(|x| x.kind == crate::types::Model3dAssetKind::Mesh)
+                            .map(|x| x.format.to_ascii_lowercase())
+                            .collect()
+                    }).unwrap_or_default();
+                    crate::types::missing_model3d_formats(&requested, &delivered)
+                } else {
+                    Vec::new()
+                };
+
+                if mesh_missing || !missing.is_empty() {
+                    let reason = if mesh_missing {
+                        "provider reported success without a mesh asset".to_string()
+                    } else {
+                        format!(
+                            "provider did not return the requested format(s): {}",
+                            missing.join(", ")
+                        )
+                    };
+                    warn!(generation_id = %gen.id, reason = %reason, "poller: failing the 3d row");
                     Some(PollOutcome {
                         status: GenerationStatus::Failed,
                         progress: poll.progress,
                         result_url: None,
-                        error: Some("provider reported success without a mesh asset".to_string()),
+                        error: Some(reason),
                         assets: None,
                     })
                 } else {
@@ -289,7 +323,14 @@ pub(crate) async fn poll_once(
                         progress: poll.progress,
                         result_url: mesh_url,
                         error: poll.error,
-                        assets: assets.map(|a| serde_json::json!({ "assets": a })),
+                        // `requested_formats` rides along because the terminal
+                        // write REPLACES metadata — dropping it here would erase
+                        // what submit recorded and leave every later read of this
+                        // row enforcing only the GLB floor.
+                        assets: assets.map(|a| serde_json::json!({
+                            "assets": a,
+                            "requested_formats": requested,
+                        })),
                     })
                 }
             }
@@ -919,7 +960,8 @@ mod poller_tests {
             reference_images: vec![], strict: true, extra: None, metadata: None,
         };
         let extras = crate::providers::Model3dExtras {
-            output_format: None, texture: None, pbr: None, target_polycount: None,
+            output_formats: vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()],
+            texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
         };
         p.generate(&schema, &base, &extras, &Default::default()).await.unwrap().provider_job_id
