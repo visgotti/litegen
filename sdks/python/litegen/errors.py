@@ -14,7 +14,8 @@ class LiteGenAPIError(LiteGenError):
     On a validation error, ``param`` names the request field at fault
     (``"output_formats"``, ``"reference_images"``, ``"prompt"``, …) and ``model``
     the model the request named. Branch on ``code`` and ``param`` rather than
-    parsing the message.
+    parsing the message. ``retry_after`` is the wait, in seconds, the server's
+    ``Retry-After`` header asked for (a 429 or 503), else ``None``.
     """
 
     def __init__(
@@ -27,6 +28,7 @@ class LiteGenAPIError(LiteGenError):
         provider_error: Any = None,
         param: str | None = None,
         model: str | None = None,
+        retry_after: float | None = None,
     ) -> None:
         super().__init__(message)
         self.status = status
@@ -35,6 +37,7 @@ class LiteGenAPIError(LiteGenError):
         self.provider_error = provider_error
         self.param = param
         self.model = model
+        self.retry_after = retry_after
 
 
 class LiteGenValidationError(LiteGenAPIError):
@@ -55,13 +58,24 @@ class LiteGenPollingTimeoutError(LiteGenError):
     """
 
     def __init__(
-        self, job_id: str, last_status: str | None = None, kind: str = "video"
+        self,
+        job_id: str | None = None,
+        last_status: str | None = None,
+        kind: str = "video",
+        *,
+        video_id: str | None = None,
     ) -> None:
         # `kind` is what timed out, as it reads in the message: "video",
         # "3D generation", or "job" from the generic poller. It is a trailing
         # argument defaulting to "video" because this error shipped as
         # `(video_id, last_status)`, and those callers must keep producing the
-        # exact message they always did.
+        # exact message they always did — `video_id=` by keyword included.
+        if video_id is not None:
+            if job_id is not None:
+                raise TypeError("pass the id once: job_id, or its older name video_id")
+            job_id = video_id
+        if job_id is None:
+            raise TypeError("LiteGenPollingTimeoutError needs the id of the job that timed out")
         suffix = f" (last status: {last_status})" if last_status else ""
         super().__init__(f"Polling for {kind} '{job_id}' timed out{suffix}")
         self.job_id = job_id

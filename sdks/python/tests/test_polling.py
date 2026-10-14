@@ -3,11 +3,13 @@ and 3D wrappers built on it."""
 from __future__ import annotations
 
 import enum
+import time
 from typing import Any
 
+import httpx
 import pytest
 
-from litegen.errors import LiteGenPollingTimeoutError
+from litegen.errors import LiteGenAPIError, LiteGenPollingTimeoutError, LiteGenTimeoutError
 from litegen.polling import (
     apoll_job,
     apoll_video,
@@ -190,3 +192,100 @@ def test_polling_timeout_error_keeps_its_original_two_argument_form() -> None:
         "processing",
     )
     assert str(LiteGenPollingTimeoutError("v1")) == "Polling for video 'v1' timed out"
+    # The keyword it shipped with still works.
+    by_keyword = LiteGenPollingTimeoutError(video_id="v1", last_status="processing")
+    assert str(by_keyword) == str(err)
+    assert (by_keyword.video_id, by_keyword.job_id) == ("v1", "v1")
+    with pytest.raises(TypeError):
+        LiteGenPollingTimeoutError("v1", video_id="v2")
+    with pytest.raises(TypeError):
+        LiteGenPollingTimeoutError()
+
+
+# ─── transient status-read failures are ridden out ───────────────────────────
+
+
+def _flaky_status(seq: list[Any]):
+    """A get_status that raises each exception in ``seq`` and returns each
+    mapping, in order; the last item repeats."""
+    state = {"calls": 0}
+
+    def get_status(_id: str) -> dict[str, Any]:
+        item = seq[min(state["calls"], len(seq) - 1)]
+        state["calls"] += 1
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    return get_status, state
+
+
+def _transient() -> list[Exception]:
+    return [
+        LiteGenAPIError(429, "Rate limit exceeded", retry_after=0.0),
+        LiteGenAPIError(503, "at capacity"),
+        LiteGenTimeoutError("read timed out"),
+        httpx.ConnectError("connection refused"),
+    ]
+
+
+def test_poll_job_rides_out_a_rate_limit_a_503_a_timeout_and_a_dropped_connection() -> None:
+    # Over a 30-minute 3D wait one of these is likely, and raising it would
+    # abandon a job that keeps running (and billing) on the server.
+    seq = [*_transient(), {"status": "processing"}, *_transient(), {"status": "completed"}]
+    get_status, state = _flaky_status(seq)
+    updates = list(poll_job("j1", get_status, interval=0, timeout=5))
+    assert [u["status"] for u in updates] == ["processing", "completed"]
+    assert state["calls"] == len(seq)
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 409])
+def test_poll_job_raises_a_client_error_at_once(status: int) -> None:
+    get_status, state = _flaky_status([LiteGenAPIError(status, "no")])
+    with pytest.raises(LiteGenAPIError) as exc:
+        list(poll_job("j1", get_status, interval=0, timeout=5))
+    assert exc.value.status == status
+    assert state["calls"] == 1
+
+
+def test_poll_job_gives_up_after_five_failures_in_a_row() -> None:
+    get_status, state = _flaky_status([LiteGenAPIError(502, "bad gateway")])
+    with pytest.raises(LiteGenAPIError) as exc:
+        list(poll_job("j1", get_status, interval=0, timeout=5))
+    assert exc.value.status == 502
+    assert state["calls"] == 6, "the first read and five retries"
+
+
+def test_poll_job_waits_out_retry_after_only_until_its_deadline() -> None:
+    limited = LiteGenAPIError(429, "Rate limit exceeded", retry_after=30.0)
+    get_status, _ = _flaky_status([{"status": "processing"}, limited])
+    started = time.monotonic()
+    with pytest.raises(LiteGenPollingTimeoutError) as exc:
+        list(poll_job("j1", get_status, interval=0, timeout=0.2))
+    assert time.monotonic() - started < 2, "slept the full Retry-After past the deadline"
+    assert exc.value.last_status == "processing"
+    assert exc.value.__cause__ is limited
+
+
+async def test_apoll_job_rides_out_transient_failures_and_gives_up_on_a_run() -> None:
+    seq = [*_transient(), {"status": "completed"}]
+    state = {"calls": 0}
+
+    async def get_status(_id: str) -> dict[str, Any]:
+        item = seq[min(state["calls"], len(seq) - 1)]
+        state["calls"] += 1
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    final = await async_wait_for_job("j1", get_status, interval=0, timeout=5)
+    assert final["status"] == "completed"
+
+    async def always_down(_id: str) -> dict[str, Any]:
+        state["calls"] += 1
+        raise LiteGenAPIError(500, "boom")
+
+    state["calls"] = 0
+    with pytest.raises(LiteGenAPIError):
+        await async_wait_for_job("j1", always_down, interval=0, timeout=5)
+    assert state["calls"] == 6

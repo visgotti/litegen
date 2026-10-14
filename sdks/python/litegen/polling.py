@@ -22,7 +22,9 @@ from typing import (
     cast,
 )
 
-from .errors import LiteGenPollingTimeoutError
+import httpx
+
+from .errors import LiteGenAPIError, LiteGenPollingTimeoutError, LiteGenTimeoutError
 from .types import Model3dGenerationResponse
 
 _TERMINAL = {"completed", "failed", "cancelled"}
@@ -43,6 +45,27 @@ _MODEL3D_KIND = "3D generation"
 # that never finished is marked failed anyway.
 MODEL3D_DEFAULT_TIMEOUT = 1800.0
 
+# Consecutive failed status reads a poll rides out before raising the last one.
+# A status read is a GET, safe to repeat, and over a 30-minute 3D wait a
+# rate-limit 429, a 503 while the proxy sheds load, or a dropped connection is
+# likely; giving up on one throws away a job that keeps running, and billing,
+# on the server.
+_MAX_POLL_RETRIES = 5
+_MAX_RETRY_DELAY = 30.0
+
+
+def _retry_delay(err: Exception, failures: int, interval: float) -> float | None:
+    """Seconds to wait before reading the status again after ``err``, the
+    ``failures``-th failure in a row, or ``None`` when ``err`` is final."""
+    if isinstance(err, LiteGenAPIError):
+        if err.status != 429 and err.status < 500:
+            return None
+        if err.retry_after is not None:
+            return err.retry_after
+    elif not isinstance(err, (LiteGenTimeoutError, httpx.TransportError)):
+        return None
+    return min(interval * 2 ** (failures - 1), _MAX_RETRY_DELAY)
+
 
 def poll_job(
     job_id: str,
@@ -62,16 +85,34 @@ def poll_job(
     (``completed`` / ``failed`` / ``cancelled``), which is the last value
     yielded. A ``failed`` job is yielded like any other update, never raised.
 
+    A status read that fails transiently (a 429 or 5xx, a timeout, a dropped
+    connection) is retried, after the server's ``Retry-After`` when it sent
+    one, up to five times in a row; any other error is raised at once.
+
     Raises :class:`~litegen.errors.LiteGenPollingTimeoutError`, naming ``kind``
     in its message, once ``timeout`` seconds pass without a terminal status.
     That stops the polling, not the job.
     """
     deadline = time.monotonic() + timeout
     last: _JobT | None = None
+    failures = 0
+    last_error: Exception | None = None
     while True:
         if time.monotonic() > deadline:
-            raise LiteGenPollingTimeoutError(job_id, _status_value(last), kind=kind)
-        last = get_status(job_id)
+            raise LiteGenPollingTimeoutError(
+                job_id, _status_value(last), kind=kind
+            ) from last_error
+        try:
+            last = get_status(job_id)
+        except Exception as e:
+            failures += 1
+            delay = _retry_delay(e, failures, interval)
+            if delay is None or failures > _MAX_POLL_RETRIES:
+                raise
+            last_error = e
+            time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
+            continue
+        failures, last_error = 0, None
         yield last
         if _status_value(last) in _TERMINAL:
             return
@@ -89,10 +130,24 @@ async def apoll_job(
     """Async version of :func:`poll_job`: drive it with ``async for``."""
     deadline = time.monotonic() + timeout
     last: _JobT | None = None
+    failures = 0
+    last_error: Exception | None = None
     while True:
         if time.monotonic() > deadline:
-            raise LiteGenPollingTimeoutError(job_id, _status_value(last), kind=kind)
-        last = await get_status(job_id)
+            raise LiteGenPollingTimeoutError(
+                job_id, _status_value(last), kind=kind
+            ) from last_error
+        try:
+            last = await get_status(job_id)
+        except Exception as e:
+            failures += 1
+            delay = _retry_delay(e, failures, interval)
+            if delay is None or failures > _MAX_POLL_RETRIES:
+                raise
+            last_error = e
+            await asyncio.sleep(min(delay, max(0.0, deadline - time.monotonic())))
+            continue
+        failures, last_error = 0, None
         yield last
         if _status_value(last) in _TERMINAL:
             return
