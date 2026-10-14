@@ -3,6 +3,7 @@ pub mod oauth;
 pub mod users;
 pub mod account;
 pub mod orgs;
+pub mod convert;
 pub mod management;
 
 pub use auth_password::{
@@ -2754,6 +2755,10 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         // literally equal to "assets" — unreachable, since ids are minted
         // `litegen-3d-{uuid}`.
         .route("/v1/models3d/{id}", get(get_3d_status))
+        // Standalone conversion: no provider, no generation row, no billing.
+        // Behind Generate rather than Read because it is CPU work on
+        // caller-supplied bytes, not a lookup.
+        .route("/v1/utils/models3d/convert", post(convert::convert_model3d))
         .layer(middleware::from_fn(|req: axum::extract::Request, next: middleware::Next| async {
             check_scope(Scope::Generate, req, next).await
         }))
@@ -2769,6 +2774,7 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/models", get(list_models))
         .route("/v1/models/{*id}", get(get_model_schema))
         .route("/v1/providers", get(list_providers))
+        .route("/v1/utils/models3d/formats", get(convert::list_model3d_convert_formats))
         .route("/health", get(health_check))
         .route("/v1/stats", get(get_stats))
         .route("/v1/logs", get(get_logs_filtered))

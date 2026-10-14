@@ -243,6 +243,17 @@ async fn main() -> anyhow::Result<()> {
             config.cors.allowed_origins.clone()
         };
 
+        // Response headers a cross-origin browser may READ. Without this, a
+        // browser SDK sees them as absent even though the server sent them —
+        // CORS hides every non-safelisted response header. These are the
+        // dropped-params and conversion-loss reports, and a converted file's
+        // download name.
+        let exposed_headers = [
+            axum::http::HeaderName::from_static("x-litegen-dropped-params"),
+            axum::http::HeaderName::from_static("x-litegen-conversion-losses"),
+            axum::http::header::CONTENT_DISPOSITION,
+        ];
+
         let layer = if effective_origins.iter().any(|o| o == "*") {
             // Wildcard — allow any origin (dev convenience)
             CorsLayer::new()
@@ -265,6 +276,7 @@ async fn main() -> anyhow::Result<()> {
                 .allow_methods(allowed_methods.to_vec())
                 .allow_headers(allowed_headers.to_vec())
         };
+        let layer = layer.expose_headers(exposed_headers.to_vec());
 
         if config.cors.allow_credentials {
             layer.allow_credentials(true)
