@@ -1,0 +1,220 @@
+## fal-ai/hunyuan3d/v2 — active image-to-3d
+{
+  "POST /fal-ai/hunyuan3d/v2 (application/json)": {
+    "properties": {
+      "guidance_scale": {
+        "default": 7.5,
+        "maximum": 20,
+        "minimum": 0,
+        "type": "number"
+      },
+      "input_image_url": {
+        "type": "string"
+      },
+      "num_inference_steps": {
+        "default": 50,
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "octree_resolution": {
+        "default": 256,
+        "maximum": 1024,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "textured_mesh": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "input_image_url"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/hyper3d/rodin — active image-to-3d
+{
+  "POST /fal-ai/hyper3d/rodin (application/json)": {
+    "properties": {
+      "TAPose": {
+        "default": false,
+        "type": "boolean"
+      },
+      "addons": {
+        "anyOf": [
+          {
+            "const": "HighPack",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "bbox_condition": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "condition_mode": {
+        "default": "concat",
+        "enum": [
+          "fuse",
+          "concat"
+        ],
+        "type": "string"
+      },
+      "geometry_file_format": {
+        "default": "glb",
+        "enum": [
+          "glb",
+          "usdz",
+          "fbx",
+          "obj",
+          "stl"
+        ],
+        "type": "string"
+      },
+      "input_image_urls": {
+        "items": {
+          "_fal_ui_field": "image",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "material": {
+        "default": "PBR",
+        "enum": [
+          "PBR",
+          "Shaded"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "default": "",
+        "maxLength": 1024,
+        "type": "string"
+      },
+      "quality": {
+        "default": "medium",
+        "enum": [
+          "high",
+          "medium",
+          "low",
+          "extra-low"
+        ],
+        "type": "string"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "tier": {
+        "default": "Regular",
+        "enum": [
+          "Regular",
+          "Sketch"
+        ],
+        "type": "string"
+      },
+      "use_hyper": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "type": "object"
+  }
+}
+
+## fal-ai/trellis — active image-to-3d
+{
+  "POST /fal-ai/trellis (application/json)": {
+    "properties": {
+      "image_url": {
+        "type": "string"
+      },
+      "mesh_simplify": {
+        "default": 0.95,
+        "maximum": 0.98,
+        "minimum": 0.9,
+        "type": "number"
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "slat_guidance_strength": {
+        "default": 3,
+        "maximum": 10,
+        "minimum": 0,
+        "type": "number"
+      },
+      "slat_sampling_steps": {
+        "default": 12,
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "ss_guidance_strength": {
+        "default": 7.5,
+        "maximum": 10,
+        "minimum": 0,
+        "type": "number"
+      },
+      "ss_sampling_steps": {
+        "default": 12,
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "texture_size": {
+        "default": 1024,
+        "enum": [
+          512,
+          1024,
+          2048
+        ],
+        "type": "integer"
+      }
+    },
+    "required": [
+      "image_url"
+    ],
+    "type": "object"
+  }
+}

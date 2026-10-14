@@ -1,22 +1,26 @@
 // fal.ai — an aggregator (~1,500 endpoints), so "new" is scoped to the model
-// families we carry: FLUX, Stable Diffusion / SDXL, Recraft, AuraFlow and LTX
-// Video, matched on the endpoint id, minus training endpoints (LoRA trainers
-// are not generation models). Sources are fal's public Platform API
-// (api.fal.ai/v1/models — no key needed, but unauthenticated calls are
-// rate-limited, so this stays at four fetches):
+// families we carry: FLUX, Stable Diffusion / SDXL, Recraft, AuraFlow, LTX
+// Video, and the 3D families Hyper3D Rodin, TRELLIS and Hunyuan3D, matched on
+// the endpoint id, minus training endpoints (LoRA trainers are not generation
+// models). Sources are fal's public Platform API (api.fal.ai/v1/models — no
+// key needed, but unauthenticated calls are rate-limited, so this stays at five
+// fetches):
 //  - catalog-1/-2: list mode, which returns every *active* endpoint (deprecated
 //    ones drop out) at most 1,000 per page. Two pages cover the catalog today;
 //    catalog-2 fails loudly once a third page exists. List order follows
 //    popularity, so which page an id lands on churns week to week — these two
 //    snapshots are a fixed note, not the id list, to keep "changed" meaningful.
-//  - carried-image/-video: find mode for exactly our endpoint ids with
+//  - carried-image/-video/-3d: find mode for exactly our endpoint ids with
 //    expand=openapi-3.0 — their registry status plus each endpoint's input
 //    schema (the typings snapshot). An id the registry no longer knows comes
-//    back without metadata and counts as absent.
+//    back without metadata and counts as absent. That spec is the same document
+//    the adapters cite as https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=…
+//    (byte-identical for the three 3D endpoints, 2026-10-12), so per-endpoint
+//    fetches of it would add calls without adding typings.
 // Vendor id = the endpoint id in the URL path. Mapping mirrors
-// litegen-core/src/providers/image/fal.rs `resolve_endpoint` and video/fal.rs
+// litegen-core/src/providers/image/fal.rs `resolve_endpoint`, video/fal.rs
 // `resolve_spec` (fal/video is its LTX Video default arm; fal/ltx-2.3 has its
-// own arm).
+// own arm) and model3d/fal.rs `resolve_spec` (text_to_3d and image_to_3d).
 import { openapiExcerpt } from '../extract.mjs';
 
 // Grouped by the adapter that calls them; each group is its own typings
@@ -37,11 +41,18 @@ const VIDEO = {
   'fal/video': ['fal-ai/ltx-video', 'fal-ai/ltx-video/image-to-video'],
   'fal/ltx-2.3': ['fal-ai/ltx-2.3/text-to-video', 'fal-ai/ltx-2.3/image-to-video'],
 };
-const GROUPS = { image: IMAGE, video: VIDEO };
-const MODELS = { ...IMAGE, ...VIDEO };
+const MODEL3D = {
+  // One endpoint for both modes: text_to_3d and image_to_3d are both fal-ai/hyper3d/rodin.
+  'fal/hyper3d-rodin': 'fal-ai/hyper3d/rodin',
+  // Image-to-3D only (text_to_3d is empty): image_url / input_image_url is required.
+  'fal/trellis': 'fal-ai/trellis',
+  'fal/hunyuan3d-v2': 'fal-ai/hunyuan3d/v2',
+};
+const GROUPS = { image: IMAGE, video: VIDEO, '3d': MODEL3D };
+const MODELS = { ...IMAGE, ...VIDEO, ...MODEL3D };
 
 const API = 'https://api.fal.ai/v1/models';
-const FAMILIES = /(?:^|[/-])(?:flux|stable-diffusion|sdxl|sd3|recraft|aura-?flow|ltx)/;
+const FAMILIES = /(?:^|[/-])(?:flux|stable-diffusion|sdxl|sd3|recraft|aura-?flow|ltx|hyper3d|rodin|trellis|hunyuan-?3d)/;
 
 const isTraining = (m) => m.metadata?.category === 'training' || m.metadata?.kind === 'training';
 
