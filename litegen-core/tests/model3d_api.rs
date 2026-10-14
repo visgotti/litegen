@@ -515,6 +515,38 @@ async fn cancelling_an_in_flight_3d_job_survives_every_later_poll() {
 }
 
 #[tokio::test]
+async fn a_cancelled_video_still_answers_its_status() {
+    // Cancel drops the router's video job; the status endpoint must then answer
+    // from the row (`cancelled`), not 404 "video job not found".
+    let (app, db) = harness::app_with_mock_3d().await;
+    let (status, submitted) = post_json(&app, "/v1/videos/generations", json!({ "model": "mock/video-gen", "prompt": "a fox" })).await;
+    assert_eq!(status, StatusCode::OK, "{submitted}");
+    let id = submitted["id"].as_str().expect("video id").to_string();
+    wait_for_generation_row(&db, &id).await;
+    let (status, cancelled) = cancel(&app, &id).await;
+    assert_eq!(status, StatusCode::OK, "{cancelled}");
+
+    let resp = app.clone().oneshot(
+        Request::get(format!("/v1/videos/{id}")).body(Body::empty()).unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let polled = harness::json_body(resp).await;
+    assert_eq!(polled["status"], "cancelled", "{polled}");
+}
+
+#[tokio::test]
+async fn a_video_id_is_not_answered_as_a_3d_generation() {
+    let (app, db) = harness::app_with_mock_3d().await;
+    let (_, submitted) = post_json(&app, "/v1/videos/generations", json!({ "model": "mock/video-gen", "prompt": "a fox" })).await;
+    let id = submitted["id"].as_str().expect("video id").to_string();
+    wait_for_generation_row(&db, &id).await;
+    let resp = app.clone().oneshot(
+        Request::get(format!("/v1/models3d/{id}")).body(Body::empty()).unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn a_cancelled_3d_generation_reports_usage_and_no_error() {
     let (app, db) = harness::app_with_mock_3d().await;
     let id = harness::submit(&app, "mock/mesh-3d", "a fox").await;
