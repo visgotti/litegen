@@ -1,5 +1,12 @@
-import { describe, it, expect } from "vitest";
-import { pollVideo, poll3d, pollJob, waitForCompletion } from "../src/polling";
+import { describe, it, expect, vi } from "vitest";
+import {
+  pollVideo,
+  poll3d,
+  pollJob,
+  waitForCompletion,
+  waitForModel3d,
+  MODEL3D_DEFAULT_TIMEOUT_MS,
+} from "../src/polling";
 import { LiteGenPollingTimeoutError } from "../src/errors";
 
 type Update = { status: string; progress: number };
@@ -74,6 +81,41 @@ describe("LiteGenPollingTimeoutError names the family that timed out", () => {
     const err = await drain(pollJob("x1", neverTerminal, { timeoutMs: -1 })).catch((e) => e);
     expect((err as LiteGenPollingTimeoutError).kind).toBe("job");
     expect((err as Error).message).toContain("Polling for job 'x1' timed out");
+  });
+});
+
+describe("3D polling budget", () => {
+  it("defaults to MODEL3D_DEFAULT_TIMEOUT_MS, not the 5-minute video default", async () => {
+    vi.useFakeTimers();
+    try {
+      const getStatus = fakeStatus([{ status: "processing", progress: 10 }]);
+      const settled = waitForModel3d("litegen-3d-1", getStatus, { intervalMs: 60_000 }).then(
+        () => "resolved",
+        (e: unknown) => e,
+      );
+
+      // Well past 5 minutes: a 3D job must still be polling.
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(await Promise.race([settled, Promise.resolve("still polling")])).toBe("still polling");
+
+      // Past 30 minutes: now it gives up, naming the family.
+      await vi.advanceTimersByTimeAsync(MODEL3D_DEFAULT_TIMEOUT_MS);
+      const err = await settled;
+      expect(err).toBeInstanceOf(LiteGenPollingTimeoutError);
+      expect((err as LiteGenPollingTimeoutError).kind).toBe("3D generation");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets an explicit timeout win over the default", async () => {
+    const getStatus = fakeStatus([{ status: "processing", progress: 10 }]);
+    const err = await waitForModel3d("litegen-3d-1", getStatus, { timeoutMs: -1 }).catch((e) => e);
+    expect(err).toBeInstanceOf(LiteGenPollingTimeoutError);
+  });
+
+  it("is 30 minutes", () => {
+    expect(MODEL3D_DEFAULT_TIMEOUT_MS).toBe(30 * 60_000);
   });
 });
 

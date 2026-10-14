@@ -1,14 +1,43 @@
 """Asynchronous LiteGen SDK client."""
 from __future__ import annotations
 
+import asyncio
 import os
-from typing import Any, AsyncIterator, Awaitable, Callable, Mapping
+from typing import Any, AsyncIterator, Awaitable, Callable, Generator, Mapping
+from urllib.parse import quote
 
 import httpx
+from typing_extensions import Unpack
 
-from .client import _clean, _drop_none, _q, _raise_for_status
+from .client import (
+    _DROPPED_PARAMS_HEADER,
+    _OCTET_STREAM,
+    _clean,
+    _conversion,
+    _drop_none,
+    _parse_dropped_params,
+    _q,
+    _raise_for_status,
+)
 from .errors import LiteGenTimeoutError
-from .polling import apoll_video, async_wait_for_video_completion
+from .polling import (
+    MODEL3D_DEFAULT_TIMEOUT,
+    apoll_model3d,
+    apoll_video,
+    async_wait_for_model3d_completion,
+    async_wait_for_video_completion,
+)
+from .types import (
+    CostEstimate,
+    Generation,
+    GenerationPage,
+    MediaType,
+    Model3dConversion,
+    Model3dConvertFormats,
+    Model3dFormat,
+    Model3dGenerateParams,
+    Model3dGenerationResponse,
+)
 
 
 class AsyncLiteGenClient:
@@ -41,6 +70,8 @@ class AsyncLiteGenClient:
 
         self.images = _AsyncImages(self)
         self.videos = _AsyncVideos(self)
+        self.models3d = _AsyncModels3d(self)
+        self.generations = _AsyncGenerations(self)
         self.models = _AsyncModels(self)
         self.health = _AsyncHealth(self)
         self.stats = _AsyncStats(self)
@@ -62,16 +93,33 @@ class AsyncLiteGenClient:
         await self.close()
 
     async def _request(self, method: str, path: str, *, json: Any = None, params: Any = None) -> Any:
+        return (await self._request_with_headers(method, path, json=json, params=params))[0]
+
+    async def _request_with_headers(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Any = None,
+        params: Any = None,
+        content: bytes | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> tuple[Any, httpx.Headers]:
+        """:meth:`_request`, plus the response headers (the job submits read the
+        dropped-params header, see :func:`litegen.client._parse_dropped_params`;
+        mesh conversion sends raw ``content`` and reads its losses header)."""
         try:
-            resp = await self._http.request(method, path, json=json, params=params)
+            resp = await self._http.request(
+                method, path, json=json, params=params, content=content, headers=headers
+            )
         except httpx.TimeoutException as e:
             raise LiteGenTimeoutError(str(e)) from e
         if resp.status_code >= 400:
             _raise_for_status(resp)
         ctype = resp.headers.get("content-type", "")
         if ctype.startswith("application/json"):
-            return resp.json()
-        return resp.content
+            return resp.json(), resp.headers
+        return resp.content, resp.headers
 
 
 class _AsyncImages:
@@ -101,32 +149,50 @@ class AsyncVideoJob:
 
     There's no SSE on the wire. ``await job.submitted`` returns the initial
     submit response (id, status) without waiting. Submission is lazy and
-    memoized: the POST fires on first use.
+    memoized: the POST fires on first use. ``await job.dropped_params()`` names
+    any params lax mode (``strict=False``) dropped.
     """
 
     def __init__(
         self,
-        submit: Callable[[], Awaitable[dict[str, Any]]],
+        submit: Callable[[], Awaitable[tuple[dict[str, Any], Mapping[str, str]]]],
         get_status: Callable[[str], Awaitable[dict[str, Any]]],
         *,
         interval: float = 2.0,
         timeout: float = 300.0,
     ) -> None:
+        # `submit` returns the response headers alongside the body because the
+        # dropped-params report travels in a header.
         self._submit = submit
         self._get_status = get_status
         self._interval = interval
         self._timeout = timeout
         self._submitted: dict[str, Any] | None = None
+        self._dropped_params: list[str] = []
+        # One POST however many coroutines reach first use together — the same
+        # guard as AsyncModel3dJob. `gather(job.submitted, job.dropped_params())`
+        # would otherwise start, and bill, two videos.
+        self._submit_lock = asyncio.Lock()
 
     async def _ensure_submitted(self) -> dict[str, Any]:
-        if self._submitted is None:
-            self._submitted = await self._submit()
-        return self._submitted
+        async with self._submit_lock:
+            if self._submitted is None:
+                body, headers = await self._submit()
+                self._dropped_params = _parse_dropped_params(headers.get(_DROPPED_PARAMS_HEADER))
+                self._submitted = body
+            return self._submitted
 
     @property
     def submitted(self) -> Awaitable[dict[str, Any]]:
         """Awaitable resolving to the initial submit response (id, status)."""
         return self._ensure_submitted()
+
+    async def dropped_params(self) -> list[str]:
+        """Params the server dropped rather than rejected, because the request set
+        ``strict=False``; ``[]`` when nothing was dropped. A method, not a
+        property, because it submits the job first if it hasn't been yet."""
+        await self._ensure_submitted()
+        return list(self._dropped_params)
 
     def __await__(self):
         return self._result().__await__()
@@ -163,8 +229,10 @@ class _AsyncVideos:
         timeout = req.pop("timeout", 300.0)
         body = _clean(req)
 
-        async def _submit() -> dict[str, Any]:
-            return await self._c._request("POST", "/v1/videos/generations", json=body)
+        async def _submit() -> tuple[dict[str, Any], httpx.Headers]:
+            return await self._c._request_with_headers(
+                "POST", "/v1/videos/generations", json=body
+            )
 
         return AsyncVideoJob(
             _submit, self.get_status, interval=interval, timeout=timeout
@@ -196,12 +264,221 @@ class _AsyncVideos:
         )
 
 
+class AsyncModel3dJob:
+    """Awaitable, async-iterable handle returned by ``client.models3d.generate``.
+
+    3D generation is always asynchronous on the server, so this handle mirrors
+    the sync :class:`~litegen.client.Model3dJob`::
+
+        # await → the final job (submits + polls under the hood)
+        final = await client.models3d.generate(model="fal/hyper3d-rodin", prompt="a teapot")
+        meshes = [a for a in final.get("assets", []) if a["kind"] == "mesh"]
+
+        # …or stream progress (each update carries the unified 0-100 progress)
+        async for update in client.models3d.generate(model="...", prompt="..."):
+            print(update["status"], update["progress"])
+
+    A ``failed`` or ``cancelled`` job is returned, not raised. ``await
+    job.submitted`` returns the initial submit response without waiting, ``await
+    job.id()`` its id, and ``await job.dropped_params()`` what lax mode dropped.
+    Submission is lazy and memoized: the POST fires on first use.
+    """
+
+    def __init__(
+        self,
+        submit: Callable[[], Awaitable[tuple[Model3dGenerationResponse, Mapping[str, str]]]],
+        get_status: Callable[[str], Awaitable[Model3dGenerationResponse]],
+        *,
+        interval: float = 2.0,
+        timeout: float = MODEL3D_DEFAULT_TIMEOUT,
+    ) -> None:
+        self._submit = submit
+        self._get_status = get_status
+        self._interval = interval
+        self._timeout = timeout
+        self._submitted: Model3dGenerationResponse | None = None
+        self._dropped_params: list[str] = []
+        # One POST however many coroutines reach first use together. Every
+        # accessor here is an awaitable that submits on demand, so an innocent
+        # `gather(job.id(), job.dropped_params())` would otherwise start, and
+        # bill, two 3D jobs.
+        self._submit_lock = asyncio.Lock()
+
+    async def _ensure_submitted(self) -> Model3dGenerationResponse:
+        async with self._submit_lock:
+            if self._submitted is None:
+                body, headers = await self._submit()
+                self._dropped_params = _parse_dropped_params(
+                    headers.get(_DROPPED_PARAMS_HEADER)
+                )
+                self._submitted = body
+            return self._submitted
+
+    @property
+    def submitted(self) -> Awaitable[Model3dGenerationResponse]:
+        """Awaitable resolving to the initial submit response (id, status)."""
+        return self._ensure_submitted()
+
+    async def id(self) -> str:
+        """The generation id. Submits the job first if it hasn't been yet."""
+        return (await self._ensure_submitted())["id"]
+
+    async def dropped_params(self) -> list[str]:
+        """Params the server dropped rather than rejected, because the request set
+        ``strict=False``; ``[]`` when nothing was dropped. Submits the job first if
+        it hasn't been yet."""
+        await self._ensure_submitted()
+        return list(self._dropped_params)
+
+    def __await__(self) -> Generator[Any, None, Model3dGenerationResponse]:
+        return self._result().__await__()
+
+    async def _result(self) -> Model3dGenerationResponse:
+        last = await self._ensure_submitted()
+        async for update in self._stream():
+            last = update
+        return last
+
+    def __aiter__(self) -> AsyncIterator[Model3dGenerationResponse]:
+        return self._stream()
+
+    async def _stream(self) -> AsyncIterator[Model3dGenerationResponse]:
+        job = await self._ensure_submitted()
+        async for update in apoll_model3d(
+            job["id"], self._get_status, interval=self._interval, timeout=self._timeout
+        ):
+            yield update
+
+
+class _AsyncModels3d:
+    def __init__(self, c: AsyncLiteGenClient) -> None:
+        self._c = c
+
+    def generate(
+        self,
+        *,
+        interval: float = 2.0,
+        timeout: float = MODEL3D_DEFAULT_TIMEOUT,
+        **req: Unpack[Model3dGenerateParams],
+    ) -> AsyncModel3dJob:
+        """Submit a 3D job (``POST /v1/models3d/generations``), returning an
+        awaitable, async-iterable :class:`AsyncModel3dJob`.
+
+        ``await`` it for the finished job, or ``async for`` over it to stream
+        progress. ``interval`` / ``timeout`` (seconds) tune the polling and are
+        never sent; the timeout defaults to 30 minutes, and hitting it stops the
+        polling, not the job.
+        """
+        body = _clean(req)
+
+        async def _submit() -> tuple[Model3dGenerationResponse, httpx.Headers]:
+            return await self._c._request_with_headers(
+                "POST", "/v1/models3d/generations", json=body
+            )
+
+        return AsyncModel3dJob(
+            _submit, self.get_status, interval=interval, timeout=timeout
+        )
+
+    async def estimate_cost(self, **req: Unpack[Model3dGenerateParams]) -> CostEstimate:
+        """Price a 3D request without running it (``POST /v1/models3d/cost``)."""
+        return await self._c._request("POST", "/v1/models3d/cost", json=_clean(req))
+
+    async def get_status(self, generation_id: str) -> Model3dGenerationResponse:
+        """Current state of a 3D job (``GET /v1/models3d/{id}``)."""
+        return await self._c._request(
+            "GET", f"/v1/models3d/{quote(generation_id, safe='')}"
+        )
+
+    async def wait_for_completion(
+        self,
+        generation_id: str,
+        *,
+        interval: float = 2.0,
+        timeout: float = MODEL3D_DEFAULT_TIMEOUT,
+    ) -> Model3dGenerationResponse:
+        """Poll ``GET /v1/models3d/{id}`` until the job is terminal; return the final state."""
+        return await async_wait_for_model3d_completion(
+            generation_id, self.get_status, interval=interval, timeout=timeout
+        )
+
+    def poll(
+        self,
+        generation_id: str,
+        *,
+        interval: float = 2.0,
+        timeout: float = MODEL3D_DEFAULT_TIMEOUT,
+    ) -> AsyncIterator[Model3dGenerationResponse]:
+        """Stream status updates from ``GET /v1/models3d/{id}`` as an async generator::
+
+            async for update in client.models3d.poll(job_id):
+                print(update["status"], update["progress"])
+        """
+        return apoll_model3d(
+            generation_id, self.get_status, interval=interval, timeout=timeout
+        )
+
+    async def convert(
+        self, data: bytes, *, from_format: Model3dFormat, to_format: Model3dFormat
+    ) -> Model3dConversion:
+        """Convert a mesh file to another container
+        (``POST /v1/utils/models3d/convert``); see
+        :meth:`litegen.client._Models3dNamespace.convert`."""
+        body, headers = await self._c._request_with_headers(
+            "POST", "/v1/utils/models3d/convert",
+            params={"from": from_format, "to": to_format},
+            content=bytes(data),
+            headers=_OCTET_STREAM,
+        )
+        return _conversion(body, headers, to_format)
+
+    async def convert_formats(self) -> Model3dConvertFormats:
+        """What the converter accepts (``GET /v1/utils/models3d/formats``)."""
+        return await self._c._request("GET", "/v1/utils/models3d/formats")
+
+
+class _AsyncGenerations:
+    """Generation rows, shared by every media type (image, video and 3D)."""
+
+    def __init__(self, c: AsyncLiteGenClient) -> None:
+        self._c = c
+
+    async def list(self, *, page: int = 1, per_page: int = 50) -> GenerationPage:
+        """One page of generation rows (``GET /v1/generations``)."""
+        return await self._c._request(
+            "GET", "/v1/generations", params={"page": page, "per_page": per_page}
+        )
+
+    async def get(self, generation_id: str) -> Generation:
+        """One generation row (``GET /v1/generations/{id}``)."""
+        return await self._c._request(
+            "GET", f"/v1/generations/{quote(generation_id, safe='')}"
+        )
+
+    async def cancel(self, generation_id: str) -> Generation:
+        """Cancel a pending or processing job (``PATCH /v1/generations/{id}``).
+
+        Works for any async job, video or 3D, and returns the updated row. A 3D
+        job's polls report ``cancelled`` from then on, so an
+        :class:`AsyncModel3dJob` being awaited returns it. A job that already
+        finished cannot be cancelled: the server answers 409, raised as
+        :class:`~litegen.errors.LiteGenAPIError`.
+        """
+        return await self._c._request(
+            "PATCH",
+            f"/v1/generations/{quote(generation_id, safe='')}",
+            json={"status": "cancelled"},
+        )
+
+
 class _AsyncModels:
     def __init__(self, c: AsyncLiteGenClient) -> None:
         self._c = c
 
-    async def list(self) -> Any:
-        resp = await self._c._request("GET", "/v1/models")
+    async def list(self, *, media_type: MediaType | None = None) -> Any:
+        """Models in the catalog (``GET /v1/models``), optionally of one ``media_type``."""
+        params = {"media_type": media_type} if media_type is not None else None
+        resp = await self._c._request("GET", "/v1/models", params=params)
         return resp["data"] if isinstance(resp, dict) and "data" in resp else resp
 
     async def get(self, model_id: str) -> Any:

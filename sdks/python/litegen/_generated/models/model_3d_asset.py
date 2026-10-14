@@ -11,19 +11,26 @@ T = TypeVar("T", bound="Model3DAsset")
 
 @_attrs_define
 class Model3DAsset:
-    """One file produced by a 3D generation. A completed generation always carries
-    exactly one `Mesh` asset; consumers treat its absence as a provider failure.
-    `url` is always absolute — a root-relative path is indistinguishable from an
-    outage to a client fetching it from a worker.
+    """One file produced by a 3D generation, re-hosted on litegen storage (the
+    app's own bucket when it configured one).
+
+    A `completed` generation carries one `mesh` asset for every format in its
+    `output_formats` — never fewer; a missing one fails the generation instead —
+    plus whatever textures and previews the vendor returned.
 
         Attributes:
-            format_ (str): "glb" | "obj" | "fbx" | "usdz" | "png" | "jpg".
-            kind (Model3DAssetKind):
-            url (str):
-            height (Union[None, Unset, int]):
-            polycount (Union[None, Unset, int]): Meshes only.
-            size_bytes (Union[None, Unset, int]):
-            width (Union[None, Unset, int]): Preview / texture assets only.
+            format_ (str): Lowercase container without a dot. Meshes use the `Model3dFormat`
+                vocabulary; textures and previews their image format (`png`, `jpg`,
+                `webp`). A plain string so a client tolerates a format added later.
+            kind (Model3DAssetKind): What a `Model3dAsset` is.
+            url (str): Always absolute: a root-relative path is indistinguishable from an
+                outage to a client fetching it from a worker. Meshes live at
+                `…/{generation_id}/model.{format}`.
+            height (Union[None, Unset, int]): Pixel height, on textures and previews whose vendor reports it.
+            polycount (Union[None, Unset, int]): Triangle count, on meshes whose vendor reports one. A container litegen
+                derived carries its source's count — conversion keeps every triangle.
+            size_bytes (Union[None, Unset, int]): Size of the stored file.
+            width (Union[None, Unset, int]): Pixel width, on textures and previews whose vendor reports it.
     """
 
     format_: str

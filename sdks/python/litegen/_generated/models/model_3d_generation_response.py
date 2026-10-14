@@ -25,20 +25,24 @@ T = TypeVar("T", bound="Model3DGenerationResponse")
 
 @_attrs_define
 class Model3DGenerationResponse:
-    """3D generation is always async — this is both the submit response and the
-    poll response, mirroring `VideoGenerationResponse` with `video_url` replaced
-    by the richer `assets` list.
+    """A 3D generation's state — both the submit response and every poll
+    response, since 3D generation is always async. Mirrors
+    `VideoGenerationResponse`, with `video_url` replaced by `assets`.
 
         Attributes:
-            created (int):
-            id (str):
+            created (int): Unix seconds when the generation was submitted.
+            id (str): `litegen-3d-…`. Poll it at `GET /v1/models3d/{id}`; it is also the
+                generation's id under `/v1/generations`.
             model (str):
-            progress (int): Unified 0–100 progress.
+            progress (int): 0–100. Vendors that only report queue state (fal) move in coarse steps.
             provider (str):
             status (GenerationStatus):
-            assets (Union[Unset, List['Model3DAsset']]): Populated on `completed`. Omitted entirely while the job is in
-                flight.
-            error (Union[None, Unset, str]):
+            assets (Union[Unset, List['Model3DAsset']]): Populated on `completed`; omitted while in flight and on `failed`,
+                so a
+                failed generation never looks half-usable.
+            error (Union[None, Unset, str]): Why the generation failed, when it did. Vendor failures carry the
+                vendor's message, with its machine-readable type in parentheses when it
+                sent one.
             usage (Union['UsageInfo', None, Unset]):
     """
 

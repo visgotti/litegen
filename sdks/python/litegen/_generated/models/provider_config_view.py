@@ -34,7 +34,7 @@ class ProviderConfigView:
         enabled (bool):
         extra_header_names (List[str]): Header names only; values can carry secrets.
         has_secret (bool):
-        modalities (List[str]): Media this adapter can serve: image, video.
+        modalities (List[str]): Media this adapter can serve: image, video, model3d.
         model_mapping (ProviderConfigViewModelMapping):
         name (str):
         source (str): Where the effective config comes from: `env`, `runtime` or `none`.

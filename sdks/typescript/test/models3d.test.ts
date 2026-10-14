@@ -73,6 +73,42 @@ describe("client.models3d", () => {
   });
 });
 
+describe("client.models.list", () => {
+  it("narrows the catalog with ?media_type=", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(String(url)).toBe("https://litegen.test/v1/models?media_type=model3d");
+      return jsonResponse({ data: [{ id: "mock/mesh-3d" }] });
+    });
+    const models = await clientWith(fetchMock as unknown as typeof fetch).models.list({
+      media_type: "model3d",
+    });
+    expect(models.map((m) => m.id)).toEqual(["mock/mesh-3d"]);
+  });
+
+  it("sends no query when unfiltered", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(String(url)).toBe("https://litegen.test/v1/models");
+      return jsonResponse({ data: [] });
+    });
+    await clientWith(fetchMock as unknown as typeof fetch).models.list();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("still accepts the original list(signal) form", async () => {
+    const ctrl = new AbortController();
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(String(url)).toBe("https://litegen.test/v1/models");
+      // The client wraps the caller's signal in its own timeout controller;
+      // aborting the caller's must abort the request.
+      ctrl.abort();
+      expect(init?.signal?.aborted).toBe(true);
+      return jsonResponse({ data: [] });
+    });
+    await clientWith(fetchMock as unknown as typeof fetch).models.list(ctrl.signal);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
 describe("pollJob", () => {
   it("is generic over any { status } response", async () => {
     // The point of the refactor: poll3d is a two-line wrapper, not a copy.

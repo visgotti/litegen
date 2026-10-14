@@ -8,8 +8,8 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
-from .client import LiteGenClient, VideoJob
-from .async_client import AsyncLiteGenClient, AsyncVideoJob
+from .client import LiteGenClient, Model3dJob, VideoJob
+from .async_client import AsyncLiteGenClient, AsyncModel3dJob, AsyncVideoJob
 from .errors import (
     LiteGenError,
     LiteGenAPIError,
@@ -18,8 +18,28 @@ from .errors import (
     LiteGenPollingTimeoutError,
 )
 from .polling import (
-    wait_for_video_completion,
+    MODEL3D_DEFAULT_TIMEOUT,
+    apoll_job,
+    apoll_model3d,
+    async_wait_for_job,
+    async_wait_for_model3d_completion,
     async_wait_for_video_completion,
+    poll_job,
+    poll_model3d,
+    wait_for_job,
+    wait_for_model3d_completion,
+    wait_for_video_completion,
+)
+# The 3D request/response shapes are static TypedDicts (plain dicts at runtime).
+# The rest of litegen.types (ReferenceImage, CostEstimate, UsageInfo,
+# GenerationStatus, …) stays in that module: those names at this level already
+# belong to the generated classes re-exported below.
+from .types import (
+    Model3dAsset,
+    Model3dConversion,
+    Model3dConvertFormats,
+    Model3dGenerateParams,
+    Model3dGenerationResponse,
 )
 
 
@@ -56,6 +76,12 @@ def _reexport_generated() -> list[str]:
         "HealthResponse", "LivenessResponse", "CacheStatus",
         "ModelListResponse", "CacheClearedResponse", "RevokeKeyResponse",
         "BaseGenerationRequest",
+        # The generated 3D classes (Model3DGenerationRequest,
+        # Model3DGenerationResponse, Model3DAsset, Model3DAssetKind) are left
+        # out on purpose. This level exports the `litegen.types` TypedDicts
+        # Model3dGenerationResponse / Model3dAsset, which describe the dicts the
+        # client actually returns; the attrs classes would sit beside them as
+        # different types whose names differ by one letter's case.
     ]
     g = globals()
     for name in candidates:
@@ -69,8 +95,10 @@ __all__ = [
     "__version__",
     "LiteGenClient",
     "VideoJob",
+    "Model3dJob",
     "AsyncLiteGenClient",
     "AsyncVideoJob",
+    "AsyncModel3dJob",
     "LiteGenError",
     "LiteGenAPIError",
     "LiteGenValidationError",
@@ -78,4 +106,18 @@ __all__ = [
     "LiteGenPollingTimeoutError",
     "wait_for_video_completion",
     "async_wait_for_video_completion",
+    "poll_job",
+    "apoll_job",
+    "wait_for_job",
+    "async_wait_for_job",
+    "poll_model3d",
+    "apoll_model3d",
+    "wait_for_model3d_completion",
+    "async_wait_for_model3d_completion",
+    "MODEL3D_DEFAULT_TIMEOUT",
+    "Model3dGenerateParams",
+    "Model3dGenerationResponse",
+    "Model3dAsset",
+    "Model3dConversion",
+    "Model3dConvertFormats",
 ] + _reexport_generated()

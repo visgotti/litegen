@@ -1,7 +1,7 @@
 {
   "name": "@litegen/sdk",
   "version": "0.0.1",
-  "description": "First-party TypeScript SDK for LiteGen — universal AI image & video generation proxy.",
+  "description": "First-party TypeScript SDK for LiteGen — universal AI image, video & 3D generation proxy.",
   "license": "MIT",
   "homepage": "https://litegen.ai",
   "repository": {
@@ -9,7 +9,7 @@
     "url": "git+https://github.com/visgotti/litegen-first.git",
     "directory": "sdks/typescript"
   },
-  "keywords": ["litegen", "ai", "image-generation", "video-generation", "sdk", "fal", "replicate", "openai"],
+  "keywords": ["litegen", "ai", "image-generation", "video-generation", "3d-generation", "sdk", "fal", "replicate", "openai"],
   "publishConfig": {
     "access": "public"
   },

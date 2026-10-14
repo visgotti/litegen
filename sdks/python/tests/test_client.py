@@ -1,12 +1,16 @@
 """Unit tests for the LiteGen Python SDK."""
 from __future__ import annotations
 
+import asyncio
+from typing import Any
+
 import pytest
 import respx
 from httpx import Response
 
 from litegen import (
     AsyncLiteGenClient,
+    AsyncVideoJob,
     LiteGenAPIError,
     LiteGenClient,
     LiteGenValidationError,
@@ -169,6 +173,108 @@ def test_video_job_submitted_does_not_wait() -> None:
     submitted = client.videos.generate(prompt="p", model="runway/gen-3").submitted
     assert submitted["id"] == "vid-9"
     assert submitted["status"] == "processing"
+
+
+_SUBMITTED_VIDEO = {
+    "id": "vid-9", "status": "processing", "model": "m", "provider": "p",
+    "progress": 0, "created": 1,
+}
+
+
+@respx.mock
+def test_validation_error_names_the_param_and_model() -> None:
+    # The validator's error body names the offending field and the model.
+    respx.post("http://localhost:4000/v1/models3d/generations").mock(
+        return_value=Response(
+            400,
+            json={
+                "error": {
+                    "code": "param_unsupported",
+                    "message": "seed not supported by 'mock/mesh-3d'",
+                    "model": "mock/mesh-3d",
+                    "param": "seed",
+                    "type": "validation_error",
+                }
+            },
+        )
+    )
+    job = LiteGenClient().models3d.generate(model="mock/mesh-3d", prompt="a fox", seed=7)
+    with pytest.raises(LiteGenValidationError) as exc:
+        job.result()
+    assert (exc.value.code, exc.value.param, exc.value.model) == (
+        "param_unsupported",
+        "seed",
+        "mock/mesh-3d",
+    )
+
+
+def test_api_error_param_and_model_default_to_none() -> None:
+    err = LiteGenAPIError(500, "boom", type="internal_error")
+    assert err.param is None and err.model is None
+
+
+@respx.mock
+def test_video_job_reports_params_dropped_in_lax_mode() -> None:
+    # Lax mode names what it dropped in a response header on the submit.
+    submit = respx.post("http://localhost:4000/v1/videos/generations").mock(
+        return_value=Response(
+            200,
+            json=_SUBMITTED_VIDEO,
+            headers={"X-Litegen-Dropped-Params": "fps,negative_prompt"},
+        )
+    )
+    client = LiteGenClient()
+    job = client.videos.generate(prompt="p", model="runway/gen-3", strict=False, fps=60)
+    assert job.dropped_params == ["fps", "negative_prompt"]  # submits on first read
+    assert job.submitted["id"] == "vid-9"
+    assert submit.call_count == 1
+
+    # No header: nothing was dropped.
+    submit.mock(return_value=Response(200, json=_SUBMITTED_VIDEO))
+    assert client.videos.generate(prompt="p", model="runway/gen-3").dropped_params == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_async_video_job_reports_params_dropped_in_lax_mode() -> None:
+    _mock_video_job()  # the status polls; the submit is re-mocked with the header
+    submit = respx.post("http://localhost:4000/v1/videos/generations").mock(
+        return_value=Response(
+            200, json=_SUBMITTED_VIDEO, headers={"x-litegen-dropped-params": "fps"}
+        )
+    )
+    async with AsyncLiteGenClient() as client:
+        job = client.videos.generate(
+            prompt="p", model="runway/gen-3", strict=False, fps=60, interval=0.0, timeout=5.0
+        )
+        assert await job.dropped_params() == ["fps"]
+        final = await job
+    assert final["status"] == "completed"
+    assert submit.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_async_video_job_concurrent_first_use_submits_once() -> None:
+    # Every accessor submits on demand, so two coroutines reaching first use
+    # together must share ONE POST — otherwise this starts, and bills, two
+    # videos. The submit yields mid-request, as a real one does, which is
+    # exactly where an unguarded check-then-submit lets the second one in.
+    calls = 0
+
+    async def submit() -> tuple[dict[str, Any], dict[str, str]]:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)
+        return dict(_SUBMITTED_VIDEO), {"x-litegen-dropped-params": "fps"}
+
+    async def get_status(_id: str) -> dict[str, Any]:
+        return {**_SUBMITTED_VIDEO, "status": "completed", "progress": 100}
+
+    job = AsyncVideoJob(submit, get_status, interval=0.0, timeout=5.0)
+    submitted, dropped = await asyncio.gather(job.submitted, job.dropped_params())
+    assert calls == 1
+    assert submitted["id"] == "vid-9"
+    assert dropped == ["fps"]
 
 
 @pytest.mark.asyncio

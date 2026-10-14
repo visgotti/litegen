@@ -1110,7 +1110,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GET /v1/models/{id} — Full schema for one model. */
+        /**
+         * GET /v1/models/{id} — Full schema for one model, as a caller should read it.
+         * @description Served, not raw. `params.output_formats` lists every container a caller may
+         *     request — the vendor's own plus what litegen derives locally — with
+         *     `derivable_values` saying which share one vendor job (see
+         *     `ParamSpecStringArray`). A model still declaring the superseded scalar
+         *     `output_format` is served under the canonical plural, so a client only ever
+         *     has one spelling to render.
+         */
         get: operations["get_model_schema"];
         put?: never;
         post?: never;
@@ -1538,6 +1546,48 @@ export interface paths {
         patch: operations["patch_user"];
         trace?: never;
     };
+    "/v1/utils/models3d/convert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /v1/utils/models3d/convert — Convert a mesh between containers without generating anything.
+         * @description The body is the raw file. The response is the converted file, with the
+         *     target's `Content-Type`. Whatever the target container can hold survives
+         *     (materials, textures, skins, animation); what it cannot is dropped and
+         *     named in `X-Litegen-Conversion-Losses`.
+         *
+         *     Live: `curl --data-binary @fox.glb "https://app.litegen.ai/api/v1/utils/models3d/convert?from=glb&to=obj" -H "Authorization: Bearer sk_live_..." -o fox.obj`
+         */
+        post: operations["convert_model3d"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/utils/models3d/formats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/utils/models3d/formats — Containers the standalone converter reads and writes. */
+        get: operations["list_model3d_convert_formats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/videos/cost": {
         parameters: {
             query?: never;
@@ -1808,7 +1858,14 @@ export interface components {
             /** Format: int32 */
             n?: number;
             negative_prompt?: string | null;
-            prompt: string;
+            /**
+             * @description Whether a prompt is required is decided per model, by its
+             *     `prompt.required` in `GET /v1/models/{id}` — never by the wire format.
+             *     Omitting it is the same as sending `""`, which an image-to-3D model
+             *     with no prompt field (TRELLIS, Hunyuan3D v2) accepts and a text model
+             *     answers with `prompt_required`.
+             */
+            prompt?: string;
             reference_images?: components["schemas"]["ReferenceImage"][];
             /** Format: int64 */
             seed?: number | null;
@@ -2085,9 +2142,26 @@ export interface components {
          */
         EntityType: "key" | "org" | "app" | "member" | "end_user";
         ErrorDetail: {
+            /**
+             * @description Machine-readable reason within the family, e.g. `param_unsupported`,
+             *     `param_enum_mismatch`, `prompt_required`, `ref_role_required`.
+             */
             code?: string | null;
+            /** @description Human-readable; not for matching on — use `code` and `param`. */
             message: string;
+            /** @description The model the rejected request named. Validation errors only. */
+            model?: string | null;
+            /**
+             * @description The request field that failed validation — `output_formats`, `prompt`,
+             *     `reference_images`, `extra.<key>` — so a caller can tell which one to fix
+             *     without parsing `message`. Validation errors only.
+             */
+            param?: string | null;
             provider_error?: unknown;
+            /**
+             * @description The error's family, e.g. `validation_error`, `authentication_error`,
+             *     `quota_exceeded`, `provider_not_configured`.
+             */
             type: string;
         };
         ErrorResponse: {
@@ -2302,102 +2376,220 @@ export interface components {
             user_id: string;
         };
         /**
-         * @description One file produced by a 3D generation. A completed generation always carries
-         *     exactly one `Mesh` asset; consumers treat its absence as a provider failure.
-         *     `url` is always absolute — a root-relative path is indistinguishable from an
-         *     outage to a client fetching it from a worker.
+         * @description One file produced by a 3D generation, re-hosted on litegen storage (the
+         *     app's own bucket when it configured one).
+         *
+         *     A `completed` generation carries one `mesh` asset for every format in its
+         *     `output_formats` — never fewer; a missing one fails the generation instead —
+         *     plus whatever textures and previews the vendor returned.
          */
         Model3dAsset: {
-            /** @description "glb" | "obj" | "fbx" | "usdz" | "png" | "jpg". */
+            /**
+             * @description Lowercase container without a dot. Meshes use the `Model3dFormat`
+             *     vocabulary; textures and previews their image format (`png`, `jpg`,
+             *     `webp`). A plain string so a client tolerates a format added later.
+             */
             format: string;
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description Pixel height, on textures and previews whose vendor reports it.
+             */
             height?: number | null;
             kind: components["schemas"]["Model3dAssetKind"];
             /**
              * Format: int32
-             * @description Meshes only.
+             * @description Triangle count, on meshes whose vendor reports one. A container litegen
+             *     derived carries its source's count — conversion keeps every triangle.
              */
             polycount?: number | null;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Size of the stored file.
+             */
             size_bytes?: number | null;
+            /**
+             * @description Always absolute: a root-relative path is indistinguishable from an
+             *     outage to a client fetching it from a worker. Meshes live at
+             *     `…/{generation_id}/model.{format}`.
+             */
             url: string;
             /**
              * Format: int32
-             * @description Preview / texture assets only.
+             * @description Pixel width, on textures and previews whose vendor reports it.
              */
             width?: number | null;
         };
-        /** @enum {string} */
+        /**
+         * @description What a `Model3dAsset` is.
+         * @enum {string}
+         */
         Model3dAssetKind: "mesh" | "texture" | "preview";
-        Model3dGenerationRequest: components["schemas"]["BaseGenerationRequest"] & {
+        /** @description What the converter can do, for a client to check before uploading. */
+        Model3dConvertFormats: {
             /**
-             * @description Superseded by `output_formats`; a value here is folded into it. Kept so
-             *     clients written against the scalar keep working for one release.
+             * @description Containers accepted as both `from` and `to`. Every pair converts, in
+             *     both directions. Grows with litegen's converter, so read it rather than
+             *     hardcoding it; it can be narrower than the `Model3dFormat` vocabulary.
              */
-            output_format?: string | null;
+            formats: components["schemas"]["Model3dFormat"][];
             /**
-             * @description Desired mesh containers, e.g. `["glb", "fbx"]`. Every format asked for
-             *     here is guaranteed present on a `completed` generation or the generation
-             *     fails — see `missing_model3d_formats`. Defaults to the model's declared
-             *     default, and to `["glb"]` when it declares none.
+             * Format: int64
+             * @description Largest request body accepted, in bytes. Larger bodies get `413`.
              */
-            output_formats?: string[] | null;
-            /** @description PBR materials, where the model supports them. */
-            pbr?: boolean | null;
-            /** @description Auto-rig / emit a skeleton, where supported. */
-            rig?: boolean | null;
-            /** @description "off" | "auto" | "on". */
-            symmetry?: string | null;
-            /** Format: int32 */
-            target_polycount?: number | null;
-            /** @description Generate textures (vs. bare geometry). */
-            texture?: boolean | null;
-            /** @description "triangle" | "quad". */
-            topology?: string | null;
+            max_input_bytes: number;
         };
         /**
-         * @description 3D generation is always async — this is both the submit response and the
-         *     poll response, mirroring `VideoGenerationResponse` with `video_url` replaced
-         *     by the richer `assets` list.
+         * @description Every mesh container a 3D request may name in `output_formats`.
+         *
+         *     The closed vocabulary across all of litegen's 3D models. Which subset one
+         *     model can deliver is per model: `GET /v1/models/{id}` lists it under
+         *     `params.output_formats.enum_values`, and anything outside it is refused
+         *     with `param_enum_mismatch` before any vendor is called.
+         *
+         *     A container reaches a caller one of two ways. Either litegen derives it
+         *     locally from whatever readable container the vendor emitted — the set
+         *     `proxy::model3d_convert::derivable_formats` returns, served per model as
+         *     `params.output_formats.derivable_values` — and any number of those cost one
+         *     vendor job together; or the vendor emits it itself, one job each. Which is
+         *     which grows with `litegen-core/src/mesh/`, so this list is deliberately a
+         *     superset of every container any vendor or the converter produces.
+         *
+         *     Requests carry these as plain, case-insensitive strings — validation, not
+         *     deserialisation, owns the error, so it can name what IS deliverable. This
+         *     type pins the vocabulary for OpenAPI and for the catalog loader.
+         * @enum {string}
+         */
+        Model3dFormat: "glb" | "gltf" | "obj" | "stl" | "ply" | "fbx" | "usdz" | "usda" | "3mf" | "dae";
+        /**
+         * @description Request body for `POST /v1/models3d/generations` and `POST /v1/models3d/cost`.
+         *
+         *     The mode is inferred, never passed: no `reference_images` is text-to-3D, an
+         *     `init` image is image-to-3D, and `view-*` images are multiview-to-3D.
+         *
+         *     Every 3D param is optional and model-dependent; `GET /v1/models/{id}` →
+         *     `params` says which a model takes. One it does not take is refused with
+         *     `param_unsupported` when `strict` is true (the default), and dropped — and
+         *     named in the `X-Litegen-Dropped-Params` response header — when `strict` is
+         *     false. A supported param with a bad VALUE is refused in both modes.
+         */
+        Model3dGenerationRequest: components["schemas"]["BaseGenerationRequest"] & {
+            /**
+             * @deprecated
+             * @description Superseded by `output_formats`. A lone value is folded into it; when both are sent, `output_formats` wins and this one is reported dropped.
+             * @enum {string}
+             */
+            output_format?: "glb" | "gltf" | "obj" | "stl" | "ply" | "fbx" | "usdz" | "usda" | "3mf" | "dae";
+            /**
+             * @description Mesh containers to deliver, e.g. `["glb", "fbx"]`. A promise, not a
+             *     hint: every format named here is present on a `completed` generation,
+             *     or the generation ends `failed`. Omitted means the model's declared
+             *     default, and `["glb"]` when it declares none. Case-insensitive;
+             *     duplicates collapse.
+             *
+             *     Any set of the containers litegen derives (the model's served
+             *     `derivable_values`) costs one vendor job between them; every other
+             *     container costs one job of its own. A request needing more vendor jobs
+             *     than the model's `max_items` is refused with `param_too_many`.
+             */
+            output_formats?: components["schemas"]["Model3dFormat"][] | null;
+            /** @description PBR materials. `false` asks for flat shading, not "no material". */
+            pbr?: boolean | null;
+            /** @description Auto-rig: deliver the mesh with a skeleton. */
+            rig?: boolean | null;
+            symmetry?: null | components["schemas"]["Model3dSymmetry"];
+            /**
+             * Format: int32
+             * @description Approximate triangle budget for the mesh, within the model's declared
+             *     `target_polycount` range.
+             */
+            target_polycount?: number | null;
+            /** @description Texture the mesh, rather than returning bare geometry. */
+            texture?: boolean | null;
+            topology?: null | components["schemas"]["Model3dTopology"];
+        };
+        /**
+         * @description A 3D generation's state — both the submit response and every poll
+         *     response, since 3D generation is always async. Mirrors
+         *     `VideoGenerationResponse`, with `video_url` replaced by `assets`.
          */
         Model3dGenerationResponse: {
-            /** @description Populated on `completed`. Omitted entirely while the job is in flight. */
+            /**
+             * @description Populated on `completed`; omitted while in flight and on `failed`, so a
+             *     failed generation never looks half-usable.
+             */
             assets?: components["schemas"]["Model3dAsset"][];
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Unix seconds when the generation was submitted.
+             */
             created: number;
+            /**
+             * @description Why the generation failed, when it did. Vendor failures carry the
+             *     vendor's message, with its machine-readable type in parentheses when it
+             *     sent one.
+             */
             error?: string | null;
+            /**
+             * @description `litegen-3d-…`. Poll it at `GET /v1/models3d/{id}`; it is also the
+             *     generation's id under `/v1/generations`.
+             */
             id: string;
             model: string;
             /**
              * Format: int32
-             * @description Unified 0–100 progress.
+             * @description 0–100. Vendors that only report queue state (fal) move in coarse steps.
              */
             progress: number;
             provider: string;
             status: components["schemas"]["GenerationStatus"];
             usage?: null | components["schemas"]["UsageInfo"];
         };
+        /**
+         * @description Symmetry handling a 3D request may ask for (`symmetry`).
+         * @enum {string}
+         */
+        Model3dSymmetry: "off" | "auto" | "on";
+        /**
+         * @description Face topology a 3D request may ask for (`topology`).
+         * @enum {string}
+         */
+        Model3dTopology: "triangle" | "quad";
         ModelCapabilities: {
             /** Format: double */
             max_duration_seconds?: number | null;
             /** Format: int32 */
             max_images?: number;
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description Upper bound of the model's `target_polycount` param, when it takes one.
+             */
             max_polycount?: number | null;
+            /**
+             * @description Every mesh container a caller may request, including those litegen
+             *     derives locally — the same list, in the same order, as
+             *     `GET /v1/models/{id}` serves under `params.output_formats.enum_values`.
+             *     Empty for image and video models.
+             */
             output_formats?: string[];
             supported_sizes?: string[];
             supports_first_frame?: boolean;
+            /** @description Accepts one `init` reference image (image-to-3D). */
             supports_image_to_3d?: boolean;
             supports_image_to_image: boolean;
             supports_image_to_video?: boolean;
             supports_inpainting?: boolean;
             supports_last_frame?: boolean;
+            /** @description Accepts several `view-*` reference images (multiview-to-3D). */
             supports_multiview_to_3d?: boolean;
+            /** @description Takes the `pbr` param. */
             supports_pbr?: boolean;
+            /** @description Takes the `rig` param. */
             supports_rig?: boolean;
+            /** @description Accepts a prompt with no reference images (text-to-3D). */
             supports_text_to_3d?: boolean;
             supports_text_to_image: boolean;
             supports_text_to_video?: boolean;
+            /** @description Takes the `texture` param. */
             supports_texture?: boolean;
         };
         ModelCapabilityFlags: {
@@ -2458,6 +2650,13 @@ export interface components {
             capabilities: components["schemas"]["ModelCapabilityFlags"];
             description?: string;
             display_name: string;
+            /**
+             * @description The vendor's own API reference page for the endpoint this model calls —
+             *     the page to re-read when a field mapping is questioned. An absolute
+             *     `https://` URL (the loader refuses anything else); every non-mock 3D
+             *     model carries one.
+             */
+            docs_url?: string | null;
             extra_allowlist?: string[];
             id: string;
             media_type: components["schemas"]["CapabilityMediaType"];
@@ -2735,6 +2934,16 @@ export interface components {
          *     emits GLB with no choice at all. `max_items` is how a model states which of
          *     those it is, so an unsatisfiable request fails in validation rather than
          *     after the vendor has been billed.
+         *
+         *     For `output_formats` the catalog yaml and the API describe two different
+         *     sets, on purpose:
+         *
+         *     - **yaml** `enum_values` declares what the VENDOR emits natively — the only
+         *       thing a catalog author can verify against the vendor's schema.
+         *     - **`GET /v1/models/{id}`** serves what a CALLER may request: the native
+         *       set plus every container litegen derives locally, with `derivable_values`
+         *       saying which those are. That is the same set the validator accepts, so a
+         *       client rendering `params` offers exactly what will be honoured.
          */
         ParamSpecStringArray: {
             /**
@@ -2742,12 +2951,29 @@ export interface components {
              *     resolver falls back to `glb`.
              */
             default?: string[];
+            /**
+             * @description The members litegen produces locally from a single vendor job (for
+             *     `output_formats`, whatever its mesh converter covers — today `glb`,
+             *     `obj`, `stl`, `ply`). Present only in API
+             *     responses, and only when the model's vendor emits at least one of them —
+             *     with nothing readable to convert from, nothing is derivable. Computed
+             *     by the server; the catalog loader refuses a yaml that sets it.
+             */
+            derivable_values?: string[];
             description?: string | null;
+            /**
+             * @description Accepted members. See the type docs for what this means in yaml versus
+             *     in an API response.
+             */
             enum_values?: string[];
             label?: string | null;
             /**
-             * @description Upper bound on how many members one request may ask for. `None` means
-             *     "as many as are declared".
+             * @description For `output_formats`: how many VENDOR jobs one request may need — not
+             *     how many members it may name. Every member of `derivable_values` comes
+             *     out of one source container, so a request costs
+             *     `|requested \ derivable_values| + (requested ∩ derivable_values ≠ ∅ ? 1 : 0)`
+             *     jobs, and more than `max_items` is refused with `param_too_many`.
+             *     `None` means no limit.
              */
             max_items?: number | null;
         };
@@ -2780,9 +3006,20 @@ export interface components {
             is_active?: boolean | null;
             role?: null | components["schemas"]["Role"];
         };
+        /** @description How a model treats the request's `prompt`. Lengths count characters. */
         PromptSpec: {
+            /**
+             * @description `0` means the model takes no prompt at all (an image-only endpoint
+             *     whose vendor has no prompt field): a client should not offer one, and a
+             *     non-empty prompt is refused in strict mode and dropped in lax mode.
+             */
             max_length?: number | null;
             min_length?: number | null;
+            /**
+             * @description An empty or omitted prompt is refused with `prompt_required`. 3D models
+             *     that take images set this false, yet still need a prompt when a request
+             *     carries no image (text-to-3D).
+             */
             required?: boolean;
         };
         /**
@@ -2841,7 +3078,7 @@ export interface components {
             has_secret: boolean;
             /** @description Last 4 characters of the effective key, e.g. `…a1b2`. Never the secret. */
             key_hint?: string | null;
-            /** @description Media this adapter can serve: image, video. */
+            /** @description Media this adapter can serve: image, video, model3d. */
             modalities: string[];
             model_mapping: {
                 [key: string]: string;
@@ -6388,6 +6625,8 @@ export interface operations {
             /** @description 3D generation started */
             200: {
                 headers: {
+                    /** @description Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped. */
+                    "X-Litegen-Dropped-Params"?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -7773,6 +8012,94 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    convert_model3d: {
+        parameters: {
+            query: {
+                /** @description Container the request body is in. Must be one of `GET /v1/utils/models3d/formats`. */
+                from: components["schemas"]["Model3dFormat"];
+                /** @description Container to convert to. Must be one of `GET /v1/utils/models3d/formats`. */
+                to: components["schemas"]["Model3dFormat"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The mesh file, raw. Any Content-Type is accepted; `from` decides how it is read. */
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description The converted file. Content-Type is the target container's, e.g. model/obj */
+            200: {
+                headers: {
+                    /** @description Comma-separated kinds of content in the input that the target container could not hold, sorted and deduplicated: animation, skins, morph_targets, normals, uvs, vertex_colors, textures, image_formats, materials, alpha, hierarchy, meshes, texture_sampling, texture_transforms, geometry. Judged from what the input actually contains, so a plain mesh to STL loses nothing. Absent when nothing was lost. */
+                    "X-Litegen-Conversion-Losses"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description `from` or `to` missing or not convertible (`param_required`, `format_unsupported`), or the body is not a `from` file (`format_mismatch`) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Body over `max_input_bytes` (`body_too_large`) */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The file parsed as `from` but cannot be converted (`mesh_malformed`, `mesh_unsupported`, `mesh_empty`) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server at capacity, retry shortly (`server_at_capacity`) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_model3d_convert_formats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Supported containers and the input size cap */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Model3dConvertFormats"];
                 };
             };
         };

@@ -56,7 +56,14 @@ def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
 ) -> Response[Union[ErrorResponse, ModelSchema]]:
-    """GET /v1/models/{id} — Full schema for one model.
+    """GET /v1/models/{id} — Full schema for one model, as a caller should read it.
+
+     Served, not raw. `params.output_formats` lists every container a caller may
+    request — the vendor's own plus what litegen derives locally — with
+    `derivable_values` saying which share one vendor job (see
+    `ParamSpecStringArray`). A model still declaring the superseded scalar
+    `output_format` is served under the canonical plural, so a client only ever
+    has one spelling to render.
 
     Args:
         id (str):
@@ -85,7 +92,14 @@ def sync(
     *,
     client: Union[AuthenticatedClient, Client],
 ) -> Optional[Union[ErrorResponse, ModelSchema]]:
-    """GET /v1/models/{id} — Full schema for one model.
+    """GET /v1/models/{id} — Full schema for one model, as a caller should read it.
+
+     Served, not raw. `params.output_formats` lists every container a caller may
+    request — the vendor's own plus what litegen derives locally — with
+    `derivable_values` saying which share one vendor job (see
+    `ParamSpecStringArray`). A model still declaring the superseded scalar
+    `output_format` is served under the canonical plural, so a client only ever
+    has one spelling to render.
 
     Args:
         id (str):
@@ -109,7 +123,14 @@ async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
 ) -> Response[Union[ErrorResponse, ModelSchema]]:
-    """GET /v1/models/{id} — Full schema for one model.
+    """GET /v1/models/{id} — Full schema for one model, as a caller should read it.
+
+     Served, not raw. `params.output_formats` lists every container a caller may
+    request — the vendor's own plus what litegen derives locally — with
+    `derivable_values` saying which share one vendor job (see
+    `ParamSpecStringArray`). A model still declaring the superseded scalar
+    `output_format` is served under the canonical plural, so a client only ever
+    has one spelling to render.
 
     Args:
         id (str):
@@ -136,7 +157,14 @@ async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
 ) -> Optional[Union[ErrorResponse, ModelSchema]]:
-    """GET /v1/models/{id} — Full schema for one model.
+    """GET /v1/models/{id} — Full schema for one model, as a caller should read it.
+
+     Served, not raw. `params.output_formats` lists every container a caller may
+    request — the vendor's own plus what litegen derives locally — with
+    `derivable_values` saying which share one vendor job (see
+    `ParamSpecStringArray`). A model still declaring the superseded scalar
+    `output_format` is served under the canonical plural, so a client only ever
+    has one spelling to render.
 
     Args:
         id (str):

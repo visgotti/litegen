@@ -10,11 +10,16 @@ T = TypeVar("T", bound="PromptSpec")
 
 @_attrs_define
 class PromptSpec:
-    """
+    """How a model treats the request's `prompt`. Lengths count characters.
+
     Attributes:
-        max_length (Union[None, Unset, int]):
+        max_length (Union[None, Unset, int]): `0` means the model takes no prompt at all (an image-only endpoint
+            whose vendor has no prompt field): a client should not offer one, and a
+            non-empty prompt is refused in strict mode and dropped in lax mode.
         min_length (Union[None, Unset, int]):
-        required (Union[Unset, bool]):
+        required (Union[Unset, bool]): An empty or omitted prompt is refused with `prompt_required`. 3D models
+            that take images set this false, yet still need a prompt when a request
+            carries no image (text-to-3D).
     """
 
     max_length: Union[None, Unset, int] = UNSET

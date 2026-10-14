@@ -1,7 +1,8 @@
 """Exhaustive integration suite for the GENERATED Python SDK against a live
-litegen-core binary.
+litegen-core binary (plus one end-to-end check of the hand-written
+`LiteGenClient` facade's 3D path; see `test_handwritten_client_models3d`).
 
-Every one of the 76 generated endpoint functions
+Every one of the 79 generated endpoint functions
 (`litegen._generated.api.<group>.<endpoint>`) is exercised at least once. Each
 test records the endpoint names it touches in the module-level `EXERCISED` set;
 `test_every_generated_endpoint_is_covered` walks the generated package and asserts
@@ -23,6 +24,7 @@ status with an inline comment explaining why — assertions are never weakened.
 from __future__ import annotations
 
 import importlib
+import io
 import pkgutil
 import uuid
 
@@ -30,7 +32,7 @@ import httpx
 import pytest
 
 import litegen._generated.api as api_pkg
-from litegen import LiteGenClient
+from litegen import LiteGenClient, LiteGenValidationError
 from litegen._generated.client import AuthenticatedClient, Client
 from litegen._generated.models import (
     AcceptInvitationRequest,
@@ -43,6 +45,8 @@ from litegen._generated.models import (
     ImageGenerationRequest,
     InviteRequest,
     LoginRequest,
+    Model3DFormat,
+    Model3DGenerationRequest,
     OrgTransferOwnerRequest,
     PasswordResetConfirmBody,
     PasswordResetRequestBody,
@@ -62,6 +66,11 @@ from litegen._generated.models import (
 )
 
 # ---- API groups -------------------------------------------------------------
+from litegen._generated.api.utilities import (
+    convert_model3d,
+    list_model3d_convert_formats,
+)
+from litegen._generated.types import File
 from litegen._generated.api.account import (
     get_account,
     list_sessions,
@@ -119,6 +128,11 @@ from litegen._generated.api.generations import (
 )
 from litegen._generated.api.images import estimate_image_cost, generate_image
 from litegen._generated.api.models import get_model_schema, list_models
+from litegen._generated.api.models_3d import (
+    estimate_3d_cost,
+    generate_3d,
+    get_3d_status,
+)
 from litegen._generated.api.organizations import (
     create_org,
     create_org_provider_credential,
@@ -164,6 +178,7 @@ from conftest import MASTER_KEY, PASSWORD, unique_email  # noqa: E402
 # Models served by the mock provider (see repo models/mock.yaml).
 IMG_MODEL = "mock/image-gen"
 VIDEO_MODEL = "mock/video-gen"
+MESH_MODEL = "mock/mesh-3d"
 
 # Records the bare module name of every generated endpoint we exercise. The
 # meta-test below compares it against the discovered universe of 76 modules.
@@ -381,6 +396,121 @@ def test_generations(owner):
     )
     assert r.status_code in (200, 400, 404, 409), f"cancel_generation: {r.status_code} {r.content!r}"
     EXERCISED.add("cancel_generation")
+
+
+# =============================================================================
+# models3d  (owner.bearer = API key)
+# =============================================================================
+def test_models3d(owner):
+    body = Model3DGenerationRequest(model=MESH_MODEL, prompt="a small cube")
+
+    _ok(estimate_3d_cost.sync_detailed(client=owner.bearer, body=body), 200)
+    EXERCISED.add("estimate_3d_cost")
+
+    gen = _ok(generate_3d.sync_detailed(client=owner.bearer, body=body), 200)
+    EXERCISED.add("generate_3d")
+    gen_id = gen.parsed.id
+    assert gen_id
+
+    _ok(get_3d_status.sync_detailed(client=owner.bearer, id=gen_id), 200)
+    EXERCISED.add("get_3d_status")
+
+
+def test_handwritten_client_models3d(base_url, owner):
+    """The hand-written `LiteGenClient` facade, end to end on the mock mesh model.
+
+    Authenticates with the owner's org API key, not the master key: in hosted
+    mode the master key is a platform admin bound to no org, and
+    GET /v1/models3d/{id} answers a caller without an org with 403 "no active
+    organization", so a job submitted with it could never be polled.
+    """
+    with LiteGenClient(base_url=base_url, api_key=owner.api_key) as client:
+        models = client.models.list(media_type="model3d")
+        assert MESH_MODEL in {m["id"] for m in models}
+        assert {m["media_type"] for m in models} == {"model3d"}, "filter leaked other media"
+
+        est = client.models3d.estimate_cost(model=MESH_MODEL, prompt="a small cube")
+        assert est["cost_source"] in ("dynamic", "estimated")
+        assert est["total_cost_usd"] >= 0
+
+        requested = ["glb", "obj"]
+        job = client.models3d.generate(
+            model=MESH_MODEL,
+            prompt="a small cube",
+            output_formats=requested,
+            interval=0.25,
+            timeout=120,
+        )
+        final = job.result()
+        assert final["status"] == "completed", final
+        assert final["id"] == job.id
+        # The server's promise, and all this asserts: every requested container
+        # is present as a mesh on a completed generation. Whether a format came
+        # from the vendor or was derived server-side is not the SDK's business.
+        meshes = {a["format"].lower() for a in final.get("assets", []) if a["kind"] == "mesh"}
+        assert set(requested) <= meshes, final
+        assert job.dropped_params == []
+
+        # mock/mesh-3d has no `rig` param: strict mode rejects it on first use...
+        strict = client.models3d.generate(model=MESH_MODEL, prompt="a small cube", rig=True)
+        with pytest.raises(LiteGenValidationError):
+            strict.submitted
+        # ...and lax mode drops it and says so.
+        lax = client.models3d.generate(
+            model=MESH_MODEL, prompt="a small cube", strict=False, rig=True
+        )
+        assert lax.dropped_params == ["rig"]
+
+
+def test_model3d_convert_utility(base_url, owner):
+    """The standalone mesh converter (`/v1/utils/models3d/*`), end to end.
+
+    The input is real: a GLB the mock mesh model just generated, downloaded from
+    its absolute asset URL. Converted through the hand-written facade, then
+    through the generated client, which this suite must also exercise.
+    """
+    with LiteGenClient(base_url=base_url, api_key=owner.api_key) as client:
+        final = client.models3d.generate(
+            model=MESH_MODEL, prompt="a cube to convert", interval=0.25, timeout=120
+        ).result()
+        assert final["status"] == "completed", final
+        glb_url = next(
+            a["url"] for a in final["assets"] if a["kind"] == "mesh" and a["format"] == "glb"
+        )
+        glb = httpx.get(glb_url).content
+        assert glb[:4] == b"glTF"
+
+        caps = client.models3d.convert_formats()
+        assert {"glb", "stl"} <= set(caps["formats"]), caps
+        assert caps["max_input_bytes"] >= len(glb)
+
+        out = client.models3d.convert(glb, from_format="glb", to_format="stl")
+        assert (out["format"], out["filename"], out["content_type"]) == ("stl", "model.stl", "model/stl")
+        # Binary STL: 80-byte header, u32 triangle count, 50 bytes per triangle.
+        triangles = int.from_bytes(out["content"][80:84], "little")
+        assert triangles > 0 and len(out["content"]) == 84 + 50 * triangles
+        assert isinstance(out["losses"], list)
+
+        # A target the converter cannot write is refused before any work,
+        # naming the side at fault. `blend` is outside the vocabulary entirely,
+        # so this stays covered however many containers the converter learns
+        # (the static type would rightly reject it, hence the ignore).
+        with pytest.raises(LiteGenValidationError) as exc:
+            client.models3d.convert(glb, from_format="glb", to_format="blend")  # type: ignore[arg-type]
+        assert (exc.value.code, exc.value.param) == ("format_unsupported", "to")
+
+    r = list_model3d_convert_formats.sync_detailed(client=owner.bearer)
+    assert r.status_code == 200, r.content
+    EXERCISED.add("list_model3d_convert_formats")
+
+    r = convert_model3d.sync_detailed(
+        client=owner.bearer,
+        body=File(payload=io.BytesIO(glb)),
+        from_=Model3DFormat.GLB,
+        to=Model3DFormat.OBJ,
+    )
+    assert r.status_code == 200, r.content
+    EXERCISED.add("convert_model3d")
 
 
 # =============================================================================
@@ -1131,9 +1261,9 @@ def test_every_generated_endpoint_is_covered(base_url):
 
     Compares EXERCISED (populated by every other test) against the discovered
     universe of endpoint module names, and independently asserts the raw module
-    file count is 124. Both `transfer_owner` modules are exercised
+    file count is 129. Both `transfer_owner` modules are exercised
     (organizations + users); they share a bare name, so the deduped name set has
-    123 entries while the file count is 124.
+    128 entries while the file count is 129.
 
     Takes `base_url` only so it skips with the rest of the suite when the binary
     isn't built: without the binary nothing populates EXERCISED, and this would
@@ -1147,6 +1277,6 @@ def test_every_generated_endpoint_is_covered(base_url):
     unexpected = EXERCISED - discovered
     assert not missing, f"{len(missing)} endpoint(s) never exercised: {sorted(missing)}"
     assert not unexpected, f"recorded names not found in generated API: {sorted(unexpected)}"
-    # 124 endpoint module files in total (123 unique names + duplicate transfer_owner).
-    assert file_count == 124, f"expected 124 endpoint module files, found {file_count}"
-    assert len(discovered) == 123, f"expected 123 unique names, found {len(discovered)}"
+    # 129 endpoint module files in total (128 unique names + duplicate transfer_owner).
+    assert file_count == 129, f"expected 129 endpoint module files, found {file_count}"
+    assert len(discovered) == 128, f"expected 128 unique names, found {len(discovered)}"

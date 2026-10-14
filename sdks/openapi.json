@@ -2,7 +2,7 @@
     "openapi": "3.1.0",
     "info": {
         "title": "LiteGen API",
-        "description": "Universal proxy for AI image and video generation.",
+        "description": "Universal proxy for AI image, video and 3D model generation.",
         "license": {
             "name": "MIT",
             "identifier": "MIT"
@@ -3861,7 +3861,8 @@
                 "tags": [
                     "Models"
                 ],
-                "summary": "GET /v1/models/{id} \u2014 Full schema for one model.",
+                "summary": "GET /v1/models/{id} \u2014 Full schema for one model, as a caller should read it.",
+                "description": "Served, not raw. `params.output_formats` lists every container a caller may\nrequest \u2014 the vendor's own plus what litegen derives locally \u2014 with\n`derivable_values` saying which share one vendor job (see\n`ParamSpecStringArray`). A model still declaring the superseded scalar\n`output_format` is served under the canonical plural, so a client only ever\nhas one spelling to render.",
                 "operationId": "get_model_schema",
                 "parameters": [
                     {
@@ -3959,6 +3960,14 @@
                 "responses": {
                     "200": {
                         "description": "3D generation started",
+                        "headers": {
+                            "X-Litegen-Dropped-Params": {
+                                "schema": {
+                                    "type": "string"
+                                },
+                                "description": "Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped."
+                            }
+                        },
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -5998,6 +6007,132 @@
                 }
             }
         },
+        "/v1/utils/models3d/convert": {
+            "post": {
+                "tags": [
+                    "Utilities"
+                ],
+                "summary": "POST /v1/utils/models3d/convert \u2014 Convert a mesh between containers without generating anything.",
+                "description": "The body is the raw file. The response is the converted file, with the\ntarget's `Content-Type`. Whatever the target container can hold survives\n(materials, textures, skins, animation); what it cannot is dropped and\nnamed in `X-Litegen-Conversion-Losses`.\n\nLive: `curl --data-binary @fox.glb \"https://app.litegen.ai/api/v1/utils/models3d/convert?from=glb&to=obj\" -H \"Authorization: Bearer sk_live_...\" -o fox.obj`",
+                "operationId": "convert_model3d",
+                "parameters": [
+                    {
+                        "name": "from",
+                        "in": "query",
+                        "description": "Container the request body is in. Must be one of `GET /v1/utils/models3d/formats`.",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/components/schemas/Model3dFormat"
+                        }
+                    },
+                    {
+                        "name": "to",
+                        "in": "query",
+                        "description": "Container to convert to. Must be one of `GET /v1/utils/models3d/formats`.",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/components/schemas/Model3dFormat"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "description": "The mesh file, raw. Any Content-Type is accepted; `from` decides how it is read.",
+                    "content": {
+                        "application/octet-stream": {
+                            "schema": {
+                                "type": "string",
+                                "format": "binary",
+                                "description": "A mesh file as raw bytes, for the spec only: the handler reads the `Body`\ndirectly. Without this, `Vec<u8>` documents as an array of integers and the\nSDK generators type the upload as `number[]`."
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "The converted file. Content-Type is the target container's, e.g. model/obj",
+                        "headers": {
+                            "X-Litegen-Conversion-Losses": {
+                                "schema": {
+                                    "type": "string"
+                                },
+                                "description": "Comma-separated kinds of content in the input that the target container could not hold, sorted and deduplicated: animation, skins, morph_targets, normals, uvs, vertex_colors, textures, image_formats, materials, alpha, hierarchy, meshes, texture_sampling, texture_transforms, geometry. Judged from what the input actually contains, so a plain mesh to STL loses nothing. Absent when nothing was lost."
+                            }
+                        },
+                        "content": {
+                            "application/octet-stream": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary",
+                                    "description": "A mesh file as raw bytes, for the spec only: the handler reads the `Body`\ndirectly. Without this, `Vec<u8>` documents as an array of integers and the\nSDK generators type the upload as `number[]`."
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "`from` or `to` missing or not convertible (`param_required`, `format_unsupported`), or the body is not a `from` file (`format_mismatch`)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "413": {
+                        "description": "Body over `max_input_bytes` (`body_too_large`)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "The file parsed as `from` but cannot be converted (`mesh_malformed`, `mesh_unsupported`, `mesh_empty`)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Server at capacity, retry shortly (`server_at_capacity`)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/utils/models3d/formats": {
+            "get": {
+                "tags": [
+                    "Utilities"
+                ],
+                "summary": "GET /v1/utils/models3d/formats \u2014 Containers the standalone converter reads and writes.",
+                "operationId": "list_model3d_convert_formats",
+                "responses": {
+                    "200": {
+                        "description": "Supported containers and the input size cap",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Model3dConvertFormats"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v1/videos/cost": {
             "post": {
                 "tags": [
@@ -6806,7 +6941,6 @@
             "BaseGenerationRequest": {
                 "type": "object",
                 "required": [
-                    "prompt",
                     "model"
                 ],
                 "properties": {
@@ -6827,7 +6961,8 @@
                         ]
                     },
                     "prompt": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "Whether a prompt is required is decided per model, by its\n`prompt.required` in `GET /v1/models/{id}` \u2014 never by the wire format.\nOmitting it is the same as sending `\"\"`, which an image-to-3D model\nwith no prompt field (TRELLIS, Hunyuan3D v2) accepts and a text model\nanswers with `prompt_required`."
                     },
                     "reference_images": {
                         "type": "array",
@@ -7439,14 +7574,31 @@
                         "type": [
                             "string",
                             "null"
-                        ]
+                        ],
+                        "description": "Machine-readable reason within the family, e.g. `param_unsupported`,\n`param_enum_mismatch`, `prompt_required`, `ref_role_required`."
                     },
                     "message": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "Human-readable; not for matching on \u2014 use `code` and `param`."
+                    },
+                    "model": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The model the rejected request named. Validation errors only."
+                    },
+                    "param": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The request field that failed validation \u2014 `output_formats`, `prompt`,\n`reference_images`, `extra.<key>` \u2014 so a caller can tell which one to fix\nwithout parsing `message`. Validation errors only."
                     },
                     "provider_error": {},
                     "type": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "The error's family, e.g. `validation_error`, `authentication_error`,\n`quota_exceeded`, `provider_not_configured`."
                     }
                 }
             },
@@ -8083,7 +8235,7 @@
             },
             "Model3dAsset": {
                 "type": "object",
-                "description": "One file produced by a 3D generation. A completed generation always carries\nexactly one `Mesh` asset; consumers treat its absence as a provider failure.\n`url` is always absolute \u2014 a root-relative path is indistinguishable from an\noutage to a client fetching it from a worker.",
+                "description": "One file produced by a 3D generation, re-hosted on litegen storage (the\napp's own bucket when it configured one).\n\nA `completed` generation carries one `mesh` asset for every format in its\n`output_formats` \u2014 never fewer; a missing one fails the generation instead \u2014\nplus whatever textures and previews the vendor returned.",
                 "required": [
                     "kind",
                     "url",
@@ -8092,7 +8244,7 @@
                 "properties": {
                     "format": {
                         "type": "string",
-                        "description": "\"glb\" | \"obj\" | \"fbx\" | \"usdz\" | \"png\" | \"jpg\"."
+                        "description": "Lowercase container without a dot. Meshes use the `Model3dFormat`\nvocabulary; textures and previews their image format (`png`, `jpg`,\n`webp`). A plain string so a client tolerates a format added later."
                     },
                     "height": {
                         "type": [
@@ -8100,6 +8252,7 @@
                             "null"
                         ],
                         "format": "int32",
+                        "description": "Pixel height, on textures and previews whose vendor reports it.",
                         "minimum": 0
                     },
                     "kind": {
@@ -8111,7 +8264,7 @@
                             "null"
                         ],
                         "format": "int32",
-                        "description": "Meshes only.",
+                        "description": "Triangle count, on meshes whose vendor reports one. A container litegen\nderived carries its source's count \u2014 conversion keeps every triangle.",
                         "minimum": 0
                     },
                     "size_bytes": {
@@ -8120,10 +8273,12 @@
                             "null"
                         ],
                         "format": "int64",
+                        "description": "Size of the stored file.",
                         "minimum": 0
                     },
                     "url": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "Always absolute: a root-relative path is indistinguishable from an\noutage to a client fetching it from a worker. Meshes live at\n`\u2026/{generation_id}/model.{format}`."
                     },
                     "width": {
                         "type": [
@@ -8131,17 +8286,57 @@
                             "null"
                         ],
                         "format": "int32",
-                        "description": "Preview / texture assets only.",
+                        "description": "Pixel width, on textures and previews whose vendor reports it.",
                         "minimum": 0
                     }
                 }
             },
             "Model3dAssetKind": {
                 "type": "string",
+                "description": "What a `Model3dAsset` is.",
                 "enum": [
                     "mesh",
                     "texture",
                     "preview"
+                ]
+            },
+            "Model3dConvertFormats": {
+                "type": "object",
+                "description": "What the converter can do, for a client to check before uploading.",
+                "required": [
+                    "formats",
+                    "max_input_bytes"
+                ],
+                "properties": {
+                    "formats": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Model3dFormat"
+                        },
+                        "description": "Containers accepted as both `from` and `to`. Every pair converts, in\nboth directions. Grows with litegen's converter, so read it rather than\nhardcoding it; it can be narrower than the `Model3dFormat` vocabulary."
+                    },
+                    "max_input_bytes": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Largest request body accepted, in bytes. Larger bodies get `413`.",
+                        "minimum": 0
+                    }
+                }
+            },
+            "Model3dFormat": {
+                "type": "string",
+                "description": "Every mesh container a 3D request may name in `output_formats`.\n\nThe closed vocabulary across all of litegen's 3D models. Which subset one\nmodel can deliver is per model: `GET /v1/models/{id}` lists it under\n`params.output_formats.enum_values`, and anything outside it is refused\nwith `param_enum_mismatch` before any vendor is called.\n\nA container reaches a caller one of two ways. Either litegen derives it\nlocally from whatever readable container the vendor emitted \u2014 the set\n`proxy::model3d_convert::derivable_formats` returns, served per model as\n`params.output_formats.derivable_values` \u2014 and any number of those cost one\nvendor job together; or the vendor emits it itself, one job each. Which is\nwhich grows with `litegen-core/src/mesh/`, so this list is deliberately a\nsuperset of every container any vendor or the converter produces.\n\nRequests carry these as plain, case-insensitive strings \u2014 validation, not\ndeserialisation, owns the error, so it can name what IS deliverable. This\ntype pins the vocabulary for OpenAPI and for the catalog loader.",
+                "enum": [
+                    "glb",
+                    "gltf",
+                    "obj",
+                    "stl",
+                    "ply",
+                    "fbx",
+                    "usdz",
+                    "usda",
+                    "3mf",
+                    "dae"
                 ]
             },
             "Model3dGenerationRequest": {
@@ -8153,11 +8348,21 @@
                         "type": "object",
                         "properties": {
                             "output_format": {
-                                "type": [
-                                    "string",
-                                    "null"
+                                "type": "string",
+                                "description": "Superseded by `output_formats`. A lone value is folded into it; when both are sent, `output_formats` wins and this one is reported dropped.",
+                                "enum": [
+                                    "glb",
+                                    "gltf",
+                                    "obj",
+                                    "stl",
+                                    "ply",
+                                    "fbx",
+                                    "usdz",
+                                    "usda",
+                                    "3mf",
+                                    "dae"
                                 ],
-                                "description": "Superseded by `output_formats`; a value here is folded into it. Kept so\nclients written against the scalar keep working for one release."
+                                "deprecated": true
                             },
                             "output_formats": {
                                 "type": [
@@ -8165,30 +8370,34 @@
                                     "null"
                                 ],
                                 "items": {
-                                    "type": "string"
+                                    "$ref": "#/components/schemas/Model3dFormat"
                                 },
-                                "description": "Desired mesh containers, e.g. `[\"glb\", \"fbx\"]`. Every format asked for\nhere is guaranteed present on a `completed` generation or the generation\nfails \u2014 see `missing_model3d_formats`. Defaults to the model's declared\ndefault, and to `[\"glb\"]` when it declares none."
+                                "description": "Mesh containers to deliver, e.g. `[\"glb\", \"fbx\"]`. A promise, not a\nhint: every format named here is present on a `completed` generation,\nor the generation ends `failed`. Omitted means the model's declared\ndefault, and `[\"glb\"]` when it declares none. Case-insensitive;\nduplicates collapse.\n\nAny set of the containers litegen derives (the model's served\n`derivable_values`) costs one vendor job between them; every other\ncontainer costs one job of its own. A request needing more vendor jobs\nthan the model's `max_items` is refused with `param_too_many`."
                             },
                             "pbr": {
                                 "type": [
                                     "boolean",
                                     "null"
                                 ],
-                                "description": "PBR materials, where the model supports them."
+                                "description": "PBR materials. `false` asks for flat shading, not \"no material\"."
                             },
                             "rig": {
                                 "type": [
                                     "boolean",
                                     "null"
                                 ],
-                                "description": "Auto-rig / emit a skeleton, where supported."
+                                "description": "Auto-rig: deliver the mesh with a skeleton."
                             },
                             "symmetry": {
-                                "type": [
-                                    "string",
-                                    "null"
-                                ],
-                                "description": "\"off\" | \"auto\" | \"on\"."
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Model3dSymmetry",
+                                        "description": "Symmetry handling."
+                                    }
+                                ]
                             },
                             "target_polycount": {
                                 "type": [
@@ -8196,6 +8405,7 @@
                                     "null"
                                 ],
                                 "format": "int32",
+                                "description": "Approximate triangle budget for the mesh, within the model's declared\n`target_polycount` range.",
                                 "minimum": 0
                             },
                             "texture": {
@@ -8203,22 +8413,27 @@
                                     "boolean",
                                     "null"
                                 ],
-                                "description": "Generate textures (vs. bare geometry)."
+                                "description": "Texture the mesh, rather than returning bare geometry."
                             },
                             "topology": {
-                                "type": [
-                                    "string",
-                                    "null"
-                                ],
-                                "description": "\"triangle\" | \"quad\"."
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Model3dTopology",
+                                        "description": "Face topology of the output mesh."
+                                    }
+                                ]
                             }
                         }
                     }
-                ]
+                ],
+                "description": "Request body for `POST /v1/models3d/generations` and `POST /v1/models3d/cost`.\n\nThe mode is inferred, never passed: no `reference_images` is text-to-3D, an\n`init` image is image-to-3D, and `view-*` images are multiview-to-3D.\n\nEvery 3D param is optional and model-dependent; `GET /v1/models/{id}` \u2192\n`params` says which a model takes. One it does not take is refused with\n`param_unsupported` when `strict` is true (the default), and dropped \u2014 and\nnamed in the `X-Litegen-Dropped-Params` response header \u2014 when `strict` is\nfalse. A supported param with a bad VALUE is refused in both modes."
             },
             "Model3dGenerationResponse": {
                 "type": "object",
-                "description": "3D generation is always async \u2014 this is both the submit response and the\npoll response, mirroring `VideoGenerationResponse` with `video_url` replaced\nby the richer `assets` list.",
+                "description": "A 3D generation's state \u2014 both the submit response and every poll\nresponse, since 3D generation is always async. Mirrors\n`VideoGenerationResponse`, with `video_url` replaced by `assets`.",
                 "required": [
                     "id",
                     "status",
@@ -8233,20 +8448,23 @@
                         "items": {
                             "$ref": "#/components/schemas/Model3dAsset"
                         },
-                        "description": "Populated on `completed`. Omitted entirely while the job is in flight."
+                        "description": "Populated on `completed`; omitted while in flight and on `failed`, so a\nfailed generation never looks half-usable."
                     },
                     "created": {
                         "type": "integer",
-                        "format": "int64"
+                        "format": "int64",
+                        "description": "Unix seconds when the generation was submitted."
                     },
                     "error": {
                         "type": [
                             "string",
                             "null"
-                        ]
+                        ],
+                        "description": "Why the generation failed, when it did. Vendor failures carry the\nvendor's message, with its machine-readable type in parentheses when it\nsent one."
                     },
                     "id": {
-                        "type": "string"
+                        "type": "string",
+                        "description": "`litegen-3d-\u2026`. Poll it at `GET /v1/models3d/{id}`; it is also the\ngeneration's id under `/v1/generations`."
                     },
                     "model": {
                         "type": "string"
@@ -8254,7 +8472,7 @@
                     "progress": {
                         "type": "integer",
                         "format": "int32",
-                        "description": "Unified 0\u2013100 progress.",
+                        "description": "0\u2013100. Vendors that only report queue state (fal) move in coarse steps.",
                         "minimum": 0
                     },
                     "provider": {
@@ -8269,11 +8487,29 @@
                                 "type": "null"
                             },
                             {
-                                "$ref": "#/components/schemas/UsageInfo"
+                                "$ref": "#/components/schemas/UsageInfo",
+                                "description": "The cost quoted and charged at submit; identical on every poll."
                             }
                         ]
                     }
                 }
+            },
+            "Model3dSymmetry": {
+                "type": "string",
+                "description": "Symmetry handling a 3D request may ask for (`symmetry`).",
+                "enum": [
+                    "off",
+                    "auto",
+                    "on"
+                ]
+            },
+            "Model3dTopology": {
+                "type": "string",
+                "description": "Face topology a 3D request may ask for (`topology`).",
+                "enum": [
+                    "triangle",
+                    "quad"
+                ]
             },
             "ModelCapabilities": {
                 "type": "object",
@@ -8300,13 +8536,15 @@
                             "null"
                         ],
                         "format": "int32",
+                        "description": "Upper bound of the model's `target_polycount` param, when it takes one.",
                         "minimum": 0
                     },
                     "output_formats": {
                         "type": "array",
                         "items": {
                             "type": "string"
-                        }
+                        },
+                        "description": "Every mesh container a caller may request, including those litegen\nderives locally \u2014 the same list, in the same order, as\n`GET /v1/models/{id}` serves under `params.output_formats.enum_values`.\nEmpty for image and video models."
                     },
                     "supported_sizes": {
                         "type": "array",
@@ -8318,7 +8556,8 @@
                         "type": "boolean"
                     },
                     "supports_image_to_3d": {
-                        "type": "boolean"
+                        "type": "boolean",
+                        "description": "Accepts one `init` reference image (image-to-3D)."
                     },
                     "supports_image_to_image": {
                         "type": "boolean"
@@ -8333,16 +8572,20 @@
                         "type": "boolean"
                     },
                     "supports_multiview_to_3d": {
-                        "type": "boolean"
+                        "type": "boolean",
+                        "description": "Accepts several `view-*` reference images (multiview-to-3D)."
                     },
                     "supports_pbr": {
-                        "type": "boolean"
+                        "type": "boolean",
+                        "description": "Takes the `pbr` param."
                     },
                     "supports_rig": {
-                        "type": "boolean"
+                        "type": "boolean",
+                        "description": "Takes the `rig` param."
                     },
                     "supports_text_to_3d": {
-                        "type": "boolean"
+                        "type": "boolean",
+                        "description": "Accepts a prompt with no reference images (text-to-3D)."
                     },
                     "supports_text_to_image": {
                         "type": "boolean"
@@ -8351,7 +8594,8 @@
                         "type": "boolean"
                     },
                     "supports_texture": {
-                        "type": "boolean"
+                        "type": "boolean",
+                        "description": "Takes the `texture` param."
                     }
                 }
             },
@@ -8535,6 +8779,13 @@
                     },
                     "display_name": {
                         "type": "string"
+                    },
+                    "docs_url": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The vendor's own API reference page for the endpoint this model calls \u2014\nthe page to re-read when a field mapping is questioned. An absolute\n`https://` URL (the loader refuses anything else); every non-mock 3D\nmodel carries one."
                     },
                     "extra_allowlist": {
                         "type": "array",
@@ -9547,7 +9798,7 @@
             },
             "ParamSpecStringArray": {
                 "type": "object",
-                "description": "A param whose value is a SET of enum members rather than one of them.\n\nExists for `output_formats`, where the vendors genuinely disagree on\ncardinality: Meshy emits every requested container from one job, Rodin's\n`geometry_file_format` is a scalar so only one is reachable, and Stability\nemits GLB with no choice at all. `max_items` is how a model states which of\nthose it is, so an unsatisfiable request fails in validation rather than\nafter the vendor has been billed.",
+                "description": "A param whose value is a SET of enum members rather than one of them.\n\nExists for `output_formats`, where the vendors genuinely disagree on\ncardinality: Meshy emits every requested container from one job, Rodin's\n`geometry_file_format` is a scalar so only one is reachable, and Stability\nemits GLB with no choice at all. `max_items` is how a model states which of\nthose it is, so an unsatisfiable request fails in validation rather than\nafter the vendor has been billed.\n\nFor `output_formats` the catalog yaml and the API describe two different\nsets, on purpose:\n\n- **yaml** `enum_values` declares what the VENDOR emits natively \u2014 the only\n  thing a catalog author can verify against the vendor's schema.\n- **`GET /v1/models/{id}`** serves what a CALLER may request: the native\n  set plus every container litegen derives locally, with `derivable_values`\n  saying which those are. That is the same set the validator accepts, so a\n  client rendering `params` offers exactly what will be honoured.",
                 "properties": {
                     "default": {
                         "type": "array",
@@ -9555,6 +9806,13 @@
                             "type": "string"
                         },
                         "description": "Applied when the caller omits the param entirely. Empty means the\nresolver falls back to `glb`."
+                    },
+                    "derivable_values": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "The members litegen produces locally from a single vendor job (for\n`output_formats`, whatever its mesh converter covers \u2014 today `glb`,\n`obj`, `stl`, `ply`). Present only in API\nresponses, and only when the model's vendor emits at least one of them \u2014\nwith nothing readable to convert from, nothing is derivable. Computed\nby the server; the catalog loader refuses a yaml that sets it."
                     },
                     "description": {
                         "type": [
@@ -9566,7 +9824,8 @@
                         "type": "array",
                         "items": {
                             "type": "string"
-                        }
+                        },
+                        "description": "Accepted members. See the type docs for what this means in yaml versus\nin an API response."
                     },
                     "label": {
                         "type": [
@@ -9579,7 +9838,7 @@
                             "integer",
                             "null"
                         ],
-                        "description": "Upper bound on how many members one request may ask for. `None` means\n\"as many as are declared\".",
+                        "description": "For `output_formats`: how many VENDOR jobs one request may need \u2014 not\nhow many members it may name. Every member of `derivable_values` comes\nout of one source container, so a request costs\n`|requested \\ derivable_values| + (requested \u2229 derivable_values \u2260 \u2205 ? 1 : 0)`\njobs, and more than `max_items` is refused with `param_too_many`.\n`None` means no limit.",
                         "minimum": 0
                     }
                 }
@@ -9694,12 +9953,14 @@
             },
             "PromptSpec": {
                 "type": "object",
+                "description": "How a model treats the request's `prompt`. Lengths count characters.",
                 "properties": {
                     "max_length": {
                         "type": [
                             "integer",
                             "null"
                         ],
+                        "description": "`0` means the model takes no prompt at all (an image-only endpoint\nwhose vendor has no prompt field): a client should not offer one, and a\nnon-empty prompt is refused in strict mode and dropped in lax mode.",
                         "minimum": 0
                     },
                     "min_length": {
@@ -9710,7 +9971,8 @@
                         "minimum": 0
                     },
                     "required": {
-                        "type": "boolean"
+                        "type": "boolean",
+                        "description": "An empty or omitted prompt is refused with `prompt_required`. 3D models\nthat take images set this false, yet still need a prompt when a request\ncarries no image (text-to-3D)."
                     }
                 }
             },
@@ -9872,7 +10134,7 @@
                         "items": {
                             "type": "string"
                         },
-                        "description": "Media this adapter can serve: image, video."
+                        "description": "Media this adapter can serve: image, video, model3d."
                     },
                     "model_mapping": {
                         "type": "object",
@@ -11595,6 +11857,10 @@
         {
             "name": "Models3D",
             "description": "3D (mesh) generation endpoints"
+        },
+        {
+            "name": "Utilities",
+            "description": "Standalone tools that call no provider, such as mesh format conversion"
         },
         {
             "name": "Models",
