@@ -1,0 +1,5 @@
++ **Legacy period:** at least 6 months
++ **Model EOL date:** N/A
++ **Model lifecycle:** Active
+
+| bedrock-runtime | stability.stable-image-ultra-v1:1 | https://bedrock-runtime.{region}.amazonaws.com | Not supported | Not supported |

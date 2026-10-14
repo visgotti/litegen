@@ -76,13 +76,13 @@ test('formatReport names each problem with what to do about it', () => {
   const text = formatReport({
     exitCode: 2,
     providers: [
-      { provider: 'acme', failed: [], new: ['gamma-3'], missing: [{ model: 'acme/beta_2', vendorIds: ['beta-2'] }], changed: ['docs'], sources: [{ key: 'docs', ok: true, ids: 3 }] },
+      { provider: 'acme', failed: [], new: ['gamma-3'], missing: [{ model: 'acme/beta_2', vendorIds: ['beta-2', 'beta-2-i2v'], absent: ['beta-2'] }], changed: ['docs'], sources: [{ key: 'docs', ok: true, ids: 3 }] },
       { provider: 'zeta', failed: [{ source: 'spec', error: 'HTTP 404' }], new: [], missing: [], changed: [], sources: [{ key: 'spec', ok: false, ids: 0, error: 'HTTP 404' }] },
       { provider: 'calm', failed: [], new: [], missing: [], changed: [], sources: [{ key: 'docs', ok: true, ids: 4 }] },
     ],
   });
   assert.match(text, /acme[\s\S]*new upstream[\s\S]*gamma-3/i);
-  assert.match(text, /acme\/beta_2[\s\S]*beta-2/);
+  assert.match(text, /acme\/beta_2 \(not found: beta-2\)/);
   assert.match(text, /changed[\s\S]*snapshots\/acme\/docs\.txt/i);
   assert.match(text, /zeta[\s\S]*spec[\s\S]*HTTP 404/);
   assert.doesNotMatch(text, /calm.*(new|missing|FAILED)/i);

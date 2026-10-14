@@ -15,6 +15,14 @@
 // pinned version that disappears upstream reports that model as missing. Those
 // snapshots list the model's versions (a new version shows as "changed") plus
 // the pinned version's input schema.
+// Official models the adapter calls versionless (POST
+// /v1/models/{owner}/{name}/predictions) get their typings from the model's
+// public API schema page (/{owner}/{name}/api/schema, no token), which embeds
+// the input schema of the version that endpoint serves. Those snapshots hold
+// that input schema, whether the versionless endpoint still serves the model
+// (the adapter's only call path for it), and Replicate's per-unit price. The
+// served version id is left out: official models re-deploy often, and only a
+// schema change matters to the catalog.
 // Mapping mirrors litegen-core/src/providers/image/replicate.rs
 // `resolve_model_version` and video/replicate.rs `resolve_model_version`
 // (replicate/video is its AnimateDiff fallback arm).
@@ -26,24 +34,90 @@ const PINNED = [SDXL, ANIMATE_DIFF];
 
 const ref = ({ slug, version }) => `${slug}:${version}`;
 
+const MODELS = {
+  'replicate/flux-pro': 'black-forest-labs/flux-pro',
+  'replicate/flux-1.1-pro': 'black-forest-labs/flux-1.1-pro',
+  'replicate/flux-dev': 'black-forest-labs/flux-dev',
+  'replicate/flux-schnell': 'black-forest-labs/flux-schnell',
+  'replicate/sdxl': ref(SDXL),
+  'replicate/sd3': 'stability-ai/stable-diffusion-3',
+  'replicate/video': ref(ANIMATE_DIFF),
+};
+
+// Official models: the ones the adapter addresses by owner/name, no version.
+const OFFICIAL = Object.values(MODELS).filter((id) => !id.includes(':'));
+
 // `owner/name:version` for every version the page links to.
 const versionRefs = (body, slug) =>
   [...body.matchAll(/href="\/([\w.-]+\/[\w.-]+)\/versions\/([0-9a-f]{64})"/g)].filter((m) => m[1] === slug).map((m) => `${m[1]}:${m[2]}`);
 
-// The versions page embeds each version's Cog OpenAPI schema in React props.
-function pinnedSchema(body, { slug, version }) {
+// Replicate's server-rendered pages pass their data to React as JSON blocks.
+function* reactProps(body) {
   for (const m of body.matchAll(/<script id="react-component-props-[^"]*" type="application\/json">([\s\S]*?)<\/script>/g)) {
-    let props;
     try {
-      props = JSON.parse(m[1]);
+      yield JSON.parse(m[1]);
     } catch {
       continue;
     }
+  }
+}
+
+const predictionsExcerpt = (doc) => openapiExcerpt(doc, { paths: ['/predictions'], ours: [] });
+
+// The versions page embeds each version's Cog OpenAPI schema in React props.
+function pinnedSchema(body, { slug, version }) {
+  for (const props of reactProps(body)) {
     const doc = props?.version?.id === version ? props.version._extras?.dereferenced_openapi_schema : undefined;
-    if (doc) return openapiExcerpt(doc, { paths: ['/predictions'], ours: [] });
+    if (doc) return predictionsExcerpt(doc);
   }
   return `pinned version ${slug}:${version} is not on this page\n`;
 }
+
+// The API schema page's props: the model, whether it is served versionless,
+// and the served version's Cog OpenAPI schema. Undefined if the page stopped
+// embedding them, so the source fails instead of snapshotting nothing.
+function apiSchemaProps(body, slug) {
+  for (const props of reactProps(body)) {
+    const doc = props?.version?._extras?.dereferenced_openapi_schema;
+    const owner = props?.model?.owner;
+    if (props?.operations && doc && owner && `${owner}/${props.model.name}` === slug) return { props, doc };
+  }
+  return undefined;
+}
+
+// "$0.04 per output image [image_output_count]", one line per price tier.
+function priceLines(body) {
+  for (const props of reactProps(body)) {
+    if (!('billingConfig' in (props ?? {}))) continue;
+    const tiers = props.billingConfig?.current_tiers ?? [];
+    if (tiers.length === 0) return '(no per-unit price: billed by hardware time)';
+    return tiers
+      .flatMap((t) => {
+        const when = (t.criteria ?? []).map((c) => `${c.title} ${c.type} ${c.value}`).join(', ');
+        return (t.prices ?? []).map((p) => `${p.price} ${p.title} [${p.metric}]${when ? ` when ${when}` : ''}`);
+      })
+      .join('\n');
+  }
+  return '(no price on this page)';
+}
+
+const schemaPage = (slug) => ({
+  key: `${slug.split('/')[1].replace(/\./g, '-')}-schema`,
+  url: `https://replicate.com/${slug}/api/schema`,
+  expect: 'html',
+  // The model the page documents, only when it embeds that model's schema.
+  extract: (_html, body) => (apiSchemaProps(body, slug) ? [slug] : []),
+  snapshot: (_html, body) => {
+    const { props, doc } = apiSchemaProps(body, slug);
+    return (
+      `# ${slug}\n` +
+      `served by POST /v1/models/${slug}/predictions (versionless): ${props.usesVersionlessApi === true}\n` +
+      `disabled for predictions: ${props.version._extras.disabled_for_predictions === true}\n\n` +
+      `# price\n${priceLines(body)}\n\n` +
+      `# input schema of the served version\n${predictionsExcerpt(doc)}`
+    );
+  },
+});
 
 const versionsPage = (key, pin) => ({
   key,
@@ -57,15 +131,7 @@ const versionsPage = (key, pin) => ({
 
 export default {
   provider: 'replicate',
-  models: {
-    'replicate/flux-pro': 'black-forest-labs/flux-pro',
-    'replicate/flux-1.1-pro': 'black-forest-labs/flux-1.1-pro',
-    'replicate/flux-dev': 'black-forest-labs/flux-dev',
-    'replicate/flux-schnell': 'black-forest-labs/flux-schnell',
-    'replicate/sdxl': ref(SDXL),
-    'replicate/sd3': 'stability-ai/stable-diffusion-3',
-    'replicate/video': ref(ANIMATE_DIFF),
-  },
+  models: MODELS,
   sources: [
     {
       key: 'black-forest-labs',
@@ -81,6 +147,7 @@ export default {
     },
     versionsPage('sdxl-versions', SDXL),
     versionsPage('animate-diff-versions', ANIMATE_DIFF),
+    ...OFFICIAL.map(schemaPage),
   ],
   acknowledged: [
     { id: SDXL.slug, reason: `carried at a pinned version — matched as ${SDXL.slug}:<version> through its versions page` },

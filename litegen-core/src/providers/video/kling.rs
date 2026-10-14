@@ -315,8 +315,8 @@ mod tests {
             .await;
 
         let provider = make_provider(&server.uri());
-        let schema = ref_schema("kling/kling-v2");
-        let base = make_base("a phoenix rising", "kling/kling-v2");
+        let schema = ref_schema("kling/video-kling-v2-6");
+        let base = make_base("a phoenix rising", "kling/video-kling-v2-6");
         let extras = make_extras();
         let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
 

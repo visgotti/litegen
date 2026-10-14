@@ -1,6 +1,14 @@
 model `string` `Required`
 prompt `string`
+  [Image generation scenario] Required
+  [Layer decomposition scenario] Optional
 image `string / string[]`
+  [Image generation scenario] Optional
+  Seedream 5.0 pro and Seedream 5.0 flash support up to 10 reference images. Seedream 5.0 lite, 4.5, and 4.0 support up to 14 reference images.
+  [Layer decomposition scenario] Required
+layer_decomposition `boolean` `Default: false`
+  values: `true`, `false`
+  supported models: (none of ours)
 size `string`
   [Seedream 5.0 lite]
   * Method 1: Specify the resolution of the generated image, and describe its aspect ratio, shape, or purpose in the prompt using natural language. You let the model determine the width and height.
@@ -95,10 +103,25 @@ size `string`
   ||21:9 |6240x2656 |
 optimize_prompt_options `object`
 mode `string` `Default: standard`
+  values: `standard`, `fast`
 output_format `string` `Default: jpeg`
+  values: `png`, `jpeg`
+  supported models: Seedream 5.0 lite
+background `string` `Default: opaque`
+  values: `transparent`, `opaque`
+  supported models: (none of ours)
 response_format `string` `Default: url`
+  values: `url`, `b64_json`
 sequential_image_generation `string` `Default: disabled`
+  values: `auto`, `disabled`
+  supported models: Seedream 5.0 lite, Seedream 4.5, Seedream 4.0
 sequential_image_generation_options `object`
+  value: `auto`
+  supported models: Seedream 5.0 lite, Seedream 4.5, Seedream 4.0
 max_images `integer` `Default: 15`
+  Value range: `[1, 15]`
 stream `boolean` `Default: false`
+  values: `false`, `true`
+  supported models: Seedream 5.0 lite, Seedream 4.5, Seedream 4.0
 watermark `boolean` `Default: true`
+  values: `false`, `true`

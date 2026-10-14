@@ -8,6 +8,21 @@ v5.6
 v6
 c1
 
+# request property descriptions
+aspect_ratio: Aspect ratio other models : 16:9, 4:3, 1:1, 3:4, 9:16 v6/c1 models : 16:9, 4:3, 1:1, 3:4, 9:16, 2:3, 3:2, 21:9
+duration: Video duration v.3.5/v4/v4.5 : 5/8 (v3.5 1080p cannot use 8) v5 : 5/8 v5.5/v5.6 : 5/8/10 (1080p cannot use 10) v6/c1 : 1~15
+model: Model version (now supports v3.5/v4/v4.5/v5/v5.5/v5.6/v6/c1
+prompt: Prompt <= 5000 characters
+quality: Video quality ("360p", "540p", "720p", "1080p")
+seed: Random seed, range: 0 - 2147483647
+generate_audio_switch: Supported in v5.5/v5.6/v6/c1 models. Audio switch. Controls whether the video has audio. **true**: Audio on , **false**: Audio off . **default value** : false
+generate_multi_clip_switch: Supported in v5.5/v6 models. Single or multi-clip switch. controls single-clip and multi-clip generation modes. **true**: Multi-clip , **false**: Single-clip. **default value** : false
+sound_effect_switch: Supported in v5 models and below.
+sound_effect_content: Supported in v5 models and below. Activated when sound_effect_switch=true, Describe the sound effect you want. Leave blank for auto generation.
+lip_sync_tts_switch: Supported in v5 models and below. Set to true if you want to enable this feature. Default is false.
+lip_sync_tts_content: Supported in v5 models and below. ~140 (UTF-8) characters
+lip_sync_tts_speaker_id: Supported in v5 models and below. id from Get speech tts list
+
 {
   "POST /openapi/v2/video/text/generate (application/json)": {
     "properties": {

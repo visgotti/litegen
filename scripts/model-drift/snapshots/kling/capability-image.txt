@@ -1,0 +1,23 @@
+# Models
+| Model | Input | Generation Range | Resolution |
+| --- | --- | --- | --- |
+| Kling Image 3.0 | Text, Image | 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3, 21:9 | 1K, 2K |
+| Kling Image 3.0 Omni | Text, Image | 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3, 21:9, auto | 1K, 2K, 4K |
+| Kling Image O1 | Text, Image | 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3, 21:9, auto | 1K, 2K |
+| Kling Image 2.1 | Text, Image | 16:9, 9:16, 1:1, 4:3, 3:4, 3:2, 2:3, 21:9 | 1K, 2K |
+
+# Text to Image
+| Capability | Kling Image 3.0 | Kling Image 3.0 Omni | Kling Image O1 | Kling Image 2.1 |
+| --- | --- | --- | --- | --- |
+| Single Image Generation | Supported | Supported: Auto ratio is not supported | Supported | Supported |
+
+# Image to Image
+| Capability | Kling Image 3.0 | Kling Image 3.0 Omni | Kling Image O1 | Kling Image 2.1 |
+| --- | --- | --- | --- | --- |
+| Single Image Generation | Supported | Supported | Supported | Supported |
+| Series Image Generation | Not Supported | Supported | Not Supported | Supported |
+| Multi-image to Image | Not Supported | Supported | Supported | Supported |
+| Character Feature Reference | Not Supported | Not Supported | Not Supported | Supported |
+| Face Feature Reference | Not Supported | Not Supported | Not Supported | Supported |
+| Style Training | Not Supported | Not Supported | Not Supported | Not Supported |
+| Subject Control | Supported: Multi-image main image only | Supported: Multi-image main image only | Supported: Multi-image main image only | Not Supported |

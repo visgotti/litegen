@@ -1,0 +1,258 @@
+# models.* methods the adapters call
+generateContent: POST v1beta/{+model}:generateContent ← GenerateContentRequest
+predictLongRunning: POST v1beta/{+model}:predictLongRunning ← PredictLongRunningRequest
+predict: POST v1beta/{+model}:predict ← PredictRequest
+operations.get: GET v1beta/{+name}
+
+# request schemas
+{
+  "GenerateContentRequest": {
+    "contents": {
+      "type": "array",
+      "items": {
+        "$ref": "Content"
+      }
+    },
+    "generationConfig": {
+      "$ref": "GenerationConfig"
+    }
+  },
+  "Content": {
+    "parts": {
+      "type": "array",
+      "items": {
+        "$ref": "Part"
+      }
+    }
+  },
+  "Part": {
+    "fileData": {
+      "$ref": "FileData"
+    },
+    "inlineData": {
+      "$ref": "Blob"
+    },
+    "text": {
+      "type": "string"
+    }
+  },
+  "Blob": {
+    "data": {
+      "type": "string",
+      "format": "byte"
+    },
+    "displayName": {
+      "type": "string"
+    },
+    "mimeType": {
+      "type": "string"
+    }
+  },
+  "FileData": {
+    "displayName": {
+      "type": "string"
+    },
+    "fileUri": {
+      "type": "string"
+    },
+    "mimeType": {
+      "type": "string"
+    }
+  },
+  "GenerationConfig": {
+    "_responseJsonSchema": {
+      "type": "any",
+      "deprecated": true
+    },
+    "audioTranscriptionConfig": {
+      "$ref": "AudioTranscriptionConfig"
+    },
+    "candidateCount": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "enableAffectiveDialog": {
+      "type": "boolean"
+    },
+    "enableEnhancedCivicAnswers": {
+      "type": "boolean"
+    },
+    "frequencyPenalty": {
+      "type": "number",
+      "format": "float"
+    },
+    "imageConfig": {
+      "$ref": "ImageConfig"
+    },
+    "logprobs": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "maxOutputTokens": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "mediaResolution": {
+      "type": "string",
+      "enum": [
+        "MEDIA_RESOLUTION_UNSPECIFIED",
+        "MEDIA_RESOLUTION_LOW",
+        "MEDIA_RESOLUTION_MEDIUM",
+        "MEDIA_RESOLUTION_HIGH"
+      ]
+    },
+    "presencePenalty": {
+      "type": "number",
+      "format": "float"
+    },
+    "responseFormat": {
+      "$ref": "ResponseFormatConfig"
+    },
+    "responseJsonSchema": {
+      "type": "any"
+    },
+    "responseLogprobs": {
+      "type": "boolean"
+    },
+    "responseMimeType": {
+      "type": "string"
+    },
+    "responseModalities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "MODALITY_UNSPECIFIED",
+          "TEXT",
+          "IMAGE",
+          "AUDIO"
+        ]
+      }
+    },
+    "responseSchema": {
+      "$ref": "Schema",
+      "deprecated": true
+    },
+    "seed": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "speechConfig": {
+      "$ref": "SpeechConfig"
+    },
+    "stopSequences": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "temperature": {
+      "type": "number",
+      "format": "float"
+    },
+    "thinkingConfig": {
+      "$ref": "ThinkingConfig"
+    },
+    "topK": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "topP": {
+      "type": "number",
+      "format": "float"
+    },
+    "translationConfig": {
+      "$ref": "TranslationConfig"
+    }
+  },
+  "ImageConfig": {
+    "aspectRatio": {
+      "type": "string",
+      "description": "Optional. The aspect ratio of the image to generate. Supported aspect ratios: `1:1`, `1:4`, `4:1`, `1:8`, `8:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, or `21:9`. If not specified, the model will choose a default aspect ratio based on any reference images provided."
+    },
+    "imageSize": {
+      "type": "string",
+      "description": "Optional. Specifies the size of generated images. Supported values are `512`, `1K`, `2K`, `4K`. If not specified, the model will use default value `1K`."
+    }
+  },
+  "ResponseFormatConfig": {
+    "image": {
+      "$ref": "ImageResponseFormat"
+    }
+  },
+  "ImageResponseFormat": {
+    "aspectRatio": {
+      "type": "string",
+      "enum": [
+        "ASPECT_RATIO_UNSPECIFIED",
+        "ASPECT_RATIO_ONE_BY_ONE",
+        "ASPECT_RATIO_TWO_BY_THREE",
+        "ASPECT_RATIO_THREE_BY_TWO",
+        "ASPECT_RATIO_THREE_BY_FOUR",
+        "ASPECT_RATIO_FOUR_BY_THREE",
+        "ASPECT_RATIO_FOUR_BY_FIVE",
+        "ASPECT_RATIO_FIVE_BY_FOUR",
+        "ASPECT_RATIO_NINE_BY_SIXTEEN",
+        "ASPECT_RATIO_SIXTEEN_BY_NINE",
+        "ASPECT_RATIO_TWENTY_ONE_BY_NINE",
+        "ASPECT_RATIO_ONE_BY_EIGHT",
+        "ASPECT_RATIO_EIGHT_BY_ONE",
+        "ASPECT_RATIO_ONE_BY_FOUR",
+        "ASPECT_RATIO_FOUR_BY_ONE"
+      ]
+    },
+    "delivery": {
+      "type": "string",
+      "enum": [
+        "DELIVERY_UNSPECIFIED",
+        "INLINE",
+        "URI"
+      ]
+    },
+    "imageSize": {
+      "type": "string",
+      "enum": [
+        "IMAGE_SIZE_UNSPECIFIED",
+        "IMAGE_SIZE_FIVE_TWELVE",
+        "IMAGE_SIZE_ONE_K",
+        "IMAGE_SIZE_TWO_K",
+        "IMAGE_SIZE_FOUR_K"
+      ]
+    },
+    "mimeType": {
+      "type": "string",
+      "enum": [
+        "MIME_TYPE_UNSPECIFIED",
+        "IMAGE_JPEG"
+      ]
+    }
+  },
+  "PredictLongRunningRequest": {
+    "instances": {
+      "type": "array",
+      "items": {
+        "type": "any"
+      }
+    },
+    "labels": {
+      "type": "object"
+    },
+    "parameters": {
+      "type": "any"
+    }
+  },
+  "PredictRequest": {
+    "instances": {
+      "type": "array",
+      "items": {
+        "type": "any"
+      }
+    },
+    "labels": {
+      "type": "object"
+    },
+    "parameters": {
+      "type": "any"
+    }
+  }
+}

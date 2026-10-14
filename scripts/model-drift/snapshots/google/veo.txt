@@ -11,3 +11,55 @@
 | durationSeconds | `"4"`, `"6"`, `"8"`. * Must be "8" when using extension, reference images or with 1080p and 4k resolutions* | `"4"`, `"6"`, `"8"`. * Must be "8" when using reference images or with 1080p* | `"4"`, `"6"`, `"8"`. * Must be "8" when using extension, reference images or with 1080p and 4k resolutions* |
 | personGeneration | Text-to-video \& Extension: `"allow_all"` only Image-to-video, Interpolation, \& Reference images: `"allow_adult"` only | Text-to-video: `"allow_all"` only Image-to-video, Interpolation, \& Reference images: `"allow_adult"` only | Text-to-video: `"allow_all"` only Image-to-video: `"allow_adult"` only |
 | resolution | `"720p"` (default), `"1080p"` (only supports 8s duration), `"4k"` (only supports 8s duration) * `"720p"` only for extension* | `"720p"` (default), `"1080p"` (only supports 8s duration) | `"720p"` (default), `"1080p"` (only supports 8s duration), `"4k"` (only supports 8s duration) * `"720p"` only for extension* |
+
+# model versions
+### Veo 3.1 Preview
+| Property | Description |
+|---|---|
+| Model code | **Gemini API** `veo-3.1-generate-preview` |
+| Supported data types | **Input** Text, Image **Output** Video with audio |
+| Limits | **Text input** 1,024 tokens **Output video** 1 |
+
+### Veo 3.1 Fast Preview
+| Property | Description |
+|---|---|
+| Model code | **Gemini API** `veo-3.1-fast-generate-preview` |
+| Supported data types | **Input** Text, Image **Output** Video with audio |
+| Limits | **Text input** 1,024 tokens **Output video** 1 |
+
+### Veo 3.1 Lite Preview
+| Property | Description |
+|---|---|
+| Model code | **Gemini API** `veo-3.1-lite-generate-preview` |
+| Supported data types | **Input** Text, image **Output** Video with audio |
+| Limits | **Text input** 1,024 tokens **Output video** 1 |
+
+### Veo 3 (Deprecated)
+| Property | Description |
+|---|---|
+| Model code | **Gemini API** `veo-3.0-generate-001` |
+| Supported data types | **Input** Text, Image **Output** Video with audio |
+| Limits | **Text input** 1,024 tokens **Output video** 1 |
+
+### Veo 3 Fast (Deprecated)
+| Property | Description |
+|---|---|
+| Model code | **Gemini API** `veo-3.0-fast-generate-001` |
+| Supported data types | **Input** Text, Image **Output** Video with audio |
+| Limits | **Text input** 1,024 tokens **Output video** 1 |
+
+# request keys in the REST samples
+aspectRatio
+data
+image
+inlineData
+instances
+lastFrame
+mimeType
+numberOfVideos
+parameters
+prompt
+referenceImages
+referenceType
+resolution
+video

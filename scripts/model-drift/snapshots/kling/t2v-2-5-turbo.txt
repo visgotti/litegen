@@ -1,0 +1,25 @@
+# notice
+(no retirement notice)
+
+# POST /text-to-video/kling-2.5-turbo request body
+| Field Path | Type | Required | Default | Enum |
+| --- | --- | ---: | --- | --- |
+| `prompt` | string | Yes | - | - |
+| `settings` | object | No | - | - |
+| `settings.resolution` | string | No | `720p` | `720p`, `1080p` |
+| `settings.aspect_ratio` | string | No | `16:9` | `16:9`, `9:16`, `1:1` |
+| `settings.duration` | int | No | `5` | `5`, `10` |
+| `options` | object | No | - | - |
+| `options.callback_url` | string | No | - | - |
+| `options.external_task_id` | string | No | - | - |
+| `options.watermark_info` | object | No | - | - |
+
+# field notes
+- `prompt`: Maximum length: 2500 characters.
+- `settings.resolution`: 720p: Output video with a resolution of 720P.
+- `settings.resolution`: 1080p: Output video with a resolution of 1080P.
+- `options.callback_url`: See [Callback Protocol](https://kling.ai/document-api/api/get-started/callbacks) for the message schema.
+- `options.external_task_id`: Users can provide a Custom task ID, which does not overwrite the system-generated task ID. It can be used to query task status.
+- `options.external_task_id`: Please note that the Custom task ID must be unique within a single user account.
+- `options.watermark_info`: Controlled by the enabled parameter, the specific object format is as follows:
+- `options.watermark_info`: Custom watermark is not supported at this time.

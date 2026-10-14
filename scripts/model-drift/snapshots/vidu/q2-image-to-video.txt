@@ -1,0 +1,16 @@
+POST /ent/v2/img2video · viduq2-pro
+Body parameters
+model | string | Required | viduq2-pro
+images | array | Required | 1 1:4 4:1 50 10
+prompt | string | Optional | 2000
+audio | boolean | Optional | 
+voice_id | string | Optional | 
+is_rec | boolean | Optional | 1 10
+duration | integer | Optional | 5 1 2 3 4 5 6 7 8 9 10
+seed | integer | Optional | 0
+resolution | string | Optional | 2-8s 720p 540p 720p 1080p
+payload | string | Optional | 1048576
+off_peak | boolean | Optional | 48
+callback_url | string | Optional | 
+
+POST /ent/v2/img2video · viduq2-turbo (not carried)

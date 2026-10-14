@@ -233,18 +233,7 @@ async fn live_kling_image() {
     skip_if_missing!("KLING_ACCESS_KEY", "KLING_SECRET_KEY");
     let mut p = litegen::providers::image::kling::KlingImageProvider::new();
     p.configure(keypair_cfg(&env("KLING_ACCESS_KEY").unwrap(), &env("KLING_SECRET_KEY").unwrap(), None));
-    let out = p.generate(&schema("kling/kling-v2"), &base("a jade dragon", "kling/kling-v2"), &img_extras(), &empty_mat()).await.expect("kling image");
-    assert!(!out.data.is_empty());
-}
-
-#[tokio::test]
-#[ignore = "live: set BEDROCK_ACCESS_KEY_ID + BEDROCK_SECRET_ACCESS_KEY (+BEDROCK_REGION)"]
-async fn live_bedrock_canvas_image() {
-    skip_if_missing!("BEDROCK_ACCESS_KEY_ID", "BEDROCK_SECRET_ACCESS_KEY");
-    let region = env("BEDROCK_REGION").unwrap_or_else(|| "us-east-1".to_string());
-    let mut p = litegen::providers::image::bedrock::BedrockImageProvider::new();
-    p.configure(keypair_cfg(&env("BEDROCK_ACCESS_KEY_ID").unwrap(), &env("BEDROCK_SECRET_ACCESS_KEY").unwrap(), Some(&region)));
-    let out = p.generate(&schema("bedrock/amazon.nova-canvas-v1:0"), &base("a desert at golden hour", "bedrock/amazon.nova-canvas-v1:0"), &img_extras(), &empty_mat()).await.expect("bedrock canvas");
+    let out = p.generate(&schema("kling/kling-v2-1"), &base("a jade dragon", "kling/kling-v2-1"), &img_extras(), &empty_mat()).await.expect("kling image");
     assert!(!out.data.is_empty());
 }
 
@@ -327,7 +316,7 @@ async fn live_kling_video() {
     skip_if_missing!("KLING_ACCESS_KEY", "KLING_SECRET_KEY");
     let mut p = litegen::providers::video::kling::KlingVideoProvider::new();
     p.configure(keypair_cfg(&env("KLING_ACCESS_KEY").unwrap(), &env("KLING_SECRET_KEY").unwrap(), None));
-    let h = p.generate(&schema("kling/video-kling-v2-1"), &base("a phoenix rising", "kling/video-kling-v2-1"), &vid_extras(), &empty_mat()).await.expect("kling submit");
+    let h = p.generate(&schema("kling/video-kling-v2-6"), &base("a phoenix rising", "kling/video-kling-v2-6"), &vid_extras(), &empty_mat()).await.expect("kling submit");
     assert!(drive_video(&p, h).await.is_some());
 }
 
@@ -342,15 +331,3 @@ async fn live_hunyuan_video() {
     assert!(drive_video(&p, h).await.is_some());
 }
 
-#[tokio::test]
-#[ignore = "live: set BEDROCK_* and BEDROCK_S3_OUTPUT_URI"]
-async fn live_bedrock_reel_video() {
-    skip_if_missing!("BEDROCK_ACCESS_KEY_ID", "BEDROCK_SECRET_ACCESS_KEY", "BEDROCK_S3_OUTPUT_URI");
-    let region = env("BEDROCK_REGION").unwrap_or_else(|| "us-east-1".to_string());
-    let mut cfg = keypair_cfg(&env("BEDROCK_ACCESS_KEY_ID").unwrap(), &env("BEDROCK_SECRET_ACCESS_KEY").unwrap(), Some(&region));
-    cfg.options = Some(serde_json::json!({ "s3_output_uri": env("BEDROCK_S3_OUTPUT_URI").unwrap() }));
-    let mut p = litegen::providers::video::bedrock::BedrockVideoProvider::new();
-    p.configure(cfg);
-    let h = p.generate(&schema("bedrock/amazon.nova-reel-v1:1"), &base("waves crashing on rocks", "bedrock/amazon.nova-reel-v1:1"), &vid_extras(), &empty_mat()).await.expect("reel submit");
-    assert!(drive_video(&p, h).await.is_some());
-}

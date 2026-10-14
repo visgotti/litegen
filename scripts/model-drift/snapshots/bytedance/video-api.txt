@@ -2,47 +2,117 @@ model `string` `Required`
 content `object[]` `Required`
 Text `object`
 type `string` `Required`
+  value: `text`
 text `string` `Required`
 Image `object`
 type `string` `Required`
+  value: `image_url`
 image_url `object` `Required`
 url `string` `Required`
 role `string` `Required under certain conditions`
+  [Image-to-video (first frame)] supported models: All models
+  [Image-to-video (first and last frames)] supported models: Dreamina Seedance 2.0 series, Seedance 1.0 pro
+  - Role of the first frame: `first_frame`
+  - Role of the last frame: `last_frame`
+  [Image-to-video (reference images)] supported models: Dreamina Seedance 2.0 series (1–9 images)
 Video `object`
 type `string` `Required`
+  value: `video_url`
 video_url `object` `Required`
 url `string` `Required`
 role `string` `conditionally required`
+  value: `reference_video`
+  supported models: Dreamina Seedance 2.0 series
 Audio `object`
 type `string` `Required`
+  value: `audio_url`
 audio_url `object` `Required`
 url `string` `Required`
 role `string` `conditionally required`
-Sample `object`
-type `string` `Required`
+  value: `reference_audio`
+  Dreamina Seedance 2.0 series: Audio-only input is not supported; include at least one reference image or video.
+Draft information `object`
+  supported models: (none of ours)
 draft_task `object` `Required`
 id `string` `Required`
+type `string` `Required`
+  value: `draft_task`
+omni_reference_task_type `string` `Default value: auto`
+  values: `auto`, `reference`, `edit`, `extend`
+  supported models: (none of ours)
 resolution `string`
-  Dreamina Seedance 2.0: Default `720p`; supports `480p`, `720p`, `1080p`, and `4k`.
   Dreamina Seedance 2.0 mini: Default `720p`; supports `480p` and `720p`.
-  Dreamina Seedance 1.0 pro: Default `1080p`; supports `480p`, `720p`, and `1080p`.
-  Dreamina Seedance 1.0 pro fast: Default `1080p`; supports `480p`, `720p`, and `1080p`.
+  Seedance 1.0 pro: Default `1080p`; supports `480p`, `720p`, and `1080p`.
+  Seedance 1.0 pro fast: Default `1080p`; supports `480p`, `720p`, and `1080p`.
 ratio `string`
   Supported values: `16:9`, `4:3`, `1:1`, `3:4`, `9:16`, `21:9`, and `adaptive`. The `adaptive` value automatically selects an aspect ratio based on the task type and input.
-  Dreamina Seedance 1.0 pro: Defaults to `16:9` for text-to-video and `adaptive` for image-to-video.
-  Dreamina Seedance 1.0 pro fast: Defaults to `16:9` for text-to-video and `adaptive` for image-to-video.
+  | Task type |  | Dreamina Seedance 2.0 series | Seedance 1.0 series |
+  | Text-to-video |  | Supports specifying an available aspect ratio or allowing the model to select one based on the prompt > Supports `adaptive` or a specified aspect ratio | Only supports specifying an available aspect ratio > Does not support `adaptive` |
+  | First-frame or first-and-last-frame image-to-video |  | Supports specifying an available aspect ratio or allowing the model to select one based on the first-frame image > Supports `adaptive` or a specified aspect ratio | Supports specifying an available aspect ratio or allowing the model to select one based on the first-frame image > Supports `adaptive` or a specified aspect ratio |
+  | Omni reference video generation | Video editing / video extension | Supports specifying an available aspect ratio or allowing the model to select one based on the video to edit or extend > Supports `adaptive` or a specified aspect ratio | — |
+  |  | Reference-to-video | Supports specifying an available aspect ratio or allowing the model to select one based on the prompt > Supports `adaptive` or a specified aspect ratio | — |
+  | Resolution | Aspect ratio | Dreamina Seedance 2.0 series | Seedance 1.0 series |
+  | 480p | `16:9` | 864×496 | 864×480 |
+  |  | `4:3` | 752×560 | 736×544 |
+  |  | `1:1` | 640×640 | 640×640 |
+  |  | `3:4` | 560×752 | 544×736 |
+  |  | `9:16` | 496×864 | 480×864 |
+  |  | `21:9` | 992×432 | 960×416 |
+  | 720p | `16:9` | 1280×720 | 1248×704 |
+  |  | `4:3` | 1112×834 | 1120×832 |
+  |  | `1:1` | 960×960 | 960×960 |
+  |  | `3:4` | 834×1112 | 832×1120 |
+  |  | `9:16` | 720×1280 | 704×1248 |
+  |  | `21:9` | 1470×630 | 1504×640 |
+  | 1080p (Seedance 2.0 fast and Seedance 2.0 mini are not supported) | `16:9` | 1920×1080 | 1920×1088 |
+  |  | `4:3` | 1664×1248 | 1664×1248 |
+  |  | `1:1` | 1440×1440 | 1440×1440 |
+  |  | `3:4` | 1248×1664 | 1248×1664 |
+  |  | `9:16` | 1080×1920 | 1088×1920 |
+  |  | `21:9` | 2206×946 | 2176×928 |
+  | 4k | `16:9` | 3840×2160 | — |
+  |  | `4:3` | 3326×2494 | — |
+  |  | `1:1` | 2880×2880 | — |
+  |  | `3:4` | 2494×3326 | — |
+  |  | `9:16` | 2160×3840 | — |
+  |  | `21:9` | 4398×1886 | — |
+  Dreamina Seedance 2.0 series: Default `adaptive`.
+  Seedance 1.0 pro: Defaults to `16:9` for text-to-video and `adaptive` for image-to-video.
+  Seedance 1.0 pro fast: Defaults to `16:9` for text-to-video and `adaptive` for image-to-video.
 duration `integer`
-  Dreamina Seedance 1.0 pro: Default `5`; supports `[2, 12]`.
-  Dreamina Seedance 1.0 pro fast: Default `5`; supports `[2, 12]`.
+  | Model | Behavior when `duration` is `-1` |
+  | Dreamina Seedance 2.0 series and Seedance 1.5 pro | The model selects an appropriate whole-second video length within the valid `duration` range. |
+  Dreamina Seedance 2.0 series: Default `5`; supports `[4, 15]` or `-1`.
+  Seedance 1.0 pro: Default `5`; supports `[2, 12]`.
+  Seedance 1.0 pro fast: Default `5`; supports `[2, 12]`.
 frames `integer`
+  Value range: All integer values in the range `[29, 289]` that fit the format `25 + 4n` are supported, where n is a positive integer.
+  supported models: Seedance 1.0 pro, Seedance 1.0 pro fast
 generate_audio `boolean` `Default: true`
+  values: `true`, `false`
+  supported models: Dreamina Seedance 2.0 series
 watermark `boolean` `Default value: false`
+  values: `true`, `false`
+output_format `string` `Default value: mp4`
+  values: `mp4`, `mov`
+  supported models: (none of ours)
 seed `integer` `Default value: -1`
+  Value range: `[-1, 2147483647]`.
+  supported models: Seedance 1.0 pro, Seedance 1.0 pro fast
 camera_fixed `boolean` `Default value: false`
+  values: `true`, `false`
+  supported models: Seedance 1.0 pro, Seedance 1.0 pro fast
 return_last_frame `boolean` `Default value: false`
+  values: `true`, `false`
 draft `boolean` `Default: false`
+  values: `true`, `false`
+  supported models: (none of ours)
 service_tier `string` `Default value: default`
+  values: `default`, `flex`
 callback_url `string`
+  values: `queued`, `running`, `succeeded`, `failed`, `expired`
 execution_expires_after `integer` `Default value: 172800`
 priority `integer` `Default 0`
+  supported models: Dreamina Seedance 2.0 series
+  Value range: `[0, 9]`.
 safety_identifier `string`

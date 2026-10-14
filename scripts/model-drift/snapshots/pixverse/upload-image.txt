@@ -1,0 +1,18 @@
+# request property descriptions
+image: Either image or image_url is required.
+image_url: image file from url, application/octet-stream is not supported.Either image or image_url is required. supported mime-type "image/jpeg","image/jpg","image/png","image/webp"
+
+{
+  "POST /openapi/v2/image/upload (multipart/form-data)": {
+    "properties": {
+      "image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "image_url": {
+        "type": "string"
+      }
+    },
+    "type": "object"
+  }
+}

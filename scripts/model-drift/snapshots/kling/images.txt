@@ -4,7 +4,7 @@
 # POST /v1/images/generations request body
 | Field Path | Type | Required | Default | Enum |
 | --- | --- | ---: | --- | --- |
-| `model_name` | string | No | `kling-v1` | `kling-v1`, `kling-v1-5`, `kling-v2`, `kling-v2-new`, `kling-v2-1`, `kling-v3` |
+| `model_name` | string | No | `kling-v3` | `kling-v2-1`, `kling-v3` |
 | `prompt` | string | Yes | - | - |
 | `negative_prompt` | string | No | - | - |
 | `image` | string | No | - | - |
@@ -19,3 +19,32 @@
 | `watermark_info` | object | No | - | - |
 | `callback_url` | string | No | - | - |
 | `external_task_id` | string | No | - | - |
+
+# field notes
+- `prompt`: Cannot exceed 2500 characters
+- `negative_prompt`: Cannot exceed 2500 characters
+- `negative_prompt`: Note: In the Image-to-Image scenario (when the "image" field is not empty), negative prompts are not supported.
+- `image`: Support inputting image Base64 encoding or image URL (ensure accessibility)
+- `image`: Base64 Encoding Note:
+- `image`: Supported image formats: .jpg / .jpeg / .png
+- `image`: File size: ≤10MB, dimensions: min 300px, aspect ratio: 1:2.5 ~ 2.5:1
+- `image`: Required when image_reference parameter is not empty
+- `image_reference`: `subject`: character feature reference, `face`: character appearance reference
+- `image_reference`: When using `face`, the uploaded image must contain only one face
+- `image_fidelity`: Value range: [0, 1], The larger the value, the stronger the reference intensity
+- `image_fidelity`: > Only kling-v2-1 supports this parameter
+- `human_fidelity`: Only takes effect when the image_reference parameter is subject
+- `human_fidelity`: Value range: [0, 1], The larger the value, the stronger the reference intensity
+- `human_fidelity`: > Only kling-v2-1 supports this parameter
+- `element_list`: Load with key:value format as follows:
+- `element_list`: The amount of reference element is related to the amount of reference image, the sum of the amount of reference element and the amount of reference image shall not exceed 10.
+- `resolution`: `1k`: 1K standard, `2k`: 2K high-res
+- `resolution`: > Different model versions support varying ranges. For details, refer to the [Capability Map](https://kling.ai/document-api/guides/capability-map/image)
+- `n`: Value range: [1, 9]
+- `aspect_ratio`: > Different model versions support varying ranges. For details, refer to the [Capability Map](https://kling.ai/document-api/guides/capability-map/image)
+- `watermark_info`: Defined by the enabled parameter, format:
+- `watermark_info`: true: generate watermarked result, false: do not generate
+- `watermark_info`: Custom watermarks are not currently supported
+- `callback_url`: For specific message schema, see [Callback Protocol](https://kling.ai/document-api/api/get-started/callbacks)
+- `external_task_id`: Will not overwrite system-generated task ID, but supports querying task by this ID
+- `external_task_id`: Please note that the customized task ID must be unique within a single user account.

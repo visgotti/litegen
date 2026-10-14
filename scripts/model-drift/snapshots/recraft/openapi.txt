@@ -9,6 +9,7 @@
 /v1/images/imageToImage
 /v1/images/inpaint
 /v1/images/outpaint
+/v1/images/refineDetails
 /v1/images/removeBackground
 /v1/images/replaceBackground
 /v1/images/variateImage
@@ -135,7 +136,8 @@
           "response_format": {
             "enum": [
               "url",
-              "b64_json"
+              "b64_json",
+              "multipart"
             ],
             "type": "string"
           },
@@ -246,6 +248,9 @@
               "upscale16mp"
             ],
             "type": "string"
+          },
+          "zdr": {
+            "type": "boolean"
           }
         },
         "required": [

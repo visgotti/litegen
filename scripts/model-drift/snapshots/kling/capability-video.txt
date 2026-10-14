@@ -1,0 +1,30 @@
+# Models
+| Model | Input | Generation Range | Resolution |
+| --- | --- | --- | --- |
+| Kling 3.0 Turbo | Text, Image | 3~15s | 720P, 1080P |
+| Kling 3.0 | Text, Image, Video | 3~15s | 720P, 1080P, 4K |
+| Kling 3.0 Omni | Text, Image, Video | 3~15s | 720P, 1080P, 4K |
+| Kling O1 | Text, Image, Video | 3~10s | 720P, 1080P |
+| Kling 2.6 | Text, Image, Video | 3~10s | 720P, 1080P |
+| Kling 2.5 Turbo | Text, Image | 5s, 10s | 720P, 1080P |
+
+# Text to Video
+| Capability | Kling 3.0 Turbo | Kling 3.0 | Kling 3.0 Omni | Kling O1 | Kling 2.6 | Kling 2.5 Turbo |
+| --- | --- | --- | --- | --- | --- | --- |
+| Single-shot Video Generation | Supported | Supported | Supported | Supported: Only supports 5s or 10s duration | Supported: Only supports 5s or 10s duration; 720P supports silent videos only | Supported |
+| Multi-shot Video Generation | Supported | Supported | Supported | Not Supported | Not Supported | Not Supported |
+| Native Audio | Supported | Supported | Supported | Not Supported | Supported | Not Supported |
+| Voice Control (Human Voice) | Not Supported | Not Supported | Not Supported | Not Supported | Not Supported | Not Supported |
+
+# Image to Video
+| Capability | Kling 3.0 Turbo | Kling 3.0 | Kling 3.0 Omni | Kling O1 | Kling 2.6 | Kling 2.5 Turbo |
+| --- | --- | --- | --- | --- | --- | --- |
+| Single-shot Video Generation | Supported | Supported | Supported | Supported: Only supports 5s or 10s duration | Supported: Only supports 5s or 10s duration; 720P only supports silent videos | Supported |
+| Multi-shot Video Generation | Supported | Supported | Supported | Not Supported | Not Supported | Not Supported |
+| First/Last Frame | Not Supported | Supported | Supported | Supported | Supported: Only supports 1080P silent videos | Supported: Only supports 1080P |
+| End Frame Only | Not Supported | Not Supported | Not Supported | Not Supported | Not Supported | Not Supported |
+| Element Control | Not Supported | Supported | Supported | Supported: Multi-image elements only | Not Supported | Not Supported |
+| Native Audio | Supported | Supported | Supported | Not Supported | Supported | Not Supported |
+| Voice Control (Human Voice) | Not Supported | Not Supported | Not Supported | Not Supported | Supported: Only supports 5s or 10s duration and 1080P videos | Not Supported |
+| Motion Control | Not Supported | Supported: 4K is not supported | Not Supported | Not Supported | Supported | Not Supported |
+| Video Reference | Not Supported | Not Supported | Supported | Supported | Not Supported | Not Supported |

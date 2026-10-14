@@ -8,6 +8,22 @@ v5.6
 v6
 c1
 
+# request property descriptions
+duration: Video duration v.3.5/v4/v4.5 : 5/8 (v3.5 1080p cannot use 8) v5 : 5/8 v5.5/v5.6 : 5/8/10 (1080p cannot use 10) v6/c1 : 1~15
+img_id: Image ID from Upload image API. single image or single-image templates
+model: Model version (now supports v3.5/v4/v4.5/v5/v5.5/v5.6/v6/c1)
+prompt: Prompt <= 5000 characters
+quality: Video quality ("360p", "540p", "720p", "1080p")
+seed: Random seed, range: 0 - 2147483647
+template_id: Template ID (template_id must be activated before use)
+generate_audio_switch: Supported in v5.5/5.6/v6/c1 models. Audio switch. Controls whether the video has audio. **true**: Audio on , **false**: Audio off . **default value** : false
+generate_multi_clip_switch: Supported in v5.5/v6 model. Single or multi-clip switch. controls single-clip and multi-clip generation modes. **true**: Multi-clip , **false**: Single-clip. **default value** : false
+sound_effect_switch: Supported in v5 and below. Or with template_id. Set to true if you want to enable this feature. Default is false.
+sound_effect_content: Supported in v5 models and below. Activated when sound_effect_switch=true, Describe the sound effect you want. Leave blank for auto generation.
+lip_sync_tts_switch: Supported in v5 models and below. Set to true if you want to enable this feature. Default is false.
+lip_sync_tts_content: Supported in v5 models and below. ~140 (UTF-8) characters
+lip_sync_tts_speaker_id: Supported in v5 models and below. id from Get speech tts list (v3.5/v4/v4.5/v5)
+
 {
   "POST /openapi/v2/video/img/generate (application/json)": {
     "properties": {

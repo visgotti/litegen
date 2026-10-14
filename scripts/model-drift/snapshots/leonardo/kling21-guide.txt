@@ -1,0 +1,12 @@
+endpoint: https://cloud.leonardo.ai/api/rest/v1/generations-image-to-video
+notice: **Kling 2.1 Pro is being retired on Tuesday, September 15, 2026 at 9:30 AM AEST (UTC+10).** We recommend switching to Kling Video 3.0 Pro (v3/pro) before this date. After September 15, requests using v2.1/pro will return an error.
+
+duration | number | 5 10
+height | number | 1080 1920
+imageId | string | 
+imageType | string | UPLOADED GENERATED
+isPublic | boolean | true false
+model | string | KLING2_1
+prompt | string | 
+resolution | string | RESOLUTION_1080
+width | number | 1080 1920

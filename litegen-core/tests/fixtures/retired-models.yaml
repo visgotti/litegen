@@ -1,6 +1,9 @@
+# Catalog rows removed after their vendor shut the model down, kept only so the
+# adapters that still exist stay unit-tested (they load their schema from here
+# instead of models/). Not loaded by the server and never advertised; see
+# `no_retired_model_ids_are_advertised` in tests/catalog_conformance.rs.
 models:
-  # Amazon Bedrock Nova (bedrock-runtime.{region}.amazonaws.com). AWS SigV4.
-  # Credentials: key_id (access key id) + key_secret (secret) + region.
+  # Bedrock EOL 2026-09-30 (removed from models/bedrock.yaml 2026-10-12).
   - id: bedrock/amazon.nova-canvas-v1:0
     provider: bedrock
     media_type: image
@@ -67,5 +70,42 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [text-to-video, image-to-video]
+
+  # OpenAI shut down the Videos API and Sora 2 on 2026-09-24 (removed from models/openai.yaml 2026-10-12).
+  - id: openai/sora
+    provider: openai
+    media_type: video
+    display_name: Sora 2
+    description: "DEPRECATED: OpenAI is shutting down the Videos API and every
+      Sora 2 model on 2026-09-24 with no replacement offered. Sora 2
+      text-to-video and image-to-video (maps to the `sora-2` model)."
+    pricing: { base_cost_usd: 0.50 }
+    capabilities: { text_to_video: true, image_to_video: true }
+    prompt: { required: true, max_length: 4000 }
+    params:
+      # Sora accepts only clip lengths of 4, 8, or 12s; other values snap to the nearest.
+      duration_seconds:
+        kind: float
+        min: 4.0
+        max: 12.0
+        default: 4.0
+      # aspect_ratio + resolution select the Sora `size` (e.g. 1280x720 / 720x1280).
+      aspect_ratio:
+        kind: aspect_ratio
+        allowed: ["16:9", "9:16"]
+        default: "16:9"
+      resolution:
+        kind: string
+        enum_values: [720p]
+        default: 720p
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      # Image-to-video uploads the first frame as a multipart `input_reference` part.
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: []
     tags: [text-to-video, image-to-video]

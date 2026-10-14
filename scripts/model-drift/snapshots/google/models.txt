@@ -2,6 +2,7 @@ gemini-2.5-flash-image
 gemini-3-pro-image
 gemini-3.1-flash-image
 gemini-3.1-flash-lite-image
+gemini-nano-banana-2.1
 gemini-omni-1.1-flash
 imagen-4.0-generate
 veo-3.1-generate-preview

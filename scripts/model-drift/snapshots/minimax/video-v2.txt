@@ -96,6 +96,17 @@ components:
             - '1:1'
             - '3:4'
             - '9:16'
+        extra:
+          type: object
+          properties:
+            prompt_expansion_mode:
+              type: string
+              enum:
+                - disabled
+                - balanced
+                - quality
+              default: balanced
+          additionalProperties: false
         callback_url:
           type: string
     VideoGenerationV2Resp:

@@ -1,0 +1,25 @@
+POST /ent/v2/text2video · viduq3-pro
+Body parameters
+model | string | Required | viduq3-pro
+prompt | string | Required | 20000
+duration | integer | Optional | 5s 1-16
+seed | integer | Optional | 0
+aspect_ratio | string | Optional | 16:9 16:9 9:16 3:4 4:3 1:1
+resolution | string | Optional | 1-16 720p 540p 720p 1080p
+audio | boolean | Optional | 
+payload | string | Optional | 1,048,576
+off_peak | boolean | Optional | 48
+callback_url | string | Optional | 3 3
+
+POST /ent/v2/text2video · viduq3-turbo
+Body parameters
+model | string | Required | viduq3-turbo
+prompt | string | Required | 5000
+duration | integer | Optional | viduq3-turbo 5 1-16
+seed | integer | Optional | 0
+aspect_ratio | string | Optional | 16:9 16:9 9:16 3:4 4:3 1:1
+resolution | string | Optional | viduq3-turbo 1-16s 720p 540p 720p 1080p
+audio | boolean | Optional | 
+payload | string | Optional | 1,048,576
+off_peak | boolean | Optional | 48
+callback_url | string | Optional | callback_url 3 3

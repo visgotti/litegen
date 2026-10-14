@@ -2,47 +2,7 @@ models:
   # Kling (api.klingai.com; regional hosts via api_base). Auth: per-request JWT
   # (HS256) from access_key (key_id) + secret_key (key_secret). Async tasks.
   # ─── Image (Kolors) ───────────────────────────────────────────────────────
-  - id: kling/kling-v2
-    provider: kling
-    media_type: image
-    display_name: Kling Image v2
-    description: Kling (Kolors) text-to-image + subject reference.
-    pricing: { base_cost_usd: 0.04 }
-    capabilities: { text_to_image: true, image_to_image: true }
-    prompt: { required: true, max_length: 2500 }
-    params:
-      negative_prompt: { kind: string, max_length: 2500 }
-      aspect_ratio:
-        kind: aspect_ratio
-        allowed: ["16:9","9:16","1:1","4:3","3:4","3:2","2:3"]
-        default: "1:1"
-    ref_inputs:
-      max_total: 1
-      default_role: subject
-      provider_format: { form: base64 }
-      roles:
-        subject: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [image_fidelity, image_reference]
-    tags: [text-to-image, image-to-image]
-
-  - id: kling/kling-v1-5
-    provider: kling
-    media_type: image
-    display_name: Kling Image v1.5
-    description: Kling (Kolors) v1.5 text-to-image.
-    pricing: { base_cost_usd: 0.035 }
-    capabilities: { text_to_image: true }
-    prompt: { required: true, max_length: 2500 }
-    params:
-      negative_prompt: { kind: string, max_length: 2500 }
-      aspect_ratio:
-        kind: aspect_ratio
-        allowed: ["16:9","9:16","1:1","4:3","3:4","3:2","2:3"]
-        default: "1:1"
-    extra_allowlist: [image_fidelity]
-    tags: [text-to-image]
-
-  # Kling Image 2.1: the successor to Image 2.0 / 1.5 (both retire 2026-09-15).
+  # Kling Image 2.1: the successor to Image 2.0 / 1.5 (both retired 2026-09-15).
   # Same POST /v1/images/generations endpoint, sent as model_name `kling-v2-1`.
   # @see https://kling.ai/document-api/api/image/2-1/image-generation.md (2026-09-11)
   # @see https://kling.ai/document-api/guides/capability-map/image.md (2026-09-11):
@@ -73,9 +33,10 @@ models:
       roles:
         subject: { required: false, min_count: 0, max_count: 1 }
     # image_reference: subject | face. resolution: 1k (default) | 2k, same
-    # price. image_fidelity is kling-v1/v1-5 only and human_fidelity
-    # kling-v1-5 only, so neither is allowlisted.
-    extra_allowlist: [image_reference, resolution]
+    # price. image_fidelity and human_fidelity (0-1; human_fidelity only with
+    # image_reference subject): "Only kling-v2-1 supports this parameter".
+    # @see https://kling.ai/document-api/api/image/2-1/image-generation.md (2026-10-12)
+    extra_allowlist: [image_reference, resolution, image_fidelity, human_fidelity]
     tags: [text-to-image, image-to-image]
 
   # Kling Image 3.0: the same POST /v1/images/generations endpoint, sent as
@@ -111,71 +72,21 @@ models:
         init: { required: false, min_count: 0, max_count: 1 }
     # resolution: 1k (default) | 2k, same price. image_reference (subject |
     # face) is feature reference, "Not Supported" on Image 3.0; image_fidelity
-    # / human_fidelity are kling-v1/v1-5 only; element_list needs element ids
+    # / human_fidelity are kling-v2-1 only; element_list needs element ids
     # from the Element Management API, which we do not wrap.
     extra_allowlist: [resolution]
     tags: [text-to-image, image-to-image]
 
   # ─── Video ────────────────────────────────────────────────────────────────
-  - id: kling/video-kling-v2-1
-    provider: kling
-    media_type: video
-    display_name: Kling Video v2.1
-    description: Kling v2.1 image-to-video (first frame + image_tail last frame).
-    pricing: { base_cost_usd: 1.00 }
-    # Kling's text2video `model_name` enum has no kling-v2-1 (capability map:
-    # 2.1 text-to-video "Not Supported"), so the first frame is required.
-    # @see https://kling.ai/document-api/api/video/1-6/text-to-video.md (2026-09-11)
-    capabilities: { image_to_video: true }
-    prompt: { required: true, max_length: 2500 }
-    params:
-      negative_prompt: { kind: string, max_length: 2500 }
-      duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0 }
-      aspect_ratio:
-        kind: aspect_ratio
-        allowed: ["16:9","9:16","1:1"]
-        default: "16:9"
-    ref_inputs:
-      max_total: 2
-      default_role: first_frame
-      provider_format: { form: base64 }
-      roles:
-        first_frame: { required: true, min_count: 1, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [cfg_scale, mode, camera_control]
-    tags: [image-to-video]
-
-  - id: kling/video-kling-v1-6
-    provider: kling
-    media_type: video
-    display_name: Kling Video v1.6
-    description: Kling v1.6 text/image-to-video.
-    pricing: { base_cost_usd: 0.50 }
-    capabilities: { text_to_video: true, image_to_video: true }
-    prompt: { required: true, max_length: 2500 }
-    params:
-      negative_prompt: { kind: string, max_length: 2500 }
-      duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0 }
-      aspect_ratio:
-        kind: aspect_ratio
-        allowed: ["16:9","9:16","1:1"]
-        default: "16:9"
-    ref_inputs:
-      max_total: 2
-      default_role: first_frame
-      provider_format: { form: base64 }
-      roles:
-        first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [cfg_scale, mode, camera_control]
-    tags: [text-to-video, image-to-video]
-
-  # Kling 2.5 Turbo and 2.6: the successors to 1.6 / 2.1 (both retire
-  # 2026-09-15). Both are in the model_name enums of the same legacy
+  # Kling 2.5 Turbo and 2.6: the successors to 1.6 / 2.1 (both retired
+  # 2026-09-15). Both were in the model_name enums of the legacy
   # /v1/videos/text2video and /v1/videos/image2video endpoints the adapter
   # calls; `video-` and `kling/` are stripped, so the ids reach Kling unchanged.
-  # @see https://kling.ai/document-api/api/video/1-6/text-to-video.md (2026-09-11)
-  # @see https://kling.ai/document-api/api/video/2-1/image-to-video.md (2026-09-11)
+  # Kling stopped documenting those legacy endpoints when 1.6 / 2.1 retired (it
+  # says they keep working); per-model limits are re-read from the new API's
+  # pages for the same model, which state the same rules under new field names.
+  # @see https://kling.ai/document-api/api/video/2-5-turbo/text-to-video.md (2026-10-12)
+  # @see https://kling.ai/document-api/api/video/2-6/image-to-video.md (2026-10-12)
   # Per-model support comes from the capability map, which the request-body
   # notes defer to ("Support varies by model version and video mode"):
   # @see https://kling.ai/document-api/guides/capability-map/video.md (2026-09-11)
@@ -251,8 +162,6 @@ models:
   # and `video-` and `kling/` are stripped, so the id reaches Kling unchanged.
   # (Kling 3.0's own docs page describes the newer /text-to-video/kling-3.0
   # API; the legacy endpoints are the ones the adapter speaks.)
-  # @see https://kling.ai/document-api/api/video/1-6/text-to-video.md (2026-09-11)
-  # @see https://kling.ai/document-api/api/video/2-1/image-to-video.md (2026-09-11)
   # @see https://kling.ai/document-api/api/video/3-0-omni/text-to-video.md (2026-09-11)
   # @see https://kling.ai/document-api/guides/capability-map/video.md (2026-09-11)
   #   - duration: 3~15 s (the `duration` enum is every whole second 3-15).

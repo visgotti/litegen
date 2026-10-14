@@ -1,3 +1,6 @@
+# v1 engine_id values the docs name
+stable-diffusion-xl-1024-v1-0
+
 # v1 endpoints
 /v1/engines/list
 /v1/generation/{engine_id}/image-to-image

@@ -1,0 +1,117 @@
+# stability-ai/stable-diffusion-3
+served by POST /v1/models/stability-ai/stable-diffusion-3/predictions (versionless): true
+disabled for predictions: false
+
+# price
+$0.035 per output image [image_output_count]
+
+# input schema of the served version
+{
+  "POST /predictions (application/json)": {
+    "properties": {
+      "created_at": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "id": {
+        "type": "string"
+      },
+      "input": {
+        "properties": {
+          "aspect_ratio": {
+            "default": "1:1",
+            "enum": [
+              "1:1",
+              "16:9",
+              "21:9",
+              "3:2",
+              "2:3",
+              "4:5",
+              "5:4",
+              "9:16",
+              "9:21"
+            ],
+            "type": "string"
+          },
+          "cfg": {
+            "default": 3.5,
+            "maximum": 20,
+            "minimum": 0,
+            "type": "number"
+          },
+          "image": {
+            "format": "uri",
+            "type": "string"
+          },
+          "negative_prompt": {
+            "default": "",
+            "type": "string"
+          },
+          "output_format": {
+            "default": "webp",
+            "enum": [
+              "webp",
+              "jpg",
+              "png"
+            ],
+            "type": "string"
+          },
+          "output_quality": {
+            "default": 90,
+            "maximum": 100,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prompt": {
+            "default": "",
+            "type": "string"
+          },
+          "prompt_strength": {
+            "default": 0.85,
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "seed": {
+            "type": "integer"
+          },
+          "steps": {
+            "default": 28,
+            "maximum": 28,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "output_file_prefix": {
+        "type": "string"
+      },
+      "webhook": {
+        "format": "uri",
+        "maxLength": 65536,
+        "minLength": 1,
+        "type": "string"
+      },
+      "webhook_events_filter": {
+        "default": [
+          "start",
+          "output",
+          "logs",
+          "completed"
+        ],
+        "items": {
+          "enum": [
+            "start",
+            "output",
+            "logs",
+            "completed"
+          ],
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  }
+}

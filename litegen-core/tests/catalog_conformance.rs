@@ -39,6 +39,33 @@ fn enum_values(reg: &CapabilityRegistry, id: &str, param: &str) -> Vec<String> {
     }
 }
 
+/// The weekly drift check (`scripts/model-drift/`) watches only the models its
+/// provider definition maps. Its node test enforces that, but a change verified
+/// with `cargo test` alone never runs it — which is how three 3D models reached
+/// the catalog unwatched. Each id must be a quoted key in
+/// `scripts/model-drift/providers/<provider>.mjs`.
+#[test]
+fn every_model_is_mapped_in_its_drift_definition() {
+    let mut root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    let mut unmapped: Vec<String> = registry()
+        .all()
+        .filter(|m| m.provider != "mock")
+        .filter(|m| {
+            let path = root.join(format!("scripts/model-drift/providers/{}.mjs", m.provider));
+            let src = std::fs::read_to_string(path).unwrap_or_default();
+            !src.contains(&format!("'{}'", m.id)) && !src.contains(&format!("\"{}\"", m.id))
+        })
+        .map(|m| format!("{} → scripts/model-drift/providers/{}.mjs", m.id, m.provider))
+        .collect();
+    unmapped.sort();
+    assert!(
+        unmapped.is_empty(),
+        "map each to the vendor id(s) its adapter sends, then run \
+         `node --test 'scripts/model-drift/test/*.test.mjs'`: {unmapped:#?}"
+    );
+}
+
 /// Model ids whose vendor shutdown date has already passed. Advertising any of
 /// these guarantees a runtime failure.
 #[test]
@@ -65,6 +92,18 @@ fn no_retired_model_ids_are_advertised() {
         ("luma/ray-hdr-3", "not in the Dream Machine model enum (ray-2 | ray-flash-2); ray-3.2 is Luma Agents API only"),
         ("bytedance/seedream-3-0-t2i-250415", "BytePlus deactivated it 2026-05-13; replacement bytedance/seedream-5-0-lite-260128"),
         ("bytedance/doubao-seedance-1-0-lite-i2v-250428", "BytePlus deactivated it 2026-05-13; replacement bytedance/seedance-1-0-pro-fast-251015"),
+        // Scheduled shutdowns that took effect (2026-10-12 model-drift run):
+        // pages and enum entries gone from https://kling.ai/document-api/api/image/2-1/image-generation.md
+        ("kling/kling-v2", "Kling retired Image 2.0 2026-09-15; successor kling/kling-v2-1"),
+        ("kling/kling-v1-5", "Kling retired Image 1.5 2026-09-15; successor kling/kling-v2-1"),
+        ("kling/video-kling-v1-6", "Kling retired Video 1.6 2026-09-15; successors video-kling-v2-5-turbo / -v2-6"),
+        ("kling/video-kling-v2-1", "Kling retired Video 2.1 2026-09-15; successors video-kling-v2-5-turbo / -v2-6"),
+        // https://developers.openai.com/api/docs/deprecations: "Past deprecations"
+        ("openai/sora", "OpenAI shut down the Videos API and Sora 2 2026-09-24; no replacement"),
+        ("openai/sora-2-pro", "OpenAI shut down the Videos API and Sora 2 2026-09-24; no replacement"),
+        // https://docs.aws.amazon.com/bedrock/latest/userguide/model-lifecycle-legacy.md: "Models that have reached EOL"
+        ("bedrock/amazon.nova-canvas-v1:0", "Bedrock EOL 2026-09-30; no Amazon successor"),
+        ("bedrock/amazon.nova-reel-v1:1", "Bedrock EOL 2026-09-30; no Amazon successor"),
     ];
     let mut still_present = Vec::new();
     for (id, why) in retired {
@@ -87,20 +126,14 @@ fn no_retired_model_ids_are_advertised() {
 /// `no_retired_model_ids_are_advertised`. The weekly `/model-drift` run adds
 /// entries here as vendors announce shutdowns.
 const SCHEDULED_SHUTDOWNS: &[(&str, &str, &str)] = &[
-    // @see https://kling.ai/document-api/api/image/2-0/image-generation.md
-    ("kling/kling-v2", "2026-09-15", "Kling retires Image 2.0; successor kling/kling-v2-1"),
-    ("kling/kling-v1-5", "2026-09-15", "Kling retires Image 1.5; successor kling/kling-v2-1"),
-    ("kling/video-kling-v1-6", "2026-09-15", "Kling retires Video 1.6; successors video-kling-v2-5-turbo / -v2-6"),
-    ("kling/video-kling-v2-1", "2026-09-15", "Kling retires Video 2.1; successors video-kling-v2-5-turbo / -v2-6"),
     // @see https://developers.openai.com/api/docs/deprecations
-    ("openai/sora", "2026-09-24", "OpenAI shuts down the Videos API and Sora 2; no replacement"),
-    ("openai/sora-2-pro", "2026-09-24", "OpenAI shuts down the Videos API and Sora 2; no replacement"),
-    ("openai/gpt-image-1", "2026-10-23", "OpenAI shuts down gpt-image-1; replacement openai/gpt-image-2"),
-    // @see https://docs.aws.amazon.com/bedrock/latest/userguide/model-lifecycle.html
-    ("bedrock/amazon.nova-canvas-v1:0", "2026-09-30", "Bedrock end of life for Nova Canvas; no Amazon successor"),
-    ("bedrock/amazon.nova-reel-v1:1", "2026-09-30", "Bedrock end of life for Nova Reel; no Amazon successor"),
+    ("openai/gpt-image-1", "2026-10-23", "OpenAI shuts down gpt-image-1; replacement openai/gpt-image-2.5-sunburst or -flare"),
     // @see https://ai.google.dev/gemini-api/docs/deprecations
-    ("google/gemini-2.5-flash-image", "2026-10-02", "Google shuts down gemini-2.5-flash-image; successor google/gemini-3.1-flash-image"),
+    // Google moved this shutdown from 2026-10-02 to 2027-03-15 (deprecations page, 2026-10-12).
+    ("google/gemini-2.5-flash-image", "2027-03-15", "Google shuts down gemini-2.5-flash-image; successor google/gemini-3.1-flash-lite-image"),
+    ("google/veo-3.1-generate-preview", "2026-10-22", "Google shuts down the Veo 3.1 previews; successor gemini-omni-1.1-flash (Interactions API, not carried)"),
+    ("google/veo-3.1-fast-generate-preview", "2026-10-22", "Google shuts down the Veo 3.1 previews; successor gemini-omni-1.1-flash (Interactions API, not carried)"),
+    ("google/veo-3.1-lite-generate-preview", "2026-10-22", "Google shuts down the Veo 3.1 previews; successor gemini-omni-1.1-flash (Interactions API, not carried)"),
 ];
 
 /// Strictly after the shutdown date: on the date itself the vendor still serves it.
@@ -332,23 +365,6 @@ fn vidu_q1_duration_and_resolution_match_the_model_map() {
     }
 }
 
-/// Nova Reel's `TEXT_VIDEO` task supports `durationSeconds: 6` only; longer
-/// clips need `MULTI_SHOT_AUTOMATED`, which the adapter never emits.
-/// @see <https://docs.aws.amazon.com/nova/latest/userguide/video-gen-access.html>
-#[test]
-fn bedrock_nova_reel_duration_matches_the_text_video_task() {
-    let reg = registry();
-    let schema = reg
-        .get("bedrock/amazon.nova-reel-v1:1")
-        .expect("nova-reel missing");
-    match schema.params.get("duration_seconds") {
-        Some(ParamSpec::Float(f)) => {
-            assert_eq!(f.max, Some(6.0), "TEXT_VIDEO supports 6s only");
-        }
-        other => panic!("nova-reel duration_seconds is {other:?}"),
-    }
-}
-
 // ─── Runway: vendor facts re-read 2026-09-11 (model-drift) ──────────────────
 
 /// `gen4_turbo` appears only in the `POST /v1/image_to_video` model union
@@ -492,7 +508,7 @@ fn openai_gpt_image_2_advertises_editing_and_inpainting() {
 }
 
 /// Carried models whose vendor shutdown is announced but not yet past carry a
-/// `DEPRECATED:` description naming the date, as the Sora rows already do.
+/// `DEPRECATED:` description naming the date.
 /// @see <https://developers.openai.com/api/docs/deprecations> (2026-09-11)
 #[test]
 fn openai_models_with_an_announced_shutdown_are_marked_deprecated() {
@@ -500,8 +516,6 @@ fn openai_models_with_an_announced_shutdown_are_marked_deprecated() {
     // (catalog id, announced shutdown date)
     for (id, date) in [
         ("openai/gpt-image-1", "2026-10-23"),
-        ("openai/sora", "2026-09-24"),
-        ("openai/sora-2-pro", "2026-09-24"),
     ] {
         let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
         assert!(
@@ -634,24 +648,24 @@ fn gemini_3_1_flash_image_models_advertise_the_fourteen_documented_aspect_ratios
     }
 }
 
-/// Gemini 3 Pro Image documents 10 aspect ratios (the table headed
-/// "3.1 Pro Image", whose 1K/2K/4K sizes and 1120/2000 tokens are
-/// gemini-3-pro-image's): 4:5 and 5:4 yes, the 1:4/4:1/1:8/8:1 extremes no.
-/// @see <https://ai.google.dev/gemini-api/docs/generate-content/image-generation#aspect_ratios_and_image_size> (2026-09-11)
+/// Gemini 3 Pro Image and Gemini 2.5 Flash Image document the same 10 aspect
+/// ratios: 4:5 and 5:4 yes, the 1:4/4:1/1:8/8:1 extremes no. Pro's table is
+/// headed "3.1 Pro Image", but its 1K/2K/4K sizes and 1120/2000 tokens are
+/// gemini-3-pro-image's. 2.5 Flash gained 4:5 and 5:4 by 2026-10-12.
+/// @see <https://ai.google.dev/gemini-api/docs/generate-content/image-generation#aspect_ratios_and_image_size> (2026-10-12)
 #[test]
-fn gemini_3_pro_image_advertises_the_ten_documented_aspect_ratios() {
+fn gemini_3_pro_and_2_5_flash_image_advertise_the_ten_documented_aspect_ratios() {
     const DOCUMENTED: [&str; 10] = [
         "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9",
     ];
     let mut documented: Vec<String> = DOCUMENTED.iter().map(|s| s.to_string()).collect();
     documented.sort();
     let reg = registry();
-    let mut allowed = aspect_ratios(&reg, "google/gemini-3-pro-image");
-    allowed.sort();
-    assert_eq!(
-        allowed, documented,
-        "google/gemini-3-pro-image aspect ratios differ from Google's table"
-    );
+    for id in ["google/gemini-3-pro-image", "google/gemini-2.5-flash-image"] {
+        let mut allowed = aspect_ratios(&reg, id);
+        allowed.sort();
+        assert_eq!(allowed, documented, "{id} aspect ratios differ from Google's table");
+    }
 }
 
 /// "Gemini 3 image models let you to mix up to 14 reference images": 14 objects
@@ -980,11 +994,13 @@ fn vidu_style_is_only_allowlisted_on_text_to_video_models() {
     }
 }
 
-/// viduq2-pro: 540p/720p/1080p and a 1s floor on img2video, start-end2video and
-/// reference2video; start-end2video caps it at 8s (the other two allow 10).
-/// @see <https://platform.vidu.com/docs/image-to-video.md>
-/// @see <https://platform.vidu.com/docs/start-end-to-video.md>
-/// @see <https://platform.vidu.com/docs/reference-to-video.md>, read 2026-09-11
+/// viduq2-pro: 540p/720p/1080p and 1-10s on img2video, start-end2video and
+/// reference2video (start-end2video went from 1-8s to 1-10s by 2026-10-12).
+/// img2video, where a lone first frame routes, caps the prompt at 2000
+/// characters (5000 elsewhere); one limit serves every endpoint.
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/image-to-video.md>
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/start-end-to-video.md>
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/reference-to-video.md>, read 2026-10-12
 #[test]
 fn vidu_q2_pro_duration_and_resolution_hold_on_every_endpoint() {
     let reg = registry();
@@ -992,10 +1008,11 @@ fn vidu_q2_pro_duration_and_resolution_hold_on_every_endpoint() {
     match schema.params.get("duration_seconds") {
         Some(ParamSpec::Float(f)) => {
             assert_eq!(f.min, Some(1.0), "viduq2-pro accepts 1s clips");
-            assert_eq!(f.max, Some(8.0), "start-end2video caps viduq2-pro at 8s");
+            assert_eq!(f.max, Some(10.0), "every viduq2-pro endpoint goes to 10s");
         }
         other => panic!("viduq2-pro duration_seconds is {other:?}"),
     }
+    assert_eq!(schema.prompt.max_length, Some(2000), "img2video caps the viduq2-pro prompt at 2000");
     assert_eq!(
         enum_values(&reg, "vidu/viduq2-pro", "resolution"),
         vec!["540p".to_string(), "720p".to_string(), "1080p".to_string()],
@@ -1022,73 +1039,6 @@ fn pixverse_generate_audio_switch_is_not_allowlisted_below_v5_5() {
 }
 
 // ─── Kling: vendor facts re-read 2026-09-11 (model-drift) ──────────────────
-
-/// Kling's text2video `model_name` enum has no `kling-v2-1`, and its capability
-/// map lists Kling 2.1 text-to-video as "Not Supported": the model is
-/// image-to-video only, so every request needs its first frame. (The request
-/// validator enforces ref roles, not capability flags, so the role is what
-/// actually stops a prompt-only request.) Kling retires 2.1 on 2026-09-15; the
-/// test tolerates the model's removal.
-/// @see https://kling.ai/document-api/api/video/1-6/text-to-video.md (2026-09-11)
-#[test]
-fn kling_v2_1_video_is_image_to_video_only() {
-    let reg = registry();
-    if let Some(schema) = reg.get("kling/video-kling-v2-1") {
-        assert!(
-            !schema.capabilities.text_to_video,
-            "kling/video-kling-v2-1 advertises text-to-video; Kling's text2video enum has no kling-v2-1"
-        );
-        let first = schema
-            .ref_inputs
-            .as_ref()
-            .and_then(|r| r.roles.get("first_frame"))
-            .expect("kling/video-kling-v2-1 declares no first_frame role");
-        assert!(
-            first.required && first.min_count >= 1,
-            "kling/video-kling-v2-1 must require its first frame"
-        );
-    }
-}
-
-// ─── Bedrock: vendor facts re-read 2026-09-11 (model-drift) ─────────────────
-
-/// Nova Canvas output resolution: "Each side must be between 320-4096 pixels,
-/// inclusive. Each side must be evenly divisible by 16."
-/// @see <https://docs.aws.amazon.com/nova/latest/userguide/image-gen-access.html#image-gen-resolutions> (read 2026-09-11)
-#[test]
-fn bedrock_nova_canvas_sides_are_multiples_of_16() {
-    let reg = registry();
-    let schema = reg
-        .get("bedrock/amazon.nova-canvas-v1:0")
-        .expect("nova-canvas missing");
-    match schema.params.get("size") {
-        Some(ParamSpec::Size(litegen::capabilities::schema::SizeSpec::Freeform(f))) => {
-            assert_eq!(f.multiple_of, Some(16), "each side must be divisible by 16");
-            assert_eq!(
-                (f.min_width, f.max_width, f.min_height, f.max_height),
-                (320, 4096, 320, 4096),
-                "each side is 320-4096 px"
-            );
-        }
-        other => panic!("nova-canvas size is {other:?}, expected a freeform box"),
-    }
-}
-
-/// The adapter only emits `taskType: TEXT_VIDEO`, whose `text` "Must be 1-512
-/// characters in length" (4000 is MULTI_SHOT_AUTOMATED's limit).
-/// @see <https://docs.aws.amazon.com/nova/latest/userguide/video-gen-access.html> (read 2026-09-11)
-#[test]
-fn bedrock_nova_reel_prompt_limit_is_the_text_video_limit() {
-    let reg = registry();
-    let schema = reg
-        .get("bedrock/amazon.nova-reel-v1:1")
-        .expect("nova-reel missing");
-    assert_eq!(
-        schema.prompt.max_length,
-        Some(512),
-        "TEXT_VIDEO text is 1-512 characters"
-    );
-}
 
 // ─── Luma: vendor facts re-read 2026-09-11 (model-drift) ────────────────────
 
@@ -1275,6 +1225,24 @@ fn bytedance_seedance_1_0_pro_declares_a_seed_param() {
     match schema.params.get("seed") {
         Some(ParamSpec::Seed(s)) => assert_eq!(s.max, 2_147_483_647, "Seedance seed max"),
         other => panic!("seedance-1-0-pro seed is {other:?}, expected a seed param"),
+    }
+}
+
+/// Both Seedance 1.0 models document resolution "Default `1080p`; supports
+/// `480p`, `720p`, and `1080p`" (the catalog left 1.0 pro without a default).
+/// @see <https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api> (read 2026-10-12)
+#[test]
+fn bytedance_seedance_1_0_resolutions_default_to_1080p() {
+    let reg = registry();
+    for id in ["bytedance/doubao-seedance-1-0-pro-250528", "bytedance/seedance-1-0-pro-fast-251015"] {
+        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        match schema.params.get("resolution") {
+            Some(ParamSpec::String(r)) => {
+                assert_eq!(r.enum_values, vec!["480p", "720p", "1080p"], "{id} resolutions");
+                assert_eq!(r.default.as_deref(), Some("1080p"), "{id} resolution default");
+            }
+            other => panic!("{id} resolution is {other:?}, expected String"),
+        }
     }
 }
 
@@ -1836,8 +1804,10 @@ fn bytedance_seedance_2_0_mini_advertises_only_frame_roles_and_its_bounds() {
 
 /// Kling Image 2.1 on POST /v1/images/generations (`model_name` kling-v2-1):
 /// text + image input, eight aspect ratios including 21:9, prompt at most
-/// 2500 characters; `image_fidelity` is kling-v1/v1-5 only.
-/// @see https://kling.ai/document-api/api/image/2-1/image-generation.md (2026-09-11)
+/// 2500 characters. `image_fidelity` and `human_fidelity`: "Only kling-v2-1
+/// supports this parameter" (2026-10-12; they were kling-v1/v1-5 only before
+/// those retired), so 2.1 allowlists both and Image 3.0 neither.
+/// @see https://kling.ai/document-api/api/image/2-1/image-generation.md (2026-10-12)
 /// @see https://kling.ai/document-api/guides/capability-map/image.md (2026-09-11)
 #[test]
 fn kling_image_2_1_matches_the_image_2_1_contract() {
@@ -1853,10 +1823,11 @@ fn kling_image_2_1_matches_the_image_2_1_contract() {
         .collect();
     want.sort();
     assert_eq!(got, want, "Image 2.1 aspect ratios");
-    assert!(
-        !schema.extra_allowlist.iter().any(|k| k == "image_fidelity" || k == "human_fidelity"),
-        "image_fidelity / human_fidelity are kling-v1/v1-5 only"
-    );
+    let v3 = reg.get("kling/kling-v3").expect("kling/kling-v3 missing");
+    for key in ["image_fidelity", "human_fidelity"] {
+        assert!(schema.extra_allowlist.iter().any(|k| k == key), "kling-v2-1 supports {key}");
+        assert!(!v3.extra_allowlist.iter().any(|k| k == key), "{key} is kling-v2-1 only");
+    }
 }
 
 /// Kling 2.5 Turbo and 2.6 on the legacy text2video / image2video endpoints:
@@ -2046,6 +2017,16 @@ fn vidu_q3_turbo_serves_every_endpoint_the_adapter_routes_to() {
     );
 }
 
+/// viduq3-pro's text2video, img2video and start-end2video operations all take
+/// a prompt of up to 20000 characters.
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md> (2026-10-12)
+#[test]
+fn vidu_q3_pro_prompt_limit_is_the_documented_20000() {
+    let reg = registry();
+    let schema = reg.get("vidu/viduq3-pro").expect("vidu/viduq3-pro missing");
+    assert_eq!(schema.prompt.max_length, Some(20000), "viduq3-pro prompt is up to 20000 characters");
+}
+
 /// viduq3-pro is accepted by text2video, img2video and start-end2video, but
 /// by neither reference2video `model` list, so it must not declare a
 /// `reference` role (the adapter sends any reference ref to reference2video).
@@ -2099,10 +2080,10 @@ fn vidu_q3_models_allowlist_audio_but_not_bgm() {
 
 /// viduq2-pro-fast is only in img2video's and start-end2video's `model`
 /// values: no text-to-video, no reference role, a required start frame, and
-/// no aspect_ratio (neither endpoint takes one). 720p / 1080p only, and 1-8s
-/// (start-end2video's ceiling; img2video goes to 10s).
+/// no aspect_ratio (neither endpoint takes one). 720p / 1080p only, and 1-10s
+/// (start-end2video went from 1-8s to 1-10s by 2026-10-12).
 /// @see <https://platform.vidu.com/docs/image-to-video.md>
-/// @see <https://platform.vidu.com/docs/start-end-to-video.md>, read 2026-09-11
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/start-end-to-video.md>, read 2026-10-12
 #[test]
 fn vidu_q2_pro_fast_is_image_to_video_only() {
     let reg = registry();
@@ -2137,7 +2118,7 @@ fn vidu_q2_pro_fast_is_image_to_video_only() {
     match schema.params.get("duration_seconds") {
         Some(ParamSpec::Float(f)) => {
             assert_eq!(f.min, Some(1.0), "viduq2-pro-fast accepts 1s clips");
-            assert_eq!(f.max, Some(8.0), "start-end2video caps viduq2-pro-fast at 8s");
+            assert_eq!(f.max, Some(10.0), "start-end2video takes viduq2-pro-fast to 10s");
         }
         other => panic!("viduq2-pro-fast duration_seconds is {other:?}"),
     }

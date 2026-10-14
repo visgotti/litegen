@@ -1,0 +1,29 @@
+POST /ent/v2/img2video · viduq3-turbo
+Body parameters
+model | string | Required | viduq3-turbo
+images | array | Required | 1 1:4 4:1 50 10
+prompt | string | Optional | 20000
+audio | boolean | Optional | 
+is_rec | boolean | Optional | true false
+duration | integer | Optional | 5 1-16
+seed | integer | Optional | 0
+resolution | string | Optional | 1-16s 720p 540p 720p 1080p
+payload | string | Optional | 1048576
+off_peak | boolean | Optional | false true false 48
+callback_url | string | Optional | callback_url
+
+POST /ent/v2/img2video · viduq3-pro-fast viduq3-pro
+Body parameters
+model | string | Required | viduq3-pro-fast viduq3-pro
+images | array | Required | 1 1:4 4:1 50 10
+prompt | string | Optional | 20000
+audio | boolean | Optional | 
+is_rec | boolean | Optional | true false
+duration | integer | Optional | 5 1-16
+seed | integer | Optional | 0
+resolution | string | Optional | 1-16s 720p 540p 720p 1080p
+payload | string | Optional | 1048576
+off_peak | boolean | Optional | false true false true false 48
+callback_url | string | Optional | callback_url
+
+POST /ent/v2/img2video · viduq3-pro-fast (not carried)

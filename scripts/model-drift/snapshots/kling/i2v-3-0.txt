@@ -1,0 +1,55 @@
+# notice
+(no retirement notice)
+
+# POST /image-to-video/kling-3.0 request body
+| Field Path | Type | Required | Default | Enum |
+| --- | --- | ---: | --- | --- |
+| `contents` | array | Yes | - | - |
+| `contents[].type` | string | Yes | - | `prompt`, `first_frame`, `last_frame`, `element` |
+| `settings` | object | No | - | - |
+| `settings.multi_shot` | boolean | No | `true` | - |
+| `settings.audio` | string | No | `off` | `native`, `off` |
+| `settings.resolution` | string | No | `720p` | `720p`, `1080p`, `4k` |
+| `settings.duration` | int | No | `5` | `3`, `4`, `5`, `6`, `7`, `8`, `9`, `10`, `11`, `12`, `13`, `14`, `15` |
+| `options` | object | No | - | - |
+| `options.callback_url` | string | No | - | - |
+| `options.external_task_id` | string | No | - | - |
+| `options.watermark_info` | object | No | - | - |
+
+# field notes
+- `contents`: The reference format is as follows, with detailed parameter descriptions provided below:
+- `contents[].type`: `prompt`: Prompt word input identifier.
+  - `first_frame`: First frame input identifier.
+  - `last_frame`: Last frame input identifier.
+  - `element`: Element input identifier.
+- `contents[].type.prompt`: Defined in JSON format, as follows:
+- `contents[].type.prompt`: The prompt can be templated to meet different video generation requirements:
+- `contents[].type.prompt`: > **The Kling 3.0 model can achieve various capabilities through prompt and other content.**
+  > 1. Multi-shot video format: "shot n, m, words; shot n, m, words;" (separated by standard semicolons), where:
+  >     a. n: shot sequence number (1–6 shots supported)
+  >     b. m: shot duration in seconds (each shot ≥ 1s; sum of all shot durations must equal the total video duration)
+  >     c. words: shot prompt (max 512 characters)
+  > 2. Specify an element in the format of @xxx, such as @Zhang.
+  > 3. Avoid Element names that are substrings of each other, such as @Zhang and @ZhangSan.
+  > 4. Avoid using Element names that overlap with content in the prompt. For example, do not use @gmail as an Element name if the prompt contains "My email address is wang@gmail.com".
+  > 5. For more information, please refer to: [Kling VIDEO 3.0 Model User Guide](https://kling.ai/quickstart/klingai-video-3-model-user-guide).
+- `contents[].type.first_frame / last_frame`: Required in the first_frame, optional in the last_frame
+- `contents[].type.first_frame / last_frame`: Defined in JSON format, as follows:
+- `contents[].type.first_frame / last_frame`: Image format support: .jpg, .jpeg, .png.
+- `contents[].type.first_frame / last_frame`: The size of the image file cannot exceed 50MB.
+- `contents[].type.first_frame / last_frame`: The width and height of the image must be no less than 300px, and the aspect ratio of the image should fall within the range of 1:2.5 to 2.5:1.
+- `contents[].type.first_frame / last_frame`: Supports first-frame-to-video and first-and-last-frame-to-video generation; last-frame-only video generation is not supported.
+- `contents[].type.element`: Defined in JSON format, as follows:
+- `contents[].type.element`: Up to 3 Elements can be specified.
+- `contents[].type.element`: See [Kling Element Library User Guide](https://kling.ai/quickstart/klingai-element-library-3-user-guide) for details.
+- `settings.multi_shot`: When set to false, multi-shot prompts will not produce multi-shot output.
+- `settings.audio`: native: The generated video includes native audio matching the visuals.
+- `settings.audio`: off: The generated video has no audio.
+- `settings.resolution`: 720p: Output video with a resolution of 720P.
+- `settings.resolution`: 1080p: Output video with a resolution of 1080P.
+- `settings.resolution`: 4k: Output video with a resolution of 4K.
+- `options.callback_url`: See [Callback Protocol](https://kling.ai/document-api/api/get-started/callbacks) for the message schema.
+- `options.external_task_id`: Users can provide a Custom task ID, which does not overwrite the system-generated task ID. It can be used to query task status.
+- `options.external_task_id`: Please note that the Custom task ID must be unique within a single user account.
+- `options.watermark_info`: Controlled by the enabled parameter, the specific object format is as follows:
+- `options.watermark_info`: Custom watermark is not supported at this time.

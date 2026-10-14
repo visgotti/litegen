@@ -12,6 +12,7 @@ black-forest-labs/flux-2-klein-9b-base-lora
 black-forest-labs/flux-2-max
 black-forest-labs/flux-2-pro
 black-forest-labs/flux-3
+black-forest-labs/flux-3-image
 black-forest-labs/flux-canny-dev
 black-forest-labs/flux-canny-pro
 black-forest-labs/flux-depth-dev

@@ -1,26 +1,43 @@
 // Leonardo — our adapters call the v1 REST API: POST v1/generations with a
-// platform-model UUID in `modelId`, and POST v1/generations-image-to-video
-// with a `model` enum. Leonardo's current docs describe only its v2 API, so
-// the v1 pages come from the versioned docs (docs.leonardo.ai/v1.0/…): `.md`
-// twins of ReadMe pages, each embedding its endpoint's OpenAPI definition as
-// a ```json block.
+// platform-model UUID in `modelId`, POST v1/generations-image-to-video with a
+// `model` enum, and POST v1/init-image (presigned upload of a reference or
+// start-frame image) for both. They never call v2 (POST v2/generations with a
+// `model` + `parameters` body). Leonardo's current API reference describes
+// only v2, so the v1 references come from the versioned docs
+// (docs.leonardo.ai/v1.0/…): `.md` twins of ReadMe pages, each embedding its
+// endpoint's OpenAPI definition as a ```json block. The versioned docs are
+// frozen (no retirement notices), so a guide the current docs still keep in
+// v1 shape is read from the current docs.
 //  • image-to-video: the v1 reference's `model` enum.
 //  • model-ids: "Refer to Commonly Used API Values" — image-model UUIDs (the
 //    snapshot keeps the names beside them, so a new UUID in the report can be
 //    looked up) and video `model` values, including ones the reference enum
 //    lags on (VEO3_1 and VEO3_1FAST, which the v1 Veo 3.1 guide sends to
 //    image-to-video).
+//  • veo31-guide, kling21-guide, kling25-guide: the per-model guides for the
+//    image-to-video models we carry — the only place each model's v1 `model`
+//    value, duration set and resolution presets are documented ("Set to `4`,
+//    `6`, or `8`"). Ids from the Body Parameters table's `model` row; the
+//    snapshot is the documented endpoint, any warning callout (Leonardo
+//    announced the Kling 2.1 Pro retirement only there), and that table's
+//    names, types and backticked values. Motion 2.0 has no v1 guide (only
+//    recipes), so the reference schema covers it.
 //  • generations: the v1 image reference; its only model id is the `modelId`
 //    default, the snapshot is the request schema.
+//  • init-image (index): the v1 upload reference — no model, but the adapters
+//    call it before every reference-image request.
 //  • deprecations (index): retirements are announced on this page while the
 //    v1 pages keep listing the retired ids, so a new notice shows up here.
 //  • v2-models (index): the v2 API's model lineup — a different request shape
 //    our adapters do not speak — so its changes show up as a snapshot diff.
+//    The snapshot also keeps the v2 parameters of our video models' twins:
+//    models/leonardo.yaml takes their prompt limits from those schemas.
 // Mapping mirrors litegen-core/src/providers/image/leonardo.rs
 // (`resolve_model_id`) and video/leonardo.rs (`resolve_model`).
 import { markdownExcerpt, openapiModelIds, openapiExcerpt } from '../extract.mjs';
 
-const V1 = 'https://docs.leonardo.ai/v1.0';
+const CURRENT = 'https://docs.leonardo.ai';
+const V1 = `${CURRENT}/v1.0`;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const embedded = (_md, body) => JSON.parse(markdownExcerpt(body, { lang: 'json' }));
@@ -45,6 +62,65 @@ const column = (rows, name, heading) => {
 };
 const imageModels = (md) => table(md, 'Image Model IDs');
 const videoModels = (md) => table(md, 'Video Model IDs');
+const ticks = (cell) => [...cell.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+
+/** A v1 guide's Body Parameters table, checked for the columns it is read by. */
+function guideParams(md, slug) {
+  const rows = table(md, 'Body Parameters');
+  for (const name of ['Parameter', 'Type', 'Definition']) column(rows, name, `${slug} Body Parameters`);
+  return rows;
+}
+
+/** Warning callouts, whitespace-collapsed: some retirements are announced only here (Kling 2.1 Pro, 2026-09-15). */
+const notices = (md) => [...md.matchAll(/<Callout\b[^>]*theme="warn"[^>]*>([\s\S]*?)<\/Callout>/g)].map((m) => m[1].replace(/\s+/g, ' ').trim());
+
+/** The URL in the guide's "## Endpoint" code block: which API (v1 image-to-video or v2) it documents. */
+function guideEndpoint(md, slug) {
+  const m = md.match(/^## Endpoint[ \t]*\n+```[^\n]*\n\s*(\S+)/m);
+  if (!m) throw new Error(`${slug}: no "## Endpoint" code block`);
+  return m[1];
+}
+
+const guide = (key, base, slug) => ({
+  key,
+  url: `${base}/docs/${slug}.md`,
+  expect: 'text',
+  extract: (_md, body) => {
+    const row = guideParams(body, slug).find((r) => r.Parameter === 'model');
+    if (!row) throw new Error(`${slug}: Body Parameters table has no \`model\` row`);
+    return ticks(row.Definition);
+  },
+  // The Definition column is prose; its backticked values are the accepted ones.
+  snapshot: (_md, body) =>
+    [
+      `endpoint: ${guideEndpoint(body, slug)}`,
+      ...notices(body).map((n) => `notice: ${n}`),
+      '',
+      ...guideParams(body, slug).map((r) => [r.Parameter, r.Type, ticks(r.Definition).join(' ')].join(' | ')),
+    ].join('\n'),
+});
+
+// The v2 twins of the video models we carry (MOTION2, VEO3_1, VEO3_1FAST,
+// KLING2_5): models/leonardo.yaml takes prompt limits from their schemas.
+// KLING2_1's twin, kling-2.1, left the v2 lineup in 2026-10.
+const V2_TWINS = ['motion_2.0', 'veo-3.1-generate-001', 'veo-3.1-fast-generate-001', 'kling-2.5'];
+const CONSTRAINTS = ['type', 'enum', 'const', 'default', 'minimum', 'maximum', 'minLength', 'maxLength', 'minItems', 'maxItems'];
+const constraints = (p) => JSON.stringify(Object.fromEntries(CONSTRAINTS.filter((k) => k in p).map((k) => [k, p[k]])));
+
+/** One line per `parameters` property (and its sub-properties) of each twin's v2 request branch. */
+function twinParameters(spec) {
+  const [schema] = Object.values(JSON.parse(openapiExcerpt(spec, { paths: ['/generations'], ours: V2_TWINS })));
+  const lines = [];
+  for (const branch of schema?.oneOf ?? []) {
+    const model = branch.properties?.model?.enum?.[0] ?? branch.properties?.model?.const;
+    for (const [name, p] of Object.entries(branch.properties?.parameters?.properties ?? {})) {
+      lines.push(`${model} ${name} ${constraints(p)}`);
+      for (const [sub, q] of Object.entries(p.properties ?? {})) lines.push(`${model} ${name}.${sub} ${constraints(q)}`);
+    }
+  }
+  if (!lines.length) throw new Error("v2 POST /generations: no twin of our models has a `parameters` schema — the spec was restructured");
+  return lines.join('\n');
+}
 
 const v1Endpoint = (key, slug, path, extract) => ({
   key,
@@ -87,24 +163,36 @@ export default {
           ...videoModels(body).map((r) => `${r.Model}  ${r['Video Model']}`),
         ].join('\n'),
     },
+    // The current docs' Kling guides still document the v1 request (and carry
+    // retirement callouts); the current Veo 3.1 guide documents v2, so its
+    // v1 copy is read.
+    guide('veo31-guide', V1, 'veo-31'),
+    guide('kling21-guide', CURRENT, 'kling-2-1-pro'),
+    guide('kling25-guide', CURRENT, 'kling-2-5-turbo'),
     v1Endpoint('generations', 'creategeneration', '/generations', (spec) => {
       const modelId = spec.paths?.['/generations']?.post?.requestBody?.content?.['application/json']?.schema?.properties?.modelId;
       if (!modelId) throw new Error('POST /generations has no `modelId` request property');
       return [modelId.default];
     }),
+    { ...v1Endpoint('init-image', 'uploadinitimage', '/init-image', (spec) => Object.keys(spec.paths)), index: true },
     {
       key: 'deprecations',
       index: true,
-      url: 'https://docs.leonardo.ai/docs/deprecations-changes.md',
+      url: `${CURRENT}/docs/deprecations-changes.md`,
       expect: 'text',
       extract: /^## (.+?)\s*$/gm,
     },
     {
       key: 'v2-models',
       index: true,
-      url: 'https://docs.leonardo.ai/reference/creategeneration.md',
+      url: `${CURRENT}/reference/creategeneration.md`,
       expect: 'text',
       extract: (md, body) => openapiModelIds(embedded(md, body), { paths: ['/generations'] }),
+      snapshot: (md, body) => {
+        const spec = embedded(md, body);
+        const ids = [...new Set(openapiModelIds(spec, { paths: ['/generations'] }).map((id) => id.toLowerCase()))].sort();
+        return `# v2 models\n${ids.join('\n')}\n\n# v2 parameters of our models' twins\n${twinParameters(spec)}`;
+      },
     },
   ],
   acknowledged: [

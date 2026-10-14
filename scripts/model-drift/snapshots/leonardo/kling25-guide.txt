@@ -1,0 +1,12 @@
+endpoint: https://cloud.leonardo.ai/api/rest/v1/generations-image-to-video
+
+duration | number | 5 10
+endFrameImage | object | id type imageId imageType
+height | number | 1080 1440 1920
+imageId | string | 
+imageType | string | UPLOADED GENERATED
+isPublic | boolean | true false
+model | string | Kling2_5
+prompt | string | 
+resolution | string | RESOLUTION_1080
+width | number | 1080 1440 1920

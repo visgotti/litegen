@@ -124,8 +124,11 @@ export function evaluateSource(source, response, ctx = { ours: [] }) {
  * Compare the union of a provider's source ids against the vendor ids our
  * models map to (definition.models: litegen id → vendor id | vendor id[]).
  * - new:     upstream ids we neither carry nor acknowledged
- * - missing: carried models none of whose vendor ids appear upstream — only
- *            when every source succeeded, since a failed source may hold them
+ * - missing: carried models with a vendor id that no longer appears upstream
+ *            (`absent`). A model maps to every id its adapter sends — one per
+ *            endpoint it routes to — so one endpoint going away is a desync
+ *            even while the others remain. Only when every source succeeded,
+ *            since a failed source may hold them.
  * - failed:  failed sources, plus a canary failure when sources returned ids
  *            but none of ours (the source is wrong, so new/missing would be noise)
  * Index sources (lists of docs pages or endpoints) only feed snapshots: a new
@@ -152,11 +155,50 @@ export function classify(def, results) {
   );
   const fresh = [...upstream].filter((id) => !ours.has(id) && !acks.some((a) => a.test(id))).sort();
   const missing =
-    failed.length > 0 ? [] : carried.filter((c) => !c.vendorIds.some((v) => upstream.has(lc(v))));
+    failed.length > 0
+      ? []
+      : carried.flatMap((c) => {
+          const absent = c.vendorIds.filter((v) => !upstream.has(lc(v)));
+          return absent.length ? [{ ...c, absent }] : [];
+        });
   return { provider: def.provider, failed, new: fresh, missing };
 }
 
-/** Registry ↔ definition consistency: every carried model mapped, no stale mappings. */
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** `id` as a whole token or path segment, not part of a longer id: gen4 ≠ gen4_turbo, but /v1/gen4/generate counts. */
+const mentions = (text, id) => new RegExp(`(?<![\\w.-])${escapeRe(id)}(?![\\w-]|\\.\\w)`, 'i').test(text);
+
+/**
+ * Typings coverage: every vendor id we carry must appear in at least one
+ * typings snapshot — a source with its own `snapshot` that is not an index,
+ * or an index that says `typings: true` (its ids are field names, say, but
+ * its snapshot is a request schema) — or the
+ * check never compares that model's request schema with models/*.yaml, and a
+ * new enum value or bound on it goes unseen. A model whose vendor publishes
+ * no request schema is listed in the definition's `untyped`, with the reason.
+ * Withheld when a typings source failed, since the id may live in that one,
+ * and for a model already reported missing (`missing`: litegen ids).
+ */
+export function typingsGaps(def, results, missing = []) {
+  const typedKeys = new Set(def.sources.filter((s) => s.snapshot && (!s.index || s.typings)).map((s) => s.key));
+  const typed = results.filter((r) => typedKeys.has(r.key));
+  if (typed.some((r) => !r.ok)) return [];
+  const exempt = def.untyped ?? {};
+  return Object.entries(def.models)
+    .filter(([model]) => !Object.hasOwn(exempt, model) && !missing.includes(model))
+    .flatMap(([model, v]) => {
+      const absent = [v].flat().filter((id) => !typed.some((r) => mentions(r.snapshot, id)));
+      if (absent.length === 0) return [];
+      return [{
+        source: '(typings)',
+        error:
+          `${model}: ${absent.join(', ')} appears in no typings snapshot, so its request schema is never compared — ` +
+          'add or re-scope a source that covers it, or list the model in `untyped` with the reason',
+      }];
+    });
+}
+
+/** Registry ↔ definition consistency: every carried model mapped, no stale mappings or exemptions. */
 function validateDefinition(def, registryIds) {
   const file = `scripts/model-drift/providers/${def.provider}.mjs`;
   const mapped = new Set(Object.keys(def.models));
@@ -168,6 +210,12 @@ function validateDefinition(def, registryIds) {
     ...[...mapped]
       .filter((id) => !inRegistry.has(id))
       .map((id) => ({ source: '(config)', error: `${id} is mapped in ${file} but not in models/*.yaml` })),
+    ...Object.entries(def.untyped ?? {})
+      .filter(([id, reason]) => !mapped.has(id) || typeof reason !== 'string' || !reason.trim())
+      .map(([id]) => ({
+        source: '(config)',
+        error: mapped.has(id) ? `untyped ${id} in ${file} needs a reason` : `untyped ${id} in ${file} is not a mapped model`,
+      })),
   ];
 }
 
@@ -277,6 +325,8 @@ export async function run({ modelsDir, definitions, snapshotsDir, fetchImpl = ht
       results.push(result);
     }
     const verdict = classify(def, results);
+    // A broken source would make every model it covers look untyped.
+    if (verdict.failed.length === 0) verdict.failed.push(...typingsGaps(def, results, verdict.missing.map((m) => m.model)));
 
     const dir = join(snapshotsDir, provider);
     const changed = [];
@@ -369,7 +419,7 @@ export function formatReport({ exitCode, providers }) {
     const problems = [];
     for (const f of p.failed) problems.push(`  FAILED ${f.source}: ${f.error}`);
     if (p.new.length) problems.push(`  new upstream (not carried, not acknowledged): ${p.new.join(', ')}`);
-    for (const m of p.missing) problems.push(`  missing upstream: ${m.model} (looked for ${m.vendorIds.join(' | ')})`);
+    for (const m of p.missing) problems.push(`  missing upstream: ${m.model} (not found: ${(m.absent ?? m.vendorIds).join(', ')})`);
     for (const key of p.changed) problems.push(`  changed: ${key} → git diff scripts/model-drift/snapshots/${p.provider}/${key}.txt`);
     if (problems.length) lines.push(p.provider, ...problems);
     else clean.push(p.provider);

@@ -1,0 +1,55 @@
+# Models: `model` | Output | Price | Prompt limit
+`recraftv4_1_flash` (alias `recraftv4_1_flash_raster`) | Raster 1K | 0.007 USD | 10,000
+`recraftv4_1` (default) | Raster 1K | 0.035 USD | 10,000
+`recraftv4_1_vector` | SVG | 0.08 USD | 10,000
+`recraftv4_1_pro` | Raster 2K | 0.21 USD | 10,000
+`recraftv4_1_pro_vector` | SVG | 0.30 USD | 10,000
+`recraftv4_1_utility` | Raster 1K | 0.035 USD | 10,000
+`recraftv4_1_utility_vector` | SVG | 0.08 USD | 10,000
+`recraftv4_1_utility_pro` | Raster 2K | 0.21 USD | 10,000
+`recraftv4_1_utility_pro_vector` | SVG | 0.30 USD | 10,000
+`recraftv4_styles` | Raster 1K | 0.035 USD | 10,000
+`recraftv4_styles_vector` | SVG | 0.05 USD | 10,000
+`recraftv4_styles_pro` | Raster 2K | 0.10 USD | 10,000
+`recraftv4_styles_pro_vector` | SVG | 0.12 USD | 10,000
+`recraftv4` | Raster 1K | 0.04 USD | 10,000
+`recraftv4_vector` | SVG | 0.08 USD | 10,000
+`recraftv4_pro` | Raster 2K | 0.25 USD | 10,000
+`recraftv4_pro_vector` | SVG | 0.30 USD | 10,000
+`recraftv3` | Raster 1K | 0.04 USD | 1,000
+`recraftv3_vector` | SVG | 0.08 USD | 1,000
+`recraftv2` | Raster 1K | 0.022 USD | 1,000
+`recraftv2_vector` | SVG | 0.044 USD | 1,000
+
+# Models: Parameter | V4.1 Flash | V4.1, V4 | V4 Styles | V3 | V2
+`prompt`, `n`, `size`, `random_seed`, `response_format`, `image_format` | yes | yes | yes | yes | yes
+`controls.colors`, `controls.background_color` | yes | yes | yes | yes | yes
+`style_id`, `style_reference_urls`, `style_references` | no | yes | yes, one is required | yes | yes
+`style_match` | no | `flexible`, `precise` | `flexible`, `precise` | `regular` | `regular`
+`style` (curated name, e.g. `Photorealism`, `Illustration`, `Vector art`; `Icon` (V2 vector only)) | no | no | no | yes | yes
+`negative_prompt` | no | no | no | yes | yes
+`text_layout` | no | no | no | yes | no
+`controls.artistic_level` (0–5), `controls.no_text` | no | no | no | yes | no
+
+# Generate image: Field | Type, default
+`prompt` | string, required
+`model` | string, `recraftv4_1`
+`n` | integer, `1`
+`size` | string, auto
+`style_id` | UUID
+`style_reference_urls` | array of strings
+`style_references` | files
+`style_match` | string
+`style` | string
+`negative_prompt` | string
+`text_layout` | array
+`controls` | object
+`random_seed` | integer
+`response_format` | string, `url`
+`image_format` | string, `webp`
+
+# Generate image: Models | Sizes
+V4.1, V4.1 Utility, V4.1 Flash, V4, V4 Styles (1K) | `1024x1024`, `1536x768`, `768x1536`, `1280x832`, `832x1280`, `1216x896`, `896x1216`, `1152x896`, `896x1152`, `832x1344`, `1280x896`, `896x1280`, `1344x768`, `768x1344`
+V4.1 Pro, V4.1 Utility Pro, V4 Pro, V4 Styles Pro (2K) | `2048x2048`, `3072x1536`, `1536x3072`, `2560x1664`, `1664x2560`, `2432x1792`, `1792x2432`, `2304x1792`, `1792x2304`, `1664x2688`, `2560x1792`, `1792x2560`, `2688x1536`, `1536x2688`
+V3, V2 | `1024x1024`, `2048x1024`, `1024x2048`, `1536x1024`, `1024x1536`, `1365x1024`, `1024x1365`, `1280x1024`, `1024x1280`, `1024x1707`, `1434x1024`, `1024x1434`, `1820x1024`, `1024x1820`
+All vector models | `w:h` ratios only

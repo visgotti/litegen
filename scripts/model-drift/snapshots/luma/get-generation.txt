@@ -1,0 +1,55 @@
+{
+  "GET /generations/{id} → 200 (application/json)": {
+    "properties": {
+      "assets": {
+        "properties": {
+          "image": {
+            "format": "uri",
+            "type": "string"
+          },
+          "progress_video": {
+            "format": "uri",
+            "type": "string"
+          },
+          "video": {
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "created_at": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "failure_reason": {
+        "type": "string"
+      },
+      "generation_type": {
+        "default": "video",
+        "enum": [
+          "video",
+          "image"
+        ],
+        "type": "string"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "model": {
+        "type": "string"
+      },
+      "state": {
+        "enum": [
+          "queued",
+          "dreaming",
+          "completed",
+          "failed"
+        ],
+        "type": "string"
+      }
+    },
+    "type": "object"
+  }
+}

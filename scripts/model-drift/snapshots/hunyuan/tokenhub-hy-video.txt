@@ -1,0 +1,56 @@
+## 概述 › 模型列表
+| 模型名称 | model 参数值（模型 ID） | 支持能力 | 视频时长（秒） | 清晰度档位 | 画面宽高比 | 选型建议 |
+| hy-video-v1.5 | hy-video-v1.5 | 文生 / 图生 | 5 | 720p | 16:9、9:16、1:1、4:3、3:4（仅文生可指定） | 混元视频通用款，文生 / 图生一体化 |
+
+## 视频生成 › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/hunyuan-video/generation
+
+## 视频生成 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| model | 是 | string | 模型版本。取值：hy-video-v1.5 |
+| prompt | 条件必选 | string | 文本提示词。文生视频必选；图生视频可选（用于描述图片中主体的运动）。 |
+| negative_prompt | 否 | string | 负向提示词，描述不希望出现的内容。 |
+| image | 否 | string | 图片（单张）：支持 URL（image_url）和 Base64格式（image），image 与 image_url 二选一，图片格式：jpg/jpeg/png，图片大小≤10MB； 1. Base64：格式要求：data:image/<图片格式>;base64,<Base64 编码>。注：图片为 jpg 时图片格式填 jpeg。 2. URL：需要公网可访问（http/https）。 |
+| image_url | 否 | string | 输入图片公网可访问 URL，大小不超过10M，支持 jpg/jpeg/png 格式，生成视频长宽比与传入图片保持一致，携带即为图生视频。与 image 二选一。 |
+| n | 否 | int | 输出视频数量。 |
+| duration | 否 | number | 视频时长（秒），小数将截断为整数。当前版本固定生成 5 秒。 |
+| aspect_ratio | 否 | string | 画面宽高比，仅文生视频有效。枚举：16:9 / 9:16 / 1:1 / 4:3 / 3:4。 |
+| resolution | 否 | string | 清晰度。当前版本固定输出 720p。 |
+| revise | 否 | bool | 是否开启提示词智能改写（扩展参数，原样透传至模型服务）。 |
+| moderation | 否 | bool | 内容审核开关（扩展参数，原样透传至模型服务）。 |
+| seed | 否 | int | 随机种子（扩展参数，原样透传至模型服务，是否生效以模型侧为准）。 |
+| footnote | 否 | string | 业务自定义水印内容，限制 16 个字符长度（不区分中英文,会去换行与空格字符），生成在视频右下角。 |
+
+## 视频生成 › 4. 输出参数
+| 字段 | 类型 | 说明 |
+| task_id | string | 系统生成的任务 ID，用于后续任务查询。 |
+| created | integer | 任务创建时间，Unix 秒级时间戳。 |
+| request_id | string | 本次请求的唯一 ID，用于问题排查与技术支持定位。 |
+| 字段 | 类型 | 说明 |
+| task_id | string | 任务 ID（未能创建时为空字符串）。 |
+| status | string | 固定 failed。 |
+| error.code | string | 错误码，请参见 附录：统一错误码。 |
+| error.message | string | 错误描述信息。 |
+
+## 查询任务结果 › 1. 接口描述
+GET https://tokenhub.tencentmaas.com/v1/wand/hunyuan-video/tasks/{task_id}
+
+## 查询任务结果 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| task_id | 是 | string | 任务 ID（路径参数），即提交任务时返回的 task_id。 |
+
+## 查询任务结果 › 4. 输出参数
+| 字段 | 类型 | 说明 |
+| task_id | string | 任务 ID。 |
+| status | string | 任务状态：queued（等待调度）/ running（生成中）/ succeeded（成功）/ failed（失败） |
+| created | integer | 任务创建时间，Unix 秒级时间戳。 |
+| videos | array | 视频结果数组（成功时返回）。 |
+| videos[].url | string | 视频文件地址，为临时地址，请及时下载转存。 |
+| videos[].audio_url | string | 音频文件地址（无音频时为空字符串）。 |
+| videos[].generate_info | string | 模型侧生成附加信息（无则空字符串）。 |
+| tokenhub_usage | object | 用量消耗（任务到达终态并完成计费后返回）。 |
+| tokenhub_usage.total_tokens | integer | 本次任务消耗的 token 数，用于计费 / 对账。 |
+| error | object | 失败信息（status=failed 时返回），含 code / message；未失败为 null。 |
+| error.code | string | 错误码。 |
+| error.message | string | 错误描述信息。 |
+| request_id | string | 本次请求的唯一 ID，用于问题排查与技术支持定位。 |

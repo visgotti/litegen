@@ -243,13 +243,13 @@ litegen/
 ## Supported Providers
 
 Several vendors serve **both** image and video under one provider name — e.g. a single
-`openai` provider routes `openai/gpt-image-2` (image) and `openai/sora` (video), and the same
-holds for `fal` and `replicate`. The model ID prefix (`<provider>/<model>`) selects the
+`fal` provider routes `fal/flux-dev` (image) and `fal/ltx-2.3` (video), and the same
+holds for `replicate`. The model ID prefix (`<provider>/<model>`) selects the
 modality automatically.
 
 | Provider | Image | Video | Models |
 |----------|-------|-------|--------|
-| OpenAI | ✅ | ✅ | DALL-E 2/3 · **Sora 2 / Sora 2 Pro** |
+| OpenAI | ✅ | — | GPT Image 2.5 / 2 / 1 · _(Sora 2 and the Videos API shut down 2026-09-24)_ |
 | Fal.ai | ✅ | ✅ | Flux, SDXL, Recraft · Kling, MiniMax, SVD, LTX |
 | Replicate | ✅ | ✅ | Flux, SDXL, SD3 · AnimateDiff, SVD, Zeroscope |
 | Google | ✅ | 🔜 | Imagen 3, Gemini 2.5/3 image · _Veo 3 video — public API, not yet wired_ |

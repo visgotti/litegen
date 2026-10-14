@@ -1,4 +1,28 @@
+# models the page documents (the tables below are headed by their names)
+gemini-nano-banana-2.1 — Nano Banana 2.1 / Gemini Nano Banana 2.1
+gemini-3.1-flash-lite-image — Nano Banana 2 Lite / Gemini 3.1 Flash Lite Image
+gemini-3.1-flash-image — Nano Banana 2 / Gemini 3.1 Flash Image
+gemini-3-pro-image — Nano Banana Pro / Gemini 3 Pro Image
+gemini-2.5-flash-image — Nano Banana / Gemini 2.5 Flash Image
 # aspect ratio x size tables
+### Nano Banana 2.1
+| Aspect ratio | 1K resolution | 1K tokens | 2K resolution | 2K tokens | 4K resolution | 4K tokens |
+|---|---|---|---|---|---|---|
+| **1:1** | 1024x1024 | 1120 | 2048x2048 | 1680 | 4096x4096 | 2520 |
+| **1:4** | 512x2048 | 1120 | 1024x4096 | 1680 | 2048x8192 | 2520 |
+| **1:8** | 384x3072 | 1120 | 768x6144 | 1680 | 1536x12288 | 2520 |
+| **2:3** | 848x1264 | 1120 | 1696x2528 | 1680 | 3392x5056 | 2520 |
+| **3:2** | 1264x848 | 1120 | 2528x1696 | 1680 | 5056x3392 | 2520 |
+| **3:4** | 896x1200 | 1120 | 1792x2400 | 1680 | 3584x4800 | 2520 |
+| **4:1** | 2048x512 | 1120 | 4096x1024 | 1680 | 8192x2048 | 2520 |
+| **4:3** | 1200x896 | 1120 | 2400x1792 | 1680 | 4800x3584 | 2520 |
+| **4:5** | 928x1152 | 1120 | 1856x2304 | 1680 | 3712x4608 | 2520 |
+| **5:4** | 1152x928 | 1120 | 2304x1856 | 1680 | 4608x3712 | 2520 |
+| **8:1** | 3072x384 | 1120 | 6144x768 | 1680 | 12288x1536 | 2520 |
+| **9:16** | 768x1376 | 1120 | 1536x2752 | 1680 | 3072x5504 | 2520 |
+| **16:9** | 1376x768 | 1120 | 2752x1536 | 1680 | 5504x3072 | 2520 |
+| **21:9** | 1584x672 | 1120 | 3168x1344 | 1680 | 6336x2688 | 2520 |
+
 ### 3.1 Flash Image
 | Aspect ratio | 512 resolution | 0.5K tokens | 1K resolution | 1K tokens | 2K resolution | 2K tokens | 4K resolution | 4K tokens |
 |---|---|---|---|---|---|---|---|---|
@@ -62,6 +86,13 @@
 | 9:16 | 768x1344 | 1290 |
 | 16:9 | 1344x768 | 1290 |
 | 21:9 | 1536x672 | 1290 |
+
+# reference image limits
+| Gemini 3.1 Flash Lite Image | Gemini Nano Banana 2.1 \& Gemini 3.1 Flash Image | Gemini 3 Pro Image |
+|---|---|---|
+| Up to 14 images of objects with high-fidelity to include in the final image | Up to 10 images of objects with high-fidelity to include in the final image | Up to 6 images of objects with high-fidelity to include in the final image |
+| N/A | Up to 4 images of characters to maintain character consistency | Up to 5 images of characters to maintain character consistency |
+| N/A | N/A | Up to 3 images to be used as style references |
 
 # request keys in the REST samples
 aspectRatio

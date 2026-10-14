@@ -1,1 +1,4 @@
-(none of our models is in a deprecation batch)
+# Fourth batch of model deprecations (November 11, 2026)
+notified / deprecated / deactivated: September 8, 2026 / September 15, 2026 / November 11, 2026
+  The following models are deactivated on September 10, 2026 for the eu-west-1 region. All endpoints calling these models are shutdown. Please use these models in ap-southeast-1.
+  - seedream-5-0-lite-260128

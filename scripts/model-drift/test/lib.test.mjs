@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadRegistry, evaluateSource, classify, run } from '../lib.mjs';
+import { loadRegistry, evaluateSource, classify, typingsGaps, run } from '../lib.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_MODELS = join(here, 'fixtures', 'models');
@@ -115,7 +115,7 @@ const def = {
 const ok = (key, ids) => ({ key, ok: true, ids });
 
 test('classify lists upstream ids we neither carry nor acknowledged as new', () => {
-  const r = classify(def, [ok('a', ['alpha-1', 'beta-2', 'gamma-3', 'legacy-0', 'alpha-1-20260101'])]);
+  const r = classify(def, [ok('a', ['alpha-1', 'beta-2', 'beta-2-i2v', 'gamma-3', 'legacy-0', 'alpha-1-20260101'])]);
   assert.deepEqual(r.new, ['gamma-3']);
   assert.deepEqual(r.missing, []);
   assert.deepEqual(r.failed, []);
@@ -129,11 +129,17 @@ test('classify matches our vendor ids case-insensitively', () => {
 
 test('classify flags a carried model none of whose vendor ids appear upstream as missing', () => {
   const r = classify(def, [ok('a', ['alpha-1'])]);
-  assert.deepEqual(r.missing, [{ model: 'acme/beta_2', vendorIds: ['beta-2', 'beta-2-i2v'] }]);
+  assert.deepEqual(r.missing, [{ model: 'acme/beta_2', vendorIds: ['beta-2', 'beta-2-i2v'], absent: ['beta-2', 'beta-2-i2v'] }]);
 });
 
-test('classify counts a model present when any one of its vendor ids appears', () => {
-  const r = classify(def, [ok('a', ['alpha-1', 'beta-2-i2v'])]);
+test('classify flags a model one of whose endpoints is gone, even while the others remain', () => {
+  // The adapter sends every mapped id (t2v and i2v here), so i2v vanishing breaks it.
+  const r = classify(def, [ok('a', ['alpha-1', 'beta-2'])]);
+  assert.deepEqual(r.missing, [{ model: 'acme/beta_2', vendorIds: ['beta-2', 'beta-2-i2v'], absent: ['beta-2-i2v'] }]);
+});
+
+test('classify counts a model present when every one of its vendor ids appears', () => {
+  const r = classify(def, [ok('a', ['alpha-1', 'beta-2', 'beta-2-i2v'])]);
   assert.deepEqual(r.missing, []);
 });
 
@@ -151,8 +157,68 @@ test('classify fails the provider when sources return ids but none of ours, supp
   assert.match(r.failed[0].error, /none of our 2 models/i);
 });
 
+// ─── typingsGaps ──────────────────────────────────────────────────────────────
+
+const typedDef = (extra = {}) => ({
+  provider: 'acme',
+  models: { 'acme/alpha-1': 'alpha-1', 'acme/beta_2': ['beta-2', 'beta-2-i2v'] },
+  sources: [
+    { key: 'list', extract: /x/ },
+    { key: 'schema', extract: /x/, snapshot: () => '' },
+    { key: 'pages', index: true, extract: /x/, snapshot: () => '' },
+    { key: 'fields', index: true, typings: true, extract: /x/, snapshot: () => '' },
+  ],
+  ...extra,
+});
+const snap = (key, snapshot, more = {}) => ({ key, ok: true, ids: ['x'], snapshot, ...more });
+
+test('typingsGaps passes when every vendor id appears in a typings snapshot', () => {
+  const gaps = typingsGaps(typedDef(), [snap('list', 'zzz'), snap('schema', 'model: [alpha-1, beta-2]\nPOST /v1/beta-2-i2v')]);
+  assert.deepEqual(gaps, []);
+});
+
+test('typingsGaps flags a carried vendor id that no typings snapshot mentions', () => {
+  const gaps = typingsGaps(typedDef(), [snap('schema', 'model: [alpha-1, beta-2]')]);
+  assert.equal(gaps.length, 1);
+  assert.match(gaps[0].error, /acme\/beta_2: beta-2-i2v appears in no typings snapshot/);
+});
+
+test('typingsGaps does not count id-list or index snapshots as typings evidence', () => {
+  const gaps = typingsGaps(typedDef(), [
+    snap('list', 'alpha-1\nbeta-2\nbeta-2-i2v'),
+    snap('schema', ''),
+    snap('pages', 'alpha-1 beta-2 beta-2-i2v', { index: true }),
+  ]);
+  assert.deepEqual(gaps.map((g) => g.error.split(':')[0]), ['acme/alpha-1', 'acme/beta_2']);
+});
+
+test('typingsGaps matches whole ids only, so a longer sibling id is not coverage', () => {
+  const def = { ...typedDef(), models: { 'acme/alpha-1': 'alpha-1' } };
+  assert.equal(typingsGaps(def, [snap('schema', '"alpha-1-pro" alpha-12 alpha-1_turbo v.alpha-1')]).length, 1);
+  assert.deepEqual(typingsGaps(def, [snap('schema', 'enum: ["ALPHA-1", "alpha-1-pro"]. done')]), []);
+  assert.deepEqual(typingsGaps(def, [snap('schema', 'POST /v1/alpha-1 (application/json)')]), []);
+  assert.deepEqual(typingsGaps(def, [snap('schema', 'POST /v1/alpha-1/generate (multipart/form-data)')]), []);
+});
+
+test('typingsGaps counts an index source that declares its snapshot typings', () => {
+  assert.deepEqual(typingsGaps(typedDef(), [snap('fields', '// action alpha-1\n// action beta-2\n// action beta-2-i2v', { index: true })]), []);
+});
+
+test('typingsGaps skips a model listed in untyped', () => {
+  const def = typedDef({ untyped: { 'acme/beta_2': 'vendor publishes no request schema' } });
+  assert.deepEqual(typingsGaps(def, [snap('schema', 'alpha-1')]), []);
+});
+
+test('typingsGaps leaves out a model already reported missing upstream', () => {
+  assert.deepEqual(typingsGaps(typedDef(), [snap('schema', 'alpha-1')], ['acme/beta_2']), []);
+});
+
+test('typingsGaps is withheld when a typings source failed, since the id may live in it', () => {
+  assert.deepEqual(typingsGaps(typedDef(), [{ key: 'schema', ok: false, error: 'HTTP 404' }]), []);
+});
+
 test('classify leaves index sources (page or endpoint lists) out of the model-id comparison', () => {
-  const r = classify(def, [ok('a', ['alpha-1', 'beta-2']), { key: 'pages', ok: true, index: true, ids: ['/docs/new-video-api'] }]);
+  const r = classify(def, [ok('a', ['alpha-1', 'beta-2', 'beta-2-i2v']), { key: 'pages', ok: true, index: true, ids: ['/docs/new-video-api'] }]);
   assert.deepEqual(r.new, []);
   assert.deepEqual(r.missing, []);
   assert.deepEqual(r.failed, []);
@@ -179,6 +245,8 @@ function acmeDef(url) {
     provider: 'acme',
     models: { 'acme/alpha-1': 'alpha-1', 'acme/beta_2': 'beta-2' },
     sources: [{ key: 'docs', url, expect: 'text', extract: /\b(?:alpha|beta|gamma)-\d\b/g }],
+    // This fixture's one source is an id list; typings coverage has its own tests.
+    untyped: { 'acme/alpha-1': 'fixture: id list only', 'acme/beta_2': 'fixture: id list only' },
     acknowledged: [],
   };
 }
@@ -412,4 +480,36 @@ test('run does not overwrite the committed snapshot of a failed source', async (
     fetchImpl: fakeFetch({ [url]: { status: 404, contentType: 'text/html', body: html } }),
   });
   assert.equal(readFileSync(join(snapDir, 'acme', 'docs.txt'), 'utf8'), 'alpha-1\nbeta-2\n');
+});
+
+test('run exits 2 when a carried model is in no typings snapshot', async () => {
+  const snapDir = mkdtempSync(join(tmpdir(), 'drift-snap-'));
+  const url = 'https://acme.test/spec';
+  const def = { ...acmeDef(url), untyped: undefined };
+  def.sources = [{ ...def.sources[0], snapshot: () => 'model: [alpha-1]' }];
+  const res = await run({
+    modelsDir: FIXTURE_MODELS,
+    definitions: [def],
+    snapshotsDir: snapDir,
+    fetchImpl: fakeFetch({ [url]: { status: 200, contentType: 'text/plain', body: 'alpha-1 beta-2' } }),
+  });
+  assert.equal(res.exitCode, 2);
+  assert.deepEqual(res.providers[0].failed.map((f) => f.source), ['(typings)']);
+  assert.match(res.providers[0].failed[0].error, /acme\/beta_2: beta-2/);
+});
+
+test('run flags an untyped entry that names no mapped model, or gives no reason', async () => {
+  const snapDir = mkdtempSync(join(tmpdir(), 'drift-snap-'));
+  const url = 'https://acme.test/llms.txt';
+  const def = { ...acmeDef(url), untyped: { 'acme/alpha-1': '', 'acme/beta_2': 'id list only', 'acme/gone': 'retired' } };
+  const res = await run({
+    modelsDir: FIXTURE_MODELS,
+    definitions: [def],
+    snapshotsDir: snapDir,
+    fetchImpl: fakeFetch({ [url]: { status: 200, contentType: 'text/plain', body: 'alpha-1 beta-2' } }),
+  });
+  assert.equal(res.exitCode, 2);
+  const errors = res.providers[0].failed.map((f) => f.error).join('\n');
+  assert.match(errors, /untyped acme\/alpha-1 .* needs a reason/);
+  assert.match(errors, /untyped acme\/gone .* is not a mapped model/);
 });

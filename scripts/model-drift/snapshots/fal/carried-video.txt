@@ -20,6 +20,10 @@
         ],
         "type": "integer"
       },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
       "end_image_url": {
         "anyOf": [
           {
@@ -91,6 +95,10 @@
         ],
         "type": "integer"
       },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
       "fps": {
         "default": 25,
         "enum": [
@@ -131,6 +139,10 @@
 {
   "POST /fal-ai/ltx-video (application/json)": {
     "properties": {
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
       "guidance_scale": {
         "default": 3,
         "exclusiveMinimum": 1,
@@ -172,6 +184,10 @@
 {
   "POST /fal-ai/ltx-video/image-to-video (application/json)": {
     "properties": {
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
       "guidance_scale": {
         "default": 3,
         "exclusiveMinimum": 1,
