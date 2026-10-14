@@ -197,6 +197,22 @@ impl S3Storage {
         if s3_cfg.endpoint_url.is_some() { bucket = bucket.with_path_style(); }
         Ok(Self { bucket: *bucket, custom_public_url: s3_cfg.custom_public_url.clone() })
     }
+
+    /// The absolute URL an object at `key` is served from.
+    ///
+    /// For an S3-compatible endpoint (path-style) this is the bucket's own URL,
+    /// `scheme://endpoint-host/bucket/key`: the region's `Display` is only its
+    /// name for a custom endpoint, which used to yield a relative
+    /// `region/bucket/key` that no client can fetch.
+    fn object_url(&self, key: &str) -> String {
+        if let Some(ref base) = self.custom_public_url {
+            format!("{}/{}", base.trim_end_matches('/'), key)
+        } else if self.bucket.is_path_style() {
+            format!("{}/{}", self.bucket.url().trim_end_matches('/'), key)
+        } else {
+            format!("https://{}.s3.{}.amazonaws.com/{}", self.bucket.name(), self.bucket.region(), key)
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -209,18 +225,7 @@ impl ImageStorage for S3Storage {
         if response.status_code() >= 300 {
             return Err(ImageStoreError::UploadFailed(format!("S3 returned HTTP {}", response.status_code())));
         }
-        let url = if let Some(ref base) = self.custom_public_url {
-            format!("{}/{}", base.trim_end_matches('/'), key)
-        } else {
-            let region_str = self.bucket.region().to_string();
-            let bucket_name = self.bucket.name();
-            if self.bucket.is_path_style() {
-                format!("{}/{}/{}", region_str.trim_end_matches('/'), bucket_name, key)
-            } else {
-                format!("https://{}.s3.{}.amazonaws.com/{}", bucket_name, region_str, key)
-            }
-        };
-        Ok(url)
+        Ok(self.object_url(key))
     }
     async fn delete(&self, key: &str) -> Result<(), ImageStoreError> {
         self.bucket.delete_object(key).await
@@ -383,6 +388,40 @@ pub fn build_model3d_store(config: &ImageStorageConfig, public_base_url: &str) -
 #[cfg(test)]
 mod model3d_storage_tests {
     use super::*;
+
+    fn s3(endpoint: Option<&str>, public: Option<&str>) -> S3Storage {
+        S3Storage::from_config(&ImageStorageConfig {
+            backend: "s3".into(),
+            s3: Some(crate::config::S3StorageConfig {
+                bucket_name: "litegen".into(),
+                region: "fr-par".into(),
+                access_key_id: Some("k".into()),
+                secret_access_key: Some("s".into()),
+                endpoint_url: endpoint.map(str::to_string),
+                custom_public_url: public.map(str::to_string),
+            }),
+            path_prefix: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn an_s3_compatible_endpoint_mints_absolute_object_urls() {
+        let key = "litegen/3d/litegen-3d-abc/model.glb";
+        assert_eq!(
+            s3(Some("https://s3.fr-par.scw.cloud"), None).object_url(key),
+            "https://s3.fr-par.scw.cloud/litegen/litegen/3d/litegen-3d-abc/model.glb",
+        );
+        assert_eq!(
+            s3(Some("http://minio:9000"), None).object_url(key),
+            "http://minio:9000/litegen/litegen/3d/litegen-3d-abc/model.glb",
+        );
+        // A custom public URL still wins.
+        assert_eq!(
+            s3(Some("http://minio:9000"), Some("https://cdn.example.com/")).object_url(key),
+            "https://cdn.example.com/litegen/3d/litegen-3d-abc/model.glb",
+        );
+    }
 
     #[test]
     fn asset_key_takes_its_extension_from_the_caller_not_the_content_type() {
