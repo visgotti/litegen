@@ -470,6 +470,22 @@ pub fn validate_model3d(
     }
 
     if let Some(requested) = req.output_formats.as_mut() {
+        // Bounded before anything walks the list: the vocabulary is ten
+        // containers, and the de-duplication below is quadratic, so an
+        // unbounded array (the 25 MiB body allows millions of entries) would pin
+        // a runtime worker for hours before the enum check ever ran.
+        const MAX_LISTED: usize = 64;
+        if requested.len() > MAX_LISTED {
+            return Err(ValidationError::new(
+                "param_too_many",
+                format!(
+                    "output_formats lists {} entries; at most {} are accepted",
+                    requested.len(),
+                    MAX_LISTED
+                ),
+                Some("output_formats"),
+            ));
+        }
         // Case-fold and de-duplicate before checking. `["glb", "GLB"]` is one
         // container asked for twice, not a request for two.
         let mut seen: Vec<String> = Vec::new();

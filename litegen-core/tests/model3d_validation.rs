@@ -208,6 +208,27 @@ fn formats_are_case_folded_and_deduplicated() {
 }
 
 #[test]
+fn an_oversized_format_list_is_refused_before_it_is_walked() {
+    // The de-duplication is quadratic; a body-sized list of distinct strings
+    // used to pin a runtime worker for hours. It must now fail fast.
+    let schema = schema_with(HashMap::from([
+        ("output_formats".to_string(), formats_param(&["glb", "obj"], None)),
+    ]));
+    let mut r = req(true);
+    r.output_formats = Some((0..100_000).map(|i| format!("f{i:06}")).collect());
+    let started = std::time::Instant::now();
+    let err = validate_model3d(&schema, r).unwrap_err();
+    assert_eq!(err.code, "param_too_many");
+    assert_eq!(err.param.as_deref(), Some("output_formats"));
+    assert!(started.elapsed() < std::time::Duration::from_secs(1), "took {:?}", started.elapsed());
+
+    // A realistic list well under the bound still validates as before.
+    let mut ok = req(true);
+    ok.output_formats = Some(vec!["glb".into(); 64]);
+    assert_eq!(validate_model3d(&schema, ok).unwrap().request.output_formats.unwrap(), vec!["glb".to_string()]);
+}
+
+#[test]
 fn a_legacy_scalar_spec_still_validates_the_plural_request() {
     // A catalog that has not migrated yet: the model declares the old scalar
     // `output_format`, and a client sends the new plural field.
