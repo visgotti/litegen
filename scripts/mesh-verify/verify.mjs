@@ -388,7 +388,10 @@ async function usdrecordFrames(file, sessionText, times, tcps, dir, tag, extraAr
     await fs.rm(sub, { recursive: true, force: true });
     await fs.mkdir(sub, { recursive: true });
     const args = ['--sessionLayer', session, '--camera', '/VerifyCameraRoot/VerifyCamera', '--imageWidth', '256', ...extraArgs];
-    if (t === 'static') args.push('--defaultTime', 'true');
+    // `--defaultTime` is a flag (store_true in OpenUSD's framesArgs.py): a
+    // value after it is read as the USD file, and argparse then rejects the
+    // real output path, so every static render failed.
+    if (t === 'static') args.push('--defaultTime');
     else args.push('--frames', String(t * tcps));
     // One retry: usdrecord occasionally fails a frame it renders on the
     // next attempt (seen once in 2,000 frames, while SceneKit was rendering).
