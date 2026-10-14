@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
-import { BarChart3, Activity, Layers, Database, Key, Plug, Sparkles, Film, ShieldAlert, Users as UsersIcon, Building2 } from 'lucide-react';
+import { BarChart3, Activity, Layers, Database, Key, Plug, Sparkles, Film, ShieldAlert, Users as UsersIcon, Building2, Wallet, PieChart, UserRound, SlidersHorizontal } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import Overview from './pages/Overview';
 import Logs from './pages/Logs';
@@ -17,6 +17,10 @@ import Users from './pages/Users';
 import Organization from './pages/Organization';
 import Providers from './pages/Providers';
 import Members from './pages/Members';
+import Budgets from './pages/Budgets';
+import Spend from './pages/Spend';
+import EndUsers from './pages/EndUsers';
+import Gateway from './pages/Gateway';
 import UserMenu from './components/UserMenu';
 import RequirePermission from './components/RequirePermission';
 import RequireAuth from './components/RequireAuth';
@@ -37,6 +41,10 @@ const BASE_NAV_ITEMS = [
   { to: '/audit', icon: ShieldAlert, label: 'Audit', testid: undefined },
   { to: '/organization', icon: Building2, label: 'Organization', testid: 'nav-organization' },
   { to: '/members', icon: UsersIcon, label: 'Members', testid: 'nav-members' },
+  { to: '/budgets', icon: Wallet, label: 'Budgets', testid: 'nav-budgets' },
+  { to: '/spend', icon: PieChart, label: 'Spend', testid: 'nav-spend' },
+  { to: '/end-users', icon: UserRound, label: 'End users', testid: 'nav-end-users' },
+  { to: '/gateway', icon: SlidersHorizontal, label: 'Gateway', testid: 'nav-gateway' },
 ];
 
 function useMe() {
@@ -119,6 +127,16 @@ function AppShell() {
           <Route path="/providers" element={<Providers />} />
           <Route path="/organization" element={<Organization />} />
           <Route path="/members" element={<Members />} />
+          <Route path="/budgets" element={<Budgets />} />
+          <Route path="/spend" element={<Spend />} />
+          <Route path="/end-users" element={<EndUsers />} />
+          {/* Gateway admin: owner/admin in single-tenant mode, the master key in
+              hosted mode (the server enforces the latter and the page shows its 403). */}
+          <Route path="/gateway" element={
+            <RequirePermission perm="system:config">
+              <Gateway />
+            </RequirePermission>
+          } />
           {/* The global Users page exists only in single-tenant mode. The nav
               link is further gated to owner/admin (canSeeUsers); a non-admin who
               navigates here directly still gets RequirePermission's 403. In

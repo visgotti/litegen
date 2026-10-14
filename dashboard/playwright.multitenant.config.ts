@@ -5,7 +5,11 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const BINARY_PATH = path.resolve(__dirname, '../litegen-core/target/release/litegen');
+// The release binary by default; LITEGEN_E2E_BINARY points at another build,
+// as in playwright.config.ts.
+const BINARY_PATH = process.env.LITEGEN_E2E_BINARY
+  ? path.resolve(process.env.LITEGEN_E2E_BINARY)
+  : path.resolve(__dirname, '../litegen-core/target/release/litegen');
 const BACKEND_CWD = path.resolve(__dirname, '../litegen-core'); // so embedded ./migrations/sqlite resolves
 const MODELS_DIR = path.resolve(__dirname, '../models');
 const DB_PATH = '/tmp/litegen-e2e-mt.db';
