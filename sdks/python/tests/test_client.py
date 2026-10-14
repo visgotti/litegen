@@ -6,13 +6,14 @@ from typing import Any
 
 import pytest
 import respx
-from httpx import Response
+from httpx import ReadTimeout, Response
 
 from litegen import (
     AsyncLiteGenClient,
     AsyncVideoJob,
     LiteGenAPIError,
     LiteGenClient,
+    LiteGenTimeoutError,
     LiteGenValidationError,
 )
 
@@ -175,6 +176,19 @@ def test_video_job_submitted_does_not_wait() -> None:
     assert submitted["status"] == "processing"
 
 
+@respx.mock
+def test_video_job_never_resubmits_after_a_failed_submit() -> None:
+    # A timed-out POST may still have started (and billed) the video.
+    route = respx.post("http://localhost:4000/v1/videos/generations").mock(
+        side_effect=ReadTimeout("read timed out")
+    )
+    job = LiteGenClient().videos.generate(prompt="p", model="runway/gen-3")
+    for _ in range(3):
+        with pytest.raises(LiteGenTimeoutError):
+            job.result()
+    assert route.call_count == 1
+
+
 _SUBMITTED_VIDEO = {
     "id": "vid-9", "status": "processing", "model": "m", "provider": "p",
     "progress": 0, "created": 1,
@@ -275,6 +289,27 @@ async def test_async_video_job_concurrent_first_use_submits_once() -> None:
     assert calls == 1
     assert submitted["id"] == "vid-9"
     assert dropped == ["fps"]
+
+
+@pytest.mark.asyncio
+async def test_async_video_job_failed_submit_is_not_resent_by_the_next_waiter() -> None:
+    calls = 0
+
+    async def submit() -> tuple[dict[str, Any], dict[str, str]]:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)
+        raise LiteGenTimeoutError("read timed out")
+
+    async def get_status(_id: str) -> dict[str, Any]:
+        raise AssertionError("never submitted, so never polled")
+
+    job = AsyncVideoJob(submit, get_status, interval=0.0, timeout=5.0)
+    outcomes = await asyncio.gather(job.submitted, job.dropped_params(), return_exceptions=True)
+    assert all(isinstance(o, LiteGenTimeoutError) for o in outcomes), outcomes
+    with pytest.raises(LiteGenTimeoutError):
+        await job
+    assert calls == 1
 
 
 @pytest.mark.asyncio

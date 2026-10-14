@@ -6,13 +6,17 @@ with respx.
 from __future__ import annotations
 
 import asyncio
+import email.utils
 import inspect
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
 import respx
-from httpx import Response
+from httpx import ReadTimeout, Response
 
 from litegen import (
     MODEL3D_DEFAULT_TIMEOUT,
@@ -21,6 +25,7 @@ from litegen import (
     LiteGenAPIError,
     LiteGenClient,
     LiteGenPollingTimeoutError,
+    LiteGenTimeoutError,
     LiteGenValidationError,
     Model3dJob,
     apoll_model3d,
@@ -29,7 +34,7 @@ from litegen import (
     wait_for_model3d_completion,
 )
 from litegen.async_client import _AsyncModels3d
-from litegen.client import _Models3dNamespace, _parse_dropped_params
+from litegen.client import _Models3dNamespace, _parse_dropped_params, _retry_after_seconds
 
 BASE = "http://localhost:4000"
 JOB_ID = "litegen-3d-abc123"
@@ -303,6 +308,44 @@ def test_wait_for_completion_timeout_names_a_3d_generation() -> None:
 
 
 @respx.mock
+def test_a_rate_limited_status_read_is_retried_after_retry_after() -> None:
+    # The per-key RPM limit covers status reads too; a 429 mid-wait must not
+    # abandon a job that is still running.
+    respx.post(SUBMIT_URL).mock(return_value=Response(200, json=_job("pending", 0)))
+    status = respx.get(STATUS_URL).mock(
+        side_effect=[
+            Response(
+                429,
+                json={"error": {"message": "Rate limit exceeded. Retry after 0 seconds.", "type": "rate_limit_exceeded", "code": 429}},
+                headers={"Retry-After": "0"},
+            ),
+            Response(503, headers={"Retry-After": "0"}),
+            Response(200, json=_job("completed", 100, assets=[GLB])),
+        ]
+    )
+    final = LiteGenClient().models3d.generate(
+        model="mock/mesh-3d", prompt="x", interval=0.0, timeout=5.0
+    ).result()
+    assert final["status"] == "completed"
+    assert status.call_count == 3
+
+
+def test_a_rate_limit_error_carries_its_retry_after() -> None:
+    assert _retry_after_seconds("2") == 2.0
+    assert _retry_after_seconds(" 1.5 ") == 1.5
+    assert _retry_after_seconds("-3") == 0.0
+    assert _retry_after_seconds("Wed, 21 Oct 2015 07:28:00 GMT") == 0.0, "a date in the past"
+    assert 50 < (_retry_after_seconds(_http_date_in(60)) or 0) <= 60
+    assert _retry_after_seconds(None) is None
+    assert _retry_after_seconds("") is None
+    assert _retry_after_seconds("soon") is None
+
+
+def _http_date_in(seconds: int) -> str:
+    return email.utils.formatdate(time.time() + seconds, usegmt=True)
+
+
+@respx.mock
 def test_a_rejected_submit_raises_when_the_job_is_first_used() -> None:
     route = respx.post(SUBMIT_URL).mock(return_value=Response(400, json=VALIDATION_400))
     job = LiteGenClient().models3d.generate(model="mock/mesh-3d", prompt="x", rig=True)
@@ -311,6 +354,42 @@ def test_a_rejected_submit_raises_when_the_job_is_first_used() -> None:
         job.result()
     assert exc.value.status == 400
     assert exc.value.code == "param_unsupported"
+
+
+@respx.mock
+def test_a_submit_that_timed_out_is_never_sent_again() -> None:
+    # The POST may still have reached the server and started (and billed) a
+    # job, so using the handle afterwards must not submit a second one.
+    route = respx.post(SUBMIT_URL).mock(side_effect=ReadTimeout("read timed out"))
+    job = LiteGenClient().models3d.generate(model="mock/mesh-3d", prompt="x")
+    with pytest.raises(LiteGenTimeoutError):
+        job.result()
+    for use in (lambda: job.id, lambda: job.submitted, lambda: job.dropped_params, job.result):
+        with pytest.raises(LiteGenTimeoutError):
+            use()
+    assert route.call_count == 1
+
+
+def test_threads_sharing_a_job_submit_it_once() -> None:
+    calls = 0
+    lined_up = threading.Barrier(4)
+
+    def submit() -> tuple[dict[str, Any], dict[str, str]]:
+        nonlocal calls
+        calls += 1
+        time.sleep(0.05)  # every other thread reaches first use meanwhile
+        return _job("pending", 0), {}
+
+    job = Model3dJob(submit, lambda _id: _job("completed", 100), interval=0.0, timeout=5.0)
+
+    def first_use(_: int) -> str:
+        lined_up.wait()
+        return job.id
+
+    with ThreadPoolExecutor(4) as pool:
+        ids = list(pool.map(first_use, range(4)))
+    assert ids == [JOB_ID] * 4
+    assert calls == 1
 
 
 @respx.mock
@@ -498,6 +577,22 @@ async def test_async_rejected_submit_raises_when_the_job_is_first_used() -> None
         job = client.models3d.generate(model="mock/mesh-3d", prompt="x", rig=True)
         with pytest.raises(LiteGenValidationError):
             await job
+
+
+@respx.mock
+async def test_async_a_failed_submit_is_not_resent_by_the_next_waiter() -> None:
+    route = respx.post(SUBMIT_URL).mock(side_effect=ReadTimeout("read timed out"))
+    async with AsyncLiteGenClient() as client:
+        job = client.models3d.generate(model="mock/mesh-3d", prompt="x")
+        # The coroutines queued on the submit lock see the first one's failure
+        # rather than sending the POST again.
+        outcomes = await asyncio.gather(
+            job.id(), job.dropped_params(), job.submitted, return_exceptions=True
+        )
+        assert all(isinstance(o, LiteGenTimeoutError) for o in outcomes), outcomes
+        with pytest.raises(LiteGenTimeoutError):
+            await job
+    assert route.call_count == 1
 
 
 @respx.mock

@@ -1,8 +1,11 @@
 """Synchronous LiteGen SDK client."""
 from __future__ import annotations
 
+import email.utils
 import os
 import re
+import threading
+import time
 from typing import Any, Callable, Iterator, Mapping
 from urllib.parse import quote
 
@@ -143,7 +146,23 @@ def _raise_for_status(resp: httpx.Response) -> None:
         provider_error=provider_error,
         param=param if isinstance(param, str) else None,
         model=model if isinstance(model, str) else None,
+        retry_after=_retry_after_seconds(resp.headers.get("retry-after")),
     )
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    """A ``Retry-After`` header (delta-seconds or an HTTP date) in seconds."""
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        at = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, at.timestamp() - time.time())
 
 
 def _clean(req: Mapping[str, Any]) -> dict[str, Any]:
@@ -235,14 +254,28 @@ class VideoJob:
         self._interval = interval
         self._timeout = timeout
         self._submitted: dict[str, Any] | None = None
+        self._submit_error: Exception | None = None
         self._dropped_params: list[str] = []
+        # One POST however many threads reach first use together, as on
+        # AsyncVideoJob.
+        self._submit_lock = threading.Lock()
 
     def _ensure_submitted(self) -> dict[str, Any]:
-        if self._submitted is None:
-            body, headers = self._submit()
-            self._dropped_params = _parse_dropped_params(headers.get(_DROPPED_PARAMS_HEADER))
-            self._submitted = body
-        return self._submitted
+        with self._submit_lock:
+            # A failed submit is raised again, never retried: a POST that timed
+            # out may still have started, and billed, the job. Call
+            # ``generate()`` again to submit a new one.
+            if self._submit_error is not None:
+                raise self._submit_error
+            if self._submitted is None:
+                try:
+                    body, headers = self._submit()
+                except Exception as e:
+                    self._submit_error = e
+                    raise
+                self._dropped_params = _parse_dropped_params(headers.get(_DROPPED_PARAMS_HEADER))
+                self._submitted = body
+            return self._submitted
 
     @property
     def submitted(self) -> dict[str, Any]:
@@ -369,14 +402,28 @@ class Model3dJob:
         self._interval = interval
         self._timeout = timeout
         self._submitted: Model3dGenerationResponse | None = None
+        self._submit_error: Exception | None = None
         self._dropped_params: list[str] = []
+        # One POST however many threads reach first use together, as on
+        # AsyncModel3dJob.
+        self._submit_lock = threading.Lock()
 
     def _ensure_submitted(self) -> Model3dGenerationResponse:
-        if self._submitted is None:
-            body, headers = self._submit()
-            self._dropped_params = _parse_dropped_params(headers.get(_DROPPED_PARAMS_HEADER))
-            self._submitted = body
-        return self._submitted
+        with self._submit_lock:
+            # A failed submit is raised again, never retried: a POST that timed
+            # out may still have started, and billed, the job. Call
+            # ``generate()`` again to submit a new one.
+            if self._submit_error is not None:
+                raise self._submit_error
+            if self._submitted is None:
+                try:
+                    body, headers = self._submit()
+                except Exception as e:
+                    self._submit_error = e
+                    raise
+                self._dropped_params = _parse_dropped_params(headers.get(_DROPPED_PARAMS_HEADER))
+                self._submitted = body
+            return self._submitted
 
     @property
     def submitted(self) -> Model3dGenerationResponse:

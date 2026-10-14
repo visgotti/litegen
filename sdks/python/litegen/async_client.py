@@ -168,6 +168,7 @@ class AsyncVideoJob:
         self._interval = interval
         self._timeout = timeout
         self._submitted: dict[str, Any] | None = None
+        self._submit_error: Exception | None = None
         self._dropped_params: list[str] = []
         # One POST however many coroutines reach first use together — the same
         # guard as AsyncModel3dJob. `gather(job.submitted, job.dropped_params())`
@@ -176,8 +177,17 @@ class AsyncVideoJob:
 
     async def _ensure_submitted(self) -> dict[str, Any]:
         async with self._submit_lock:
+            # A failed submit is raised again, never retried: a POST that timed
+            # out may still have started, and billed, the job — and the next
+            # coroutine waiting on the lock would otherwise send another.
+            if self._submit_error is not None:
+                raise self._submit_error
             if self._submitted is None:
-                body, headers = await self._submit()
+                try:
+                    body, headers = await self._submit()
+                except Exception as e:
+                    self._submit_error = e
+                    raise
                 self._dropped_params = _parse_dropped_params(headers.get(_DROPPED_PARAMS_HEADER))
                 self._submitted = body
             return self._submitted
@@ -297,6 +307,7 @@ class AsyncModel3dJob:
         self._interval = interval
         self._timeout = timeout
         self._submitted: Model3dGenerationResponse | None = None
+        self._submit_error: Exception | None = None
         self._dropped_params: list[str] = []
         # One POST however many coroutines reach first use together. Every
         # accessor here is an awaitable that submits on demand, so an innocent
@@ -306,8 +317,17 @@ class AsyncModel3dJob:
 
     async def _ensure_submitted(self) -> Model3dGenerationResponse:
         async with self._submit_lock:
+            # A failed submit is raised again, never retried: a POST that timed
+            # out may still have started, and billed, the job — and the next
+            # coroutine waiting on the lock would otherwise send another.
+            if self._submit_error is not None:
+                raise self._submit_error
             if self._submitted is None:
-                body, headers = await self._submit()
+                try:
+                    body, headers = await self._submit()
+                except Exception as e:
+                    self._submit_error = e
+                    raise
                 self._dropped_params = _parse_dropped_params(
                     headers.get(_DROPPED_PARAMS_HEADER)
                 )
