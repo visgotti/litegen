@@ -316,4 +316,55 @@ models:
         assert_eq!(err.code, "param_out_of_range");
         assert_eq!(err.param.as_deref(), Some("duration_seconds"));
     }
+
+    // ─── Required-image rules shared by every family ────────────────────────
+
+    fn edit_model(init_role: &str, prompt: &str) -> CapabilityRegistry {
+        CapabilityRegistry::from_yaml_strs(&[("x.yaml", format!(r#"
+models:
+  - id: t/edit
+    provider: t
+    media_type: image
+    display_name: Edit
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ image_to_image: true }}
+    prompt: {prompt}
+    ref_inputs:
+      max_total: 3
+      default_role: init
+      provider_format: {{ form: url }}
+      roles:
+        init: {init_role}
+"#).as_str())]).unwrap()
+    }
+
+    fn with_images(n: usize) -> ImageGenerationRequest {
+        let mut r = img("hi");
+        r.base.model = "t/edit".into();
+        r.base.reference_images = (0..n)
+            .map(|i| ReferenceImage { kind: RefImageKind::Url, value: format!("https://x/{i}.png"), role: Some("init".into()) })
+            .collect();
+        r
+    }
+
+    #[test]
+    fn a_missing_required_image_is_reported_as_required_not_as_a_count() {
+        // `min_count: 1` is the usual spelling; with `min_count: 0` the role
+        // used to be declared required and never enforced at all.
+        for min in [1, 0] {
+            let r = edit_model(&format!("{{ required: true, min_count: {min}, max_count: 3 }}"), "{ required: true }");
+            let m = r.get("t/edit").unwrap();
+            let err = validate_image(m, with_images(0)).unwrap_err();
+            assert_eq!(err.code, "ref_role_required", "min_count {min}: {}", err.message);
+            assert!(validate_image(m, with_images(1)).is_ok(), "min_count {min}");
+        }
+    }
+
+    #[test]
+    fn too_few_images_for_a_role_is_still_a_count_error() {
+        let r = edit_model("{ required: true, min_count: 2, max_count: 3 }", "{ required: true }");
+        let m = r.get("t/edit").unwrap();
+        assert_eq!(validate_image(m, with_images(1)).unwrap_err().code, "ref_role_count_out_of_range");
+        assert!(validate_image(m, with_images(2)).is_ok());
+    }
 }
