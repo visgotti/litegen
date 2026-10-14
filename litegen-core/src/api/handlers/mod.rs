@@ -3,6 +3,7 @@ pub mod oauth;
 pub mod users;
 pub mod account;
 pub mod orgs;
+pub mod management;
 
 pub use auth_password::{
     auth_config, csrf_token, login, logout, me, password_reset_confirm, password_reset_request,
@@ -114,7 +115,8 @@ where
     path = "/v1/images/generations",
     request_body = ImageGenerationRequest,
     responses(
-        (status = 200, description = "Image generated successfully", body = ImageGenerationResponse),
+        (status = 200, description = "Image generated successfully", body = ImageGenerationResponse,
+            headers(("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped."))),
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 502, description = "Provider error", body = ErrorResponse),
     ),
@@ -123,6 +125,7 @@ where
 pub async fn generate_image(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
+    attribution: crate::management::enforce::RequestAttribution,
     validated: ValidatedImage,
 ) -> impl IntoResponse {
     // The in-flight slot was acquired in the Validated* extractor (before the
@@ -182,6 +185,18 @@ pub async fn generate_image(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    // Org/app/member/end-user/key limits (budgets, model allowlists, rpm and
+    // parallel caps). Settled alongside the key quota below.
+    let mut limits = match crate::management::enforce::begin(
+        &state, key_ctx.as_ref(), &attribution, &validated.schema.id, validated.schema.pricing.base_cost_usd,
+    ).await {
+        Ok(g) => g,
+        Err(resp) => {
+            settle_quota(&state, charge_key, reserved, 0.0).await;
+            return resp;
+        }
+    };
+    let attributed = limits.attribution();
 
     match state.router.generate_image(&validated.schema, &validated.request.base, &extras, &materialized, app_creds, app_store, cache_scope.as_deref()).await {
         Ok(response) => {
@@ -190,6 +205,7 @@ pub async fn generate_image(
 
             // Settle the reservation to the actual cost.
             settle_quota(&state, charge_key, reserved, cost).await;
+            limits.settle(&state, cost).await;
 
             // Build artifact for drill-down storage
             let artifact = {
@@ -243,6 +259,7 @@ pub async fn generate_image(
                 let _ = db
                     .log_request(&id, &model, &provider, "completed", "image", cost, latency, None, None, org_id.as_deref(), app_id.as_deref())
                     .await;
+                crate::management::enforce::attribute(&db, &id, &attributed).await;
                 if let Err(e) = db.insert_request_artifact(&artifact).await {
                     tracing::warn!(error = %e, request_id = %artifact.request_id, "Failed to store request artifact");
                 }
@@ -257,6 +274,7 @@ pub async fn generate_image(
             // Nothing was delivered — release the reservation so a failed
             // request is never billed.
             settle_quota(&state, charge_key, reserved, 0.0).await;
+            limits.settle(&state, 0.0).await;
             let latency = start.elapsed().as_millis() as i64;
             let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             error!(error = %e, "Image generation failed");
@@ -272,6 +290,7 @@ pub async fn generate_image(
                 let _ = db
                     .log_request(&id, &model, "unknown", "failed", "image", 0.0, latency, Some(&err_msg), None, org_id.as_deref(), app_id.as_deref())
                     .await;
+                crate::management::enforce::attribute(&db, &id, &attributed).await;
                 let artifact = RequestArtifact {
                     request_id: id,
                     media_type: "image".to_string(),
@@ -337,7 +356,8 @@ pub async fn estimate_image_cost(
     path = "/v1/videos/generations",
     request_body = VideoGenerationRequest,
     responses(
-        (status = 200, description = "Video generation started", body = VideoGenerationResponse),
+        (status = 200, description = "Video generation started", body = VideoGenerationResponse,
+            headers(("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped."))),
         (status = 400, description = "Bad request", body = ErrorResponse),
     ),
     tag = "Videos"
@@ -345,6 +365,7 @@ pub async fn estimate_image_cost(
 pub async fn generate_video(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
+    attribution: crate::management::enforce::RequestAttribution,
     validated: ValidatedVideo,
 ) -> impl IntoResponse {
     // The in-flight slot was acquired in the Validated* extractor (before the
@@ -389,6 +410,18 @@ pub async fn generate_video(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    // Org/app/member/end-user/key limits (budgets, model allowlists, rpm and
+    // parallel caps). Settled alongside the key quota below.
+    let mut limits = match crate::management::enforce::begin(
+        &state, key_ctx.as_ref(), &attribution, &validated.schema.id, validated.schema.pricing.base_cost_usd,
+    ).await {
+        Ok(g) => g,
+        Err(resp) => {
+            settle_quota(&state, charge_key, reserved, 0.0).await;
+            return resp;
+        }
+    };
+    let attributed = limits.attribution();
 
     match state.router.generate_video(&validated.schema, &validated.request.base, &extras, &materialized, app_creds).await {
         Ok(response) => {
@@ -397,6 +430,7 @@ pub async fn generate_video(
 
             // Settle the reservation to the actual cost.
             settle_quota(&state, charge_key, reserved, cost).await;
+            limits.settle(&state, cost).await;
 
             // Build video artifact
             let video_artifact = {
@@ -441,6 +475,7 @@ pub async fn generate_video(
                 let _ = db
                     .log_request(&id, &model, &provider, "pending", "video", cost, latency, None, None, org_id.as_deref(), app_id.as_deref())
                     .await;
+                crate::management::enforce::attribute(&db, &id, &attributed).await;
                 let _ = db.insert_generation(
                     &id,
                     key_id_for_insert.as_ref(),
@@ -465,6 +500,7 @@ pub async fn generate_video(
         Err(e) => {
             // Nothing was delivered — release the reservation.
             settle_quota(&state, charge_key, reserved, 0.0).await;
+            limits.settle(&state, 0.0).await;
             let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             error!(error = %e, "Video generation failed");
             (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
@@ -609,11 +645,27 @@ pub async fn estimate_video_cost(
 )]
 pub async fn list_models(
     State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
 ) -> impl IntoResponse {
-    let models: Vec<ModelInfo> = state.registry.all()
+    // Only the models this tenant may generate with (org pool / app access).
+    let allowed = match crate::management::enforce::tenant_model_filter(
+        &state,
+        key_ctx.as_ref().and_then(|c| c.org_id.as_deref()),
+        key_ctx.as_ref().and_then(|c| c.app_id.as_deref()),
+    ).await {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::error!(error = %e, "model access lookup failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response("internal server error", 500))).into_response();
+        }
+    };
+    let mut served = state.registry.served();
+    served.sort_by(|a, b| a.id.cmp(&b.id));
+    let models: Vec<ModelInfo> = served.iter()
+        .filter(|m| allowed.as_ref().map_or(true, |set| set.contains(&m.id)))
         .map(project_model_info)
         .collect();
-    Json(ModelListResponse { object: "list".to_string(), data: models })
+    Json(ModelListResponse { object: "list".to_string(), data: models }).into_response()
 }
 
 /// GET /v1/models/{id} — Full schema for one model.
@@ -631,7 +683,7 @@ pub async fn get_model_schema(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.registry.get(&id) {
+    match state.registry.resolve(&id) {
         Some(schema) => (StatusCode::OK, Json(serde_json::to_value(schema).unwrap())).into_response(),
         None => (
             StatusCode::NOT_FOUND,
@@ -2162,6 +2214,7 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .merge(read_routes)
         .merge(admin_routes)
         .merge(auth_required_routes)
+        .merge(management::routes(csrf_state.clone()))
         .layer(auth_layer);
 
     axum::Router::new()

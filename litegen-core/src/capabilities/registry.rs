@@ -8,6 +8,12 @@ use crate::capabilities::schema::*;
 pub struct CapabilityRegistry {
     models: HashMap<String, ModelSchema>,
     by_provider: HashMap<String, Vec<String>>,
+    /// Models created through the management API, layered over the catalog.
+    /// `get`/`all`/`for_provider` stay catalog-only; serving paths use
+    /// [`resolve`](Self::resolve) and [`served`](Self::served).
+    runtime: std::sync::RwLock<HashMap<String, ModelSchema>>,
+    /// Model ids switched off platform-wide (catalog or runtime).
+    disabled: std::sync::RwLock<std::collections::HashSet<String>>,
 }
 
 impl CapabilityRegistry {
@@ -59,7 +65,7 @@ impl CapabilityRegistry {
             models.insert(m.id.clone(), m);
         }
         for ids in by_provider.values_mut() { ids.sort(); }
-        Ok(Self { models, by_provider })
+        Ok(Self { models, by_provider, ..Default::default() })
     }
 
     pub fn get(&self, id: &str) -> Option<&ModelSchema> { self.models.get(id) }
@@ -70,6 +76,67 @@ impl CapabilityRegistry {
     }
     pub fn len(&self) -> usize { self.models.len() }
     pub fn is_empty(&self) -> bool { self.models.is_empty() }
+
+    // ─── Runtime layer (management API) ─────────────────────────────────
+
+    /// The schema served for `id`: catalog first, then runtime. None when the
+    /// id is unknown or disabled.
+    pub fn resolve(&self, id: &str) -> Option<ModelSchema> {
+        if self.is_disabled(id) {
+            return None;
+        }
+        self.models.get(id).cloned().or_else(|| self.runtime_model(id))
+    }
+
+    /// Every served model (catalog + runtime, minus disabled).
+    pub fn served(&self) -> Vec<ModelSchema> {
+        let disabled = self.disabled.read().unwrap_or_else(|p| p.into_inner());
+        let runtime = self.runtime.read().unwrap_or_else(|p| p.into_inner());
+        self.models
+            .values()
+            .chain(runtime.values())
+            .filter(|m| !disabled.contains(&m.id))
+            .cloned()
+            .collect()
+    }
+
+    /// Whether `id` is defined by the YAML catalog.
+    pub fn is_catalog(&self, id: &str) -> bool {
+        self.models.contains_key(id)
+    }
+
+    pub fn runtime_model(&self, id: &str) -> Option<ModelSchema> {
+        self.runtime.read().unwrap_or_else(|p| p.into_inner()).get(id).cloned()
+    }
+
+    pub fn runtime_models(&self) -> Vec<ModelSchema> {
+        let mut v: Vec<ModelSchema> = self.runtime.read().unwrap_or_else(|p| p.into_inner()).values().cloned().collect();
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+        v
+    }
+
+    /// Add or replace a runtime model. Callers validate it first and must
+    /// never pass a catalog id.
+    pub fn upsert_runtime(&self, schema: ModelSchema) {
+        self.runtime.write().unwrap_or_else(|p| p.into_inner()).insert(schema.id.clone(), schema);
+    }
+
+    pub fn remove_runtime(&self, id: &str) -> bool {
+        self.runtime.write().unwrap_or_else(|p| p.into_inner()).remove(id).is_some()
+    }
+
+    pub fn set_disabled(&self, id: &str, disabled: bool) {
+        let mut set = self.disabled.write().unwrap_or_else(|p| p.into_inner());
+        if disabled {
+            set.insert(id.to_string());
+        } else {
+            set.remove(id);
+        }
+    }
+
+    pub fn is_disabled(&self, id: &str) -> bool {
+        self.disabled.read().unwrap_or_else(|p| p.into_inner()).contains(id)
+    }
 }
 
 #[cfg(test)]

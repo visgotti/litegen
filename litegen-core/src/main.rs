@@ -174,6 +174,13 @@ async fn main() -> anyhow::Result<()> {
         allow_password: config.auth.allow_password,
     });
 
+    // Layer what the management API stored (runtime models, provider configs,
+    // routes, settings) over the YAML/env config.
+    match litegen::management::runtime::apply_at_boot(&state).await {
+        Ok(report) => tracing::info!(?report, "management runtime config applied"),
+        Err(e) => tracing::error!(error = %e, "failed to load management runtime config"),
+    }
+
     // Shutdown coordination: one signal fans out to the poller and to
     // axum's graceful_shutdown so SIGINT/SIGTERM cleanly drains in-flight work.
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);

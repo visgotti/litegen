@@ -158,6 +158,18 @@ curl http://localhost:4000/v1/stats
 curl "http://localhost:4000/v1/logs?page=1&per_page=50"
 ```
 
+### Management (budgets, end users, spend, runtime config)
+```bash
+# A $50/month budget for an app, alerting at $40
+curl -X PUT http://localhost:4000/v1/apps/$APP_ID/limits -H "Authorization: Bearer $KEY" \
+  -d '{"max_budget_usd": 50, "soft_budget_usd": 40, "budget_duration": "1mo"}'
+# Spend this month by end user (requests tagged with x-litegen-end-user)
+curl "http://localhost:4000/v1/spend/report?group_by=end_user&from=2026-10-01" -H "Authorization: Bearer $KEY"
+```
+Also covers key/org/member budgets, model allowlists, rpm and parallel caps, end-user
+blocking, and runtime models, provider keys, routes and markup. See
+[docs/management-api.md](docs/management-api.md).
+
 ## Model Routing
 
 Configure sophisticated routing in `litegen.yaml`:
