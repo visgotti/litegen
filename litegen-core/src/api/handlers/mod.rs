@@ -546,6 +546,25 @@ pub async fn get_video_status(
         ).await {
             return resp;
         }
+        // A terminal row is the decided outcome: answer from it. A cancel drops
+        // the router's job, so without this every poll after a cancel answered
+        // 404 "video job not found" for a generation that exists and is
+        // `cancelled`. Release the router entry too, as the 3D path does.
+        if gen.media_type == "video" && gen.status.is_terminal() {
+            state.router.forget_video_job(&id).await;
+            let resp = VideoGenerationResponse {
+                id: gen.id.clone(),
+                status: gen.status,
+                model: gen.model.clone(),
+                provider: gen.provider.clone(),
+                video_url: gen.result_url.clone(),
+                progress: gen.progress.clamp(0, 100) as u8,
+                error: gen.error_message.clone(),
+                usage: Some(usage_from_row_cost(gen.cost_usd)),
+                created: gen.created_at.timestamp(),
+            };
+            return (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response();
+        }
     }
     match state.router.get_video_status(&id).await {
         Ok(resp) => (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response(),
@@ -709,8 +728,6 @@ pub async fn generate_3d(
         Ok(response) => {
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
-            settle_quota(&state, charge_key, reserved, cost).await;
-            limits.settle(&state, cost).await;
 
             let artifact = RequestArtifact {
                 request_id: response.id.clone(),
@@ -733,55 +750,73 @@ pub async fn generate_3d(
             let id = response.id.clone();
             let model = response.model.clone();
             let provider = response.provider.clone();
-            let provider_job_id = state.router.get_model3d_provider_job_id(&id).await;
-            let stage_context = state.router.get_model3d_stage_context(&id).await;
             let key_id = key_ctx.as_ref().and_then(|c| c.key_id);
             let org_id = key_ctx.as_ref().and_then(|c| c.org_id.clone());
             let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
             let requested_formats = extras.output_formats.clone();
 
-            // The row is written BEFORE the response, not spawned after it. The
-            // caller learns the id only from this response, so nothing can poll
-            // the job until these writes have landed. Spawned, a client polling
-            // fast enough terminalised a job whose row did not exist yet: the
-            // guarded terminal write found nothing to update, the GET path could
-            // not dispatch the webhook (it reads the key off the row), and the
-            // generation sat `pending` until the poller healed it. Three small
-            // writes cost nothing beside the vendor round-trip that preceded
-            // them. The log goes first so the generation can never be terminal
-            // while its log row is still to come — that order is what keeps a
-            // terminal `update_request_log_status` from being overwritten by a
-            // late `pending` insert.
-            if let Err(e) = db.log_request(&id, &model, &provider, "pending", "model3d", cost, latency, None, None, org_id.as_deref(), app_id.as_deref()).await {
-                tracing::warn!(generation_id = %id, error = %e, "failed to log the 3d request");
-            }
-            crate::management::enforce::attribute(&db, &id, &attributed).await;
-            if let Err(e) = db.insert_generation(
-                &id, key_id.as_ref(), &model, &provider, "model3d",
-                provider_job_id.as_deref(), cost, org_id.as_deref(), app_id.as_deref(),
-            ).await {
-                tracing::warn!(generation_id = %id, error = %e, "failed to record the 3d generation");
-            }
-            // The containers promised to this caller, recorded on the row so
-            // the poller and the row-answered path can enforce them — neither
-            // can reach the router's in-memory job map, and the row outlives
-            // it anyway. `insert_generation` takes no metadata, so this is a
-            // second statement; a lost write degrades to the GLB floor in
-            // `row_requested_formats`, never to "no guard at all". Guarded all
-            // the same: the background poller can reach the row between the
-            // insert and this write, and an unguarded write landing after a
-            // terminal one would replace its assets.
-            let mut meta = serde_json::json!({ "requested_formats": requested_formats });
-            // The adapter's own continuation state — fal's status_url and
-            // response_url, Meshy's preview task id. The poller rebuilds the
-            // handle from this row and cannot reach the router's in-memory
-            // job map, so an adapter that needs more than a job id to poll
-            // with only works if this is written here.
-            if let Some(ctx) = stage_context {
-                meta["stage_context"] = ctx;
-            }
-            if let Err(e) = db.update_generation_metadata_if_active(&id, &meta).await {
-                tracing::warn!(generation_id = %id, error = %e, "failed to record requested 3d formats");
+            // Everything below runs in a task the handler awaits, not on the
+            // request future itself: the vendor has accepted (and will bill)
+            // the job, so a client that disconnects now must not cancel the
+            // settlement or the rows that let the poller drive it. Awaited, so
+            // the writes still land before the response, as below explains.
+            let writes = {
+                let state = state.clone();
+                let db = db.clone();
+                let id = id.clone();
+                tokio::spawn(async move {
+                    settle_quota(&state, charge_key, reserved, cost).await;
+                    limits.settle(&state, cost).await;
+                    let provider_job_id = state.router.get_model3d_provider_job_id(&id).await;
+                    let stage_context = state.router.get_model3d_stage_context(&id).await;
+
+                    // The row is written BEFORE the response, not spawned after it. The
+                    // caller learns the id only from this response, so nothing can poll
+                    // the job until these writes have landed. Spawned, a client polling
+                    // fast enough terminalised a job whose row did not exist yet: the
+                    // guarded terminal write found nothing to update, the GET path could
+                    // not dispatch the webhook (it reads the key off the row), and the
+                    // generation sat `pending` until the poller healed it. Three small
+                    // writes cost nothing beside the vendor round-trip that preceded
+                    // them. The log goes first so the generation can never be terminal
+                    // while its log row is still to come — that order is what keeps a
+                    // terminal `update_request_log_status` from being overwritten by a
+                    // late `pending` insert.
+                    if let Err(e) = db.log_request(&id, &model, &provider, "pending", "model3d", cost, latency, None, None, org_id.as_deref(), app_id.as_deref()).await {
+                        tracing::warn!(generation_id = %id, error = %e, "failed to log the 3d request");
+                    }
+                    crate::management::enforce::attribute(&db, &id, &attributed).await;
+                    if let Err(e) = db.insert_generation(
+                        &id, key_id.as_ref(), &model, &provider, "model3d",
+                        provider_job_id.as_deref(), cost, org_id.as_deref(), app_id.as_deref(),
+                    ).await {
+                        tracing::warn!(generation_id = %id, error = %e, "failed to record the 3d generation");
+                    }
+                    // The containers promised to this caller, recorded on the row so
+                    // the poller and the row-answered path can enforce them — neither
+                    // can reach the router's in-memory job map, and the row outlives
+                    // it anyway. `insert_generation` takes no metadata, so this is a
+                    // second statement; a lost write degrades to the GLB floor in
+                    // `row_requested_formats`, never to "no guard at all". Guarded all
+                    // the same: the background poller can reach the row between the
+                    // insert and this write, and an unguarded write landing after a
+                    // terminal one would replace its assets.
+                    let mut meta = serde_json::json!({ "requested_formats": requested_formats });
+                    // The adapter's own continuation state — fal's status_url and
+                    // response_url, Meshy's preview task id. The poller rebuilds the
+                    // handle from this row and cannot reach the router's in-memory
+                    // job map, so an adapter that needs more than a job id to poll
+                    // with only works if this is written here.
+                    if let Some(ctx) = stage_context {
+                        meta["stage_context"] = ctx;
+                    }
+                    if let Err(e) = db.update_generation_metadata_if_active(&id, &meta).await {
+                        tracing::warn!(generation_id = %id, error = %e, "failed to record requested 3d formats");
+                    }
+                })
+            };
+            if let Err(e) = writes.await {
+                tracing::error!(generation_id = %id, error = %e, "3d submit bookkeeping task failed");
             }
             // The artifact is diagnostic only — no observer of completion reads
             // it — so it alone stays off the response path.
@@ -845,7 +880,9 @@ pub async fn get_3d_status(
         }
     };
     if let Some(gen) = row.as_ref() {
-        if gen.org_id.as_deref() != Some(ctx_org) {
+        // A video id is not a 3D generation: answered from its row it would
+        // read as a 3D job that "completed without a mesh", i.e. `failed`.
+        if gen.org_id.as_deref() != Some(ctx_org) || gen.media_type != "model3d" {
             return (StatusCode::NOT_FOUND, Json(error_response("Not found", 404))).into_response();
         }
         if let Err(resp) = authorize_generation_for_session(
@@ -865,6 +902,9 @@ pub async fn get_3d_status(
         // other half, covering a row terminalised by the poller, by a restart,
         // or by a cancel that raced an in-flight poll.)
         if gen.status.is_terminal() {
+            // Whoever terminalised the row (usually the poller) never touched
+            // the router's in-memory job, so release it here.
+            state.router.forget_model3d_job(&id).await;
             return (StatusCode::OK, Json(serde_json::to_value(model3d_response_from_row(gen)).unwrap())).into_response();
         }
     }
@@ -899,6 +939,8 @@ pub async fn get_3d_status(
                     );
                     if persist_model3d_result(&state, &resp, &requested).await {
                         dispatch_3d_webhook(&state, row.as_ref(), &resp).await;
+                    } else {
+                        resp = decided_or(&state, &id, resp).await;
                     }
                 } else {
                     // Contract: a completed 3D generation ALWAYS carries a mesh
@@ -916,12 +958,16 @@ pub async fn get_3d_status(
                     resp.assets.clear();
                     if fail_model3d_row(&state, &id, resp.progress as i32, err).await {
                         dispatch_3d_webhook(&state, row.as_ref(), &resp).await;
+                    } else {
+                        resp = decided_or(&state, &id, resp).await;
                     }
                 }
             } else if resp.status == GenerationStatus::Failed {
                 let err = resp.error.clone().unwrap_or_else(|| "3d generation failed".to_string());
                 if fail_model3d_row(&state, &id, resp.progress as i32, &err).await {
                     dispatch_3d_webhook(&state, row.as_ref(), &resp).await;
+                } else {
+                    resp = decided_or(&state, &id, resp).await;
                 }
             }
             (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response()
@@ -941,6 +987,18 @@ pub async fn get_3d_status(
 
 /// Terminalise a 3D row as `failed`, guarded. Returns whether THIS call wrote
 /// it (so the caller knows whether to dispatch the webhook).
+/// The answer after this observer's guarded terminal write did NOT take: if
+/// another observer (a cancel, the poller, a reap) already decided the row,
+/// that decision is the answer, because clients stop on the first terminal
+/// status they see and every later read returns the row. On anything else (a
+/// DB error, no row yet) the router's own verdict stands.
+async fn decided_or(state: &AppState, id: &str, resp: Model3dGenerationResponse) -> Model3dGenerationResponse {
+    match state.db.get_generation(id).await {
+        Ok(Some(gen)) if gen.status.is_terminal() => model3d_response_from_row(&gen),
+        _ => resp,
+    }
+}
+
 async fn fail_model3d_row(state: &AppState, id: &str, progress: i32, error: &str) -> bool {
     match state.db.update_generation_if_active(
         id, "failed", progress, None, Some(error), Some(chrono::Utc::now()), None,
