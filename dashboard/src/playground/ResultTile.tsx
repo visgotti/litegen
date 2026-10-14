@@ -1,14 +1,16 @@
 import type { ResultTileState } from './types';
 
-interface Props { tile: ResultTileState; onRerun: (modelId: string) => void; }
+interface Props { tile: ResultTileState; onRerun: (modelId: string) => void; rerunDisabled?: boolean; }
 
-export default function ResultTile({ tile, onRerun }: Props) {
+export default function ResultTile({ tile, onRerun, rerunDisabled }: Props) {
   const src = tile.b64_json ? `data:image/png;base64,${tile.b64_json}` : tile.url ?? undefined;
   return (
     <div className="pg-tile" data-testid={`pg-tile-${tile.modelId}`}>
       <div className="pg-tile-head">
         <code className="pg-tile-model">{tile.modelId}</code>
-        <button className="btn btn-secondary pg-tile-rerun" title="Rerun this model"
+        <button className="btn btn-secondary pg-tile-rerun"
+          title={rerunDisabled ? 'Wait for the run to finish, or cancel it' : 'Rerun this model'}
+          disabled={rerunDisabled}
           data-testid={`pg-tile-rerun-${tile.modelId}`} onClick={() => onRerun(tile.modelId)}>↻</button>
       </div>
       <div className="pg-tile-image">

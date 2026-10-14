@@ -2,12 +2,12 @@ import ModelViewer from '../components/ModelViewer';
 import { meshOf, previewOf, validAssets } from '../components/model3d-assets';
 import type { ResultTileState } from './types';
 
-interface Props { tile: ResultTileState; onRerun: (modelId: string) => void; }
+interface Props { tile: ResultTileState; onRerun: (modelId: string) => void; rerunDisabled?: boolean; }
 
 /** Compare-mode grid tile. Deliberately the compact `ModelViewer`, not the
  *  `ModelPreview` inspector: several live canvases each with a full toolbar
  *  would crowd the grid, and the single-mode panel is where inspection lives. */
-export default function ResultTile3D({ tile, onRerun }: Props) {
+export default function ResultTile3D({ tile, onRerun, rerunDisabled }: Props) {
   // tile.assets comes straight from the poll response (useFanOut) and is not
   // validated there; a malformed entry must not throw in render.
   const assets = validAssets(tile.assets);
@@ -23,7 +23,9 @@ export default function ResultTile3D({ tile, onRerun }: Props) {
     <div className="pg-tile" data-testid={`pg-tile-${tile.modelId}`}>
       <div className="pg-tile-head">
         <code className="pg-tile-model">{tile.modelId}</code>
-        <button className="btn btn-secondary pg-tile-rerun" title="Rerun this model"
+        <button className="btn btn-secondary pg-tile-rerun"
+          title={rerunDisabled ? 'Wait for the run to finish, or cancel it' : 'Rerun this model'}
+          disabled={rerunDisabled}
           data-testid={`pg-tile-rerun-${tile.modelId}`} onClick={() => onRerun(tile.modelId)}>↻</button>
       </div>
       <div className="pg-tile-image">
