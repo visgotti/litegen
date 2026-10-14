@@ -275,7 +275,17 @@ pub(crate) async fn poll_once(
                             // Storage failure is retryable — leave the row
                             // non-terminal so the next tick tries again rather
                             // than reporting a completed generation with no mesh.
-                            warn!(generation_id = %gen.id, error = %e, "poller: 3d asset upload failed, will retry");
+                            // But not forever: this `continue` skips the
+                            // over-age reap at the end of the loop, so a store
+                            // that never recovers (revoked BYO bucket key) would
+                            // keep the row re-downloading and re-converting every
+                            // tick and holding a slot in the oldest-first window.
+                            if over_age {
+                                warn!(generation_id = %gen.id, error = %e, "poller: 3d asset upload still failing past max age, reaping");
+                                reap_generation(db, &gen.id, &format!("could not store the 3d assets: {e}")).await;
+                            } else {
+                                warn!(generation_id = %gen.id, error = %e, "poller: 3d asset upload failed, will retry");
+                            }
                             continue;
                         }
                     }
@@ -596,6 +606,10 @@ pub fn spawn_poller(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        // A tick that completes 3D jobs (downloads, conversion, uploads) can
+        // run far past 5 s; the default `Burst` would then fire every missed
+        // tick back to back, re-polling each active row's vendor in a burst.
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
@@ -1255,5 +1269,62 @@ mod poller_tests {
         let log = request_log(&db, "litegen-vid-log-dead").await;
         assert_eq!(log.status, GenerationStatus::Failed);
         assert!(log.error.as_deref().is_some_and(|e| e.contains("401")), "{:?}", log.error);
+    }
+
+    // ─── A store that never accepts the assets ────────────────────────────
+
+    /// Every upload fails, the way a BYO bucket with a revoked key does.
+    struct RejectingStore;
+
+    #[async_trait::async_trait]
+    impl ImageStorage for RejectingStore {
+        async fn put(&self, _k: &str, _b: &bytes::Bytes, _ct: &str) -> Result<String, crate::proxy::storage::ImageStoreError> {
+            Err(crate::proxy::storage::ImageStoreError::UploadFailed("S3 returned HTTP 403".into()))
+        }
+        async fn delete(&self, _k: &str) -> Result<(), crate::proxy::storage::ImageStoreError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_3d_row_whose_assets_never_store_is_reaped_past_max_age() {
+        let concrete = in_memory_db().await;
+        let db: Arc<dyn DatabaseStore> = concrete.clone();
+        let registry = registry_with_3d_mesh_missing().await; // reports Completed with a file
+        db.insert_generation(
+            "litegen-3d-no-store", None, "mock/mesh-3d", "mock", "model3d",
+            Some("job-no-store"), 0.0, None, None,
+        ).await.unwrap();
+        sqlx::query("UPDATE generations SET created_at = datetime('now','-6 hours') WHERE id = ?")
+            .bind("litegen-3d-no-store")
+            .execute(concrete.pool())
+            .await
+            .unwrap();
+
+        let store: Arc<dyn ImageStorage> = Arc::new(RejectingStore);
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &store).await;
+
+        let row = db.get_generation("litegen-3d-no-store").await.unwrap().unwrap();
+        assert_eq!(row.status, GenerationStatus::Failed, "a permanent storage failure must not keep the row active forever");
+        assert!(
+            row.error_message.as_deref().is_some_and(|e| e.contains("could not store the 3d assets")),
+            "{:?}", row.error_message
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_3d_row_whose_assets_fail_to_store_is_retried() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = registry_with_3d_mesh_missing().await;
+        db.insert_generation(
+            "litegen-3d-store-retry", None, "mock/mesh-3d", "mock", "model3d",
+            Some("job-store-retry"), 0.0, None, None,
+        ).await.unwrap();
+
+        let store: Arc<dyn ImageStorage> = Arc::new(RejectingStore);
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &store).await;
+
+        let row = db.get_generation("litegen-3d-store-retry").await.unwrap().unwrap();
+        assert!(!row.status.is_terminal(), "within max age a storage failure is retried, got {:?}", row.status);
     }
 }
