@@ -52,18 +52,39 @@ describe('buildGenerationBody', () => {
     expect(body).not.toHaveProperty('n');
   });
 
-  it('keeps the params 3D does accept', () => {
+  it('keeps negative_prompt and seed for a model that declares them', () => {
     const body = buildGenerationBody(
-      { ...form, negativePrompt: 'blurry', seed: '7' },
-      'model3d',
+      { ...form, model: 'mock/all-params-image', negativePrompt: 'blurry', seed: '7' },
+      'image',
+      'required',
+      { negative_prompt: {}, seed: {} },
     );
     expect(body).toMatchObject({
-      model: 'mock/mesh-3d',
+      model: 'mock/all-params-image',
       prompt: 'a stone gargoyle',
       negative_prompt: 'blurry',
       seed: 7,
       strict: true,
     });
+  });
+
+  // mock/mesh-3d declares neither, and no 3D model takes a negative prompt: in
+  // strict mode a value left over from an image model would be a 400.
+  it('drops negative_prompt and seed for a model that does not declare them', () => {
+    const body = buildGenerationBody(
+      { ...form, negativePrompt: 'blurry', seed: '7' },
+      'model3d',
+      'required',
+      { target_polycount: {} },
+    );
+    expect(body).not.toHaveProperty('negative_prompt');
+    expect(body).not.toHaveProperty('seed');
+    expect(body).toMatchObject({ model: 'mock/mesh-3d', prompt: 'a stone gargoyle', strict: true });
+  });
+
+  it('sends them as entered while the schema is still loading', () => {
+    const body = buildGenerationBody({ ...form, negativePrompt: 'blurry', seed: '7' }, 'model3d');
+    expect(body).toMatchObject({ negative_prompt: 'blurry', seed: 7 });
   });
 
   it('leaves optional params out when they are blank', () => {

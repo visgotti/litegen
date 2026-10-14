@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { Trash2, RotateCcw } from 'lucide-react';
 import { client } from '../sdk-client';
 import {
@@ -27,7 +27,7 @@ import {
   sizeEnumOptions,
   sortModels,
 } from './params';
-import { withoutInlineRefs } from './ref-images';
+import { inlineRefCount, withoutInlineRefs } from './ref-images';
 import type { Availability } from './types';
 import { MODEL3D_POLL_TIMEOUT_MS } from './useFanOut';
 
@@ -62,6 +62,7 @@ async function generateModel3dJob(
   body: Record<string, unknown>,
   onProgress: (p: number) => void,
   onDropped: (params: string[]) => void,
+  signal: AbortSignal,
 ): Promise<Model3dGenerationResponse> {
   // An explicit budget, not the SDK's 5-minute default: a queued vendor job
   // can outlive that while the server job completes and is billed.
@@ -71,7 +72,9 @@ async function generateModel3dJob(
   onDropped(await job.droppedParams);
   onProgress(submitted.progress ?? 0);
   let final = submitted;
-  for await (const update of client.models3d.poll(submitted.id, pollOpts)) {
+  // The signal stops the polling only; the job itself finishes server-side
+  // and stays reachable from Generations.
+  for await (const update of client.models3d.poll(submitted.id, { ...pollOpts, signal })) {
     final = update;
     onProgress(update.progress ?? 0);
   }
@@ -105,12 +108,19 @@ export interface FormState {
  * the user their 4 meshes at 1024x1024 were accepted when one default mesh is
  * what comes back. The form disables both controls for a 3D model for the
  * same reason.
+ *
+ * `negative_prompt` and `seed` go only to a model whose schema (`declared`,
+ * its params) lists them: in strict mode either one is otherwise a 400, and a
+ * value left over from the previously selected model is the usual way to send
+ * one. No 3D model takes a negative prompt. Until the schema has loaded
+ * (`declared` undefined) they are sent as entered.
  */
 // eslint-disable-next-line react-refresh/only-export-components -- pure helper, exported for its unit test
 export function buildGenerationBody(
   form: FormState,
   mediaType: 'image' | 'model3d',
   prompt: 'required' | 'optional' | 'unused' = 'required',
+  declared?: Record<string, unknown>,
 ): Record<string, unknown> {
   const isModel3d = mediaType === 'model3d';
   const body: Record<string, unknown> = { model: form.model };
@@ -120,8 +130,9 @@ export function buildGenerationBody(
   if (prompt !== 'unused' && form.prompt.trim() !== '') body.prompt = form.prompt;
   if (!isModel3d) body.n = form.n;
   body.strict = form.strict;
-  if (form.negativePrompt) body.negative_prompt = form.negativePrompt;
-  if (form.seed) body.seed = parseInt(form.seed, 10);
+  const takes = (name: string) => declared === undefined || name in declared;
+  if (form.negativePrompt && takes('negative_prompt')) body.negative_prompt = form.negativePrompt;
+  if (form.seed && takes('seed')) body.seed = parseInt(form.seed, 10);
   if (!isModel3d && form.size) body.size = form.size;
   return body;
 }
@@ -182,6 +193,9 @@ export default function SingleMode() {
   const isModel3dSelected = selected?.media_type === 'model3d';
   const mediaType: 'image' | 'model3d' = isModel3dSelected ? 'model3d' : 'image';
 
+  const declaredParams = schema ? ((schema.params ?? {}) as Record<string, ParamSpec>) : undefined;
+  const takesNegativePrompt = declaredParams === undefined || 'negative_prompt' in declaredParams;
+  const takesSeed = declaredParams === undefined || 'seed' in declaredParams;
   const sizeSpec = (schema?.params as Record<string, ParamSpec> | undefined)?.size;
   const sizeOptions = sizeSpec ? sizeEnumOptions(sizeSpec) : [];
   const size = effectiveSize(form.size, sizeOptions);
@@ -219,6 +233,11 @@ export default function SingleMode() {
     setHistory(getPlaygroundHistory());
   }, []);
 
+  // The run in flight. Leaving Single mode aborts its polling, which would
+  // otherwise go on for up to MODEL3D_POLL_TIMEOUT_MS after the panel is gone.
+  const runCtrl = useRef<AbortController | null>(null);
+  useEffect(() => () => runCtrl.current?.abort(), []);
+
   /** A model switch starts its params afresh: values chosen for one model's
    *  schema mean nothing (or something else) on another's. Reference images
    *  stay — trying one input image on several models is the common case — and
@@ -233,13 +252,15 @@ export default function SingleMode() {
 
   /** The full request: the dedicated fields plus the schema-driven ones. */
   const buildBody = (): Record<string, unknown> => ({
-    ...buildGenerationBody({ ...form, size }, mediaType, usage),
+    ...buildGenerationBody({ ...form, size }, mediaType, usage, declaredParams),
     ...schemaInputs(schema, unified.form),
   });
 
   /** Runs one request for `model` and records it; shared by Generate and Re-submit. */
   const runRequest = async (model: string, prompt: string, body: Record<string, unknown>) => {
     const isModel3d = models.find(m => m.id === model)?.media_type === 'model3d';
+    const ctrl = new AbortController();
+    runCtrl.current = ctrl;
     setLoading(true);
     setError('');
     setProgress(null);
@@ -251,7 +272,7 @@ export default function SingleMode() {
     try {
       let responseBody: Record<string, unknown>;
       if (isModel3d) {
-        const final = await generateModel3dJob(body, setProgress, setDroppedParams);
+        const final = await generateModel3dJob(body, setProgress, setDroppedParams, ctrl.signal);
         setMeshAssets(final.assets ?? []);
         responseBody = final as unknown as Record<string, unknown>;
       } else {
@@ -271,9 +292,11 @@ export default function SingleMode() {
         // Uploaded images are megabytes of base64; localStorage holds ~5 MB.
         requestBody: withoutInlineRefs(body),
         responseBody,
+        ...(inlineRefCount(body) > 0 ? { strippedRefs: inlineRefCount(body) } : {}),
       });
       refreshHistory();
     } catch (e: unknown) {
+      if (ctrl.signal.aborted) return; // left Single mode; nothing to show
       setError((e as Error).message);
     } finally {
       setLoading(false);
@@ -323,6 +346,17 @@ export default function SingleMode() {
 
   const handleResubmit = async (entry: PlaygroundHistoryEntry) => {
     handleHistoryClick(entry);
+    if (entry.strippedRefs) {
+      // History keeps no uploaded images (see withoutInlineRefs). Sending the
+      // stored body would run without them, and where the image is optional
+      // that is a different, billed job: load the entry and ask instead.
+      const n = entry.strippedRefs;
+      setError(
+        `This run used ${n === 1 ? 'an uploaded image' : `${n} uploaded images`}, which history does not keep. `
+        + `Add ${n === 1 ? 'it' : 'them'} again, then Generate.`,
+      );
+      return;
+    }
     // Small delay to let state settle before firing
     await new Promise(r => setTimeout(r, 0));
     const isModel3d = models.find(m => m.id === entry.model)?.media_type === 'model3d';
@@ -419,6 +453,8 @@ export default function SingleMode() {
             <textarea
               data-testid="playground-negative-prompt"
               rows={2}
+              disabled={!takesNegativePrompt}
+              title={takesNegativePrompt ? undefined : 'This model takes no negative prompt; it is not sent'}
               value={form.negativePrompt}
               onChange={e => setForm(prev => ({ ...prev, negativePrompt: e.target.value }))}
               placeholder="What to exclude..."
@@ -433,6 +469,8 @@ export default function SingleMode() {
                 type="number"
                 className="input"
                 style={{ width: '100%', boxSizing: 'border-box' }}
+                disabled={!takesSeed}
+                title={takesSeed ? undefined : 'This model takes no seed; it is not sent'}
                 value={form.seed}
                 onChange={e => setForm(prev => ({ ...prev, seed: e.target.value }))}
                 placeholder="Random"
@@ -655,7 +693,11 @@ export default function SingleMode() {
               key={entry.id}
               data-testid={`playground-history-row-${i}`}
               className="playground-history-row"
-              onClick={() => handleHistoryClick(entry)}
+              // A run in flight (a 3D poll lasts minutes) owns the panel and the
+              // form; loading or starting another would interleave the two.
+              aria-disabled={loading}
+              style={loading ? { opacity: 0.6, cursor: 'not-allowed' } : undefined}
+              onClick={() => { if (!loading) handleHistoryClick(entry); }}
             >
               <div className="history-prompt">{entry.prompt}</div>
               <div className="history-meta">
@@ -667,6 +709,7 @@ export default function SingleMode() {
                 data-testid={`playground-history-resubmit-${i}`}
                 className="btn btn-secondary"
                 style={{ fontSize: 12, padding: '4px 10px', whiteSpace: 'nowrap' }}
+                disabled={loading}
                 onClick={e => { e.stopPropagation(); handleResubmit(entry); }}
                 title="Re-submit"
               >
