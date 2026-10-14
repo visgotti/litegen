@@ -157,9 +157,10 @@ fn conversion_keeps_every_attribute_the_target_can_carry() {
         let back = read(&out, to).unwrap();
         let ctx = format!("glb -> {to}");
 
-        // Normals survive every container except STL, where they cannot: STL
-        // stores one normal per FACET, and a welded vertex belongs to several.
-        if to != MeshFormat::Stl {
+        // Normals survive every container that stores them. STL stores one
+        // normal per FACET, and a welded vertex belongs to several; 3MF stores
+        // none at all.
+        if to.capabilities(WriteOptions::default()).normals {
             assert!(back.normals.is_some(), "{ctx}: normals were dropped");
         }
         assert_eq!(to.keeps_uvs(), back.uvs.is_some(), "{ctx}: uvs disagree with keeps_uvs()");
@@ -282,9 +283,9 @@ fn format_parsing_round_trips_and_rejects_what_we_cannot_convert() {
         assert_eq!(MeshFormat::parse(&f.as_str().to_uppercase()), Some(f));
         assert_eq!(MeshFormat::parse(&format!("  {f}  ")), Some(f));
     }
-    // The two we deliberately do not model, plus noise. A caller must read
+    // Containers this module does not model, plus noise. A caller must read
     // `None` as "not convertible", never as a reason to fall back to glb.
-    for s in ["fbx", "usdz", "gltf", "3mf", "", "  ", "png"] {
+    for s in ["usd", "usdc", "blend", "abc", "max", "", "  ", "png"] {
         assert_eq!(MeshFormat::parse(s), None, "{s:?} must not parse");
     }
 }

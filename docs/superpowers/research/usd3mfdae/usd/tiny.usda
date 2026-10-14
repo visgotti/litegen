@@ -1,0 +1,14 @@
+#usda 1.0
+(
+    defaultPrim = "A"
+)
+def Xform "A"
+{
+    def Mesh "B"
+    {
+        int[] faceVertexCounts = [3]
+    }
+    def Scope "C"
+    {
+    }
+}

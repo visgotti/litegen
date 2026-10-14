@@ -107,6 +107,13 @@ futures = "0.3"
 # Hex encoding
 hex = "0.4"
 
+# 3D mesh conversion (src/mesh). Both are already compiled into the binary
+# through other dependencies (miniz_oxide via flate2/png, quick-xml via
+# rust-s3), so naming them here adds no code: DEFLATE for ZIP entries (USDZ,
+# 3MF) and FBX arrays, XML for 3MF and Collada.
+miniz_oxide = "0.8"
+quick-xml = "0.32"
+
 # CSV serialization
 csv = "1.3"
 

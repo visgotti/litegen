@@ -32,11 +32,23 @@
 //!   unfamiliar file means. Guessing wrong writes garbage into a channel a
 //!   renderer will happily sample, so we carry none of them in either
 //!   direction.
-//! - **Per-vertex colour variation.** PLY stores colour per vertex; the IR has
-//!   a single `base_color`. See [`read`] for the compromise and why averaging
-//!   would be worse.
+//!
+//! # Colour
+//!
+//! Per-vertex colour is carried in both directions, as `uchar` RGBA. PLY has no
+//! colour-space field, and every consumer that matters — three.js (the engine
+//! behind the dashboard's viewer), MeshLab, Blender — reads those bytes as
+//! **sRGB**, so that is how they are written and read: linear colour from the
+//! scene is encoded to sRGB on the way out and decoded on the way in, and alpha,
+//! which has no transfer curve, is stored as is. Writing linear values straight
+//! into the bytes — what this codec once did — renders every colour visibly too
+//! dark. A material's base colour has nowhere else to go in PLY, so it is baked
+//! into the vertex colours of the primitives that use it (see
+//! `pose::degrade`).
 
 use super::ir::Mesh;
+use super::math::{linear_to_srgb, srgb_to_linear};
+use super::scene::{Node, Primitive, Scene, SceneMesh};
 use super::MeshError;
 
 /// A real PLY header is a few hundred bytes. This cap is what stops a file that
@@ -295,19 +307,24 @@ fn parse_header(bytes: &[u8]) -> Result<Header, MeshError> {
         pos = next;
         lineno += 1;
 
+        // The magic is checked on the raw bytes, BEFORE decoding as text: a
+        // GLB or a binary STL handed over as PLY has a first line that is not
+        // UTF-8 at all, and that is the caller's wrong format tag
+        // (`NotThisFormat`), not a broken PLY header (`Malformed`).
+        if lineno == 1 {
+            let first = raw.strip_suffix(b"\r").unwrap_or(raw);
+            if first.trim_ascii() != b"ply" {
+                let shown = String::from_utf8_lossy(&first[..first.len().min(MAX_QUOTED)]).into_owned();
+                return Err(not_ply(format!("first line is {}, expected \"ply\"", quoted(&shown))));
+            }
+            continue;
+        }
+
         let line = std::str::from_utf8(raw)
             .map_err(|_| bad(format!("header line {lineno} is not text")))?
             .trim_end_matches('\r')
             .trim();
 
-        if lineno == 1 {
-            // The magic is the whole first line, not a prefix: `plyfile` is not
-            // a PLY file and must not be mistaken for a truncated one.
-            if line != "ply" {
-                return Err(not_ply(format!("first line is {}, expected \"ply\"", quoted(line))));
-            }
-            continue;
-        }
         if line.is_empty() {
             continue;
         }
@@ -936,11 +953,36 @@ fn finite(v: f64, what: &str) -> Result<f32, MeshError> {
     Ok(v as f32)
 }
 
-fn read_body<B: Body>(b: &mut B, h: &Header) -> Result<Mesh, MeshError> {
+/// Everything a PLY file carries that the scene models.
+struct PlyData {
+    positions: Vec<[f32; 3]>,
+    normals: Option<Vec<[f32; 3]>>,
+    /// Linear RGBA, decoded from the file's sRGB.
+    colors: Option<Vec<[f32; 4]>>,
+    indices: Vec<u32>,
+    name: Option<String>,
+}
+
+/// One stored colour component, as a 0..1 value in the scene's linear space.
+///
+/// `scale` is the component type's full-scale value (255 for `uchar`, 1 for
+/// float). RGB is sRGB-encoded in the file and decoded here; alpha has no
+/// transfer curve. Out-of-range and non-finite values clamp rather than wrap.
+fn decode_color(raw: f64, scale: f64, alpha: bool) -> f32 {
+    let v = raw / scale;
+    let v = if v.is_finite() { v.clamp(0.0, 1.0) as f32 } else { 0.0 };
+    if alpha {
+        v
+    } else {
+        srgb_to_linear(v)
+    }
+}
+
+fn read_body<B: Body>(b: &mut B, h: &Header) -> Result<PlyData, MeshError> {
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut normals: Vec<[f32; 3]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
-    let mut base_color: Option<[f32; 4]> = None;
+    let mut colors: Vec<[f32; 4]> = Vec::new();
     let mut saw_vertex = false;
 
     for elem in &h.elements {
@@ -962,20 +1004,10 @@ fn read_body<B: Body>(b: &mut B, h: &Header) -> Result<Mesh, MeshError> {
                             f(SLOT_NX + 2, "nz")?,
                         ]);
                     }
-                    // PLY colour is per vertex; the IR has one flat base colour.
-                    // The first vertex wins. Averaging would invent a colour
-                    // that appears nowhere in the source — plausible, wrong, and
-                    // undetectable — whereas the first vertex's colour is at
-                    // least a colour the file actually contains. Per-vertex
-                    // colour variation is genuinely lost here; see the module
-                    // docs on `super` for why the IR stays this small.
-                    if plan.has_color && i == 0 {
-                        let c = |slot: usize, k: usize| -> f32 {
-                            let raw = v[slot] / plan.color_scale[k];
-                            if raw.is_finite() { raw.clamp(0.0, 1.0) as f32 } else { 0.0 }
-                        };
+                    if plan.has_color {
+                        let c = |slot: usize, k: usize| decode_color(v[slot], plan.color_scale[k], k == 3);
                         let a = if plan.has_alpha { c(SLOT_A, 3) } else { 1.0 };
-                        base_color = Some([c(SLOT_R, 0), c(SLOT_R + 1, 1), c(SLOT_R + 2, 2), a]);
+                        colors.push([c(SLOT_R, 0), c(SLOT_R + 1, 1), c(SLOT_R + 2, 2), a]);
                     }
                 }
             }
@@ -1007,19 +1039,54 @@ fn read_body<B: Body>(b: &mut B, h: &Header) -> Result<Mesh, MeshError> {
         )));
     }
 
-    Ok(Mesh {
+    Ok(PlyData {
         positions,
-        indices,
         normals: if normals.is_empty() { None } else { Some(normals) },
-        // uvs are never carried: see the module docs.
-        uvs: None,
-        base_color,
+        colors: if colors.is_empty() { None } else { Some(colors) },
+        indices,
         name: h.name.clone(),
     })
 }
 
-/// Read a PLY file (ASCII or binary little-endian) into the neutral mesh.
+/// Read a PLY file (ASCII or binary little-endian) into the flat mesh.
+///
+/// The flat mesh has one colour for the whole model, so it takes the FIRST
+/// vertex's: averaging would invent a colour that appears nowhere in the
+/// source, whereas the first vertex's is at least one the file contains. The
+/// per-vertex colours survive only through [`read_scene`].
 pub fn read(bytes: &[u8]) -> Result<Mesh, MeshError> {
+    let d = read_data(bytes)?;
+    Ok(Mesh {
+        positions: d.positions,
+        indices: d.indices,
+        normals: d.normals,
+        // uvs are never carried: see the module docs.
+        uvs: None,
+        base_color: d.colors.as_ref().and_then(|c| c.first().copied()),
+        name: d.name,
+    })
+}
+
+/// Read a PLY file as a one-mesh scene with its per-vertex colours.
+pub fn read_scene(bytes: &[u8]) -> Result<Scene, MeshError> {
+    let d = read_data(bytes)?;
+    let mut scene = Scene::default();
+    scene.meshes.push(SceneMesh {
+        name: d.name.clone(),
+        primitives: vec![Primitive {
+            positions: d.positions,
+            normals: d.normals,
+            colors: d.colors,
+            indices: d.indices,
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    scene.add_root(Node { name: d.name, mesh: Some(0), ..Default::default() });
+    Ok(scene)
+}
+
+fn read_data(bytes: &[u8]) -> Result<PlyData, MeshError> {
     let h = parse_header(bytes)?;
     let body = bytes.get(h.body_offset..).unwrap_or(&[]);
     match h.encoding {
@@ -1064,80 +1131,108 @@ fn header_name(raw: &str) -> Option<String> {
     }
 }
 
-fn quantise(c: f32) -> u8 {
+/// One linear colour component as the sRGB byte PLY readers expect (alpha:
+/// linear, no curve). Rounded rather than truncated, so a colour that came in
+/// as byte `n` goes back out as exactly `n` — `ply -> ply` is lossless.
+fn quantise(c: f32, alpha: bool) -> u8 {
     if !c.is_finite() {
         return 0;
     }
-    // Round rather than truncate so a value that came in as `n/255` goes back
-    // out as exactly `n`, which is what makes ply -> ply colour lossless.
-    (c.clamp(0.0, 1.0) * 255.0).round() as u8
+    let c = c.clamp(0.0, 1.0);
+    let encoded = if alpha { c } else { linear_to_srgb(c) };
+    (encoded * 255.0).round() as u8
 }
 
-/// Write the mesh as binary little-endian PLY.
+fn quantise_rgba(c: [f32; 4]) -> [u8; 4] {
+    [quantise(c[0], false), quantise(c[1], false), quantise(c[2], false), quantise(c[3], true)]
+}
+
+/// Write the flat mesh as binary little-endian PLY. Its one base colour is
+/// written on every vertex: PLY has no material block, so per-vertex colour is
+/// the only place a flat colour can live.
 pub fn write(mesh: &Mesh) -> Result<Vec<u8>, MeshError> {
     // write() is public, so it can be called with a mesh that never went through
     // the module-level entry point. Better to fail here than to emit a file
     // whose face list points past its own vertex list.
     mesh.validate()?;
+    let colors = mesh.base_color.map(|c| vec![c; mesh.positions.len()]);
+    write_data(&mesh.positions, mesh.normals.as_deref(), colors.as_deref(), &mesh.indices, mesh.name.as_deref())
+}
 
-    let has_normals = mesh.normals.is_some();
-    let color = mesh.base_color.map(|c| {
-        [quantise(c[0]), quantise(c[1]), quantise(c[2]), quantise(c[3])]
-    });
+/// Write a scene already reduced to PLY's capabilities (`MeshFormat::prepare`):
+/// one merged primitive, optionally with normals and vertex colours.
+pub fn write_scene(scene: &Scene) -> Result<Vec<u8>, MeshError> {
+    let prim = match scene.meshes.iter().flat_map(|m| &m.primitives).collect::<Vec<_>>().as_slice() {
+        [p] => *p,
+        _ => {
+            return Err(MeshError::Malformed(
+                "ply write: the scene must be merged into one primitive first".into(),
+            ))
+        }
+    };
+    let name = scene.meshes.iter().find_map(|m| m.name.clone()).or_else(|| scene.name.clone());
+    write_data(&prim.positions, prim.normals.as_deref(), prim.colors.as_deref(), &prim.indices, name.as_deref())
+}
+
+fn write_data(
+    positions: &[[f32; 3]],
+    normals: Option<&[[f32; 3]]>,
+    colors: Option<&[[f32; 4]]>,
+    indices: &[u32],
+    name: Option<&str>,
+) -> Result<Vec<u8>, MeshError> {
+    if normals.is_some_and(|n| n.len() != positions.len()) || colors.is_some_and(|c| c.len() != positions.len()) {
+        return Err(MeshError::Malformed("ply write: attribute lengths disagree".into()));
+    }
+    if let Some(bad) = indices.iter().find(|i| **i as usize >= positions.len()) {
+        return Err(MeshError::Malformed(format!("ply write: index {bad} out of range")));
+    }
+    let has_normals = normals.is_some();
+    let triangle_count = indices.len() / 3;
 
     let mut header = String::with_capacity(512);
     header.push_str("ply\nformat binary_little_endian 1.0\n");
     header.push_str("comment written by litegen mesh converter\n");
-    if let Some(n) = mesh.name.as_deref().and_then(header_name) {
+    if let Some(n) = name.and_then(header_name) {
         header.push_str("comment name ");
         header.push_str(&n);
         header.push('\n');
     }
-    header.push_str(&format!("element vertex {}\n", mesh.positions.len()));
+    header.push_str(&format!("element vertex {}\n", positions.len()));
     header.push_str("property float x\nproperty float y\nproperty float z\n");
     if has_normals {
         header.push_str("property float nx\nproperty float ny\nproperty float nz\n");
     }
-    if color.is_some() {
+    if colors.is_some() {
         header.push_str(
             "property uchar red\nproperty uchar green\nproperty uchar blue\nproperty uchar alpha\n",
         );
     }
-    header.push_str(&format!("element face {}\n", mesh.triangle_count()));
+    header.push_str(&format!("element face {triangle_count}\n"));
     // uchar/uint is the pairing every reader handles: a count of 3 always fits a
     // uchar, and uint indices cover any mesh that fits under MAX_INPUT_BYTES.
     header.push_str("property list uchar uint vertex_indices\n");
     header.push_str("end_header\n");
 
-    let per_vertex = 12 + if has_normals { 12 } else { 0 } + if color.is_some() { 4 } else { 0 };
-    let mut out = Vec::with_capacity(
-        header.len() + mesh.positions.len() * per_vertex + mesh.triangle_count() * 13,
-    );
+    let per_vertex = 12 + if has_normals { 12 } else { 0 } + if colors.is_some() { 4 } else { 0 };
+    let mut out = Vec::with_capacity(header.len() + positions.len() * per_vertex + triangle_count * 13);
     out.extend_from_slice(header.as_bytes());
 
-    let empty: Vec<[f32; 3]> = Vec::new();
-    let normals = mesh.normals.as_ref().unwrap_or(&empty);
-    for (i, p) in mesh.positions.iter().enumerate() {
+    for (i, p) in positions.iter().enumerate() {
         for v in p {
             out.extend_from_slice(&v.to_le_bytes());
         }
-        if has_normals {
-            // validate() has already established normals.len() == positions.len().
-            let n = normals.get(i).copied().unwrap_or([0.0, 0.0, 0.0]);
-            for v in &n {
+        if let Some(ns) = normals {
+            for v in &ns[i] {
                 out.extend_from_slice(&v.to_le_bytes());
             }
         }
-        if let Some(c) = color {
-            // The one base colour is written on every vertex: PLY has no
-            // material block, so per-vertex colour is the only place a flat
-            // colour can live, and a reader that sees it on one vertex only
-            // would show an unshaded mesh.
-            out.extend_from_slice(&c);
+        if let Some(cs) = colors {
+            out.extend_from_slice(&quantise_rgba(cs[i]));
         }
     }
 
-    for tri in mesh.indices.chunks_exact(3) {
+    for tri in indices.chunks_exact(3) {
         out.push(3u8);
         for i in tri {
             out.extend_from_slice(&i.to_le_bytes());
@@ -1230,9 +1325,10 @@ mod tests {
     #[test]
     fn round_trip_with_base_color() {
         let mut m = tri_mesh();
-        // Values chosen on the u8 grid: those are exactly the ones a lossless
-        // colour round-trip must preserve bit for bit.
-        m.base_color = Some([1.0, 128.0 / 255.0, 0.0, 64.0 / 255.0]);
+        // Values chosen on the sRGB u8 grid (alpha on the linear one): those
+        // are exactly the ones a lossless colour round-trip must preserve bit
+        // for bit.
+        m.base_color = Some([1.0, srgb_to_linear(128.0 / 255.0), 0.0, 64.0 / 255.0]);
         let back = read(&write(&m).unwrap()).unwrap();
         assert_eq!(back.base_color, m.base_color);
     }
@@ -1254,7 +1350,7 @@ mod tests {
                 [-1.0, 0.0, 0.0],
             ]),
             uvs: None,
-            base_color: Some([0.0, 1.0, 51.0 / 255.0, 1.0]),
+            base_color: Some([0.0, 1.0, srgb_to_linear(51.0 / 255.0), 1.0]),
             name: Some("widget".into()),
         };
         let back = read(&write(&m).unwrap()).unwrap();
@@ -1355,7 +1451,8 @@ mod tests {
                    0.9 2 3 7 1 255 128 0\n0.8 5 6 7 4 0 0 0\n0.7 8 9 7 7 0 0 0\n3 0 1 2\n";
         let m = read(src.as_bytes()).unwrap();
         assert_eq!(m.positions, vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]);
-        assert_eq!(m.base_color, Some([1.0, 128.0 / 255.0, 0.0, 1.0]));
+        // The bytes are sRGB; the scene's colour is linear.
+        assert_eq!(m.base_color, Some([1.0, srgb_to_linear(128.0 / 255.0), 0.0, 1.0]));
         assert_eq!(m.normals, None);
     }
 
@@ -1372,10 +1469,16 @@ mod tests {
             m.normals,
             Some(vec![[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]])
         );
-        // First vertex wins; the other two are genuinely lost.
+        // First vertex wins in the flat view; the scene keeps all three.
+        // RGB is sRGB-decoded, alpha is not.
         assert_eq!(
             m.base_color,
-            Some([10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 40.0 / 255.0])
+            Some([
+                srgb_to_linear(10.0 / 255.0),
+                srgb_to_linear(20.0 / 255.0),
+                srgb_to_linear(30.0 / 255.0),
+                40.0 / 255.0
+            ])
         );
     }
 
@@ -1386,7 +1489,9 @@ mod tests {
                    element face 1\nproperty list uchar int vertex_indices\nend_header\n\
                    0 0 0 1 0.5 0\n1 0 0 0 0 0\n0 1 0 0 0 0\n3 0 1 2\n";
         let m = read(src.as_bytes()).unwrap();
-        assert_eq!(m.base_color, Some([1.0, 0.5, 0.0, 1.0]));
+        // Float colour is 0..1 already — not divided by 255 — and sRGB-encoded
+        // like every other PLY colour.
+        assert_eq!(m.base_color, Some([1.0, srgb_to_linear(0.5), 0.0, 1.0]));
     }
 
     #[test]
@@ -1535,7 +1640,7 @@ mod tests {
             .u8(3).u32(0).u32(1).u32(0);
         let m = read(&with_header(head, body)).unwrap();
         assert_eq!(m.positions, vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]);
-        assert_eq!(m.base_color, Some([1.0, 128.0 / 255.0, 0.0, 1.0]));
+        assert_eq!(m.base_color, Some([1.0, srgb_to_linear(128.0 / 255.0), 0.0, 1.0]));
     }
 
     #[test]
@@ -1993,5 +2098,47 @@ mod tests {
         let back = read(&write(&m).unwrap()).unwrap();
         assert_eq!(back.positions, m.positions);
         assert_eq!(back.indices, m.indices);
+    }
+
+    #[test]
+    fn colour_is_encoded_as_srgb_bytes_like_every_ply_reader_expects() {
+        // Linear 0.5 is sRGB byte 188. Writing 128 — the linear value scaled —
+        // renders it as linear 0.216 in three.js, MeshLab and Blender: the
+        // too-dark colours this codec used to produce.
+        let mut m = tri_mesh();
+        m.base_color = Some([0.5, 0.5, 0.5, 0.5]);
+        let bytes = write(&m).unwrap();
+        let head_end = bytes.windows(11).position(|w| w == b"end_header\n").unwrap() + 11;
+        assert_eq!(&bytes[head_end + 12..head_end + 16], &[188, 188, 188, 128]);
+    }
+
+    #[test]
+    fn the_scene_keeps_every_vertex_colour() {
+        let src = "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\n\
+                   property float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\n\
+                   element face 1\nproperty list uchar int vertex_indices\nend_header\n\
+                   0 0 0 255 0 0\n1 0 0 0 255 0\n0 1 0 0 0 255\n3 0 1 2\n";
+        let scene = read_scene(src.as_bytes()).unwrap();
+        let p = &scene.meshes[0].primitives[0];
+        assert_eq!(
+            p.colors.as_deref(),
+            Some(&[[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]][..])
+        );
+        // And they survive a write.
+        let back = read_scene(&write_scene(&scene).unwrap()).unwrap();
+        assert_eq!(back.meshes[0].primitives[0].colors, p.colors);
+    }
+
+    #[test]
+    fn binary_bytes_tagged_as_ply_are_not_this_format() {
+        // A GLB handed over as PLY: the first "line" is binary, which says the
+        // caller named the wrong container, not that a PLY header is broken.
+        let glb = super::super::glb::write(&tri_mesh()).unwrap();
+        match read(&glb).unwrap_err() {
+            MeshError::NotThisFormat { expected: super::super::MeshFormat::Ply, .. } => {}
+            e => panic!("{e:?}"),
+        }
+        // The magic is still the whole first line, not a prefix.
+        assert!(matches!(read(b"plyfile\nformat ascii 1.0\n"), Err(MeshError::NotThisFormat { .. })));
     }
 }

@@ -1,0 +1,298 @@
+<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset>
+    <contributor><authoring_tool>make_ref_dae.py</authoring_tool></contributor>
+    <created>2026-10-12T00:00:00</created>
+    <modified>2026-10-12T00:00:00</modified>
+    <unit name="meter" meter="1"/>
+    <up_axis>Y_UP</up_axis>
+  </asset>
+  <library_images>
+    <image id="basecolor-img" name="basecolor"><init_from>basecolor.png</init_from></image>
+  </library_images>
+  <library_effects>
+    <effect id="TexturedMat-fx">
+      <profile_COMMON>
+        <newparam sid="basecolor-surface">
+          <surface type="2D"><init_from>basecolor-img</init_from></surface>
+        </newparam>
+        <newparam sid="basecolor-sampler">
+          <sampler2D><source>basecolor-surface</source></sampler2D>
+        </newparam>
+        <technique sid="common">
+          <lambert>
+            <emission><color sid="emission">0 0 0 1</color></emission>
+            <diffuse><texture texture="basecolor-sampler" texcoord="UVSET0"/></diffuse>
+            <transparent opaque="A_ONE"><color>1 1 1 1</color></transparent>
+            <transparency><float sid="transparency">1</float></transparency>
+          </lambert>
+          <extra>
+            <technique profile="GOOGLEEARTH"><double_sided>1</double_sided></technique>
+          </extra>
+        </technique>
+      </profile_COMMON>
+    </effect>
+    <effect id="RedMat-fx">
+      <profile_COMMON>
+        <technique sid="common">
+          <phong>
+            <emission><color sid="emission">0 0 0 1</color></emission>
+            <diffuse><color sid="diffuse">1 0 0 1</color></diffuse>
+            <specular><color sid="specular">0.04 0.04 0.04 1</color></specular>
+            <shininess><float sid="shininess">20</float></shininess>
+          </phong>
+        </technique>
+      </profile_COMMON>
+    </effect>
+  </library_effects>
+  <library_materials>
+    <material id="TexturedMat-mat" name="TexturedMat"><instance_effect url="#TexturedMat-fx"/></material>
+    <material id="RedMat-mat" name="RedMat"><instance_effect url="#RedMat-fx"/></material>
+  </library_materials>
+  <library_geometries>
+    <geometry id="StripMesh-geo" name="StripMesh">
+      <mesh>
+        <source id="StripMesh-geo-pos">
+          <float_array id="StripMesh-geo-pos-array" count="27">-0.5 0 0 0.5 0 0 -0.5 1 0 0.5 1 0 -0.5 2 0 0.5 2 0 1 0 0 2 0 0 1.5 1 0</float_array>
+          <technique_common>
+            <accessor source="#StripMesh-geo-pos-array" count="9" stride="3">
+              <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="StripMesh-geo-nrm">
+          <float_array id="StripMesh-geo-nrm-array" count="3">0 0 1</float_array>
+          <technique_common>
+            <accessor source="#StripMesh-geo-nrm-array" count="1" stride="3">
+              <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="StripMesh-geo-uv">
+          <float_array id="StripMesh-geo-uv-array" count="18">0 0 1 0 0 0.5 1 0.5 0 1 1 1 0 0 0 0 0 0</float_array>
+          <technique_common>
+            <accessor source="#StripMesh-geo-uv-array" count="9" stride="2">
+              <param name="S" type="float"/><param name="T" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="StripMesh-geo-col">
+          <float_array id="StripMesh-geo-col-array" count="36">1 0 0 1 0 1 0 1 0 0 1 1 1 1 0 1 1 0 1 1 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1</float_array>
+          <technique_common>
+            <accessor source="#StripMesh-geo-col-array" count="9" stride="4">
+              <param name="R" type="float"/><param name="G" type="float"/><param name="B" type="float"/><param name="A" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <vertices id="StripMesh-geo-vtx">
+          <input semantic="POSITION" source="#StripMesh-geo-pos"/>
+        </vertices>
+        <triangles count="4" material="TexturedMat-sym">
+          <input semantic="VERTEX" source="#StripMesh-geo-vtx" offset="0"/>
+          <input semantic="NORMAL" source="#StripMesh-geo-nrm" offset="1"/>
+          <input semantic="TEXCOORD" source="#StripMesh-geo-uv" offset="0" set="0"/>
+          <input semantic="COLOR" source="#StripMesh-geo-col" offset="0" set="0"/>
+          <p>0 0 1 0 3 0 0 0 3 0 2 0 2 0 3 0 5 0 2 0 5 0 4 0</p>
+        </triangles>
+        <triangles count="1" material="RedMat-sym">
+          <input semantic="VERTEX" source="#StripMesh-geo-vtx" offset="0"/>
+          <input semantic="NORMAL" source="#StripMesh-geo-nrm" offset="1"/>
+          <p>6 0 7 0 8 0</p>
+        </triangles>
+      </mesh>
+    </geometry>
+    <geometry id="StripMesh-target0" name="StripMesh-target0">
+      <mesh>
+        <source id="t0-pos">
+          <float_array id="t0-pos-array" count="27">-0.5 0 0 0.5 0 0 -0.5 1 0 0.5 1 0 0 2 0 1 2 0 1 0 0 2 0 0 1.5 1 0</float_array>
+          <technique_common>
+            <accessor source="#t0-pos-array" count="9" stride="3">
+              <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <vertices id="t0-vtx"><input semantic="POSITION" source="#t0-pos"/></vertices>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_controllers>
+    <controller id="Strip-morph" name="StripMorph">
+      <morph source="#StripMesh-geo" method="NORMALIZED">
+        <source id="Strip-morph-targets">
+          <IDREF_array id="Strip-morph-targets-array" count="1">StripMesh-target0</IDREF_array>
+          <technique_common>
+            <accessor source="#Strip-morph-targets-array" count="1" stride="1"><param name="IDREF" type="IDREF"/></accessor>
+          </technique_common>
+        </source>
+        <source id="Strip-morph-weights">
+          <float_array id="Strip-morph-weights-array" count="1">0</float_array>
+          <technique_common>
+            <accessor source="#Strip-morph-weights-array" count="1" stride="1"><param name="MORPH_WEIGHT" type="float"/></accessor>
+          </technique_common>
+        </source>
+        <targets>
+          <input semantic="MORPH_TARGET" source="#Strip-morph-targets"/>
+          <input semantic="MORPH_WEIGHT" source="#Strip-morph-weights"/>
+        </targets>
+      </morph>
+    </controller>
+    <controller id="Strip-skin" name="StripSkin">
+      <skin source="#Strip-morph">
+        <bind_shape_matrix>1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</bind_shape_matrix>
+        <source id="Strip-skin-joints">
+          <Name_array id="Strip-skin-joints-array" count="2">Bone0 Bone1</Name_array>
+          <technique_common>
+            <accessor source="#Strip-skin-joints-array" count="2" stride="1"><param name="JOINT" type="name"/></accessor>
+          </technique_common>
+        </source>
+        <source id="Strip-skin-ibm">
+          <float_array id="Strip-skin-ibm-array" count="32">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 -1 0 0 1 0 0 0 0 1</float_array>
+          <technique_common>
+            <accessor source="#Strip-skin-ibm-array" count="2" stride="16"><param name="TRANSFORM" type="float4x4"/></accessor>
+          </technique_common>
+        </source>
+        <source id="Strip-skin-w">
+          <float_array id="Strip-skin-w-array" count="2">0.5 1</float_array>
+          <technique_common>
+            <accessor source="#Strip-skin-w-array" count="2" stride="1"><param name="WEIGHT" type="float"/></accessor>
+          </technique_common>
+        </source>
+        <joints>
+          <input semantic="JOINT" source="#Strip-skin-joints"/>
+          <input semantic="INV_BIND_MATRIX" source="#Strip-skin-ibm"/>
+        </joints>
+        <vertex_weights count="9">
+          <input semantic="JOINT" source="#Strip-skin-joints" offset="0"/>
+          <input semantic="WEIGHT" source="#Strip-skin-w" offset="1"/>
+          <vcount>1 1 2 2 1 1 1 1 1</vcount>
+          <v>0 1 0 1 0 0 1 0 0 0 1 0 1 1 1 1 0 1 0 1 0 1</v>
+        </vertex_weights>
+      </skin>
+    </controller>
+  </library_controllers>
+  <library_animations>
+    <animation id="Root-anim">
+      <source id="Root-anim-in">
+        <float_array id="Root-anim-in-array" count="2">0 2</float_array>
+        <technique_common>
+          <accessor source="#Root-anim-in-array" count="2" stride="1"><param name="TIME" type="float"/></accessor>
+        </technique_common>
+      </source>
+      <source id="Root-anim-out">
+        <float_array id="Root-anim-out-array" count="32">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 1 0 1 0 0 0 0 1 0 0 0 0 1</float_array>
+        <technique_common>
+          <accessor source="#Root-anim-out-array" count="2" stride="16"><param name="TRANSFORM" type="float4x4"/></accessor>
+        </technique_common>
+      </source>
+      <source id="Root-anim-interp">
+        <Name_array id="Root-anim-interp-array" count="2">LINEAR LINEAR</Name_array>
+        <technique_common>
+          <accessor source="#Root-anim-interp-array" count="2" stride="1"><param name="INTERPOLATION" type="name"/></accessor>
+        </technique_common>
+      </source>
+      <sampler id="Root-anim-sampler">
+        <input semantic="INPUT" source="#Root-anim-in"/>
+        <input semantic="OUTPUT" source="#Root-anim-out"/>
+        <input semantic="INTERPOLATION" source="#Root-anim-interp"/>
+      </sampler>
+      <channel source="#Root-anim-sampler" target="Root/transform"/>
+    </animation>
+    <animation id="Bone1-anim">
+      <source id="Bone1-anim-in">
+        <float_array id="Bone1-anim-in-array" count="3">0 1 2</float_array>
+        <technique_common>
+          <accessor source="#Bone1-anim-in-array" count="3" stride="1"><param name="TIME" type="float"/></accessor>
+        </technique_common>
+      </source>
+      <source id="Bone1-anim-out">
+        <float_array id="Bone1-anim-out-array" count="48">1 0 0 0 0 1 0 1 0 0 1 0 0 0 0 1 0.7071068 -0.7071068 0 0 0.7071068 0.7071068 0 1 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 1 0 0 1 0 0 0 0 1</float_array>
+        <technique_common>
+          <accessor source="#Bone1-anim-out-array" count="3" stride="16"><param name="TRANSFORM" type="float4x4"/></accessor>
+        </technique_common>
+      </source>
+      <source id="Bone1-anim-interp">
+        <Name_array id="Bone1-anim-interp-array" count="3">LINEAR LINEAR LINEAR</Name_array>
+        <technique_common>
+          <accessor source="#Bone1-anim-interp-array" count="3" stride="1"><param name="INTERPOLATION" type="name"/></accessor>
+        </technique_common>
+      </source>
+      <sampler id="Bone1-anim-sampler">
+        <input semantic="INPUT" source="#Bone1-anim-in"/>
+        <input semantic="OUTPUT" source="#Bone1-anim-out"/>
+        <input semantic="INTERPOLATION" source="#Bone1-anim-interp"/>
+      </sampler>
+      <channel source="#Bone1-anim-sampler" target="Bone1/transform"/>
+    </animation>
+    <animation id="Bone0-anim">
+      <source id="Bone0-anim-in">
+        <float_array id="Bone0-anim-in-array" count="2">0 1</float_array>
+        <technique_common>
+          <accessor source="#Bone0-anim-in-array" count="2" stride="1"><param name="TIME" type="float"/></accessor>
+        </technique_common>
+      </source>
+      <source id="Bone0-anim-out">
+        <float_array id="Bone0-anim-out-array" count="32">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1.2 0 0 0 0 1.2 0 0 0 0 1.2 0 0 0 0 1</float_array>
+        <technique_common>
+          <accessor source="#Bone0-anim-out-array" count="2" stride="16"><param name="TRANSFORM" type="float4x4"/></accessor>
+        </technique_common>
+      </source>
+      <source id="Bone0-anim-interp">
+        <Name_array id="Bone0-anim-interp-array" count="2">STEP STEP</Name_array>
+        <technique_common>
+          <accessor source="#Bone0-anim-interp-array" count="2" stride="1"><param name="INTERPOLATION" type="name"/></accessor>
+        </technique_common>
+      </source>
+      <sampler id="Bone0-anim-sampler">
+        <input semantic="INPUT" source="#Bone0-anim-in"/>
+        <input semantic="OUTPUT" source="#Bone0-anim-out"/>
+        <input semantic="INTERPOLATION" source="#Bone0-anim-interp"/>
+      </sampler>
+      <channel source="#Bone0-anim-sampler" target="Bone0/transform"/>
+    </animation>
+    <animation id="Strip-morph-anim">
+      <source id="mw-in">
+        <float_array id="mw-in-array" count="3">0 1 2</float_array>
+        <technique_common><accessor source="#mw-in-array" count="3" stride="1"><param name="TIME" type="float"/></accessor></technique_common>
+      </source>
+      <source id="mw-out">
+        <float_array id="mw-out-array" count="3">0 1 0</float_array>
+        <technique_common><accessor source="#mw-out-array" count="3" stride="1"><param name="WEIGHT" type="float"/></accessor></technique_common>
+      </source>
+      <sampler id="mw-sampler">
+        <input semantic="INPUT" source="#mw-in"/>
+        <input semantic="OUTPUT" source="#mw-out"/>
+      </sampler>
+      <channel source="#mw-sampler" target="Strip-morph-weights-array(0)"/>
+    </animation>
+  </library_animations>
+  <library_visual_scenes>
+    <visual_scene id="Scene" name="Scene">
+      <node id="Root" name="Root" type="NODE">
+        <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
+        <node id="Strip" name="Strip" type="NODE">
+          <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
+          <instance_controller url="#Strip-skin">
+            <skeleton>#Bone0</skeleton>
+            <bind_material>
+              <technique_common>
+                <instance_material symbol="TexturedMat-sym" target="#TexturedMat-mat">
+                  <bind_vertex_input semantic="UVSET0" input_semantic="TEXCOORD" input_set="0"/>
+                </instance_material>
+                <instance_material symbol="RedMat-sym" target="#RedMat-mat"/>
+              </technique_common>
+            </bind_material>
+          </instance_controller>
+        </node>
+        <node id="Bone0" name="Bone0" sid="Bone0" type="JOINT">
+          <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
+          <node id="Bone1" name="Bone1" sid="Bone1" type="JOINT">
+            <matrix sid="transform">1 0 0 0 0 1 0 1 0 0 1 0 0 0 0 1</matrix>
+          </node>
+        </node>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene>
+    <instance_visual_scene url="#Scene"/>
+  </scene>
+</COLLADA>
