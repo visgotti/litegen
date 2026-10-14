@@ -29,6 +29,18 @@ pub struct ProxyRouter {
     video_jobs: Arc<tokio::sync::RwLock<HashMap<String, VideoGenerationHandle>>>,
     /// Circuit breaker tracking consecutive failures per provider.
     pub circuit_breaker: Arc<CircuitBreaker>,
+    /// Settings changed at runtime through the management API. Each set field
+    /// overrides the matching `config` value for every request that follows.
+    overrides: std::sync::RwLock<RuntimeOverrides>,
+}
+
+/// Runtime overrides of [`AppConfig`] values, set through `/v1/admin/*`.
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeOverrides {
+    /// Replaces `config.model_routes` when set.
+    pub model_routes: Option<Vec<crate::config::ModelRouteConfig>>,
+    /// The stored gateway settings (markup, alerting, end-user defaults).
+    pub gateway: crate::management::types::GatewaySettings,
 }
 
 impl ProxyRouter {
@@ -50,7 +62,38 @@ impl ProxyRouter {
             latency_history: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             video_jobs: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             circuit_breaker: cb,
+            overrides: std::sync::RwLock::new(RuntimeOverrides::default()),
         }
+    }
+
+    /// A snapshot of the runtime overrides.
+    pub fn overrides(&self) -> RuntimeOverrides {
+        self.overrides.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Replace the runtime overrides; applies to every request that follows.
+    pub fn set_overrides(&self, overrides: RuntimeOverrides) {
+        *self.overrides.write().unwrap_or_else(|p| p.into_inner()) = overrides;
+    }
+
+    /// The markup in effect: the runtime override, else the config value.
+    pub fn cost_markup_percent(&self) -> f64 {
+        self.overrides
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .gateway
+            .cost_markup_percent
+            .unwrap_or(self.config.cost_markup_percent)
+    }
+
+    /// The model routes in effect: the runtime override, else the config's.
+    pub fn model_routes(&self) -> Vec<crate::config::ModelRouteConfig> {
+        self.overrides
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .model_routes
+            .clone()
+            .unwrap_or_else(|| self.config.model_routes.clone())
     }
 
     /// Record a latency sample for a provider. Keeps at most LATENCY_HISTORY_CAP samples.
@@ -181,7 +224,7 @@ impl ProxyRouter {
         .await;
         let produced = data.len().max(1) as f64;
         let base_cost = schema.pricing.base_cost_usd * produced;
-        let (markup, total) = apply_markup(base_cost, self.config.cost_markup_percent);
+        let (markup, total) = apply_markup(base_cost, self.cost_markup_percent());
         let _ = markup;
         let usage = Some(UsageInfo {
             cost_usd: total,
@@ -507,7 +550,7 @@ impl ProxyRouter {
         // reasoning as the image path above, which bills per delivered image.)
         let produced = 1.0;
         let base_cost = schema.pricing.base_cost_usd * produced;
-        let (_, total) = apply_markup(base_cost, self.config.cost_markup_percent);
+        let (_, total) = apply_markup(base_cost, self.cost_markup_percent());
         let usage_info = Some(UsageInfo {
             cost_usd: total,
             tokens: crate::providers::usd_to_tokens(total, 0.001),
@@ -795,7 +838,7 @@ impl ProxyRouter {
             })?;
 
         // Apply global markup
-        let markup = self.config.cost_markup_percent;
+        let markup = self.cost_markup_percent();
         if markup > 0.0 {
             let (m, total) = apply_markup(est.base_cost_usd, markup);
             est.markup_usd = m;
@@ -827,7 +870,7 @@ impl ProxyRouter {
                 retryable: false,
             })?;
 
-        let markup = self.config.cost_markup_percent;
+        let markup = self.cost_markup_percent();
         if markup > 0.0 {
             let (m, total) = apply_markup(est.base_cost_usd, markup);
             est.markup_usd = m;
@@ -865,7 +908,7 @@ impl ProxyRouter {
     // ─── Helpers ────────────────────────────────────────────────────────
 
     fn find_model_route(&self, model: &str) -> Option<ModelRoute> {
-        for route_cfg in &self.config.model_routes {
+        for route_cfg in &self.model_routes() {
             if route_matches(&route_cfg.model, model) {
                 return Some(ModelRoute {
                     model: route_cfg.model.clone(),

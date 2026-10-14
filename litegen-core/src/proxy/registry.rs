@@ -133,6 +133,33 @@ impl ProviderRegistry {
         }
     }
 
+    /// (Re)configure provider `name` at runtime from the management API.
+    /// Builds a fresh adapter instance and swaps it into the maps; a job already
+    /// in flight keeps the `Arc` it submitted with, so a new key or api_base
+    /// applies to new requests only. Returns false for an unknown adapter name.
+    pub async fn configure_provider(&self, name: &str, config: ProviderInstanceConfig) -> bool {
+        if build_image_provider(name, &config).is_none()
+            && build_video_provider(name, &config).is_none()
+        {
+            return false;
+        }
+        self.register_provider(name, config).await;
+        true
+    }
+
+    /// Take provider `name` out of service: new requests see it as
+    /// unconfigured; in-flight jobs finish on the instance they hold.
+    pub async fn unregister_provider(&self, name: &str) {
+        self.image_providers.write().await.remove(name);
+        self.video_providers.write().await.remove(name);
+        self.provider_configs.write().await.remove(name);
+    }
+
+    /// The config provider `name` is currently registered with.
+    pub async fn registered_config(&self, name: &str) -> Option<ProviderInstanceConfig> {
+        self.provider_configs.read().await.get(name).cloned()
+    }
+
     /// Build a per-request image provider for `name`, optionally overriding its
     /// credentials with a per-app BYO credential.
     ///
@@ -470,7 +497,7 @@ pub fn provider_catalog() -> Vec<crate::types::ProviderCatalogEntry> {
         .collect()
 }
 
-fn build_instance_config(env_config: &ProviderEnvConfig) -> ProviderInstanceConfig {
+pub(crate) fn build_instance_config(env_config: &ProviderEnvConfig) -> ProviderInstanceConfig {
     let api_key = env_config.api_key.clone().unwrap_or_default();
     let api_keys = env_config
         .api_keys

@@ -29,7 +29,7 @@ pub(crate) fn parse_file(path: &str, yaml: &str) -> Result<Vec<ModelSchema>, Loa
     Ok(file.models)
 }
 
-fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadError> {
+pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadError> {
     let bad = |msg: String| LoadError::Validate { path: path.to_string(), message: msg };
 
     // id format: "<provider>/<rest>"

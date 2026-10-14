@@ -46,10 +46,18 @@ impl PostgresDatabase {
 
         Ok(Self { pool })
     }
+
+    pub(crate) fn pool(&self) -> &PgPool {
+        &self.pool
+    }
 }
 
 #[async_trait]
 impl DatabaseStore for PostgresDatabase {
+    fn management(&self) -> Option<&dyn crate::management::store::ManagementStore> {
+        Some(self)
+    }
+
     // ─── Generations ────────────────────────────────────────────────────────────
 
     async fn insert_generation(

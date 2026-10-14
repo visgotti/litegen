@@ -41,10 +41,8 @@ impl SqliteDatabase {
         Ok(Self { pool })
     }
 
-    /// Test-only accessor to the underlying pool so unit tests can stamp rows
-    /// (e.g. set tenant columns) that the public API doesn't yet write.
-    #[cfg(test)]
-    #[allow(dead_code)] // retained for future tenant-data tests
+    /// The underlying pool: used by the management store
+    /// (`crate::management::sql`) and by unit tests that stamp rows directly.
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
     }
@@ -52,6 +50,10 @@ impl SqliteDatabase {
 
 #[async_trait]
 impl DatabaseStore for SqliteDatabase {
+    fn management(&self) -> Option<&dyn crate::management::store::ManagementStore> {
+        Some(self)
+    }
+
     // ─── Generations ────────────────────────────────────────────────────────────
 
     async fn insert_generation(

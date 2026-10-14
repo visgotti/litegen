@@ -295,6 +295,15 @@ pub trait DatabaseStore: Send + Sync {
         Ok(None)
     }
 
+    // ─── Management ─────────────────────────────────────────────────────
+
+    /// The management-API store (limits, end users, spend, runtime config),
+    /// when this backend has one. Test doubles keep the `None` default and the
+    /// management endpoints answer 501 against them.
+    fn management(&self) -> Option<&dyn crate::management::store::ManagementStore> {
+        None
+    }
+
     // ─── Liveness ───────────────────────────────────────────────────────
 
     /// Liveness ping: execute `SELECT 1`. Returns Ok(()) if DB is reachable.

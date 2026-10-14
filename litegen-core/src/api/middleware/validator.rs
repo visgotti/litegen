@@ -703,9 +703,8 @@ impl FromRequest<Arc<AppState>> for ValidatedImage {
         let req: ImageGenerationRequest = serde_json::from_value(json).map_err(|e| {
             ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &e.to_string(), None, ""))
         })?;
-        let schema = state.registry.get(&req.base.model)
-            .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.base.model), None, &req.base.model)))?
-            .clone();
+        let schema = state.registry.resolve(&req.base.model)
+            .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.base.model), None, &req.base.model)))?;
         let schema = Arc::new(schema);
         match validate_image(&schema, req) {
             Ok(out) => Ok(ValidatedImage { schema, request: out.request, dropped: out.dropped, ctx, _permit: permit }),
@@ -731,9 +730,8 @@ impl FromRequest<Arc<AppState>> for ValidatedVideo {
         let req: VideoGenerationRequest = serde_json::from_value(json).map_err(|e| {
             ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &e.to_string(), None, ""))
         })?;
-        let schema = state.registry.get(&req.base.model)
-            .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.base.model), None, &req.base.model)))?
-            .clone();
+        let schema = state.registry.resolve(&req.base.model)
+            .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.base.model), None, &req.base.model)))?;
         let schema = Arc::new(schema);
         match validate_video(&schema, req) {
             Ok(out) => Ok(ValidatedVideo { schema, request: out.request, dropped: out.dropped, ctx, _permit: permit }),
