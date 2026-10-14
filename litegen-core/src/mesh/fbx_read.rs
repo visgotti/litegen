@@ -2790,6 +2790,11 @@ impl<'d, 'a> Reader<'d, 'a> {
                 // In-between shares bend where the channel weight passes a
                 // shape's full weight: key those crossings too.
                 let mut extra = Vec::new();
+                // Charged as each crossing is found, not after the search: the
+                // search is bounded only by sample pairs x full weights, far
+                // past the key budget, and every crossing costs a 48-step
+                // bisection.
+                let budget = MAX_ANIMATION_KEYS.saturating_sub(self.anim_keys);
                 for (c, curve) in chans.iter().zip(&curves) {
                     let Some(curve) = curve.filter(|_| c.full.len() > 1) else { continue };
                     let w = |t: f64| curve.eval(t) / 100.0;
@@ -2798,6 +2803,9 @@ impl<'d, 'a> Reader<'d, 'a> {
                         let (wa, wb) = (w(a), w(b));
                         for &bp in &c.full {
                             if (wa - bp) * (wb - bp) < 0.0 {
+                                if extra.len() >= budget {
+                                    return Err(unsupported(format!("the resampled animation passes {MAX_ANIMATION_KEYS} keys")));
+                                }
                                 let (mut lo, mut hi) = (a, b);
                                 for _ in 0..48 {
                                     let mid = 0.5 * (lo + hi);
