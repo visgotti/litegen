@@ -65,8 +65,15 @@ from .media_type import MediaType
 from .member_view import MemberView
 from .model_3d_asset import Model3DAsset
 from .model_3d_asset_kind import Model3DAssetKind
+from .model_3d_convert_formats import Model3DConvertFormats
+from .model_3d_format import Model3DFormat
 from .model_3d_generation_request import Model3DGenerationRequest
+from .model_3d_generation_request_output_format import (
+    Model3DGenerationRequestOutputFormat,
+)
 from .model_3d_generation_response import Model3DGenerationResponse
+from .model_3d_symmetry import Model3DSymmetry
+from .model_3d_topology import Model3DTopology
 from .model_capabilities import ModelCapabilities
 from .model_capability_flags import ModelCapabilityFlags
 from .model_info import ModelInfo
@@ -103,6 +110,7 @@ from .param_spec_float import ParamSpecFloat
 from .param_spec_int import ParamSpecInt
 from .param_spec_seed import ParamSpecSeed
 from .param_spec_string import ParamSpecString
+from .param_spec_string_array import ParamSpecStringArray
 from .password_reset import PasswordReset
 from .password_reset_confirm_body import PasswordResetConfirmBody
 from .password_reset_request_body import PasswordResetRequestBody
@@ -236,8 +244,13 @@ __all__ = (
     "MemberView",
     "Model3DAsset",
     "Model3DAssetKind",
+    "Model3DConvertFormats",
+    "Model3DFormat",
     "Model3DGenerationRequest",
+    "Model3DGenerationRequestOutputFormat",
     "Model3DGenerationResponse",
+    "Model3DSymmetry",
+    "Model3DTopology",
     "ModelCapabilities",
     "ModelCapabilityFlags",
     "ModelInfo",
@@ -268,6 +281,7 @@ __all__ = (
     "ParamSpecInt",
     "ParamSpecSeed",
     "ParamSpecString",
+    "ParamSpecStringArray",
     "PasswordReset",
     "PasswordResetConfirmBody",
     "PasswordResetRequestBody",

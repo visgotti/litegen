@@ -4,8 +4,7 @@ import {
   waitForCompletion,
   pollVideo,
   poll3d,
-  waitForJob,
-  MODEL3D_KIND,
+  waitForModel3d,
   type WaitForCompletionOptions,
 } from "./polling";
 
@@ -273,7 +272,7 @@ export interface CredentialFieldSpec {
 export interface ProviderCatalogEntry {
   /** Provider id (e.g. "openai", "bedrock"). */
   name: string;
-  /** Which media this provider serves — any of "image", "video". */
+  /** Which media this provider serves — any of "image", "video", "model3d". */
   modalities: string[];
   /** Coarse auth scheme: "api_key" | "aws_sigv4" | "tencent_tc3" | "kling_jwt". */
   auth_scheme: string;
@@ -281,6 +280,84 @@ export interface ProviderCatalogEntry {
   pool_field: string;
   /** Fields to collect per pool entry, besides the universal weight/label. */
   fields: CredentialFieldSpec[];
+}
+
+/** A request body sent as raw bytes rather than JSON. */
+type RawBody = Blob | ArrayBuffer | ArrayBufferView;
+
+function isRawBody(body: unknown): body is RawBody {
+  return (
+    (typeof Blob !== "undefined" && body instanceof Blob) ||
+    body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(body)
+  );
+}
+
+/** What `models3d.convert` hands back. */
+export interface Model3dConversion {
+  /** The converted file; `blob.type` is the target's Content-Type (e.g. `model/obj`). */
+  blob: Blob;
+  /** The container it is in — the `to` that was asked for. */
+  format: Schemas["Model3dFormat"];
+  /**
+   * A file name for it: the server's Content-Disposition (`model.<to>`), or the
+   * same name built locally when a cross-origin response hides that header.
+   */
+  filename: string;
+  /**
+   * What this file lost on the way to the target container, from the
+   * `X-Litegen-Conversion-Losses` response header — e.g. `["materials", "uvs"]`. Worked
+   * out from the input's actual content, not the format pair: a plain
+   * untextured mesh to STL loses nothing. Known kinds: `animation`, `skins`,
+   * `morph_targets`, `normals`, `uvs`, `vertex_colors`, `textures`,
+   * `image_formats`, `materials`, `alpha`, `hierarchy`, `meshes`,
+   * `texture_sampling`, `texture_transforms`, `geometry`; a kind added later
+   * passes through as-is. Empty when nothing was lost (or by a server that
+   * does not report losses yet).
+   */
+  losses: string[];
+}
+
+/** Options for `models3d.convert`. Which pairs work: `models3d.convertFormats()`. */
+export interface ConvertModel3dOptions {
+  /** The container the input is in. A file that is not one is a 400 `format_mismatch`. */
+  from: Schemas["Model3dFormat"];
+  /** The container to convert it to. */
+  to: Schemas["Model3dFormat"];
+  signal?: AbortSignal;
+}
+
+/** Response header naming what a conversion lost, comma-joined (omitted when nothing was). */
+const CONVERSION_LOSSES_HEADER = "x-litegen-conversion-losses";
+
+/** `filename="model.obj"` out of a Content-Disposition value, if it has one. */
+function dispositionFilename(value: string | null): string | null {
+  const m = value ? /filename="?([^";]+)"?/i.exec(value) : null;
+  return m?.[1] ?? null;
+}
+
+/** Filters for `models.list` (`GET /v1/models`). */
+export interface ListModelsOptions {
+  /** Only models of this family: `"image"`, `"video"` or `"model3d"`. */
+  media_type?: Schemas["MediaType"];
+}
+
+// ─── Lax-mode dropped params ─────────────────────────────────────────────────
+
+/**
+ * Response header the generation POSTs set when `strict: false` made the server
+ * drop params the model does not support instead of rejecting the request.
+ */
+export const DROPPED_PARAMS_HEADER = "x-litegen-dropped-params";
+
+/**
+ * Parse an `X-Litegen-Dropped-Params` value — a comma-joined list such as
+ * `"rig,symmetry,reference_images[view-top]"` — into its entries. A missing or
+ * empty header means nothing was dropped.
+ */
+export function parseDroppedParams(value: string | null | undefined): string[] {
+  if (!value) return [];
+  return value.split(",").map((p) => p.trim()).filter((p) => p !== "");
 }
 
 // ─── Client options ──────────────────────────────────────────────────────────
@@ -476,7 +553,11 @@ export class LiteGenClient {
       res = await this.fetchImpl(url, {
         method,
         headers,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
+        // Bytes (a file to convert) go as they are; everything else is JSON.
+        // The cast is for TS >= 5.7, whose BodyInit only admits views over a
+        // plain ArrayBuffer; spelling that generically in RawBody would break
+        // consumers compiling our .d.ts with an older TypeScript.
+        body: body === undefined ? undefined : isRawBody(body) ? (body as BodyInit) : JSON.stringify(body),
         credentials: this.credentials,
         signal: ctrl.signal,
       });
@@ -516,12 +597,27 @@ export class LiteGenClient {
     body?: unknown,
     signal?: AbortSignal,
   ): Promise<T> {
+    return (await this.requestWithHeaders<T>(method, path, body, signal)).body;
+  }
+
+  /**
+   * Like {@link request}, but also hands back the response headers — for the
+   * endpoints whose contract includes one, such as the generation POSTs'
+   * `X-Litegen-Dropped-Params`.
+   * @internal
+   */
+  async requestWithHeaders<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+  ): Promise<{ body: T; headers: Headers }> {
     const res = await this.fetchOk(method, path, body, signal);
     // 204 No Content and similar empty responses — return undefined cast to T.
     if (res.status === 204 || res.headers.get("content-length") === "0") {
-      return undefined as unknown as T;
+      return { body: undefined as unknown as T, headers: res.headers };
     }
-    return (await res.json()) as T;
+    return { body: (await res.json()) as T, headers: res.headers };
   }
 
   /**
@@ -551,6 +647,87 @@ class ImagesNamespace {
   }
 }
 
+/** What a generation POST returned: its body, plus anything lax mode dropped. */
+export interface JobSubmission<T> {
+  body: T;
+  /** Parsed `X-Litegen-Dropped-Params`; empty when nothing was dropped. */
+  droppedParams: string[];
+}
+
+/**
+ * The shape every async generation handle shares: submit once, then poll the
+ * job to a terminal status. {@link VideoJob} and {@link Model3dJob} are this
+ * class under their own response type rather than copies of each other, so a
+ * fix to how a job submits or polls lands in both.
+ *
+ * Awaitable (resolves to the final completed / failed / cancelled job) and
+ * async-iterable (yields every poll, including the terminal one). There's no
+ * SSE on the wire — it submits then polls under the hood. Submission is lazy
+ * and memoized: the POST fires on first use, exactly once.
+ */
+export class GenerationJob<T extends { id: string }> implements PromiseLike<T>, AsyncIterable<T> {
+  private submission?: Promise<JobSubmission<T>>;
+  private submittedBody?: Promise<T>;
+
+  /**
+   * @internal Jobs come from `client.videos.generate` / `client.models3d.generate`;
+   * constructing one directly is not part of the public API.
+   */
+  constructor(
+    private readonly submitFn: () => Promise<JobSubmission<T>>,
+    private readonly pollFn: (id: string) => AsyncGenerator<T, T, void>,
+  ) {}
+
+  private submit(): Promise<JobSubmission<T>> {
+    if (!this.submission) this.submission = this.submitFn();
+    return this.submission;
+  }
+
+  /** The initial submit response (id, status) — does not wait for completion. */
+  get submitted(): Promise<T> {
+    if (!this.submittedBody) this.submittedBody = this.submit().then((s) => s.body);
+    return this.submittedBody;
+  }
+
+  /**
+   * Params the server dropped rather than rejected, because the request set
+   * `strict: false` and the model does not support them — e.g. `["rig",
+   * "reference_images[view-top]"]`. Always empty under `strict: true`, where
+   * an unsupported param is a 400 instead. Resolves once the job is submitted
+   * (submitting it if nothing else has yet).
+   */
+  get droppedParams(): Promise<string[]> {
+    return this.submit().then((s) => s.droppedParams);
+  }
+
+  then<TResult1 = T, TResult2 = never>(
+    onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): Promise<TResult1 | TResult2> {
+    return this.runToCompletion().then(onfulfilled, onrejected);
+  }
+
+  async *[Symbol.asyncIterator](): AsyncGenerator<T, void, void> {
+    const job = await this.submitted;
+    yield* this.pollFn(job.id);
+  }
+
+  private async runToCompletion(): Promise<T> {
+    const job = await this.submitted;
+    let last: T = job;
+    for await (const update of this.pollFn(job.id)) last = update;
+    return last;
+  }
+}
+
+/** A generation POST's body, with its dropped-params header parsed alongside. */
+async function withDroppedParams<T>(
+  response: Promise<{ body: T; headers: Headers }>,
+): Promise<JobSubmission<T>> {
+  const { body, headers } = await response;
+  return { body, droppedParams: parseDroppedParams(headers.get(DROPPED_PARAMS_HEADER)) };
+}
+
 /**
  * Handle returned by `videos.generate`. Video generation is async, so this is
  * both awaitable and async-iterable:
@@ -566,58 +743,28 @@ class ImagesNamespace {
  * }
  * ```
  *
- * There's no SSE on the wire — it submits then polls under the hood. Use
- * `await job.submitted` if you only want the initial job id without waiting.
- * Submission is lazy + memoized: the POST fires on first use.
+ * Use `await job.submitted` if you only want the initial job id without
+ * waiting, and `await job.droppedParams` to see what lax mode dropped.
  */
-export class VideoJob implements PromiseLike<VideoResponse>, AsyncIterable<VideoResponse> {
-  private submittedPromise?: Promise<VideoResponse>;
-
-  constructor(
-    private readonly submitFn: () => Promise<VideoResponse>,
-    private readonly pollFn: (id: string) => AsyncGenerator<VideoResponse, VideoResponse, void>,
-  ) {}
-
-  /** The initial submit response (id, status) — does not wait for completion. */
-  get submitted(): Promise<VideoResponse> {
-    if (!this.submittedPromise) this.submittedPromise = this.submitFn();
-    return this.submittedPromise;
-  }
-
-  then<TResult1 = VideoResponse, TResult2 = never>(
-    onfulfilled?: ((value: VideoResponse) => TResult1 | PromiseLike<TResult1>) | null,
-    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-  ): Promise<TResult1 | TResult2> {
-    return this.runToCompletion().then(onfulfilled, onrejected);
-  }
-
-  async *[Symbol.asyncIterator](): AsyncGenerator<VideoResponse, void, void> {
-    const job = await this.submitted;
-    yield* this.pollFn(job.id);
-  }
-
-  private async runToCompletion(): Promise<VideoResponse> {
-    const job = await this.submitted;
-    let last: VideoResponse = job;
-    for await (const update of this.pollFn(job.id)) last = update;
-    return last;
-  }
-}
+export class VideoJob extends GenerationJob<VideoResponse> {}
 
 class VideosNamespace {
   constructor(private readonly client: LiteGenClient) {}
   /**
-   * Submit a video job. The returned {@link VideoJob} is awaitable (resolves to
-   * the finished job) and async-iterable (streams progress).
+   * Submit a video job (`POST /v1/videos/generations`). The returned
+   * {@link VideoJob} is awaitable (resolves to the finished job) and
+   * async-iterable (streams progress).
    */
   generate(req: VideoRequest, opts?: WaitForCompletionOptions): VideoJob {
     return new VideoJob(
       () =>
-        this.client.request<VideoResponse>(
-          "POST",
-          "/v1/videos/generations",
-          req,
-          opts?.signal,
+        withDroppedParams(
+          this.client.requestWithHeaders<VideoResponse>(
+            "POST",
+            "/v1/videos/generations",
+            req,
+            opts?.signal,
+          ),
         ),
       (id) => pollVideo(id, (vid) => this.getStatus(vid, opts?.signal), opts),
     );
@@ -650,84 +797,65 @@ class VideosNamespace {
  * this is both awaitable and async-iterable — the same shape as {@link VideoJob}:
  *
  * ```ts
- * const mesh = await client.models3d.generate({ ... });
- * const url = mesh.assets?.find(a => a.kind === "mesh")?.url;
+ * const job = await client.models3d.generate({ model, prompt, output_formats: ["glb", "obj"] });
+ * if (job.status === "completed") {
+ *   const glb = job.assets?.find((a) => a.kind === "mesh" && a.format === "glb");
+ * }
  *
  * for await (const update of client.models3d.generate({ ... })) {
  *   console.log(`${update.status} — ${update.progress}%`);
  * }
  * ```
  *
- * A completed job always carries exactly one `kind: "mesh"` asset with an
- * absolute URL; its absence means the generation failed — there is no
- * separate failure payload to check.
+ * `output_formats` is a promise, not a hint: a `completed` job carries a
+ * `kind: "mesh"` asset for every format it asked for (plus any texture and
+ * preview files), each with an absolute URL. A job that could not deliver one
+ * ends `failed` with `error` set — there is no partial success to check for.
+ * Polling defaults to {@link MODEL3D_DEFAULT_TIMEOUT_MS}.
  */
-export class Model3dJob implements PromiseLike<Model3dResponse>, AsyncIterable<Model3dResponse> {
-  private submittedPromise?: Promise<Model3dResponse>;
+export class Model3dJob extends GenerationJob<Model3dResponse> {}
 
-  constructor(
-    private readonly submitFn: () => Promise<Model3dResponse>,
-    private readonly pollFn: (id: string) => AsyncGenerator<Model3dResponse, Model3dResponse, void>,
-  ) {}
-
-  /** The initial submit response (id, status) — does not wait for completion. */
-  get submitted(): Promise<Model3dResponse> {
-    if (!this.submittedPromise) this.submittedPromise = this.submitFn();
-    return this.submittedPromise;
-  }
-
-  then<TResult1 = Model3dResponse, TResult2 = never>(
-    onfulfilled?: ((value: Model3dResponse) => TResult1 | PromiseLike<TResult1>) | null,
-    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-  ): Promise<TResult1 | TResult2> {
-    return this.runToCompletion().then(onfulfilled, onrejected);
-  }
-
-  async *[Symbol.asyncIterator](): AsyncGenerator<Model3dResponse, void, void> {
-    const job = await this.submitted;
-    yield* this.pollFn(job.id);
-  }
-
-  private async runToCompletion(): Promise<Model3dResponse> {
-    const job = await this.submitted;
-    let last: Model3dResponse = job;
-    for await (const update of this.pollFn(job.id)) last = update;
-    return last;
-  }
-}
-
+/** `client.models3d` — the 3D family (`/v1/models3d/*`). */
 class Models3dNamespace {
   constructor(private readonly client: LiteGenClient) {}
   /**
-   * Submit a 3D job. The returned {@link Model3dJob} is awaitable (resolves to
-   * the finished job) and async-iterable (streams progress).
+   * Submit a 3D job (`POST /v1/models3d/generations`). The returned
+   * {@link Model3dJob} is awaitable (resolves to the finished job) and
+   * async-iterable (streams progress). Validation failures — an unsupported
+   * format, too many formats for the model, a missing required reference
+   * image — reject before the provider is called, so they cost nothing.
    */
   generate(req: Model3dRequest, opts?: WaitForCompletionOptions): Model3dJob {
     return new Model3dJob(
       () =>
-        this.client.request<Model3dResponse>(
-          "POST",
-          "/v1/models3d/generations",
-          req,
-          opts?.signal,
+        withDroppedParams(
+          this.client.requestWithHeaders<Model3dResponse>(
+            "POST",
+            "/v1/models3d/generations",
+            req,
+            opts?.signal,
+          ),
         ),
       (id) => poll3d(id, (jid) => this.getStatus(jid, opts?.signal), opts),
     );
   }
+  /** Quote a 3D job without running it (`POST /v1/models3d/cost`). */
   estimateCost(req: Model3dRequest, signal?: AbortSignal): Promise<CostEstimate> {
     return this.client.request("POST", "/v1/models3d/cost", req, signal);
   }
+  /** One poll of a 3D job (`GET /v1/models3d/{id}`). */
   getStatus(id: string, signal?: AbortSignal): Promise<Model3dResponse> {
     return this.client.request("GET", `/v1/models3d/${encodeURIComponent(id)}`, undefined, signal);
   }
+  /** Poll a submitted 3D job until it is completed, failed or cancelled. */
   waitForCompletion(id: string, opts?: WaitForCompletionOptions): Promise<Model3dResponse> {
-    return waitForJob(id, (jid) => this.getStatus(jid, opts?.signal), opts, MODEL3D_KIND);
+    return waitForModel3d(id, (jid) => this.getStatus(jid, opts?.signal), opts);
   }
   /**
    * Stream progress updates for a 3D job as an async iterable:
    * `for await (const update of client.models3d.poll(job.id)) { ... }`.
    * Yields each poll (incl. the terminal one); `update.progress` is the unified
-   * 0–100 value.
+   * 0–100 value. Cancel a job with `client.generations.cancel(id)`.
    */
   poll(
     id: string,
@@ -735,19 +863,86 @@ class Models3dNamespace {
   ): AsyncGenerator<Model3dResponse, Model3dResponse, void> {
     return poll3d(id, (jid) => this.getStatus(jid, opts?.signal), opts);
   }
+  /**
+   * Convert a mesh file you already have to another container
+   * (`POST /v1/utils/models3d/convert`). A standalone utility: no provider,
+   * no generation, nothing billed.
+   *
+   * ```ts
+   * const { blob, filename } = await client.models3d.convert(glbBytes, { from: "glb", to: "stl" });
+   * ```
+   *
+   * Rejects with `LiteGenAPIError` on a pair the converter does not support
+   * (400 `format_unsupported`, `param` says which), a file that is not a `from`
+   * file (400 `format_mismatch`), one over the size cap (413), or a mesh it
+   * cannot read or convert (422 `mesh_malformed` / `mesh_unsupported` /
+   * `mesh_empty`).
+   */
+  async convert(input: RawBody, opts: ConvertModel3dOptions): Promise<Model3dConversion> {
+    const res = await this.client.fetchOk(
+      "POST",
+      `/v1/utils/models3d/convert?from=${encodeURIComponent(opts.from)}&to=${encodeURIComponent(opts.to)}`,
+      input,
+      opts.signal,
+      { "Content-Type": "application/octet-stream" },
+    );
+    return {
+      blob: await res.blob(),
+      format: opts.to,
+      filename: dispositionFilename(res.headers.get("content-disposition")) ?? `model.${opts.to}`,
+      // Same comma-joined shape as the dropped-params header, so the same parser.
+      losses: parseDroppedParams(res.headers.get(CONVERSION_LOSSES_HEADER)),
+    };
+  }
+  /**
+   * What the converter accepts (`GET /v1/utils/models3d/formats`): the
+   * containers usable as both `from` and `to` — any pair converts — and the
+   * largest input it takes. Narrower than `Model3dFormat`, and it grows with
+   * litegen's converter, so read it rather than hard-coding it.
+   */
+  convertFormats(signal?: AbortSignal): Promise<Schemas["Model3dConvertFormats"]> {
+    return this.client.request("GET", "/v1/utils/models3d/formats", undefined, signal);
+  }
+}
+
+/** True for an AbortSignal from any realm (polyfilled fetch brings its own). */
+function isAbortSignal(v: unknown): v is AbortSignal {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as AbortSignal).aborted === "boolean" &&
+    typeof (v as AbortSignal).addEventListener === "function"
+  );
 }
 
 class ModelsNamespace {
   constructor(private readonly client: LiteGenClient) {}
-  async list(signal?: AbortSignal): Promise<ModelInfo[]> {
-    const resp = await this.client.request<ModelListResponse>(
-      "GET",
-      "/v1/models",
-      undefined,
-      signal,
-    );
+  /**
+   * The model catalog (`GET /v1/models`), optionally narrowed to one family:
+   * `models.list({ media_type: "model3d" })`. `models.list(signal)` — the
+   * original signature — still works.
+   */
+  async list(
+    opts?: ListModelsOptions | AbortSignal,
+    signal?: AbortSignal,
+  ): Promise<ModelInfo[]> {
+    const options: ListModelsOptions = isAbortSignal(opts) ? {} : (opts ?? {});
+    const sig = isAbortSignal(opts) ? opts : signal;
+    const resp = options.media_type
+      ? await this.client.request<ModelListResponse>(
+          "GET",
+          `/v1/models?media_type=${encodeURIComponent(options.media_type)}`,
+          undefined,
+          sig,
+        )
+      : await this.client.request<ModelListResponse>("GET", "/v1/models", undefined, sig);
     return resp.data;
   }
+  /**
+   * One model's full capability schema (`GET /v1/models/{id}`): its params
+   * with their allowed values, prompt rules, reference-image roles and
+   * provider passthrough keys — everything needed to build a valid request.
+   */
   get(id: string, signal?: AbortSignal): Promise<ModelSchema> {
     return this.client.request("GET", `/v1/models/${encodeURIComponent(id)}`, undefined, signal);
   }
@@ -1099,6 +1294,12 @@ class GenerationsNamespace {
     );
   }
 
+  /**
+   * Cancel an in-flight async job — video or 3D — by id
+   * (`PATCH /v1/generations/{id}` with `{ status: "cancelled" }`). Rejects
+   * with `LiteGenAPIError` status 409 once the job is no longer pending or
+   * processing, and 404 for an unknown id.
+   */
   cancel(id: string, signal?: AbortSignal): Promise<Generation> {
     return this.client.request(
       "PATCH",

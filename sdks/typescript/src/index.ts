@@ -1,7 +1,14 @@
 export {
   LiteGenClient,
+  GenerationJob,
   VideoJob,
   Model3dJob,
+  DROPPED_PARAMS_HEADER,
+  parseDroppedParams,
+  type JobSubmission,
+  type ListModelsOptions,
+  type Model3dConversion,
+  type ConvertModel3dOptions,
   type LiteGenClientOptions,
   type FetchLike,
   type AuditLogEntry,
@@ -31,7 +38,16 @@ export {
   LiteGenTimeoutError,
   LiteGenPollingTimeoutError,
 } from "./errors";
-export { waitForCompletion, pollVideo, poll3d, waitForJob, pollJob, type WaitForCompletionOptions } from "./polling";
+export {
+  waitForCompletion,
+  pollVideo,
+  poll3d,
+  waitForModel3d,
+  waitForJob,
+  pollJob,
+  MODEL3D_DEFAULT_TIMEOUT_MS,
+  type WaitForCompletionOptions,
+} from "./polling";
 
 // Re-export raw schema types for advanced use.
 export type { components, operations, paths } from "./generated/schema";
@@ -76,6 +92,14 @@ export const RefImageKind = {
 } as const;
 export type RefImageKind = (typeof RefImageKind)[keyof typeof RefImageKind];
 
+/** What one file in a 3D result is: the mesh itself, a texture map, or a 2D preview render. */
+export const Model3dAssetKind = {
+  Mesh: "mesh",
+  Texture: "texture",
+  Preview: "preview",
+} as const;
+export type Model3dAssetKind = (typeof Model3dAssetKind)[keyof typeof Model3dAssetKind];
+
 // Convenience type aliases for the most common request/response shapes.
 export type ImageGenerationRequest = components["schemas"]["ImageGenerationRequest"];
 export type ImageGenerationResponse = components["schemas"]["ImageGenerationResponse"];
@@ -85,6 +109,21 @@ export type VideoGenerationResponse = components["schemas"]["VideoGenerationResp
 export type Model3dGenerationRequest = components["schemas"]["Model3dGenerationRequest"];
 export type Model3dGenerationResponse = components["schemas"]["Model3dGenerationResponse"];
 export type Model3dAsset = components["schemas"]["Model3dAsset"];
+/**
+ * Every mesh container a 3D request may name in `output_formats`. Which of
+ * them one model can deliver is that model's `params.output_formats.enum_values`
+ * (`models.get(id)`), and which of those litegen converts locally — so that any
+ * subset of them costs one provider job — is its `derivable_values`. Both are
+ * per model and change as litegen learns new containers; read them, don't
+ * hard-code them.
+ */
+export type Model3dFormat = components["schemas"]["Model3dFormat"];
+/** What `models3d.convertFormats()` returns: the converter's containers and its input cap. */
+export type Model3dConvertFormats = components["schemas"]["Model3dConvertFormats"];
+/** Face topology a 3D request may ask for (`topology`). */
+export type Model3dTopology = components["schemas"]["Model3dTopology"];
+/** Symmetry handling a 3D request may ask for (`symmetry`). */
+export type Model3dSymmetry = components["schemas"]["Model3dSymmetry"];
 export type ReferenceImage = components["schemas"]["ReferenceImage"];
 export type ModelInfo = components["schemas"]["ModelInfo"];
 export type ModelSchema = components["schemas"]["ModelSchema"];
@@ -124,6 +163,8 @@ export type ParamSpecBool = components["schemas"]["ParamSpecBool"];
 export type ParamSpecInt = components["schemas"]["ParamSpecInt"];
 export type ParamSpecFloat = components["schemas"]["ParamSpecFloat"];
 export type ParamSpecString = components["schemas"]["ParamSpecString"];
+/** A set-valued param (`output_formats`): `enum_values`, `max_items`, and on 3D models `derivable_values`. */
+export type ParamSpecStringArray = components["schemas"]["ParamSpecStringArray"];
 export type ParamSpecSeed = components["schemas"]["ParamSpecSeed"];
 export type ParamSpecAspectRatio = components["schemas"]["ParamSpecAspectRatio"];
 export type SizeSpec = components["schemas"]["SizeSpec"];
@@ -135,6 +176,8 @@ export type RefProviderFormat = components["schemas"]["RefProviderFormat"];
 export type RefProviderFormatMultipart = components["schemas"]["RefProviderFormatMultipart"];
 export type PromptSpec = components["schemas"]["PromptSpec"];
 export type ModelCapabilityFlags = components["schemas"]["ModelCapabilityFlags"];
+/** The `capabilities` projection on each `GET /v1/models` entry (incl. the 3D `supports_*`, `output_formats`, `max_polycount`). */
+export type ModelCapabilities = components["schemas"]["ModelCapabilities"];
 
 // Management API (budgets/limits, end users, spend, gateway admin).
 export type EntityType = components["schemas"]["EntityType"];

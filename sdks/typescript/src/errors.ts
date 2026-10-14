@@ -13,6 +13,14 @@ export class LiteGenAPIError extends LiteGenError {
   readonly status: number;
   readonly type: string;
   readonly code?: string;
+  /**
+   * The request field a validation error is about — `"output_formats"`,
+   * `"reference_images"`, `"prompt"`, … — when the server names one. Branch on
+   * this (with `code`) rather than parsing `message`.
+   */
+  readonly param?: string;
+  /** The model the failed request named, on validation errors. */
+  readonly model?: string;
   readonly providerError?: unknown;
 
   constructor(status: number, detail: ErrorDetail) {
@@ -24,6 +32,10 @@ export class LiteGenAPIError extends LiteGenError {
     // while the declared type is `string`. Coerce so `error.code === "429"`
     // comparisons behave as the type promises, regardless of the wire form.
     this.code = detail.code != null ? String(detail.code) : undefined;
+    // The server writes `"param": null` when a validation error names no
+    // field; normalise both to undefined so `err.param ?? …` reads naturally.
+    this.param = typeof detail.param === "string" ? detail.param : undefined;
+    this.model = typeof detail.model === "string" ? detail.model : undefined;
     this.providerError = detail.provider_error ?? undefined;
   }
 }

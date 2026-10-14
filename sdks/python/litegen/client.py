@@ -2,17 +2,36 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Callable, Iterator, Mapping
 from urllib.parse import quote
 
 import httpx
+from typing_extensions import Unpack
 
 from .errors import (
     LiteGenAPIError,
     LiteGenTimeoutError,
     LiteGenValidationError,
 )
-from .polling import poll_video, wait_for_video_completion
+from .polling import (
+    MODEL3D_DEFAULT_TIMEOUT,
+    poll_model3d,
+    poll_video,
+    wait_for_model3d_completion,
+    wait_for_video_completion,
+)
+from .types import (
+    CostEstimate,
+    Generation,
+    GenerationPage,
+    MediaType,
+    Model3dConversion,
+    Model3dConvertFormats,
+    Model3dFormat,
+    Model3dGenerateParams,
+    Model3dGenerationResponse,
+)
 
 
 class LiteGenClient:
@@ -45,6 +64,8 @@ class LiteGenClient:
 
         self.images = _ImagesNamespace(self)
         self.videos = _VideosNamespace(self)
+        self.models3d = _Models3dNamespace(self)
+        self.generations = _GenerationsNamespace(self)
         self.models = _ModelsNamespace(self)
         self.health = _HealthNamespace(self)
         self.stats = _StatsNamespace(self)
@@ -66,16 +87,36 @@ class LiteGenClient:
         self.close()
 
     def _request(self, method: str, path: str, *, json: Any = None, params: Any = None) -> Any:
+        return self._request_with_headers(method, path, json=json, params=params)[0]
+
+    def _request_with_headers(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Any = None,
+        params: Any = None,
+        content: bytes | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> tuple[Any, httpx.Headers]:
+        """:meth:`_request`, plus the response headers.
+
+        The job submits need them (lax mode reports the params it dropped in a
+        header, see :func:`_parse_dropped_params`), and so does mesh conversion,
+        which also sends raw ``content`` instead of JSON.
+        """
         try:
-            resp = self._http.request(method, path, json=json, params=params)
+            resp = self._http.request(
+                method, path, json=json, params=params, content=content, headers=headers
+            )
         except httpx.TimeoutException as e:
             raise LiteGenTimeoutError(str(e)) from e
         if resp.status_code >= 400:
             _raise_for_status(resp)
         ctype = resp.headers.get("content-type", "")
         if ctype.startswith("application/json"):
-            return resp.json()
-        return resp.content
+            return resp.json(), resp.headers
+        return resp.content, resp.headers
 
 
 def _raise_for_status(resp: httpx.Response) -> None:
@@ -90,6 +131,9 @@ def _raise_for_status(resp: httpx.Response) -> None:
     err_type = detail.get("type") or "api_error"
     code = detail.get("code")
     provider_error = detail.get("provider_error")
+    # The validator names the offending field and the model alongside the code.
+    param = detail.get("param")
+    model = detail.get("model")
     cls = LiteGenValidationError if err_type == "validation_error" else LiteGenAPIError
     raise cls(
         resp.status_code,
@@ -97,12 +141,52 @@ def _raise_for_status(resp: httpx.Response) -> None:
         type=err_type,
         code=str(code) if code is not None else None,
         provider_error=provider_error,
+        param=param if isinstance(param, str) else None,
+        model=model if isinstance(model, str) else None,
     )
 
 
-def _clean(req: dict[str, Any]) -> dict[str, Any]:
+def _clean(req: Mapping[str, Any]) -> dict[str, Any]:
     """Drop None values so server defaults are honored."""
     return {k: v for k, v in req.items() if v is not None}
+
+
+# Mesh conversion names what the file lost (uvs, materials, …) in this header,
+# comma-joined, on its 200 — and omits it when nothing was lost.
+_CONVERSION_LOSSES_HEADER = "x-litegen-conversion-losses"
+_OCTET_STREAM = {"Content-Type": "application/octet-stream"}
+
+
+def _disposition_filename(value: str | None) -> str | None:
+    """``model.obj`` out of ``attachment; filename="model.obj"``, if present."""
+    match = re.search(r'filename="?([^";]+)"?', value or "", re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _conversion(body: Any, headers: Mapping[str, str], to_format: Model3dFormat) -> Model3dConversion:
+    """The converted file and what its response headers say about it."""
+    return {
+        "content": body,
+        "content_type": headers.get("content-type", "application/octet-stream"),
+        "filename": _disposition_filename(headers.get("content-disposition")) or f"model.{to_format}",
+        "format": to_format,
+        # Same comma-joined shape as the dropped-params header, same parser.
+        "losses": _parse_dropped_params(headers.get(_CONVERSION_LOSSES_HEADER)),
+    }
+
+
+# With `strict=False` (lax mode) the server drops params the model does not
+# support instead of rejecting the request, and names them in this header on the
+# generation POST, comma-joined: "rig,symmetry,reference_images[view-top]". It
+# is absent when nothing was dropped (litegen-core's validator `dropped_header`).
+_DROPPED_PARAMS_HEADER = "x-litegen-dropped-params"
+
+
+def _parse_dropped_params(value: str | None) -> list[str]:
+    """Split an ``X-Litegen-Dropped-Params`` value into param names (``[]`` if absent)."""
+    if not value:
+        return []
+    return [name.strip() for name in value.split(",") if name.strip()]
 
 
 class _ImagesNamespace:
@@ -133,28 +217,45 @@ class VideoJob:
     There's no SSE on the wire — it submits then polls under the hood.
     ``job.submitted`` returns the initial submit response (id, status) without
     waiting. Submission is lazy and memoized: the POST fires on first use.
+    ``job.dropped_params`` names any params lax mode (``strict=False``) dropped.
     """
 
     def __init__(
         self,
-        submit: Callable[[], dict[str, Any]],
+        submit: Callable[[], tuple[dict[str, Any], Mapping[str, str]]],
         get_status: Callable[[str], dict[str, Any]],
         *,
         interval: float = 2.0,
         timeout: float = 300.0,
     ) -> None:
+        # `submit` returns the response headers alongside the body because the
+        # dropped-params report travels in a header.
         self._submit = submit
         self._get_status = get_status
         self._interval = interval
         self._timeout = timeout
         self._submitted: dict[str, Any] | None = None
+        self._dropped_params: list[str] = []
+
+    def _ensure_submitted(self) -> dict[str, Any]:
+        if self._submitted is None:
+            body, headers = self._submit()
+            self._dropped_params = _parse_dropped_params(headers.get(_DROPPED_PARAMS_HEADER))
+            self._submitted = body
+        return self._submitted
 
     @property
     def submitted(self) -> dict[str, Any]:
         """The initial submit response (id, status) — does not wait for completion."""
-        if self._submitted is None:
-            self._submitted = self._submit()
-        return self._submitted
+        return self._ensure_submitted()
+
+    @property
+    def dropped_params(self) -> list[str]:
+        """Params the server dropped rather than rejected, because the request set
+        ``strict=False``; ``[]`` when nothing was dropped. Submits the job first if
+        it hasn't been yet."""
+        self._ensure_submitted()
+        return list(self._dropped_params)
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         return poll_video(
@@ -187,7 +288,7 @@ class _VideosNamespace:
         timeout = req.pop("timeout", 300.0)
         body = _clean(req)
         return VideoJob(
-            lambda: self._c._request("POST", "/v1/videos/generations", json=body),
+            lambda: self._c._request_with_headers("POST", "/v1/videos/generations", json=body),
             self.get_status,
             interval=interval,
             timeout=timeout,
@@ -230,12 +331,223 @@ class _VideosNamespace:
         )
 
 
+class Model3dJob:
+    """Handle returned by :meth:`_Models3dNamespace.generate`.
+
+    3D generation is always asynchronous on the server, so, like
+    :class:`VideoJob`, this handle lets you block for the finished job or
+    stream progress as it runs::
+
+        # block until the job is terminal; returns the final state
+        final = client.models3d.generate(model="fal/hyper3d-rodin", prompt="a teapot").result()
+        meshes = [a for a in final.get("assets", []) if a["kind"] == "mesh"]
+
+        # …or stream progress (each update carries the unified 0-100 progress)
+        for update in client.models3d.generate(model="...", prompt="..."):
+            print(update["status"], update["progress"])
+
+    A ``failed`` or ``cancelled`` job is returned like a completed one, not
+    raised: check ``final["status"]``, and ``final.get("error")`` for why.
+
+    ``job.submitted`` returns the initial submit response without waiting,
+    ``job.id`` its id (e.g. for ``client.generations.cancel``), and
+    ``job.dropped_params`` the params lax mode dropped. Submission is lazy and
+    memoized: the POST fires on first use, which is also where a rejected
+    request raises (e.g. :class:`~litegen.errors.LiteGenValidationError`).
+    """
+
+    def __init__(
+        self,
+        submit: Callable[[], tuple[Model3dGenerationResponse, Mapping[str, str]]],
+        get_status: Callable[[str], Model3dGenerationResponse],
+        *,
+        interval: float = 2.0,
+        timeout: float = MODEL3D_DEFAULT_TIMEOUT,
+    ) -> None:
+        self._submit = submit
+        self._get_status = get_status
+        self._interval = interval
+        self._timeout = timeout
+        self._submitted: Model3dGenerationResponse | None = None
+        self._dropped_params: list[str] = []
+
+    def _ensure_submitted(self) -> Model3dGenerationResponse:
+        if self._submitted is None:
+            body, headers = self._submit()
+            self._dropped_params = _parse_dropped_params(headers.get(_DROPPED_PARAMS_HEADER))
+            self._submitted = body
+        return self._submitted
+
+    @property
+    def submitted(self) -> Model3dGenerationResponse:
+        """The initial submit response (id, status) — does not wait for completion."""
+        return self._ensure_submitted()
+
+    @property
+    def id(self) -> str:
+        """The generation id. Submits the job first if it hasn't been yet."""
+        return self._ensure_submitted()["id"]
+
+    @property
+    def dropped_params(self) -> list[str]:
+        """Params the server dropped rather than rejected, because the request set
+        ``strict=False``; ``[]`` when nothing was dropped. Submits the job first if
+        it hasn't been yet."""
+        self._ensure_submitted()
+        return list(self._dropped_params)
+
+    def __iter__(self) -> Iterator[Model3dGenerationResponse]:
+        return poll_model3d(
+            self.submitted["id"],
+            self._get_status,
+            interval=self._interval,
+            timeout=self._timeout,
+        )
+
+    def result(self) -> Model3dGenerationResponse:
+        """Block until the job reaches a terminal status; return the final job."""
+        last = self.submitted
+        for last in self:
+            pass
+        return last
+
+
+class _Models3dNamespace:
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    def generate(
+        self,
+        *,
+        interval: float = 2.0,
+        timeout: float = MODEL3D_DEFAULT_TIMEOUT,
+        **req: Unpack[Model3dGenerateParams],
+    ) -> Model3dJob:
+        """Submit a 3D job (``POST /v1/models3d/generations``), returning a :class:`Model3dJob`.
+
+        Call ``.result()`` to block until it is finished, or iterate the handle
+        to stream progress. ``interval`` / ``timeout`` (seconds) tune the
+        polling and are never sent. The timeout defaults to 30 minutes rather
+        than video's 5 because vendor 3D jobs routinely take longer; hitting it
+        stops the polling, not the job.
+        """
+        body = _clean(req)
+        return Model3dJob(
+            lambda: self._c._request_with_headers("POST", "/v1/models3d/generations", json=body),
+            self.get_status,
+            interval=interval,
+            timeout=timeout,
+        )
+
+    def estimate_cost(self, **req: Unpack[Model3dGenerateParams]) -> CostEstimate:
+        """Price a 3D request without running it (``POST /v1/models3d/cost``)."""
+        return self._c._request("POST", "/v1/models3d/cost", json=_clean(req))
+
+    def get_status(self, generation_id: str) -> Model3dGenerationResponse:
+        """Current state of a 3D job (``GET /v1/models3d/{id}``)."""
+        return self._c._request("GET", f"/v1/models3d/{quote(generation_id, safe='')}")
+
+    def wait_for_completion(
+        self,
+        generation_id: str,
+        *,
+        interval: float = 2.0,
+        timeout: float = MODEL3D_DEFAULT_TIMEOUT,
+    ) -> Model3dGenerationResponse:
+        """Poll ``GET /v1/models3d/{id}`` until the job is terminal; return the final state."""
+        return wait_for_model3d_completion(
+            generation_id, self.get_status, interval=interval, timeout=timeout
+        )
+
+    def poll(
+        self,
+        generation_id: str,
+        *,
+        interval: float = 2.0,
+        timeout: float = MODEL3D_DEFAULT_TIMEOUT,
+    ) -> Iterator[Model3dGenerationResponse]:
+        """Stream status updates from ``GET /v1/models3d/{id}`` as a generator::
+
+            for update in client.models3d.poll(job_id):
+                print(update["status"], update["progress"])
+
+        Yields the terminal update last.
+        """
+        return poll_model3d(
+            generation_id, self.get_status, interval=interval, timeout=timeout
+        )
+
+    def convert(
+        self, data: bytes, *, from_format: Model3dFormat, to_format: Model3dFormat
+    ) -> Model3dConversion:
+        """Convert a mesh file you already have to another container
+        (``POST /v1/utils/models3d/convert``). A standalone utility: no
+        provider, no generation, nothing billed::
+
+            out = client.models3d.convert(glb_bytes, from_format="glb", to_format="stl")
+            Path(out["filename"]).write_bytes(out["content"])
+
+        Raises :class:`~litegen.errors.LiteGenValidationError` for a pair the
+        converter does not support (``format_unsupported``; ``err.param`` says
+        which side) or a file that is not a ``from_format`` file
+        (``format_mismatch``), and :class:`~litegen.errors.LiteGenAPIError` for
+        one over the size cap (413) or a mesh it cannot read or convert (422).
+        """
+        body, headers = self._c._request_with_headers(
+            "POST", "/v1/utils/models3d/convert",
+            params={"from": from_format, "to": to_format},
+            content=bytes(data),
+            headers=_OCTET_STREAM,
+        )
+        return _conversion(body, headers, to_format)
+
+    def convert_formats(self) -> Model3dConvertFormats:
+        """What the converter accepts (``GET /v1/utils/models3d/formats``): the
+        containers usable as both ``from_format`` and ``to_format``, and the
+        largest input it takes. Read it rather than hard-coding a list."""
+        return self._c._request("GET", "/v1/utils/models3d/formats")
+
+
+class _GenerationsNamespace:
+    """Generation rows, shared by every media type (image, video and 3D)."""
+
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    def list(self, *, page: int = 1, per_page: int = 50) -> GenerationPage:
+        """One page of generation rows (``GET /v1/generations``)."""
+        return self._c._request(
+            "GET", "/v1/generations", params={"page": page, "per_page": per_page}
+        )
+
+    def get(self, generation_id: str) -> Generation:
+        """One generation row (``GET /v1/generations/{id}``)."""
+        return self._c._request("GET", f"/v1/generations/{quote(generation_id, safe='')}")
+
+    def cancel(self, generation_id: str) -> Generation:
+        """Cancel a pending or processing job (``PATCH /v1/generations/{id}``).
+
+        Works for any async job, video or 3D, and returns the updated row. A 3D
+        job's polls report ``cancelled`` from then on, so a :class:`Model3dJob`
+        being waited on returns it. A job that already finished cannot be
+        cancelled: the server answers 409, raised as
+        :class:`~litegen.errors.LiteGenAPIError`.
+        """
+        return self._c._request(
+            "PATCH",
+            f"/v1/generations/{quote(generation_id, safe='')}",
+            json={"status": "cancelled"},
+        )
+
+
 class _ModelsNamespace:
     def __init__(self, client: LiteGenClient) -> None:
         self._c = client
 
-    def list(self) -> list[Any]:
-        resp = self._c._request("GET", "/v1/models")
+    def list(self, *, media_type: MediaType | None = None) -> list[Any]:
+        """Models in the catalog (``GET /v1/models``), optionally of one ``media_type``."""
+        params = {"media_type": media_type} if media_type is not None else None
+        resp = self._c._request("GET", "/v1/models", params=params)
         return resp["data"] if isinstance(resp, dict) and "data" in resp else resp
 
     def get(self, model_id: str) -> Any:

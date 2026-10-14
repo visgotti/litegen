@@ -17,11 +17,15 @@ class VideoGenerationRequest:
     """
     Attributes:
         model (str):
-        prompt (str):
         extra (Union[Unset, Any]):
         metadata (Union[Unset, Any]):
         n (Union[Unset, int]):
         negative_prompt (Union[None, Unset, str]):
+        prompt (Union[Unset, str]): Whether a prompt is required is decided per model, by its
+            `prompt.required` in `GET /v1/models/{id}` — never by the wire format.
+            Omitting it is the same as sending `""`, which an image-to-3D model
+            with no prompt field (TRELLIS, Hunyuan3D v2) accepts and a text model
+            answers with `prompt_required`.
         reference_images (Union[Unset, List['ReferenceImage']]):
         seed (Union[None, Unset, int]):
         strict (Union[Unset, bool]):
@@ -36,11 +40,11 @@ class VideoGenerationRequest:
     """
 
     model: str
-    prompt: str
     extra: Union[Unset, Any] = UNSET
     metadata: Union[Unset, Any] = UNSET
     n: Union[Unset, int] = UNSET
     negative_prompt: Union[None, Unset, str] = UNSET
+    prompt: Union[Unset, str] = UNSET
     reference_images: Union[Unset, List["ReferenceImage"]] = UNSET
     seed: Union[None, Unset, int] = UNSET
     strict: Union[Unset, bool] = UNSET
@@ -53,8 +57,6 @@ class VideoGenerationRequest:
     def to_dict(self) -> Dict[str, Any]:
         model = self.model
 
-        prompt = self.prompt
-
         extra = self.extra
 
         metadata = self.metadata
@@ -66,6 +68,8 @@ class VideoGenerationRequest:
             negative_prompt = UNSET
         else:
             negative_prompt = self.negative_prompt
+
+        prompt = self.prompt
 
         reference_images: Union[Unset, List[Dict[str, Any]]] = UNSET
         if not isinstance(self.reference_images, Unset):
@@ -111,7 +115,6 @@ class VideoGenerationRequest:
         field_dict.update(
             {
                 "model": model,
-                "prompt": prompt,
             }
         )
         if extra is not UNSET:
@@ -122,6 +125,8 @@ class VideoGenerationRequest:
             field_dict["n"] = n
         if negative_prompt is not UNSET:
             field_dict["negative_prompt"] = negative_prompt
+        if prompt is not UNSET:
+            field_dict["prompt"] = prompt
         if reference_images is not UNSET:
             field_dict["reference_images"] = reference_images
         if seed is not UNSET:
@@ -146,8 +151,6 @@ class VideoGenerationRequest:
         d = src_dict.copy()
         model = d.pop("model")
 
-        prompt = d.pop("prompt")
-
         extra = d.pop("extra", UNSET)
 
         metadata = d.pop("metadata", UNSET)
@@ -162,6 +165,8 @@ class VideoGenerationRequest:
             return cast(Union[None, Unset, str], data)
 
         negative_prompt = _parse_negative_prompt(d.pop("negative_prompt", UNSET))
+
+        prompt = d.pop("prompt", UNSET)
 
         reference_images = []
         _reference_images = d.pop("reference_images", UNSET)
@@ -219,11 +224,11 @@ class VideoGenerationRequest:
 
         video_generation_request = cls(
             model=model,
-            prompt=prompt,
             extra=extra,
             metadata=metadata,
             n=n,
             negative_prompt=negative_prompt,
+            prompt=prompt,
             reference_images=reference_images,
             seed=seed,
             strict=strict,

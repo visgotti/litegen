@@ -10,7 +10,10 @@ type WithStatus = { status: string };
 export interface WaitForCompletionOptions {
   /** Milliseconds between polls. Default 2000. */
   intervalMs?: number;
-  /** Total timeout in milliseconds. Default 5 minutes. */
+  /**
+   * Total timeout in milliseconds. Default 5 minutes, except 3D jobs, which
+   * default to {@link MODEL3D_DEFAULT_TIMEOUT_MS}.
+   */
   timeoutMs?: number;
   /** Optional AbortSignal to cancel polling. */
   signal?: AbortSignal;
@@ -23,6 +26,21 @@ const TERMINAL_STATUSES = new Set<string>(["completed", "failed", "cancelled"]);
  * go through the generic `waitForJob` report the same word as `poll3d`.
  */
 export const MODEL3D_KIND = "3D generation";
+
+/**
+ * Default polling budget for a 3D job: 30 minutes, not the 5 every other family
+ * gets. A vendor 3D job can sit in the vendor's queue and then refine for well
+ * over 5 minutes, and giving up client-side does not stop it — the server job
+ * runs on to completion and is billed, so a short default throws away results
+ * the caller paid for. 30 minutes stays inside the backend's 2-hour reap age,
+ * past which the server fails the row itself.
+ */
+export const MODEL3D_DEFAULT_TIMEOUT_MS = 30 * 60_000;
+
+/** `opts` with the 3D family's default timeout filled in where none was given. */
+function withModel3dDefaults(opts: WaitForCompletionOptions = {}): WaitForCompletionOptions {
+  return { ...opts, timeoutMs: opts.timeoutMs ?? MODEL3D_DEFAULT_TIMEOUT_MS };
+}
 
 /**
  * Poll any async job, yielding every status update — including the terminal one
@@ -90,13 +108,25 @@ export const pollVideo = (
 
 /**
  * Poll a 3D generation job. `for await (const update of client.models3d.poll(job.id))`.
+ * Defaults to {@link MODEL3D_DEFAULT_TIMEOUT_MS} when `opts.timeoutMs` is unset.
  */
 export const poll3d = (
   id: string,
   getStatus: (id: string) => Promise<Model3dResponse>,
   opts?: WaitForCompletionOptions,
 ): AsyncGenerator<Model3dResponse, Model3dResponse, void> =>
-  pollJob<Model3dResponse>(id, getStatus, opts, MODEL3D_KIND);
+  pollJob<Model3dResponse>(id, getStatus, withModel3dDefaults(opts), MODEL3D_KIND);
+
+/**
+ * Resolve once a 3D job reaches a terminal status, returning the final state.
+ * Same default timeout as {@link poll3d}.
+ */
+export const waitForModel3d = (
+  id: string,
+  getStatus: (id: string) => Promise<Model3dResponse>,
+  opts?: WaitForCompletionOptions,
+): Promise<Model3dResponse> =>
+  waitForJob<Model3dResponse>(id, getStatus, withModel3dDefaults(opts), MODEL3D_KIND);
 
 /**
  * Back-compat wrapper. Deliberately concrete rather than a bare alias for

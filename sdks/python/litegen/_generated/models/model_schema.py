@@ -35,9 +35,13 @@ class ModelSchema:
         id (str):
         media_type (CapabilityMediaType):
         pricing (CapabilityModelPricing):
-        prompt (PromptSpec):
+        prompt (PromptSpec): How a model treats the request's `prompt`. Lengths count characters.
         provider (str):
         description (Union[Unset, str]):
+        docs_url (Union[None, Unset, str]): The vendor's own API reference page for the endpoint this model calls —
+            the page to re-read when a field mapping is questioned. An absolute
+            `https://` URL (the loader refuses anything else); every non-mock 3D
+            model carries one.
         extra_allowlist (Union[Unset, List[str]]):
         params (Union[Unset, ModelSchemaParams]):
         ref_inputs (Union['RefInputSpec', None, Unset]):
@@ -52,6 +56,7 @@ class ModelSchema:
     prompt: "PromptSpec"
     provider: str
     description: Union[Unset, str] = UNSET
+    docs_url: Union[None, Unset, str] = UNSET
     extra_allowlist: Union[Unset, List[str]] = UNSET
     params: Union[Unset, "ModelSchemaParams"] = UNSET
     ref_inputs: Union["RefInputSpec", None, Unset] = UNSET
@@ -76,6 +81,12 @@ class ModelSchema:
         provider = self.provider
 
         description = self.description
+
+        docs_url: Union[None, Unset, str]
+        if isinstance(self.docs_url, Unset):
+            docs_url = UNSET
+        else:
+            docs_url = self.docs_url
 
         extra_allowlist: Union[Unset, List[str]] = UNSET
         if not isinstance(self.extra_allowlist, Unset):
@@ -112,6 +123,8 @@ class ModelSchema:
         )
         if description is not UNSET:
             field_dict["description"] = description
+        if docs_url is not UNSET:
+            field_dict["docs_url"] = docs_url
         if extra_allowlist is not UNSET:
             field_dict["extra_allowlist"] = extra_allowlist
         if params is not UNSET:
@@ -147,6 +160,15 @@ class ModelSchema:
         provider = d.pop("provider")
 
         description = d.pop("description", UNSET)
+
+        def _parse_docs_url(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        docs_url = _parse_docs_url(d.pop("docs_url", UNSET))
 
         extra_allowlist = cast(List[str], d.pop("extra_allowlist", UNSET))
 
@@ -185,6 +207,7 @@ class ModelSchema:
             prompt=prompt,
             provider=provider,
             description=description,
+            docs_url=docs_url,
             extra_allowlist=extra_allowlist,
             params=params,
             ref_inputs=ref_inputs,

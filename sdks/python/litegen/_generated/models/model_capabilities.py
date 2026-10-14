@@ -16,20 +16,23 @@ class ModelCapabilities:
         supports_text_to_image (bool):
         max_duration_seconds (Union[None, Unset, float]):
         max_images (Union[Unset, int]):
-        max_polycount (Union[None, Unset, int]):
-        output_formats (Union[Unset, List[str]]):
+        max_polycount (Union[None, Unset, int]): Upper bound of the model's `target_polycount` param, when it takes one.
+        output_formats (Union[Unset, List[str]]): Every mesh container a caller may request, including those litegen
+            derives locally — the same list, in the same order, as
+            `GET /v1/models/{id}` serves under `params.output_formats.enum_values`.
+            Empty for image and video models.
         supported_sizes (Union[Unset, List[str]]):
         supports_first_frame (Union[Unset, bool]):
-        supports_image_to_3d (Union[Unset, bool]):
+        supports_image_to_3d (Union[Unset, bool]): Accepts one `init` reference image (image-to-3D).
         supports_image_to_video (Union[Unset, bool]):
         supports_inpainting (Union[Unset, bool]):
         supports_last_frame (Union[Unset, bool]):
-        supports_multiview_to_3d (Union[Unset, bool]):
-        supports_pbr (Union[Unset, bool]):
-        supports_rig (Union[Unset, bool]):
-        supports_text_to_3d (Union[Unset, bool]):
+        supports_multiview_to_3d (Union[Unset, bool]): Accepts several `view-*` reference images (multiview-to-3D).
+        supports_pbr (Union[Unset, bool]): Takes the `pbr` param.
+        supports_rig (Union[Unset, bool]): Takes the `rig` param.
+        supports_text_to_3d (Union[Unset, bool]): Accepts a prompt with no reference images (text-to-3D).
         supports_text_to_video (Union[Unset, bool]):
-        supports_texture (Union[Unset, bool]):
+        supports_texture (Union[Unset, bool]): Takes the `texture` param.
     """
 
     supports_image_to_image: bool

@@ -3,6 +3,12 @@ from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.model_3d_format import Model3DFormat
+from ..models.model_3d_generation_request_output_format import (
+    Model3DGenerationRequestOutputFormat,
+)
+from ..models.model_3d_symmetry import Model3DSymmetry
+from ..models.model_3d_topology import Model3DTopology
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -14,48 +20,75 @@ T = TypeVar("T", bound="Model3DGenerationRequest")
 
 @_attrs_define
 class Model3DGenerationRequest:
-    """
-    Attributes:
-        model (str):
-        prompt (str):
-        extra (Union[Unset, Any]):
-        metadata (Union[Unset, Any]):
-        n (Union[Unset, int]):
-        negative_prompt (Union[None, Unset, str]):
-        reference_images (Union[Unset, List['ReferenceImage']]):
-        seed (Union[None, Unset, int]):
-        strict (Union[Unset, bool]):
-        output_format (Union[None, Unset, str]): Desired mesh container: "glb" | "obj" | "fbx" | "usdz". Default "glb".
-        pbr (Union[None, Unset, bool]): PBR materials, where the model supports them.
-        rig (Union[None, Unset, bool]): Auto-rig / emit a skeleton, where supported.
-        symmetry (Union[None, Unset, str]): "off" | "auto" | "on".
-        target_polycount (Union[None, Unset, int]):
-        texture (Union[None, Unset, bool]): Generate textures (vs. bare geometry).
-        topology (Union[None, Unset, str]): "triangle" | "quad".
+    """Request body for `POST /v1/models3d/generations` and `POST /v1/models3d/cost`.
+
+    The mode is inferred, never passed: no `reference_images` is text-to-3D, an
+    `init` image is image-to-3D, and `view-*` images are multiview-to-3D.
+
+    Every 3D param is optional and model-dependent; `GET /v1/models/{id}` →
+    `params` says which a model takes. One it does not take is refused with
+    `param_unsupported` when `strict` is true (the default), and dropped — and
+    named in the `X-Litegen-Dropped-Params` response header — when `strict` is
+    false. A supported param with a bad VALUE is refused in both modes.
+
+        Attributes:
+            model (str):
+            extra (Union[Unset, Any]):
+            metadata (Union[Unset, Any]):
+            n (Union[Unset, int]):
+            negative_prompt (Union[None, Unset, str]):
+            prompt (Union[Unset, str]): Whether a prompt is required is decided per model, by its
+                `prompt.required` in `GET /v1/models/{id}` — never by the wire format.
+                Omitting it is the same as sending `""`, which an image-to-3D model
+                with no prompt field (TRELLIS, Hunyuan3D v2) accepts and a text model
+                answers with `prompt_required`.
+            reference_images (Union[Unset, List['ReferenceImage']]):
+            seed (Union[None, Unset, int]):
+            strict (Union[Unset, bool]):
+            output_format (Union[Unset, Model3DGenerationRequestOutputFormat]): Superseded by `output_formats`. A lone value
+                is folded into it; when both are sent, `output_formats` wins and this one is reported dropped.
+            output_formats (Union[List[Model3DFormat], None, Unset]): Mesh containers to deliver, e.g. `["glb", "fbx"]`. A
+                promise, not a
+                hint: every format named here is present on a `completed` generation,
+                or the generation ends `failed`. Omitted means the model's declared
+                default, and `["glb"]` when it declares none. Case-insensitive;
+                duplicates collapse.
+
+                Any set of the containers litegen derives (the model's served
+                `derivable_values`) costs one vendor job between them; every other
+                container costs one job of its own. A request needing more vendor jobs
+                than the model's `max_items` is refused with `param_too_many`.
+            pbr (Union[None, Unset, bool]): PBR materials. `false` asks for flat shading, not "no material".
+            rig (Union[None, Unset, bool]): Auto-rig: deliver the mesh with a skeleton.
+            symmetry (Union[Model3DSymmetry, None, Unset]):
+            target_polycount (Union[None, Unset, int]): Approximate triangle budget for the mesh, within the model's
+                declared
+                `target_polycount` range.
+            texture (Union[None, Unset, bool]): Texture the mesh, rather than returning bare geometry.
+            topology (Union[Model3DTopology, None, Unset]):
     """
 
     model: str
-    prompt: str
     extra: Union[Unset, Any] = UNSET
     metadata: Union[Unset, Any] = UNSET
     n: Union[Unset, int] = UNSET
     negative_prompt: Union[None, Unset, str] = UNSET
+    prompt: Union[Unset, str] = UNSET
     reference_images: Union[Unset, List["ReferenceImage"]] = UNSET
     seed: Union[None, Unset, int] = UNSET
     strict: Union[Unset, bool] = UNSET
-    output_format: Union[None, Unset, str] = UNSET
+    output_format: Union[Unset, Model3DGenerationRequestOutputFormat] = UNSET
+    output_formats: Union[List[Model3DFormat], None, Unset] = UNSET
     pbr: Union[None, Unset, bool] = UNSET
     rig: Union[None, Unset, bool] = UNSET
-    symmetry: Union[None, Unset, str] = UNSET
+    symmetry: Union[Model3DSymmetry, None, Unset] = UNSET
     target_polycount: Union[None, Unset, int] = UNSET
     texture: Union[None, Unset, bool] = UNSET
-    topology: Union[None, Unset, str] = UNSET
+    topology: Union[Model3DTopology, None, Unset] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         model = self.model
-
-        prompt = self.prompt
 
         extra = self.extra
 
@@ -68,6 +101,8 @@ class Model3DGenerationRequest:
             negative_prompt = UNSET
         else:
             negative_prompt = self.negative_prompt
+
+        prompt = self.prompt
 
         reference_images: Union[Unset, List[Dict[str, Any]]] = UNSET
         if not isinstance(self.reference_images, Unset):
@@ -84,11 +119,21 @@ class Model3DGenerationRequest:
 
         strict = self.strict
 
-        output_format: Union[None, Unset, str]
-        if isinstance(self.output_format, Unset):
-            output_format = UNSET
+        output_format: Union[Unset, str] = UNSET
+        if not isinstance(self.output_format, Unset):
+            output_format = self.output_format.value
+
+        output_formats: Union[List[str], None, Unset]
+        if isinstance(self.output_formats, Unset):
+            output_formats = UNSET
+        elif isinstance(self.output_formats, list):
+            output_formats = []
+            for output_formats_type_0_item_data in self.output_formats:
+                output_formats_type_0_item = output_formats_type_0_item_data.value
+                output_formats.append(output_formats_type_0_item)
+
         else:
-            output_format = self.output_format
+            output_formats = self.output_formats
 
         pbr: Union[None, Unset, bool]
         if isinstance(self.pbr, Unset):
@@ -105,6 +150,8 @@ class Model3DGenerationRequest:
         symmetry: Union[None, Unset, str]
         if isinstance(self.symmetry, Unset):
             symmetry = UNSET
+        elif isinstance(self.symmetry, Model3DSymmetry):
+            symmetry = self.symmetry.value
         else:
             symmetry = self.symmetry
 
@@ -123,6 +170,8 @@ class Model3DGenerationRequest:
         topology: Union[None, Unset, str]
         if isinstance(self.topology, Unset):
             topology = UNSET
+        elif isinstance(self.topology, Model3DTopology):
+            topology = self.topology.value
         else:
             topology = self.topology
 
@@ -131,7 +180,6 @@ class Model3DGenerationRequest:
         field_dict.update(
             {
                 "model": model,
-                "prompt": prompt,
             }
         )
         if extra is not UNSET:
@@ -142,6 +190,8 @@ class Model3DGenerationRequest:
             field_dict["n"] = n
         if negative_prompt is not UNSET:
             field_dict["negative_prompt"] = negative_prompt
+        if prompt is not UNSET:
+            field_dict["prompt"] = prompt
         if reference_images is not UNSET:
             field_dict["reference_images"] = reference_images
         if seed is not UNSET:
@@ -150,6 +200,8 @@ class Model3DGenerationRequest:
             field_dict["strict"] = strict
         if output_format is not UNSET:
             field_dict["output_format"] = output_format
+        if output_formats is not UNSET:
+            field_dict["output_formats"] = output_formats
         if pbr is not UNSET:
             field_dict["pbr"] = pbr
         if rig is not UNSET:
@@ -172,8 +224,6 @@ class Model3DGenerationRequest:
         d = src_dict.copy()
         model = d.pop("model")
 
-        prompt = d.pop("prompt")
-
         extra = d.pop("extra", UNSET)
 
         metadata = d.pop("metadata", UNSET)
@@ -188,6 +238,8 @@ class Model3DGenerationRequest:
             return cast(Union[None, Unset, str], data)
 
         negative_prompt = _parse_negative_prompt(d.pop("negative_prompt", UNSET))
+
+        prompt = d.pop("prompt", UNSET)
 
         reference_images = []
         _reference_images = d.pop("reference_images", UNSET)
@@ -207,14 +259,38 @@ class Model3DGenerationRequest:
 
         strict = d.pop("strict", UNSET)
 
-        def _parse_output_format(data: object) -> Union[None, Unset, str]:
+        _output_format = d.pop("output_format", UNSET)
+        output_format: Union[Unset, Model3DGenerationRequestOutputFormat]
+        if isinstance(_output_format, Unset):
+            output_format = UNSET
+        else:
+            output_format = Model3DGenerationRequestOutputFormat(_output_format)
+
+        def _parse_output_formats(
+            data: object,
+        ) -> Union[List[Model3DFormat], None, Unset]:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
-            return cast(Union[None, Unset, str], data)
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                output_formats_type_0 = []
+                _output_formats_type_0 = data
+                for output_formats_type_0_item_data in _output_formats_type_0:
+                    output_formats_type_0_item = Model3DFormat(
+                        output_formats_type_0_item_data
+                    )
 
-        output_format = _parse_output_format(d.pop("output_format", UNSET))
+                    output_formats_type_0.append(output_formats_type_0_item)
+
+                return output_formats_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[List[Model3DFormat], None, Unset], data)
+
+        output_formats = _parse_output_formats(d.pop("output_formats", UNSET))
 
         def _parse_pbr(data: object) -> Union[None, Unset, bool]:
             if data is None:
@@ -234,12 +310,20 @@ class Model3DGenerationRequest:
 
         rig = _parse_rig(d.pop("rig", UNSET))
 
-        def _parse_symmetry(data: object) -> Union[None, Unset, str]:
+        def _parse_symmetry(data: object) -> Union[Model3DSymmetry, None, Unset]:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
-            return cast(Union[None, Unset, str], data)
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                symmetry_type_1 = Model3DSymmetry(data)
+
+                return symmetry_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[Model3DSymmetry, None, Unset], data)
 
         symmetry = _parse_symmetry(d.pop("symmetry", UNSET))
 
@@ -261,26 +345,35 @@ class Model3DGenerationRequest:
 
         texture = _parse_texture(d.pop("texture", UNSET))
 
-        def _parse_topology(data: object) -> Union[None, Unset, str]:
+        def _parse_topology(data: object) -> Union[Model3DTopology, None, Unset]:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
-            return cast(Union[None, Unset, str], data)
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                topology_type_1 = Model3DTopology(data)
+
+                return topology_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[Model3DTopology, None, Unset], data)
 
         topology = _parse_topology(d.pop("topology", UNSET))
 
         model_3d_generation_request = cls(
             model=model,
-            prompt=prompt,
             extra=extra,
             metadata=metadata,
             n=n,
             negative_prompt=negative_prompt,
+            prompt=prompt,
             reference_images=reference_images,
             seed=seed,
             strict=strict,
             output_format=output_format,
+            output_formats=output_formats,
             pbr=pbr,
             rig=rig,
             symmetry=symmetry,

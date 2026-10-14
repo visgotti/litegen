@@ -67,7 +67,17 @@ def sync_detailed(
     """POST /v1/models3d/cost — Estimate cost for a 3D generation.
 
     Args:
-        body (Model3DGenerationRequest):
+        body (Model3DGenerationRequest): Request body for `POST /v1/models3d/generations` and
+            `POST /v1/models3d/cost`.
+
+            The mode is inferred, never passed: no `reference_images` is text-to-3D, an
+            `init` image is image-to-3D, and `view-*` images are multiview-to-3D.
+
+            Every 3D param is optional and model-dependent; `GET /v1/models/{id}` →
+            `params` says which a model takes. One it does not take is refused with
+            `param_unsupported` when `strict` is true (the default), and dropped — and
+            named in the `X-Litegen-Dropped-Params` response header — when `strict` is
+            false. A supported param with a bad VALUE is refused in both modes.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -96,7 +106,17 @@ def sync(
     """POST /v1/models3d/cost — Estimate cost for a 3D generation.
 
     Args:
-        body (Model3DGenerationRequest):
+        body (Model3DGenerationRequest): Request body for `POST /v1/models3d/generations` and
+            `POST /v1/models3d/cost`.
+
+            The mode is inferred, never passed: no `reference_images` is text-to-3D, an
+            `init` image is image-to-3D, and `view-*` images are multiview-to-3D.
+
+            Every 3D param is optional and model-dependent; `GET /v1/models/{id}` →
+            `params` says which a model takes. One it does not take is refused with
+            `param_unsupported` when `strict` is true (the default), and dropped — and
+            named in the `X-Litegen-Dropped-Params` response header — when `strict` is
+            false. A supported param with a bad VALUE is refused in both modes.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -120,7 +140,17 @@ async def asyncio_detailed(
     """POST /v1/models3d/cost — Estimate cost for a 3D generation.
 
     Args:
-        body (Model3DGenerationRequest):
+        body (Model3DGenerationRequest): Request body for `POST /v1/models3d/generations` and
+            `POST /v1/models3d/cost`.
+
+            The mode is inferred, never passed: no `reference_images` is text-to-3D, an
+            `init` image is image-to-3D, and `view-*` images are multiview-to-3D.
+
+            Every 3D param is optional and model-dependent; `GET /v1/models/{id}` →
+            `params` says which a model takes. One it does not take is refused with
+            `param_unsupported` when `strict` is true (the default), and dropped — and
+            named in the `X-Litegen-Dropped-Params` response header — when `strict` is
+            false. A supported param with a bad VALUE is refused in both modes.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -147,7 +177,17 @@ async def asyncio(
     """POST /v1/models3d/cost — Estimate cost for a 3D generation.
 
     Args:
-        body (Model3DGenerationRequest):
+        body (Model3DGenerationRequest): Request body for `POST /v1/models3d/generations` and
+            `POST /v1/models3d/cost`.
+
+            The mode is inferred, never passed: no `reference_images` is text-to-3D, an
+            `init` image is image-to-3D, and `view-*` images are multiview-to-3D.
+
+            Every 3D param is optional and model-dependent; `GET /v1/models/{id}` →
+            `params` says which a model takes. One it does not take is refused with
+            `param_unsupported` when `strict` is true (the default), and dropped — and
+            named in the `X-Litegen-Dropped-Params` response header — when `strict` is
+            false. A supported param with a bad VALUE is refused in both modes.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
