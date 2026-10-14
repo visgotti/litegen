@@ -73,3 +73,12 @@ export function withoutInlineRefs(body: Record<string, unknown>): Record<string,
   else delete rest.reference_images;
   return rest;
 }
+
+/** How many inline (base64) reference images `withoutInlineRefs` would remove
+ *  from `body` — what a history entry must ask for again before re-running. */
+export function inlineRefCount(body: Record<string, unknown>): number {
+  const refs = body.reference_images;
+  return Array.isArray(refs)
+    ? refs.filter(r => (r as { type?: unknown } | null)?.type === 'base64').length
+    : 0;
+}

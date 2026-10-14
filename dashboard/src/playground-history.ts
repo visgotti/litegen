@@ -5,6 +5,9 @@ export interface PlaygroundHistoryEntry {
   timestamp: string;
   requestBody: Record<string, unknown>;
   responseBody: Record<string, unknown>;
+  /** How many uploaded reference images `requestBody` lost to
+   *  `withoutInlineRefs`; a Re-submit must ask for them, not run without. */
+  strippedRefs?: number;
 }
 
 const HISTORY_KEY = 'litegen_playground_history';

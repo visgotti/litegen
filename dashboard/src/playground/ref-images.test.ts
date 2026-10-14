@@ -5,6 +5,7 @@ import {
   formatMiB,
   inlineBytes,
   isFetchableUrl,
+  inlineRefCount,
   withoutInlineRefs,
 } from './ref-images';
 
@@ -74,5 +75,27 @@ describe('withoutInlineRefs', () => {
     expect(withoutInlineRefs(body)).toBe(body);
     const noRefs = { model: 'm' };
     expect(withoutInlineRefs(noRefs)).toBe(noRefs);
+  });
+});
+
+describe('inlineRefCount', () => {
+  // A history entry records this so a Re-submit asks for the stripped
+  // uploads instead of running without them.
+  it('counts the uploads withoutInlineRefs removes, not the URLs it keeps', () => {
+    const body = {
+      model: 'm',
+      reference_images: [
+        { type: 'base64', value: 'AAAA', role: 'init' },
+        { type: 'url', value: 'https://x/y.png', role: 'style' },
+        { type: 'base64', value: 'BBBB', role: 'view-back' },
+      ],
+    };
+    expect(inlineRefCount(body)).toBe(2);
+    expect(inlineRefCount(withoutInlineRefs(body))).toBe(0);
+  });
+
+  it('is zero without reference images', () => {
+    expect(inlineRefCount({ model: 'm' })).toBe(0);
+    expect(inlineRefCount({ model: 'm', reference_images: 'nope' })).toBe(0);
   });
 });
