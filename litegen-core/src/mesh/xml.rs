@@ -151,11 +151,46 @@ fn head(reader: &NsReader<&[u8]>, e: &BytesStart) -> Result<Element, MeshError> 
     Ok(el)
 }
 
+/// Refuse a DOCTYPE that carries markup before its first `>`, in one linear
+/// pass, before quick-xml sees the document.
+///
+/// quick-xml 0.32 treats any `<!D` / `<!d` as a DOCTYPE and finds its end by
+/// recounting the `<`/`>` balance from the DOCTYPE's start at every later `>`,
+/// which is quadratic in the document once an internal subset (`[<!ENTITY …>]`)
+/// keeps the balance open: a 10 KB DEFLATEd `.rels` part costs days of CPU. No
+/// format read here needs a DTD (3MF forbids one, Collada is XSD-based), so
+/// only the plain `<!DOCTYPE name …>` form, which closes at its first `>`, gets
+/// through.
+fn refuse_dtd_markup(b: &[u8]) -> Result<(), MeshError> {
+    let mut i = 0;
+    while i + 2 < b.len() {
+        if b[i] == b'<' && b[i + 1] == b'!' && matches!(b[i + 2], b'D' | b'd') {
+            let mut j = i + 3;
+            loop {
+                match b.get(j) {
+                    Some(b'>') => break,
+                    Some(b'<') | None => {
+                        return Err(malformed(
+                            "a DOCTYPE with an internal subset, or one that never closes, is not supported",
+                        ))
+                    }
+                    Some(_) => j += 1,
+                }
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(())
+}
+
 /// Walk a document, calling `f` for every element start (with its attributes,
 /// but no children), end and text run. `f` may stop the walk early by
 /// returning `Ok(false)`.
 pub fn stream(bytes: &[u8], mut f: impl FnMut(XmlEvent<'_>) -> Result<bool, MeshError>) -> Result<(), MeshError> {
     let text = std::str::from_utf8(bytes).map_err(|e| malformed(format!("document is not UTF-8 ({e})")))?;
+    refuse_dtd_markup(text.as_bytes())?;
     let mut reader = NsReader::from_str(text);
     reader.config_mut().trim_text(true);
     reader.config_mut().check_end_names = true;
@@ -343,6 +378,28 @@ mod tests {
     fn refuses_custom_entities_rather_than_expanding_them() {
         let doc = br#"<!DOCTYPE a [<!ENTITY lol "lol">]><a>&lol;</a>"#;
         assert!(parse(doc).is_err());
+    }
+
+    #[test]
+    fn an_unbalanced_doctype_is_refused_in_linear_time() {
+        // quick-xml rescans a DOCTYPE from its start at every `>`; this shape
+        // used to take seconds at 80 KB and days at 10 MB.
+        let mut doc = b"<!DOCTYPE r [<]>".to_vec();
+        for _ in 0..200_000 {
+            doc.extend_from_slice(b"<>");
+        }
+        let started = std::time::Instant::now();
+        let e = parse(&doc).unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_millis(500), "took {:?}", started.elapsed());
+        assert!(e.to_string().contains("DOCTYPE"), "{e}");
+        // Lowercase and post-root spellings reach the same quick-xml path.
+        assert!(parse(b"<a/><!doctype x [<y>]>").is_err());
+    }
+
+    #[test]
+    fn a_plain_doctype_still_parses() {
+        let root = parse(br#"<?xml version="1.0"?><!DOCTYPE COLLADA><COLLADA v="1"/>"#).unwrap();
+        assert_eq!(root.name, "COLLADA");
     }
 
     #[test]
