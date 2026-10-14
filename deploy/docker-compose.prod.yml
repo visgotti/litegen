@@ -11,6 +11,10 @@ services:
     environment:
       LITEGEN__SERVER__HOST: "0.0.0.0"
       LITEGEN__SERVER__PORT: "4000"
+      # The origin clients reach this proxy at (e.g. https://app.litegen.ai/api).
+      # Locally stored 3D asset URLs are minted from it; unset, they point at
+      # http://127.0.0.1:4000, which no remote client can open.
+      LITEGEN__SERVER__PUBLIC_BASE_URL: "${LITEGEN__SERVER__PUBLIC_BASE_URL:-}"
       LITEGEN__DATABASE_URL: "postgres://litegen:${POSTGRES_PASSWORD}@db:5432/litegen"
       LITEGEN__MASTER_KEY: "${LITEGEN__MASTER_KEY:?LITEGEN__MASTER_KEY must be set}"
       LITEGEN_CORS_ORIGINS: "${LITEGEN_CORS_ORIGINS:-}"

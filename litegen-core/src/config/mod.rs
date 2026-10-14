@@ -224,9 +224,16 @@ impl ServerConfig {
     /// addresses — correct for local dev and CI, which is the only situation
     /// where nobody has set `public_base_url`. Anything else deployed behind a
     /// proxy MUST set it (`LITEGEN__SERVER__PUBLIC_BASE_URL`).
+    ///
+    /// An empty value counts as unset: compose files pass an unset variable as
+    /// `""` (`${VAR:-}`), which config-rs keeps as `Some("")`, and minting from
+    /// it would make every asset URL relative.
     pub fn public_base_url(&self) -> String {
         self.public_base_url
-            .clone()
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
             .unwrap_or_else(|| format!("http://{}:{}", reachable_host(&self.host), self.port))
             .trim_end_matches('/')
             .to_string()
@@ -639,6 +646,21 @@ impl<'a> serde::Serialize for ServerConfigSerialize<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_public_base_url_counts_as_unset() {
+        // Compose passes an unset `${VAR:-}` as "", which config-rs keeps; it
+        // must not turn every minted asset URL relative.
+        let mut s = ServerConfig::default();
+        s.port = 4000;
+        s.host = "0.0.0.0".into();
+        s.public_base_url = Some("".into());
+        assert_eq!(s.public_base_url(), "http://127.0.0.1:4000");
+        s.public_base_url = Some("  ".into());
+        assert_eq!(s.public_base_url(), "http://127.0.0.1:4000");
+        s.public_base_url = Some("https://app.litegen.ai/api/".into());
+        assert_eq!(s.public_base_url(), "https://app.litegen.ai/api");
+    }
 
     #[test]
     fn mode_defaults_to_single_tenant_and_parses_env() {
