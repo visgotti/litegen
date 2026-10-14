@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { client } from '../sdk-client';
 import type { ImageGenerationRequest, Model3dGenerationRequest } from '@litegen/sdk';
 import type { ResultTileState } from './types';
@@ -48,6 +48,34 @@ export function createRunEpoch() {
 
 export type RunEpoch = ReturnType<typeof createRunEpoch>;
 
+/**
+ * The 3D generations a run has submitted and not yet seen finish, so Cancel
+ * can stop them on the server. Aborting the polling alone leaves the vendor
+ * job running: it completes, is billed, and its row and webhook say
+ * 'completed' while the tile says 'cancelled'.
+ */
+export function createLiveJobs(cancelJob: (id: string) => Promise<unknown>) {
+  const live = new Set<string>();
+  return {
+    add(id: string): void {
+      live.add(id);
+    },
+    /** The job finished (or was cancelled) on its own; nothing to stop. */
+    settle(id: string): void {
+      live.delete(id);
+    },
+    /** Cancels one job on the server, best effort: it may have just finished. */
+    cancel(id: string): void {
+      live.delete(id);
+      cancelJob(id).catch(() => {});
+    },
+    /** Cancels every job still live. */
+    cancelAll(): void {
+      for (const id of [...live]) this.cancel(id);
+    },
+  };
+}
+
 type FanOutRequest = {
   modelId: string;
   mediaType: 'image' | 'model3d';
@@ -66,6 +94,13 @@ export function useFanOut(): FanOut {
   const [running, setRunning] = useState(false);
   const epochRef = useRef<RunEpoch | null>(null);
   const epoch = (epochRef.current ??= createRunEpoch());
+  const liveRef = useRef<ReturnType<typeof createLiveJobs> | null>(null);
+  const liveJobs = (liveRef.current ??= createLiveJobs(id => client.generations.cancel(id)));
+
+  // Leaving Compare mode stops the polling, which would otherwise run on for
+  // up to MODEL3D_POLL_TIMEOUT_MS. The jobs themselves are not cancelled: they
+  // finish server-side and stay reachable from Generations.
+  useEffect(() => () => epoch.abort(), [epoch]);
 
   const setTile = (key: string, p: Partial<ResultTileState>) =>
     setTiles(prev => prev.map(t => (t.key === key ? { ...t, ...p } : t)));
@@ -104,13 +139,23 @@ export function useFanOut(): FanOut {
         if (mediaType === 'model3d') {
           keys.forEach(k => patch(k, { status: 'running' }));
           const started = performance.now();
+          let jobId: string | undefined;
           try {
+            // No signal on the submit: aborting the POST would not withdraw a
+            // job the server may already have accepted, and the id it answers
+            // with is what a Cancel needs to stop that job.
             const job = client.models3d.generate(request as Model3dGenerationRequest, {
-              signal: ctrl.signal,
               intervalMs: 1500,
               timeoutMs: MODEL3D_POLL_TIMEOUT_MS,
             });
             const submitted = await job.submitted;
+            jobId = submitted.id;
+            liveJobs.add(jobId);
+            // Cancelled while the submit was in flight: stop the job it started.
+            if (ctrl.signal.aborted) {
+              liveJobs.cancel(jobId);
+              return;
+            }
             // Same memoized submission — no second POST. Non-empty only in lax
             // mode, where the server drops what the model can't take instead of
             // rejecting the whole request; the tile says what went missing.
@@ -150,6 +195,10 @@ export function useFanOut(): FanOut {
           } catch (e) {
             if (ctrl.signal.aborted) return;
             keys.forEach(k => patch(k, { status: 'error', error: (e as Error).message }));
+          } finally {
+            // Settled one way or another; a later Cancel has nothing to stop.
+            // (A cancelled job was already taken off by cancelAll.)
+            if (jobId !== undefined && !ctrl.signal.aborted) liveJobs.settle(jobId);
           }
           continue;
         }
@@ -180,6 +229,7 @@ export function useFanOut(): FanOut {
 
   const cancel = () => {
     epoch.abort();
+    liveJobs.cancelAll();
     setRunning(false);
     // 'polling' is a live-job state introduced for 3D (queued/running never
     // reach a server job); it must be swept here too or a tile mid-poll when

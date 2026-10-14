@@ -236,7 +236,7 @@ export default function CompareMode() {
               data-testid="pg-view-requests" onClick={() => setView('requests')}>Requests</button>
           </div>
           {view === 'results' ? (
-            <ResultGrid tiles={tiles} onRerun={id => generate(id)} />
+            <ResultGrid tiles={tiles} onRerun={id => generate(id)} rerunDisabled={running} />
           ) : (
             <pre data-testid="pg-requests-json" className="pg-requests">
               {JSON.stringify(requests, null, 2)}

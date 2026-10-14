@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 // client is never needed (and would throw under the node test environment).
 vi.mock('../sdk-client', () => ({ client: {} }));
 
-const { createRunEpoch, MODEL3D_POLL_TIMEOUT_MS } = await import('./useFanOut');
+const { createLiveJobs, createRunEpoch, MODEL3D_POLL_TIMEOUT_MS } = await import('./useFanOut');
 
 describe('createRunEpoch', () => {
   it('hands out a live controller for the first run', () => {
@@ -62,5 +62,49 @@ describe('MODEL3D_POLL_TIMEOUT_MS', () => {
   // polling beyond that would wait on a row the server has already failed.
   it('stops well before the backend reaps the generation at two hours', () => {
     expect(MODEL3D_POLL_TIMEOUT_MS).toBeLessThan(2 * 60 * 60_000);
+  });
+});
+
+type CancelJob = (id: string) => Promise<unknown>;
+
+describe('createLiveJobs', () => {
+  // Cancel must reach the server: aborting the polling alone leaves the vendor
+  // job running to completion, billed, while its tile reads 'cancelled'.
+  it('cancels every job still live, once each', () => {
+    const cancelJob = vi.fn<CancelJob>(async () => ({}));
+    const jobs = createLiveJobs(cancelJob);
+    jobs.add('a');
+    jobs.add('b');
+    jobs.cancelAll();
+    jobs.cancelAll();
+    expect(cancelJob.mock.calls.map(c => c[0])).toEqual(['a', 'b']);
+  });
+
+  it('leaves a job that already finished alone', () => {
+    const cancelJob = vi.fn<CancelJob>(async () => ({}));
+    const jobs = createLiveJobs(cancelJob);
+    jobs.add('done');
+    jobs.add('running');
+    jobs.settle('done');
+    jobs.cancelAll();
+    expect(cancelJob.mock.calls.map(c => c[0])).toEqual(['running']);
+  });
+
+  it('cancels a single job, e.g. one submitted after the run was cancelled', () => {
+    const cancelJob = vi.fn<CancelJob>(async () => ({}));
+    const jobs = createLiveJobs(cancelJob);
+    jobs.add('late');
+    jobs.cancel('late');
+    jobs.cancelAll();
+    expect(cancelJob).toHaveBeenCalledOnce();
+  });
+
+  it('swallows a refused cancel: the job may have just finished', async () => {
+    const cancelJob = vi.fn<CancelJob>(async () => { throw new Error('409: not in pending or processing state'); });
+    const jobs = createLiveJobs(cancelJob);
+    jobs.add('raced');
+    expect(() => jobs.cancelAll()).not.toThrow();
+    await Promise.resolve(); // let the rejection settle; an unhandled one fails the run
+    expect(cancelJob).toHaveBeenCalledOnce();
   });
 });
