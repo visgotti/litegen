@@ -583,6 +583,10 @@ pub fn parse(bytes: &[u8], id: &str) -> Result<Layer, MeshError> {
                 break;
             }
             let (tok, rep) = *fields.get(f as usize).ok_or_else(|| malformed("a field set names a field that does not exist"))?;
+            // Every visit is charged: specs may legally share one field set, so
+            // without this a single long run shared by a million specs costs
+            // specs x run decodes (an inlined value charges nothing itself).
+            cr.charge(1)?;
             let name = cr.tokens[tok as usize].clone();
             let v = cr.value(rep, 0)?;
             fields_here.push((name, v));
