@@ -86,10 +86,13 @@ export function meshOf(assets: Model3dAsset[], fallbackUrl?: string | null): Mod
   // A generation can now carry one mesh per requested container, and the viewer
   // renders glTF only — so taking the first would show "unsupported format" for
   // a generation that did deliver a perfectly good glb, purely because the
-  // adapter happened to push the obj first. Mirrors
-  // `Model3dGenerationResponse::mesh()` on the backend, which picks the same
-  // asset for `result_url`.
-  const listed = meshes.find(a => canPreviewMesh(a.format)) ?? meshes[0];
+  // adapter happened to push the obj first. glb first, exactly like
+  // `Model3dGenerationResponse::mesh()` on the backend (which picks the same
+  // asset for `result_url`); then any other glTF — a `gltf` can arrive
+  // alongside the glb now that litegen converts to it — then whatever is first.
+  const listed = meshes.find(a => a.format.toLowerCase() === 'glb')
+    ?? meshes.find(a => canPreviewMesh(a.format))
+    ?? meshes[0];
   if (listed) return listed;
   if (!fallbackUrl) return null;
   return { kind: 'mesh', url: fallbackUrl, format: extensionOf(fallbackUrl) };

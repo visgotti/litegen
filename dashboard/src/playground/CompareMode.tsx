@@ -4,15 +4,19 @@ import { client } from '../sdk-client';
 import type { ModelInfo, Model3dGenerationRequest } from '@litegen/sdk';
 import ModelPicker from './ModelPicker';
 import ParamField from './ParamField';
+import RefImagesField from './RefImagesField';
+import ExtraParamsField from './ExtraParamsField';
 import ResultGrid from './ResultGrid';
 import { useUnifiedParams } from './useUnifiedParams';
 import { useFanOut } from './useFanOut';
+import { promptUsage } from './params';
 import {
   getMultiHistory,
   pushMultiHistory,
   removeMultiHistory,
 } from '../playground-history';
 import type { MultiRunHistoryEntry } from '../playground-history';
+import { withoutInlineRefs } from './ref-images';
 
 type ReqView = 'results' | 'requests';
 
@@ -23,7 +27,13 @@ export default function CompareMode() {
   const [error, setError] = useState('');
   const [estCost, setEstCost] = useState<number | null>(null);
   const [history, setHistory] = useState<MultiRunHistoryEntry[]>([]);
-  const { merged, form, params, setForm, setParam, buildRequests } = useUnifiedParams(selected);
+  const {
+    merged, roles, maxRefs, extras, form, params, setForm, setParam, resetParam, problems, buildRequests, schemasById,
+  } = useUnifiedParams(selected);
+  // Models that take no prompt never receive the shared one (see
+  // promptForModel); the box only disappears when no selected model takes it.
+  const noPrompt = selected.filter(id => schemasById[id] && promptUsage(schemasById[id]) === 'unused');
+  const promptHidden = selected.length > 0 && noPrompt.length === selected.length;
   const { tiles, running, run, cancel } = useFanOut();
 
   useEffect(() => {
@@ -45,18 +55,24 @@ export default function CompareMode() {
       return [...set];
     });
 
-  const requests = buildRequests(selected);
-  const sig = JSON.stringify(requests);
-
   // buildRequests (useUnifiedParams) doesn't know media family — look it up
-  // from the loaded model list. Shared by the cost preview and generate() so
-  // both route a 3D selection to the 3D client calls instead of the image ones.
+  // from the loaded model list. Shared by the request builder, the cost
+  // preview and generate() so a 3D selection gets 3D-shaped bodies and goes to
+  // the 3D client calls instead of the image ones.
   const mediaTypeOf = (modelId: string): 'image' | 'model3d' =>
     models.find(m => m.id === modelId)?.media_type === 'model3d' ? 'model3d' : 'image';
 
+  const requests = buildRequests(selected, mediaTypeOf);
+  const sig = JSON.stringify(requests);
+  // A model the server would reject (no prompt where one is required, a
+  // missing input image) blocks the run instead of failing its tile.
+  const blocked = problems(selected).filter(p => p.problems.length > 0);
+  const anyImageModel = selected.some(id => mediaTypeOf(id) === 'image');
+  const any3dModel = selected.some(id => mediaTypeOf(id) === 'model3d');
+
   // Debounced cost preview across all selected models.
   useEffect(() => {
-    if (requests.length === 0 || !form.prompt.trim()) { setEstCost(null); return; }
+    if (requests.length === 0 || blocked.length > 0) { setEstCost(null); return; }
     const handle = setTimeout(async () => {
       try {
         const estimates = await Promise.all(requests.map(r => {
@@ -74,12 +90,12 @@ export default function CompareMode() {
     }, 400);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sig, form.prompt]);
+  }, [sig, blocked.length]);
 
   const generate = async (only?: string) => {
     setError('');
     const picked = only ? requests.filter(r => r.modelId === only) : requests;
-    if (picked.length === 0 || !form.prompt.trim()) return;
+    if (picked.length === 0 || picked.some(r => blocked.some(b => b.modelId === r.modelId))) return;
     setView('results');
     const reqs = picked.map(r => ({ ...r, mediaType: mediaTypeOf(r.modelId) }));
     await run(reqs);
@@ -89,7 +105,10 @@ export default function CompareMode() {
       prompt: form.prompt,
       timestamp: new Date().toISOString(),
       models: reqs.map(r => r.modelId),
-      results: reqs.map(r => ({ model: r.modelId, request: r.request as Record<string, unknown> })),
+      results: reqs.map(r => ({
+        model: r.modelId,
+        request: withoutInlineRefs(r.request as unknown as Record<string, unknown>),
+      })),
     };
     pushMultiHistory(entry);
     setHistory(getMultiHistory());
@@ -114,22 +133,42 @@ export default function CompareMode() {
           {error && <div className="alert alert-error">{error}</div>}
           <ModelPicker models={models} selected={selected} onToggle={toggle} onToggleGroup={toggleGroup} />
 
-          <div className="playground-form-group">
-            <label>Prompt</label>
-            <textarea data-testid="pg-prompt" rows={3} value={form.prompt}
-              onChange={e => setForm(prev => ({ ...prev, prompt: e.target.value }))}
-              placeholder="Describe the image…" />
-          </div>
+          {promptHidden ? (
+            <p className="pg-param-description" data-testid="pg-prompt-unused" style={{ margin: '0 0 12px' }}>
+              {selected.length === 1 ? 'This model takes' : 'These models take'} no prompt — they generate from the input image.
+            </p>
+          ) : (
+            <div className="playground-form-group">
+              <label htmlFor="pg-prompt-input">Prompt</label>
+              <textarea id="pg-prompt-input" data-testid="pg-prompt" rows={3} value={form.prompt}
+                onChange={e => setForm(prev => ({ ...prev, prompt: e.target.value }))}
+                placeholder={any3dModel && !anyImageModel ? 'Describe the 3D model…' : 'Describe the image…'} />
+              {noPrompt.length > 0 && (
+                <span className="pg-param-description" data-testid="pg-prompt-not-sent">
+                  Not sent to {noPrompt.map(m => m.split('/').pop()).join(', ')} — {noPrompt.length === 1 ? 'it takes' : 'they take'} no prompt.
+                </span>
+              )}
+            </div>
+          )}
+
+          <RefImagesField roles={roles} refs={form.refs} maxTotal={maxRefs} totalSelected={selected.length}
+            disabled={running}
+            onChange={refs => setForm(prev => ({ ...prev, refs }))} />
 
           {merged.length > 0 && (
             <div className="pg-params" data-testid="pg-params">
               {merged.map(p => (
                 <ParamField key={p.name} name={p.name} spec={p.spec} models={p.models}
                   totalSelected={selected.length} value={params[p.name]}
-                  onChange={v => setParam(p.name, v)} />
+                  onChange={v => setParam(p.name, v)}
+                  onReset={p.name in form.params ? () => resetParam(p.name) : undefined} />
               ))}
             </div>
           )}
+
+          <ExtraParamsField extras={extras} values={form.extra} totalSelected={selected.length}
+            disabled={running}
+            onChange={(key, raw) => setForm(prev => ({ ...prev, extra: { ...prev.extra, [key]: raw } }))} />
 
           <div className="playground-form-row">
             <div className="playground-form-group">
@@ -142,10 +181,15 @@ export default function CompareMode() {
               <label>N (1–4)</label>
               <input type="number" className="input" data-testid="pg-n" min={1} max={4}
                 style={{ width: '100%', boxSizing: 'border-box' }}
-                value={form.n}
+                value={form.n} disabled={!anyImageModel && any3dModel}
                 onChange={e => setForm(prev => ({ ...prev, n: parseInt(e.target.value, 10) || 1 }))} />
             </div>
           </div>
+          {any3dModel && (
+            <p className="pg-param-description" data-testid="pg-n-note" style={{ margin: '-4px 0 12px' }}>
+              N applies to image models only — one 3D job returns one result.
+            </p>
+          )}
 
           <div className="playground-form-group">
             <div className="toggle-row">
@@ -162,12 +206,22 @@ export default function CompareMode() {
             <div className="pg-cost" data-testid="pg-cost">Est. cost: ${estCost.toFixed(3)}</div>
           )}
 
+          {blocked.length > 0 && (
+            <ul className="pg-problems" data-testid="pg-problems">
+              {blocked.map(b => (
+                <li key={b.modelId} data-testid={`pg-problems-${b.modelId}`}>
+                  <code>{b.modelId}</code> {b.problems.join(', ')}
+                </li>
+              ))}
+            </ul>
+          )}
+
           {running ? (
             <button className="btn btn-danger" style={{ width: '100%' }}
               data-testid="pg-cancel" onClick={cancel}>Cancel</button>
           ) : (
             <button className="btn btn-primary" style={{ width: '100%' }} data-testid="pg-generate"
-              disabled={selected.length === 0 || !form.prompt.trim()} onClick={() => generate()}>
+              disabled={selected.length === 0 || blocked.length > 0} onClick={() => generate()}>
               Generate {selected.length} model{selected.length === 1 ? '' : 's'}
             </button>
           )}

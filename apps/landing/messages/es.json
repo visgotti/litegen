@@ -139,6 +139,8 @@
     "required": "obligatorio",
     "optional": "opcional",
     "maxChars": "hasta {n} caracteres",
+    "noPrompt": "no admitido — genera a partir de la imagen de entrada",
+    "formatsNote": "tal como los emite el proveedor; la API también lista los contenedores a los que litegen convierte",
     "refsShort": "{n, plural, one {# ref} other {# refs}}",
     "refsRoles": "hasta {n} ({roles})",
     "defaultEq": "predet. {v}",

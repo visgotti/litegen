@@ -139,6 +139,8 @@
     "required": "required",
     "optional": "optional",
     "maxChars": "up to {n} chars",
+    "noPrompt": "not accepted — generates from the input image",
+    "formatsNote": "as the vendor emits them; the API also lists every container litegen converts to",
     "refsShort": "{n, plural, one {# ref} other {# refs}}",
     "refsRoles": "up to {n} ({roles})",
     "defaultEq": "default {v}",

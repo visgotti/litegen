@@ -12,7 +12,7 @@ export interface ProviderCapability {
 export const PROVIDER_CAPABILITIES: Record<string, ProviderCapability> = {
   "bfl": { provider: "bfl", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: false, model3d: false } },
   "bytedance": { provider: "bytedance", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true, model3d: false } },
-  "fal": { provider: "fal", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true, model3d: false } },
+  "fal": { provider: "fal", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true, model3d: true } },
   "google": { provider: "google", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true, model3d: false } },
   "hunyuan": { provider: "hunyuan", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true, model3d: false } },
   "ideogram": { provider: "ideogram", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: false, model3d: false } },

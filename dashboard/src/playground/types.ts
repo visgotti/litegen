@@ -15,7 +15,49 @@ export interface SharedFormState {
   n: number;
   strict: boolean;
   seed: string;                        // "" = random
-  params: Record<string, unknown>;     // keyed by MergedParam.name
+  /**
+   * Only the params the user has actually set, keyed by MergedParam.name. An
+   * untouched param is absent and is never sent, so each model applies its
+   * own default — a value the client invented (an int's minimum, an enum's
+   * first member) would silently override it.
+   */
+  params: Record<string, unknown>;
+  /** Reference images, each tagged with the role it fills. */
+  refs: RefEntry[];
+  /** Raw text per provider-passthrough key (`extra`); parsed at send time. */
+  extra: Record<string, string>;
+}
+
+/**
+ * One reference image. `url` is fetched by the server (or the provider);
+ * `base64` carries an uploaded file inline as a `data:` URL.
+ */
+export interface RefEntry {
+  id: string;                          // stable React key
+  role: string;                        // e.g. "init", "view-front"
+  type: 'url' | 'base64';
+  value: string;
+  /** The uploaded file's name, shown instead of a multi-megabyte data URL. */
+  name?: string;
+}
+
+/** One reference-image role across the selected models. */
+export interface MergedRole {
+  role: string;
+  /** The strictest per-model cap: no selected model is sent more than it accepts. */
+  maxCount: number;
+  /** The most any requiring model needs. */
+  minCount: number;
+  /** Models that declare the role. */
+  models: string[];
+  /** Models that will reject the request without enough images in this role. */
+  requiredBy: string[];
+}
+
+/** One provider-passthrough key (`extra_allowlist`) across the selected models. */
+export interface MergedExtra {
+  key: string;
+  models: string[];
 }
 
 /** `polling` is distinct from `running`: the request has been ACCEPTED and we
@@ -40,4 +82,6 @@ export interface ResultTileState {
   costUsd?: number;
   latencyMs?: number;
   error?: string;
+  /** What lax mode (`strict: false`) dropped instead of rejecting. */
+  droppedParams?: string[];
 }

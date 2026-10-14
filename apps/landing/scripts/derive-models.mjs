@@ -11,10 +11,11 @@
  */
 
 /**
- * Most-applicable developer/API documentation URL per provider. Used as each
- * model's reference link (the registry YAML carries no URLs). Verified to
- * resolve to docs (not marketing/pricing); a few are the best-available
- * official portal where the vendor has no clean dedicated API-docs page.
+ * Most-applicable developer/API documentation URL per provider: the fallback
+ * reference link for a model whose YAML row declares no `docs_url` of its own
+ * (see `referenceUrlOf`). Verified to resolve to docs (not marketing/pricing);
+ * a few are the best-available official portal where the vendor has no clean
+ * dedicated API-docs page.
  */
 export const PROVIDER_DOCS = {
   openai: 'https://platform.openai.com/docs/guides/image-generation',
@@ -36,6 +37,16 @@ export const PROVIDER_DOCS = {
   replicate: 'https://replicate.com/docs/reference/http',
   fal: 'https://fal.ai/docs/documentation',
 };
+
+/**
+ * A model's reference link: its own `docs_url` — the vendor's API page for the
+ * exact endpoint it calls, which the catalog loader requires to be https —
+ * else its provider's general docs.
+ */
+export function referenceUrlOf(m) {
+  const own = typeof m.docs_url === 'string' ? m.docs_url : '';
+  return own.startsWith('https://') ? own : PROVIDER_DOCS[m.provider];
+}
 
 /** Map one parsed YAML model to a ModelEntry. Defensive about missing fields. */
 export function deriveModel(m) {
@@ -64,14 +75,21 @@ export function deriveModel(m) {
   // Display params: everything except size/aspect_ratio (shown separately).
   const displayParams = Object.entries(params)
     .filter(([name]) => name !== 'size' && name !== 'aspect_ratio')
-    .map(([name, p]) => ({
+    .map(([name, p]) => {
+      // For a 3D model's `output_formats` this is what the VENDOR emits. The
+      // API serves more (every container litegen converts to locally), but that
+      // set is the gateway's to compute and grows as it learns new containers,
+      // so the page says so (ModelsReference) rather than copying the rule here.
+      const enumValues = Array.isArray(p?.enum_values) ? p.enum_values.map(String) : undefined;
+      return {
       name,
       kind: p?.kind ?? 'string',
-      enum: Array.isArray(p?.enum_values) ? p.enum_values.map(String) : undefined,
+      enum: enumValues,
       default: p?.default !== undefined ? p.default : undefined,
       min: p?.min !== undefined ? p.min : undefined,
       max: p?.max !== undefined ? p.max : undefined,
-    }));
+      };
+    });
 
   const caps = m.capabilities ?? {};
   const prompt = m.prompt ?? {};
@@ -108,7 +126,7 @@ export function deriveModel(m) {
         ? { baseCostUsd: m.pricing.base_cost_usd }
         : undefined,
     tags: Array.isArray(m.tags) ? m.tags.slice() : [],
-    referenceUrl: PROVIDER_DOCS[m.provider],
+    referenceUrl: referenceUrlOf(m),
   };
 }
 
@@ -124,7 +142,8 @@ const INTERFACE = `export interface ModelParam {
   name: string;
   kind: string;
   enum?: string[];
-  default?: string | number | boolean;
+  /** An array for a set-valued param (\`output_formats\`). */
+  default?: string | number | boolean | string[];
   min?: number;
   max?: number;
 }

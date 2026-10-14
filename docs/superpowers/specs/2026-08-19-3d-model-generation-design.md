@@ -1,6 +1,6 @@
 # 3D Model Generation — Design
 
-**Status:** phase 1 implemented 2026-08-20 → 2026-09-11 as foundation + mock provider (plan: [2026-08-20-3d-model-generation](../plans/2026-08-20-3d-model-generation.md)). Vendor adapters (Meshy, Tripo3D, Stability, Rodin) open. The wire contract differs from §3, §6 and §8 — read **§14 Reconciliation** before relying on any wire-facing detail below.
+**Status:** phase 1 implemented 2026-08-20 → 2026-09-11 as foundation + mock provider (plan: [2026-08-20-3d-model-generation](../plans/2026-08-20-3d-model-generation.md)); the first real vendor, fal.ai (Rodin, TRELLIS, Hunyuan3D v2), shipped 2026-09-12 and was completed 2026-10-12 (§14.5). First-party Meshy, Tripo3D, Stability and Rodin adapters remain open. The wire contract differs from §3, §6 and §8 — read **§14 Reconciliation** before relying on any wire-facing detail below.
 **Date:** 2026-08-19
 **Scope:** litegen-core, models/, dashboard, sdks/typescript, apps/landing (generated config)
 **Builds on:** [Provider Expansion + Flexible Authentication](2026-05-30-provider-expansion-design.md), [BYO per-app S3 storage](2026-06-04-byo-app-storage-design.md)
@@ -600,3 +600,212 @@ process-global.
   records the blame for each.
 - In local (no-S3) mode the asset store is an unbounded process-lifetime map,
   like the mock-video store before it; S3 deployments never use it.
+
+### 14.4 Dashboard, SDKs and landing — completion pass (2026-10-12)
+
+Done in step with a backend pass that changed the wire. The Playground and SDKs
+consume these OpenAPI additions, so neither carries mesh or format knowledge of
+its own:
+
+- `ParamSpecStringArray.derivable_values` (served only): the formats that share
+  one provider job.
+- `ModelSchema.docs_url`.
+- The `Model3dFormat` / `Model3dTopology` / `Model3dSymmetry` enums.
+- `prompt` optional on the wire, with `PromptSpec.max_length == 0` meaning "takes
+  no prompt".
+- `X-Litegen-Dropped-Params`, documented and CORS-exposed.
+- `ErrorDetail.param` / `model`.
+
+**Playground (Single and Compare):**
+
+- **Reference images:** a per-role picker (URL, or an upload sent inline as
+  base64) checked against each role's min/max/required and `max_total`. Each
+  model is sent only the roles it declares. Uploads are capped at 10 MiB per
+  file and 18 MiB per request, so the base64 fits the 25 MiB body limit.
+- **Output formats:** the picker offers the deliverable set and enforces
+  `|sel \ derivable| + [sel ∩ derivable ≠ ∅] ≤ max_items`, all read from the
+  served schema. Since litegen converts between all ten of its containers
+  (`3d-format-conversion.md`), every served format is derivable, so any
+  combination is one provider job and the picker says so. The cap still binds
+  for a model that offers a container litegen cannot convert.
+- **Untouched params are never sent.** Compare used to send an int's minimum
+  and an enum's first member, which put `target_polycount: 100` on every 3D run.
+  Selects now offer "Model default", and every param has a reset.
+- **Prompt:**
+  - Hidden for, and never sent to, `max_length == 0` models (TRELLIS, Hunyuan3D
+    v2), including in mixed Compare runs where strict mode would 400.
+  - Its length is counted in characters.
+  - A request the server would refuse (no prompt, missing required image) is
+    blocked client-side with the reason.
+- **Provider passthrough:** a section built from `extra_allowlist`.
+- **Single Mode** lists every image and 3D model, not only mocks. It adds the
+  schema-driven panel, a vendor docs link, and the params lax mode dropped.
+- **History** no longer stores inline images, which overflowed localStorage
+  after a billed run.
+
+**Other dashboard fixes:**
+
+- **Model drawer:** shows the docs link, prompt rule, image roles, passthrough
+  keys and the job budget. "Copy as curl" now produces a body that validates:
+  TRELLIS's example carries its required image.
+- **Generations:** a failed cancel (409: the job finished first) refreshes the
+  row instead of blanking the list.
+- **Trace panel:** ignores superseded fetches.
+
+**SDKs:**
+
+- **Both:**
+  - lax-mode `droppedParams` / `dropped_params` on job handles
+  - `models.list({ media_type })`
+  - `LiteGenAPIError.param` / `.model`
+  - a 30-minute default poll budget for 3D (`MODEL3D_DEFAULT_TIMEOUT[_MS]`)
+  - the standalone mesh converter (`/v1/utils/models3d/*`): `models3d.convert`
+    sends the file as raw bytes and returns it with its format, file name and
+    `losses` (the `X-Litegen-Conversion-Losses` header); `convertFormats` /
+    `convert_formats` lists what it handles. Nothing is generated or billed.
+- **TypeScript:**
+  - `VideoJob` and `Model3dJob` now share a `GenerationJob<T>` base (the
+    review's F27).
+  - The vocabulary enums are exported.
+- **Python:**
+  - It gains what only TypeScript had: `client.models3d`, sync and async job
+    handles, and `client.generations` (list/get/cancel).
+  - `litegen.types` TypedDicts, drift-tested against the spec.
+  - `AsyncVideoJob`'s concurrent first use no longer submits (and bills) twice.
+- **Regeneration:** `regen-all.sh` now pins openapi-python-client 0.21.7 with
+  click 8.1.8. The output is byte-identical on Python 3.11 and 3.14, so a
+  regeneration diff is a schema change and nothing else.
+
+**Landing:**
+
+- The reference page links each model's own `docs_url`.
+- It lists the formats each vendor emits and notes that the API also lists the
+  containers litegen converts to. That set is the gateway's to compute, and it
+  grows as litegen learns new containers, so the build-time page does not copy
+  the rule.
+- It says "takes no prompt" where `max_length` is 0.
+
+**Verified:**
+
+- dashboard: 284 unit tests and 18 Playwright tests (8 new, for these inputs)
+  against the real binary
+- TS SDK: 52 tests
+- Python SDK: 126 tests, including integration against the binary
+- landing scripts: 19 tests
+
+**Open:**
+
+- `GET /v1/models` hard-codes `is_available: true`, so the Playground's
+  "needs provider setup" group never fills.
+- `images.generate` has no job handle and so no way to surface dropped params.
+- Compare tiles stay compact: the full inspector is Single Mode only.
+
+### 14.5 Backend — completion pass (2026-10-12)
+
+The server half of §14.4, plus backend fixes made in the same pass. Everything
+below is in `litegen-core/` and `models/fal.yaml`; per-cell proof is in
+[the param-mapping matrix](../param-mapping-matrix.md).
+
+**Wire (OpenAPI-visible):**
+
+- `GET /v1/models/{id}` serves `params.output_formats` as the caller's set — the
+  vendor's native containers plus every one litegen derives — with
+  `derivable_values` naming the ones that share a vendor job. `max_items` stays
+  that vendor-job budget. A legacy scalar `output_format` spec is served under
+  the plural. The yaml still declares only what the vendor emits.
+- `ModelSchema.docs_url`: the vendor's API page for the model's endpoint. The
+  loader requires an absolute https URL, and every non-mock 3D row carries one.
+- `Model3dFormat`, `Model3dTopology` and `Model3dSymmetry` are named enum
+  schemas. The request fields stay strings so validation, not
+  deserialisation, owns the error. `output_format` is marked deprecated.
+  `Model3dFormat` is glb, gltf, obj, stl, ply, fbx, usdz, usda, 3mf and dae: a
+  superset of everything the mesh converter can derive (a test pins it), so a
+  container that becomes derivable is always nameable in a typed request.
+- `prompt` is optional on the wire; `PromptSpec.max_length == 0` means "takes no
+  prompt" (strict: `param_unsupported`; lax: dropped and reported). Prompt
+  lengths count characters, not bytes.
+- `X-Litegen-Dropped-Params` is documented on the three generation POSTs and
+  CORS-exposed; `ErrorDetail.param` and `.model` are declared.
+- A missing required reference image is `ref_role_required` in every family.
+  It was `ref_role_count_out_of_range`, and a role declared `required` with
+  `min_count: 0` was never enforced at all. A 3D request with no images is
+  text-to-3D: it needs a model with a text arm and a non-empty prompt.
+
+**fal adapter** (`providers/model3d/fal.rs`, re-checked against each endpoint's
+schema on 2026-10-12):
+
+- No `prompt` is sent to TRELLIS or Hunyuan3D v2, whose schemas have no such
+  field; Rodin's prompt limit is its schema's 1024 characters, not 4000.
+- Poll failures are split by cause. A transient status or result failure (5xx,
+  408, 429, an unreadable body) is retryable, where it used to fail a billed
+  generation outright. fal's own verdicts — `COMPLETED` with `error`, a stored
+  error result (the 422 `detail` array, a request error with `error_type`), a
+  result without a mesh, a mesh URL that is gone — are `failed` with fal's
+  message, through the normal terminal path and its webhook.
+- Asset downloads pass a public-address check, follow no redirects, are
+  streamed against the size limit, and never carry the API key. Rodin's
+  textures keep their width and height.
+- The key is only ever sent to the configured queue origin: a fal-returned URL
+  on any other host is rebuilt from the base. A job whose `stage_context` was
+  lost is rebuilt from the model.
+- `extra` can never overwrite a field derived from a canonical param.
+- The one container a job asks the vendor for follows
+  `model3d_convert::prefers_vendor_native`: anything litegen cannot derive,
+  plus fbx and usdz even once it can, because a vendor's own export of those
+  carries rigs and materials a conversion from glb does not; otherwise glb.
+- Cancelling a generation cancels it at fal (`PUT …/cancel`, through the new
+  `Model3dProvider::cancel`, which defaults to `Unsupported`), so a queued job no
+  longer runs and bills after the caller gave up.
+- `health_check` validates the key against fal's Platform API, and `/health`
+  now includes 3D provider instances at all — before, a vendor serving only 3D
+  never appeared there.
+
+**Router, handlers, materializer, loader:**
+
+- A tracked 3D job keeps the provider instance that submitted it, so a job made
+  with an org's own fal key is polled and cancelled with that key. The client's
+  `GET /v1/models3d/{id}` used to poll with the operator's key and could never
+  advance a BYO job. `created` is now the submit time on every poll.
+- `generate_3d` writes the request log, the generation row and its metadata
+  before responding. A fast client used to terminalise a job whose row did not
+  exist yet: the terminal write found nothing, no webhook fired, and the row sat
+  `pending` until the poller healed it.
+- An uploaded reference image bound for a URL-taking vendor travels inline as a
+  `data:` URI (every family). The temp-upload path minted `local://` URLs in
+  every deployment, and would have raced async vendors even with a public bucket.
+- The loader requires each canonical param's own `kind`, the 3D vocabularies, an
+  https `docs_url`, and no yaml-set `derivable_values`.
+
+**Coverage added:** the validator against the shipped catalog for every
+canonical 3D param (closing the Task 8/9 follow-up),
+`tests/model3d_conformance.rs`, the served-schema and list/schema agreement,
+OpenAPI shape tests, regression tests for the whole-branch review's F2 (the
+app's bucket on the GET path), F3 (the webhook when the client's poll
+terminalises) and F11 (a DB error never answers with another org's job), and a
+billed `#[ignore]` run, `tests/live_model3d.rs`.
+
+**Open — decisions, not defects:**
+
+- Billing charges `base_cost_usd`, so a textured Hunyuan3D mesh and a Rodin
+  HighPack run (each 3× at fal) are under-charged. The estimate's `breakdown`
+  carries the multipliers; applying them means quote, reservation and charge
+  all change together.
+- In lax mode `extra` keys outside the allowlist still reach the vendor, as the
+  2026-05-28 capability-registry design chose. The fal adapter now shields
+  canonical fields from them; the general behaviour is unchanged.
+- Video still has the two router gaps fixed here for 3D: BYO jobs polled with
+  the platform key, and `created` reported as the poll time.
+- fal keeps its own public CDN copy of each mesh for the account's retention
+  period; `X-Fal-Object-Lifecycle-Preference` could expire it once re-hosted.
+- Quota is not released when an async job ends failed or cancelled (F9,
+  inherited from video).
+- `stage_context` is write-once: persisted at submit, never updated. §4.1's
+  two-stage flow (Meshy preview → refine) is therefore NOT supported yet — it
+  needs a poll result that carries new state, both observers persisting it, and
+  an atomic claim so two observers cannot both start (and bill) stage two.
+- `/health` lists one entry per provider instance with no modality, so fal
+  appears three times under the same name; a `modality` field would tell them
+  apart (an OpenAPI change).
+- Every delivered container is a single self-contained file. Multi-file
+  delivery (obj + mtl + textures, dae + images) needs rehost to keep relative
+  names together under the generation prefix.
