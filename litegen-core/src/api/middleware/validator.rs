@@ -508,21 +508,23 @@ fn check_refs(
     }
     for (role, spec) in &ri.roles {
         let c = counts.get(role).copied().unwrap_or(0);
-        if c < spec.min_count {
-            if spec.required || c > 0 {
-                return Err(ValidationError::new(
-                    "ref_role_count_out_of_range",
-                    format!("role '{}' count {} < min {}", role, c, spec.min_count),
-                    Some("reference_images"),
-                ));
-            }
-            if spec.required && c == 0 {
-                return Err(ValidationError::new(
-                    "ref_role_required",
-                    format!("role '{}' is required", role),
-                    Some("reference_images"),
-                ));
-            }
+        // Absence is checked first, and independently of `min_count`: the
+        // count branch below used to return for a required role before this
+        // could, so a missing required image read as a count error, and a role
+        // declared `required` with `min_count: 0` was never enforced at all.
+        if spec.required && c == 0 {
+            return Err(ValidationError::new(
+                "ref_role_required",
+                format!("role '{}' is required", role),
+                Some("reference_images"),
+            ));
+        }
+        if c > 0 && c < spec.min_count {
+            return Err(ValidationError::new(
+                "ref_role_count_out_of_range",
+                format!("role '{}' count {} < min {}", role, c, spec.min_count),
+                Some("reference_images"),
+            ));
         }
         if c > spec.max_count {
             return Err(ValidationError::new(
