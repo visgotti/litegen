@@ -14,6 +14,12 @@ pub const DEFAULT_MODEL3D_FORMAT: &str = "glb";
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BaseGenerationRequest {
+    /// Whether a prompt is required is decided per model, by its
+    /// `prompt.required` in `GET /v1/models/{id}` — never by the wire format.
+    /// Omitting it is the same as sending `""`, which an image-to-3D model
+    /// with no prompt field (TRELLIS, Hunyuan3D v2) accepts and a text model
+    /// answers with `prompt_required`.
+    #[serde(default)]
     pub prompt: String,
     pub model: String,
     #[serde(default = "default_n")]
@@ -155,79 +161,267 @@ pub struct VideoGenerationResponse {
 
 // ─── 3D Model Generation ──────────────────────────────────────────────────
 
+/// Every mesh container a 3D request may name in `output_formats`.
+///
+/// The closed vocabulary across all of litegen's 3D models. Which subset one
+/// model can deliver is per model: `GET /v1/models/{id}` lists it under
+/// `params.output_formats.enum_values`, and anything outside it is refused
+/// with `param_enum_mismatch` before any vendor is called.
+///
+/// A container reaches a caller one of two ways. Either litegen derives it
+/// locally from whatever readable container the vendor emitted — the set
+/// `proxy::model3d_convert::derivable_formats` returns, served per model as
+/// `params.output_formats.derivable_values` — and any number of those cost one
+/// vendor job together; or the vendor emits it itself, one job each. Which is
+/// which grows with `litegen-core/src/mesh/`, so this list is deliberately a
+/// superset of every container any vendor or the converter produces.
+///
+/// Requests carry these as plain, case-insensitive strings — validation, not
+/// deserialisation, owns the error, so it can name what IS deliverable. This
+/// type pins the vocabulary for OpenAPI and for the catalog loader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Model3dFormat {
+    /// Binary glTF 2.0 — the one container every 3D vendor emits.
+    Glb,
+    /// JSON glTF 2.0, buffers embedded so it is a single file.
+    Gltf,
+    Obj,
+    Stl,
+    Ply,
+    Fbx,
+    /// Zipped USD — the format AR Quick Look opens.
+    Usdz,
+    /// Text USD.
+    Usda,
+    #[serde(rename = "3mf")]
+    ThreeMf,
+    /// Collada 1.4.1.
+    Dae,
+}
+
+impl Model3dFormat {
+    pub const ALL: [Model3dFormat; 10] = [
+        Model3dFormat::Glb,
+        Model3dFormat::Gltf,
+        Model3dFormat::Obj,
+        Model3dFormat::Stl,
+        Model3dFormat::Ply,
+        Model3dFormat::Fbx,
+        Model3dFormat::Usdz,
+        Model3dFormat::Usda,
+        Model3dFormat::ThreeMf,
+        Model3dFormat::Dae,
+    ];
+
+    /// The wire spelling: lowercase, no dot — also the storage-key extension.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Model3dFormat::Glb => "glb",
+            Model3dFormat::Gltf => "gltf",
+            Model3dFormat::Obj => "obj",
+            Model3dFormat::Stl => "stl",
+            Model3dFormat::Ply => "ply",
+            Model3dFormat::Fbx => "fbx",
+            Model3dFormat::Usdz => "usdz",
+            Model3dFormat::Usda => "usda",
+            Model3dFormat::ThreeMf => "3mf",
+            Model3dFormat::Dae => "dae",
+        }
+    }
+
+    /// Case-insensitive, whitespace-tolerant — the same folding the validator
+    /// applies to `output_formats`.
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        Self::ALL.into_iter().find(|f| f.as_str().eq_ignore_ascii_case(s))
+    }
+}
+
+/// Face topology a 3D request may ask for (`topology`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Model3dTopology {
+    /// Triangulated output — what every vendor emits by default.
+    Triangle,
+    /// Quad-dominant remesh, for DCC tools and subdivision.
+    Quad,
+}
+
+impl Model3dTopology {
+    pub const ALL: [Model3dTopology; 2] = [Model3dTopology::Triangle, Model3dTopology::Quad];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Model3dTopology::Triangle => "triangle",
+            Model3dTopology::Quad => "quad",
+        }
+    }
+}
+
+/// Symmetry handling a 3D request may ask for (`symmetry`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Model3dSymmetry {
+    Off,
+    /// Let the model decide from the input.
+    Auto,
+    On,
+}
+
+impl Model3dSymmetry {
+    pub const ALL: [Model3dSymmetry; 3] =
+        [Model3dSymmetry::Off, Model3dSymmetry::Auto, Model3dSymmetry::On];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Model3dSymmetry::Off => "off",
+            Model3dSymmetry::Auto => "auto",
+            Model3dSymmetry::On => "on",
+        }
+    }
+}
+
+/// OpenAPI schema for the superseded `output_format`: the format vocabulary,
+/// marked deprecated.
+///
+/// Hand-built because utoipa drops `deprecated` from every shape it derives for
+/// this field — a `$ref`, the `oneOf: [null, …]` an `Option` becomes, and an
+/// inline enum alike — and a deprecation no client generator can see is not
+/// one.
+fn deprecated_output_format_schema() -> utoipa::openapi::schema::Object {
+    utoipa::openapi::schema::ObjectBuilder::new()
+        .schema_type(utoipa::openapi::schema::Type::String)
+        .enum_values(Some(Model3dFormat::ALL.iter().map(|f| f.as_str())))
+        .deprecated(Some(utoipa::openapi::Deprecated::True))
+        .description(Some(
+            "Superseded by `output_formats`. A lone value is folded into it; when both \
+             are sent, `output_formats` wins and this one is reported dropped.",
+        ))
+        .build()
+}
+
+/// Request body for `POST /v1/models3d/generations` and `POST /v1/models3d/cost`.
+///
+/// The mode is inferred, never passed: no `reference_images` is text-to-3D, an
+/// `init` image is image-to-3D, and `view-*` images are multiview-to-3D.
+///
+/// Every 3D param is optional and model-dependent; `GET /v1/models/{id}` →
+/// `params` says which a model takes. One it does not take is refused with
+/// `param_unsupported` when `strict` is true (the default), and dropped — and
+/// named in the `X-Litegen-Dropped-Params` response header — when `strict` is
+/// false. A supported param with a bad VALUE is refused in both modes.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Model3dGenerationRequest {
     #[serde(flatten)]
     pub base: BaseGenerationRequest,
-    /// Desired mesh containers, e.g. `["glb", "fbx"]`. Every format asked for
-    /// here is guaranteed present on a `completed` generation or the generation
-    /// fails — see `missing_model3d_formats`. Defaults to the model's declared
-    /// default, and to `["glb"]` when it declares none.
-    #[serde(default)] pub output_formats: Option<Vec<String>>,
-    /// Superseded by `output_formats`; a value here is folded into it. Kept so
-    /// clients written against the scalar keep working for one release.
-    #[serde(default)] pub output_format: Option<String>,
-    /// Generate textures (vs. bare geometry).
+    /// Mesh containers to deliver, e.g. `["glb", "fbx"]`. A promise, not a
+    /// hint: every format named here is present on a `completed` generation,
+    /// or the generation ends `failed`. Omitted means the model's declared
+    /// default, and `["glb"]` when it declares none. Case-insensitive;
+    /// duplicates collapse.
+    ///
+    /// Any set of the containers litegen derives (the model's served
+    /// `derivable_values`) costs one vendor job between them; every other
+    /// container costs one job of its own. A request needing more vendor jobs
+    /// than the model's `max_items` is refused with `param_too_many`.
+    #[serde(default)]
+    #[schema(value_type = Option<Vec<Model3dFormat>>)]
+    pub output_formats: Option<Vec<String>>,
+    /// Superseded by `output_formats`. Its OpenAPI schema is hand-built by
+    /// `deprecated_output_format_schema`.
+    #[serde(default)]
+    #[schema(schema_with = deprecated_output_format_schema, required = false)]
+    pub output_format: Option<String>,
+    /// Texture the mesh, rather than returning bare geometry.
     #[serde(default)] pub texture: Option<bool>,
-    /// PBR materials, where the model supports them.
+    /// PBR materials. `false` asks for flat shading, not "no material".
     #[serde(default)] pub pbr: Option<bool>,
+    /// Approximate triangle budget for the mesh, within the model's declared
+    /// `target_polycount` range.
     #[serde(default)] pub target_polycount: Option<u32>,
-    /// "off" | "auto" | "on".
-    #[serde(default)] pub symmetry: Option<String>,
-    /// "triangle" | "quad".
-    #[serde(default)] pub topology: Option<String>,
-    /// Auto-rig / emit a skeleton, where supported.
+    /// Symmetry handling.
+    #[serde(default)]
+    #[schema(value_type = Option<Model3dSymmetry>)]
+    pub symmetry: Option<String>,
+    /// Face topology of the output mesh.
+    #[serde(default)]
+    #[schema(value_type = Option<Model3dTopology>)]
+    pub topology: Option<String>,
+    /// Auto-rig: deliver the mesh with a skeleton.
     #[serde(default)] pub rig: Option<bool>,
 }
 
+/// What a `Model3dAsset` is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Model3dAssetKind {
+    /// A mesh container: one per format the request was promised.
     Mesh,
+    /// A texture map the vendor returned beside the mesh (e.g. Rodin's PBR maps).
     Texture,
+    /// A 2D rendered preview of the result.
     Preview,
 }
 
-/// One file produced by a 3D generation. A completed generation always carries
-/// exactly one `Mesh` asset; consumers treat its absence as a provider failure.
-/// `url` is always absolute — a root-relative path is indistinguishable from an
-/// outage to a client fetching it from a worker.
+/// One file produced by a 3D generation, re-hosted on litegen storage (the
+/// app's own bucket when it configured one).
+///
+/// A `completed` generation carries one `mesh` asset for every format in its
+/// `output_formats` — never fewer; a missing one fails the generation instead —
+/// plus whatever textures and previews the vendor returned.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Model3dAsset {
     pub kind: Model3dAssetKind,
+    /// Always absolute: a root-relative path is indistinguishable from an
+    /// outage to a client fetching it from a worker. Meshes live at
+    /// `…/{generation_id}/model.{format}`.
     pub url: String,
-    /// "glb" | "obj" | "fbx" | "usdz" | "png" | "jpg".
+    /// Lowercase container without a dot. Meshes use the `Model3dFormat`
+    /// vocabulary; textures and previews their image format (`png`, `jpg`,
+    /// `webp`). A plain string so a client tolerates a format added later.
     pub format: String,
+    /// Size of the stored file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
-    /// Meshes only.
+    /// Triangle count, on meshes whose vendor reports one. A container litegen
+    /// derived carries its source's count — conversion keeps every triangle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub polycount: Option<u32>,
-    /// Preview / texture assets only.
+    /// Pixel width, on textures and previews whose vendor reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
+    /// Pixel height, on textures and previews whose vendor reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
 }
 
-/// 3D generation is always async — this is both the submit response and the
-/// poll response, mirroring `VideoGenerationResponse` with `video_url` replaced
-/// by the richer `assets` list.
+/// A 3D generation's state — both the submit response and every poll
+/// response, since 3D generation is always async. Mirrors
+/// `VideoGenerationResponse`, with `video_url` replaced by `assets`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Model3dGenerationResponse {
+    /// `litegen-3d-…`. Poll it at `GET /v1/models3d/{id}`; it is also the
+    /// generation's id under `/v1/generations`.
     pub id: String,
     pub status: GenerationStatus,
     pub model: String,
     pub provider: String,
-    /// Populated on `completed`. Omitted entirely while the job is in flight.
+    /// Populated on `completed`; omitted while in flight and on `failed`, so a
+    /// failed generation never looks half-usable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assets: Vec<Model3dAsset>,
-    /// Unified 0–100 progress.
+    /// 0–100. Vendors that only report queue state (fal) move in coarse steps.
     pub progress: u8,
+    /// Why the generation failed, when it did. Vendor failures carry the
+    /// vendor's message, with its machine-readable type in parentheses when it
+    /// sent one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The cost quoted and charged at submit; identical on every poll.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<UsageInfo>,
+    /// Unix seconds when the generation was submitted.
     pub created: i64,
 }
 
@@ -389,20 +583,31 @@ pub struct ModelCapabilities {
     #[serde(default)]
     pub max_duration_seconds: Option<f64>,
     // 3D-specific
+    /// Accepts a prompt with no reference images (text-to-3D).
     #[serde(default)]
     pub supports_text_to_3d: bool,
+    /// Accepts one `init` reference image (image-to-3D).
     #[serde(default)]
     pub supports_image_to_3d: bool,
+    /// Accepts several `view-*` reference images (multiview-to-3D).
     #[serde(default)]
     pub supports_multiview_to_3d: bool,
+    /// Takes the `pbr` param.
     #[serde(default)]
     pub supports_pbr: bool,
+    /// Takes the `rig` param.
     #[serde(default)]
     pub supports_rig: bool,
+    /// Takes the `texture` param.
     #[serde(default)]
     pub supports_texture: bool,
+    /// Every mesh container a caller may request, including those litegen
+    /// derives locally — the same list, in the same order, as
+    /// `GET /v1/models/{id}` serves under `params.output_formats.enum_values`.
+    /// Empty for image and video models.
     #[serde(default)]
     pub output_formats: Vec<String>,
+    /// Upper bound of the model's `target_polycount` param, when it takes one.
     #[serde(default)]
     pub max_polycount: Option<u32>,
 }
@@ -718,12 +923,25 @@ pub struct ErrorResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ErrorDetail {
+    /// Human-readable; not for matching on — use `code` and `param`.
     pub message: String,
+    /// The error's family, e.g. `validation_error`, `authentication_error`,
+    /// `quota_exceeded`, `provider_not_configured`.
     pub r#type: String,
+    /// Machine-readable reason within the family, e.g. `param_unsupported`,
+    /// `param_enum_mismatch`, `prompt_required`, `ref_role_required`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_error: Option<serde_json::Value>,
+    /// The request field that failed validation — `output_formats`, `prompt`,
+    /// `reference_images`, `extra.<key>` — so a caller can tell which one to fix
+    /// without parsing `message`. Validation errors only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param: Option<String>,
+    /// The model the rejected request named. Validation errors only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 // ─── Generations (DB-backed polling) ───────────────────────────────────────
@@ -1271,5 +1489,59 @@ mod ref_image_tests {
         assert_eq!(r.base.reference_images.len(), 1);
         assert!(!r.base.strict);
         assert_eq!(r.size.as_deref(), Some("1024x1024"));
+    }
+}
+
+#[cfg(test)]
+mod model3d_vocab_tests {
+    use super::*;
+
+    #[test]
+    fn every_format_round_trips_through_its_wire_spelling() {
+        for f in Model3dFormat::ALL {
+            let v = serde_json::to_value(f).unwrap();
+            assert_eq!(v, f.as_str(), "serde and as_str disagree for {f:?}");
+            assert_eq!(Model3dFormat::parse(f.as_str()), Some(f));
+            assert_eq!(serde_json::from_value::<Model3dFormat>(v).unwrap(), f);
+        }
+        assert_eq!(Model3dFormat::ThreeMf.as_str(), "3mf", "the one spelling serde cannot derive");
+    }
+
+    #[test]
+    fn format_parsing_folds_case_and_whitespace_like_the_validator() {
+        assert_eq!(Model3dFormat::parse(" GLB "), Some(Model3dFormat::Glb));
+        assert_eq!(Model3dFormat::parse("3MF"), Some(Model3dFormat::ThreeMf));
+        assert_eq!(Model3dFormat::parse("GLTF"), Some(Model3dFormat::Gltf));
+        assert_eq!(Model3dFormat::parse("gltf2"), None);
+        assert_eq!(Model3dFormat::parse(""), None);
+    }
+
+    #[test]
+    fn every_locally_derivable_container_can_be_named_in_a_request() {
+        for f in crate::mesh::MeshFormat::ALL {
+            assert!(Model3dFormat::parse(f.as_str()).is_some(), "{f:?} is derivable but not in the vocabulary");
+        }
+        assert_eq!(Model3dFormat::parse(DEFAULT_MODEL3D_FORMAT), Some(Model3dFormat::Glb));
+    }
+
+    #[test]
+    fn topology_and_symmetry_round_trip_through_their_wire_spellings() {
+        for t in Model3dTopology::ALL {
+            assert_eq!(serde_json::to_value(t).unwrap(), t.as_str());
+        }
+        for s in Model3dSymmetry::ALL {
+            assert_eq!(serde_json::to_value(s).unwrap(), s.as_str());
+        }
+    }
+
+    #[test]
+    fn an_omitted_prompt_deserialises_as_empty_for_the_validator_to_judge() {
+        // Whether a prompt is required is the model's call — `PromptSpec`,
+        // applied by the validator with a precise `prompt_required` — never a
+        // JSON shape error. An image-to-3D model with no prompt field takes none.
+        let r: Model3dGenerationRequest =
+            serde_json::from_str(r#"{"model":"fal/trellis","reference_images":[{"type":"url","value":"https://x/a.png"}]}"#)
+                .unwrap();
+        assert_eq!(r.base.prompt, "");
     }
 }

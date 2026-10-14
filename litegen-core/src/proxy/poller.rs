@@ -539,7 +539,7 @@ pub(crate) async fn dispatch_terminal_webhook(
 /// key is configured, the org stored no credential, or anything fails to look up /
 /// decrypt / parse. Errors are logged but never propagated — the poller must keep
 /// running across a bad credential on one row.
-async fn resolve_gen_credential(
+pub(crate) async fn resolve_gen_credential(
     db: &Arc<dyn DatabaseStore>,
     secrets_key: Option<[u8; 32]>,
     gen: &crate::types::Generation,
@@ -984,7 +984,7 @@ mod poller_tests {
         p.configure(ProviderInstanceConfig::default());
         let schema = crate::capabilities::ModelSchema {
             id: model.into(), provider: "mock".into(), media_type: MediaType::Model3d,
-            display_name: model.into(), description: String::new(),
+            display_name: model.into(), description: String::new(), docs_url: None,
             pricing: ModelPricing { base_cost_usd: 0.0, variable_pricing: None },
             capabilities: ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
             prompt: PromptSpec { required: true, min_length: None, max_length: None },

@@ -17,6 +17,7 @@ mod tests {
             media_type: MediaType::Image,
             display_name: "M".into(),
             description: "".into(),
+            docs_url: None,
             pricing: ModelPricing { base_cost_usd: 0.01, variable_pricing: None },
             capabilities: ModelCapabilityFlags { text_to_image: true, ..Default::default() },
             prompt: PromptSpec { required: true, min_length: None, max_length: None },

@@ -391,7 +391,7 @@ models:
         assert_eq!(err.param.as_deref(), Some("duration_seconds"));
     }
 
-    // ─── Required-image rules shared by every family ────────────────────────
+    // ─── Prompt and required-image rules shared by every family ─────────────
 
     fn edit_model(init_role: &str, prompt: &str) -> CapabilityRegistry {
         CapabilityRegistry::from_yaml_strs(&[("x.yaml", format!(r#"
@@ -440,5 +440,35 @@ models:
         let m = r.get("t/edit").unwrap();
         assert_eq!(validate_image(m, with_images(1)).unwrap_err().code, "ref_role_count_out_of_range");
         assert!(validate_image(m, with_images(2)).is_ok());
+    }
+
+    #[test]
+    fn a_model_with_no_prompt_field_refuses_one_in_strict_and_drops_it_in_lax() {
+        let r = edit_model("{ required: true, min_count: 1, max_count: 1 }", "{ required: false, max_length: 0 }");
+        let m = r.get("t/edit").unwrap();
+
+        let err = validate_image(m, with_images(1)).unwrap_err();
+        assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_unsupported", Some("prompt")));
+
+        let mut lax = with_images(1);
+        lax.base.strict = false;
+        let out = validate_image(m, lax).unwrap();
+        assert_eq!(out.dropped, vec!["prompt".to_string()]);
+        assert!(out.request.base.prompt.is_empty());
+
+        let mut none = with_images(1);
+        none.base.prompt = String::new();
+        let out = validate_image(m, none).unwrap();
+        assert!(out.dropped.is_empty(), "an absent prompt is not a dropped one");
+    }
+
+    #[test]
+    fn prompt_length_counts_characters_not_bytes() {
+        // Vendor limits come from JSON Schema `maxLength`, which counts code
+        // points; "é" is two bytes.
+        let r = registry();
+        let m = r.get("t/strict").unwrap();
+        assert!(validate_image(m, img(&"é".repeat(100))).is_ok());
+        assert_eq!(validate_image(m, img(&"é".repeat(101))).unwrap_err().code, "prompt_too_long");
     }
 }

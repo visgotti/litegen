@@ -640,7 +640,8 @@ pub async fn estimate_video_cost(
     path = "/v1/models3d/generations",
     request_body = Model3dGenerationRequest,
     responses(
-        (status = 200, description = "3D generation started", body = Model3dGenerationResponse),
+        (status = 200, description = "3D generation started", body = Model3dGenerationResponse,
+            headers(("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped."))),
         (status = 400, description = "Bad request", body = ErrorResponse),
     ),
     tag = "Models3D"
@@ -648,6 +649,7 @@ pub async fn estimate_video_cost(
 pub async fn generate_3d(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
+    attribution: crate::management::enforce::RequestAttribution,
     validated: ValidatedModel3d,
 ) -> impl IntoResponse {
     let start = std::time::Instant::now();
@@ -687,6 +689,18 @@ pub async fn generate_3d(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    // Org/app/member/end-user/key limits (budgets, model allowlists, rpm and
+    // parallel caps). Settled alongside the key quota below.
+    let mut limits = match crate::management::enforce::begin(
+        &state, key_ctx.as_ref(), &attribution, &validated.schema.id, validated.schema.pricing.base_cost_usd,
+    ).await {
+        Ok(g) => g,
+        Err(resp) => {
+            settle_quota(&state, charge_key, reserved, 0.0).await;
+            return resp;
+        }
+    };
+    let attributed = limits.attribution();
 
     match state.router.generate_model3d(
         &validated.schema, &validated.request.base, &extras, &materialized, app_creds,
@@ -695,6 +709,7 @@ pub async fn generate_3d(
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
             settle_quota(&state, charge_key, reserved, cost).await;
+            limits.settle(&state, cost).await;
 
             let artifact = RequestArtifact {
                 request_id: response.id.clone(),
@@ -723,35 +738,53 @@ pub async fn generate_3d(
             let org_id = key_ctx.as_ref().and_then(|c| c.org_id.clone());
             let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
             let requested_formats = extras.output_formats.clone();
+
+            // The row is written BEFORE the response, not spawned after it. The
+            // caller learns the id only from this response, so nothing can poll
+            // the job until these writes have landed. Spawned, a client polling
+            // fast enough terminalised a job whose row did not exist yet: the
+            // guarded terminal write found nothing to update, the GET path could
+            // not dispatch the webhook (it reads the key off the row), and the
+            // generation sat `pending` until the poller healed it. Three small
+            // writes cost nothing beside the vendor round-trip that preceded
+            // them. The log goes first so the generation can never be terminal
+            // while its log row is still to come — that order is what keeps a
+            // terminal `update_request_log_status` from being overwritten by a
+            // late `pending` insert.
+            if let Err(e) = db.log_request(&id, &model, &provider, "pending", "model3d", cost, latency, None, None, org_id.as_deref(), app_id.as_deref()).await {
+                tracing::warn!(generation_id = %id, error = %e, "failed to log the 3d request");
+            }
+            crate::management::enforce::attribute(&db, &id, &attributed).await;
+            if let Err(e) = db.insert_generation(
+                &id, key_id.as_ref(), &model, &provider, "model3d",
+                provider_job_id.as_deref(), cost, org_id.as_deref(), app_id.as_deref(),
+            ).await {
+                tracing::warn!(generation_id = %id, error = %e, "failed to record the 3d generation");
+            }
+            // The containers promised to this caller, recorded on the row so
+            // the poller and the row-answered path can enforce them — neither
+            // can reach the router's in-memory job map, and the row outlives
+            // it anyway. `insert_generation` takes no metadata, so this is a
+            // second statement; a lost write degrades to the GLB floor in
+            // `row_requested_formats`, never to "no guard at all". Guarded all
+            // the same: the background poller can reach the row between the
+            // insert and this write, and an unguarded write landing after a
+            // terminal one would replace its assets.
+            let mut meta = serde_json::json!({ "requested_formats": requested_formats });
+            // The adapter's own continuation state — fal's status_url and
+            // response_url, Meshy's preview task id. The poller rebuilds the
+            // handle from this row and cannot reach the router's in-memory
+            // job map, so an adapter that needs more than a job id to poll
+            // with only works if this is written here.
+            if let Some(ctx) = stage_context {
+                meta["stage_context"] = ctx;
+            }
+            if let Err(e) = db.update_generation_metadata_if_active(&id, &meta).await {
+                tracing::warn!(generation_id = %id, error = %e, "failed to record requested 3d formats");
+            }
+            // The artifact is diagnostic only — no observer of completion reads
+            // it — so it alone stays off the response path.
             tokio::spawn(async move {
-                let _ = db.log_request(&id, &model, &provider, "pending", "model3d", cost, latency, None, None, org_id.as_deref(), app_id.as_deref()).await;
-                let _ = db.insert_generation(
-                    &id, key_id.as_ref(), &model, &provider, "model3d",
-                    provider_job_id.as_deref(), cost, org_id.as_deref(), app_id.as_deref(),
-                ).await;
-                // The containers promised to this caller, recorded on the row so
-                // the poller and the row-answered path can enforce them — neither
-                // can reach the router's in-memory job map, and the row outlives
-                // it anyway. `insert_generation` takes no metadata, so this is a
-                // second statement; a lost write degrades to the GLB floor in
-                // `row_requested_formats`, never to "no guard at all".
-                //
-                // Guarded, because a fast client can poll this job to completion
-                // between the insert above and this write. Unguarded, the write
-                // lands second and replaces the terminal metadata — assets and
-                // all — leaving a `completed` row with no mesh.
-                let mut meta = serde_json::json!({ "requested_formats": requested_formats });
-                // The adapter's own continuation state — fal's status_url and
-                // response_url, Meshy's preview task id. The poller rebuilds the
-                // handle from this row and cannot reach the router's in-memory
-                // job map, so an adapter that needs more than a job id to poll
-                // with only works if this is written here.
-                if let Some(ctx) = stage_context {
-                    meta["stage_context"] = ctx;
-                }
-                if let Err(e) = db.update_generation_metadata_if_active(&id, &meta).await {
-                    tracing::warn!(generation_id = %id, error = %e, "failed to record requested 3d formats");
-                }
                 if let Err(e) = db.insert_request_artifact(&artifact).await {
                     tracing::warn!(error = %e, request_id = %artifact.request_id, "Failed to store 3d artifact");
                 }
@@ -765,6 +798,7 @@ pub async fn generate_3d(
         }
         Err(e) => {
             settle_quota(&state, charge_key, reserved, 0.0).await;
+            limits.settle(&state, 0.0).await;
             let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             error!(error = %e, "3D generation failed");
             (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
@@ -866,13 +900,14 @@ pub async fn get_3d_status(
                         dispatch_3d_webhook(&state, row.as_ref(), &resp).await;
                     }
                 } else {
-                    // Contract: a completed 3D generation ALWAYS carries exactly
-                    // one mesh asset. A provider that reports success without one
-                    // has produced a generation the caller paid for and cannot
-                    // use, so this is a failure, not a degraded success — the
-                    // caller refunds on `failed`, and would not on `completed`.
-                    // The poller (Task 11) applies the identical rule when it is
-                    // the path that observes completion first.
+                    // Contract: a completed 3D generation ALWAYS carries a mesh
+                    // asset (one per promised container, which the router has
+                    // already enforced). A provider that reports success without
+                    // any has produced a generation the caller paid for and
+                    // cannot use, so this is a failure, not a degraded success —
+                    // the caller refunds on `failed`, and would not on
+                    // `completed`. The poller applies the identical rule when it
+                    // is the path that observes completion first.
                     let err = "provider reported success without a mesh asset";
                     tracing::warn!(generation_id = %id, "3d completed without a mesh asset, failing");
                     resp.status = GenerationStatus::Failed;
@@ -1065,8 +1100,6 @@ pub(crate) fn usage_from_row_cost(cost_usd: f64) -> UsageInfo {
     }
 }
 
-/// Rebuild a `Model3dGenerationResponse` from a persisted row (used once the
-/// poller has terminalised a job and the router no longer tracks it).
 /// The containers a persisted generation promised its caller.
 ///
 /// Falls back to GLB when the row predates the field or its metadata write was
@@ -1082,6 +1115,10 @@ pub(crate) fn row_requested_formats(gen: &crate::types::Generation) -> Vec<Strin
         .unwrap_or_else(|| vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()])
 }
 
+/// Rebuild a `Model3dGenerationResponse` from a persisted row — the answer once
+/// the poller has terminalised a job and the router no longer tracks it, and
+/// the third observer of completion, so it applies the same mesh and
+/// requested-formats guards the other two do.
 pub(crate) fn model3d_response_from_row(gen: &crate::types::Generation) -> Model3dGenerationResponse {
     let assets = gen.metadata.as_ref()
         .and_then(|m| m.get("assets"))
@@ -1180,7 +1217,14 @@ pub async fn list_models(
     Json(ModelListResponse { object: "list".to_string(), data: models }).into_response()
 }
 
-/// GET /v1/models/{id} — Full schema for one model.
+/// GET /v1/models/{id} — Full schema for one model, as a caller should read it.
+///
+/// Served, not raw. `params.output_formats` lists every container a caller may
+/// request — the vendor's own plus what litegen derives locally — with
+/// `derivable_values` saying which share one vendor job (see
+/// `ParamSpecStringArray`). A model still declaring the superseded scalar
+/// `output_format` is served under the canonical plural, so a client only ever
+/// has one spelling to render.
 #[utoipa::path(
     get,
     path = "/v1/models/{id}",
@@ -1196,12 +1240,33 @@ pub async fn get_model_schema(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match state.registry.resolve(&id) {
-        Some(schema) => (StatusCode::OK, Json(serde_json::to_value(schema).unwrap())).into_response(),
+        Some(schema) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(served_model_schema(&schema)).unwrap()),
+        ).into_response(),
         None => (
             StatusCode::NOT_FOUND,
             Json(error_response(&format!("model '{}' not found", id), 404)),
         ).into_response(),
     }
+}
+
+/// A catalog entry as the API presents it: `output_formats` widened from what
+/// the vendor emits to what a caller may request. Everything else verbatim.
+pub(crate) fn served_model_schema(
+    schema: &crate::capabilities::ModelSchema,
+) -> crate::capabilities::ModelSchema {
+    let mut served = schema.clone();
+    if let Some(native) = schema.output_formats_spec() {
+        served.params.remove("output_format");
+        served.params.insert(
+            "output_formats".to_string(),
+            crate::capabilities::ParamSpec::StringArray(
+                crate::proxy::model3d_convert::served_output_formats_spec(&native),
+            ),
+        );
+    }
+    served
 }
 
 fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
@@ -1230,9 +1295,11 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             supports_text_to_3d: s.capabilities.text_to_3d,
             supports_image_to_3d: s.capabilities.image_to_3d,
             supports_multiview_to_3d: s.capabilities.multiview_to_3d,
-            supports_pbr: s.params.contains_key("pbr"),
-            supports_rig: s.params.contains_key("rig"),
-            supports_texture: s.params.contains_key("texture"),
+            // Read the way the validator reads them — a declared Bool — so a
+            // capability can never say yes to a param the validator refuses.
+            supports_pbr: declares_bool(s, "pbr"),
+            supports_rig: declares_bool(s, "rig"),
+            supports_texture: declares_bool(s, "texture"),
             output_formats: extract_output_formats(s),
             max_polycount: extract_max_polycount(s),
         },
@@ -1253,8 +1320,12 @@ fn extract_sizes(s: &crate::capabilities::ModelSchema) -> Vec<String> {
     }
 }
 
-/// `output_formats` is derived from the model's declared `output_format`
-/// enum_values, so a model advertises exactly the formats it can emit.
+fn declares_bool(s: &crate::capabilities::ModelSchema, param: &str) -> bool {
+    matches!(s.params.get(param), Some(crate::capabilities::ParamSpec::Bool(_)))
+}
+
+/// Every container a caller may request: the same list, in the same order, as
+/// `GET /v1/models/{id}` serves under `params.output_formats.enum_values`.
 fn extract_output_formats(s: &crate::capabilities::ModelSchema) -> Vec<String> {
     // Goes through `output_formats_spec` so both the canonical plural and the
     // superseded scalar spelling advertise correctly. Reading one variant
@@ -1266,7 +1337,7 @@ fn extract_output_formats(s: &crate::capabilities::ModelSchema) -> Vec<String> {
     // capability list narrower than what the API accepts would send clients
     // looking for a vendor that emits obj when we can make one from the glb.
     s.output_formats_spec()
-        .map(|sp| crate::proxy::model3d_convert::deliverable_formats(&sp.enum_values))
+        .map(|sp| crate::proxy::model3d_convert::served_output_formats_spec(&sp).enum_values)
         .unwrap_or_default()
 }
 
@@ -2058,8 +2129,14 @@ pub async fn cancel_generation(
             // here is what makes cancellation actually stop an in-flight job;
             // `get_3d_status`'s terminal-row read-through covers the poller-owned
             // and racing-poll cases. Both are no-ops when nothing is tracked.
-            state.router.forget_model3d_job(&id).await;
+            let tracked = state.router.forget_model3d_job(&id).await;
             state.router.forget_video_job(&id).await;
+            // ...and stop it at the VENDOR, which otherwise keeps working on a
+            // job nobody will collect — and bills for it. Off the response path:
+            // the row is cancelled whatever the vendor answers.
+            if gen.media_type == "model3d" {
+                tokio::spawn(cancel_model3d_at_vendor(state.clone(), gen.clone(), tracked));
+            }
             // A cancelled job leaves the poller's active window, so this is the
             // only terminal update its `pending` request log (same id) will get.
             if let Err(e) = state.db.update_request_log_status(&id, "cancelled", None).await {
@@ -2083,6 +2160,43 @@ pub async fn cancel_generation(
             error!(error = %e, "Failed to cancel generation");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response()
         }
+    }
+}
+
+/// Ask a cancelled 3D generation's vendor to stop working on it. Best-effort:
+/// the outcome is logged, never surfaced, because the row is already
+/// `cancelled` and nothing will read the job again.
+///
+/// A job this process is not tracking — the poller drove it, or it was
+/// submitted before a restart — is rebuilt from its row exactly as the poller
+/// rebuilds it, with the org's own credential where it has one: the vendor
+/// knows the job only under the key that submitted it.
+async fn cancel_model3d_at_vendor(
+    state: Arc<AppState>,
+    gen: crate::types::Generation,
+    tracked: Option<(crate::providers::Model3dGenerationHandle, Arc<dyn crate::providers::Model3dProvider>)>,
+) {
+    let (handle, provider) = match tracked {
+        Some(job) => job,
+        None => {
+            let Some(provider_job_id) = gen.provider_job_id.clone() else { return };
+            let creds = crate::proxy::poller::resolve_gen_credential(&state.db, state.secrets_key, &gen).await;
+            let Some(provider) = state.router.registry.model3d_provider_for_request(&gen.provider, creds).await else {
+                tracing::warn!(generation_id = %gen.id, provider = %gen.provider, "3d cancel: provider not configured, the vendor job is left running");
+                return;
+            };
+            let handle = crate::providers::Model3dGenerationHandle {
+                provider_job_id,
+                provider: gen.provider.clone(),
+                model: gen.model.clone(),
+                stage_context: gen.metadata.as_ref().and_then(|m| m.get("stage_context").cloned()),
+            };
+            (handle, provider)
+        }
+    };
+    match provider.cancel(&handle).await {
+        Ok(outcome) => tracing::info!(generation_id = %gen.id, ?outcome, "3d cancel: vendor answered"),
+        Err(e) => tracing::warn!(generation_id = %gen.id, error = %e, "3d cancel: vendor call failed; the row stays cancelled"),
     }
 }
 
@@ -4760,23 +4874,13 @@ mod model3d_completion_contract_tests {
         let submitted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let id = submitted["id"].as_str().unwrap().to_string();
 
-        // The submit handler writes BOTH the `pending` log row and the
-        // generation row from one spawned task; wait for both so this test is
-        // about the terminal update alone. Waiting only for the log row leaves a
-        // race: `fail_model3d_row` guards on `update_generation_if_active`, which
-        // reports `Missing` for a generation row that has not landed yet and
-        // therefore never touches the log — the assertion below then sees the
-        // row still `pending` for a reason that has nothing to do with the
-        // contract under test.
-        let mut ready = false;
-        for _ in 0..200 {
-            let (logs, _) = db.get_request_logs(1, 100).await.unwrap();
-            let has_log = logs.iter().any(|l| l.id == id);
-            let has_gen = db.get_generation(&id).await.ok().flatten().is_some();
-            if has_log && has_gen { ready = true; break; }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        assert!(ready, "the submit handler never wrote the log and generation rows for {id}");
+        // Both rows exist the moment submit returns — `generate_3d` writes them
+        // before responding. They used to be written by a spawned task, and a
+        // client polling first found no row for the guarded terminal write to
+        // update, so the generation and its log both sat `pending`.
+        let (logs, _) = db.get_request_logs(1, 100).await.unwrap();
+        assert!(logs.iter().any(|l| l.id == id), "the pending log row is written before submit returns");
+        assert!(db.get_generation(&id).await.unwrap().is_some(), "and so is the generation row");
 
         let resp = app.oneshot(
             Request::get(format!("/v1/models3d/{id}")).body(Body::empty()).unwrap(),
@@ -4877,5 +4981,323 @@ mod model3d_usage_derivation_tests {
         for s in [GenerationStatus::Pending, GenerationStatus::Processing] {
             assert!(!s.is_terminal(), "{s} must not be terminal");
         }
+    }
+}
+
+#[cfg(test)]
+mod served_schema_tests {
+    use super::served_model_schema;
+    use crate::capabilities::{CapabilityRegistry, ParamSpec};
+
+    fn one(yaml_params: &str) -> CapabilityRegistry {
+        CapabilityRegistry::from_yaml_strs(&[(
+            "x.yaml",
+            format!(
+                "models:\n  - id: x/m\n    provider: x\n    media_type: model3d\n    display_name: M\n    \
+                 pricing: {{ base_cost_usd: 0.01 }}\n    capabilities: {{ text_to_3d: true }}\n    \
+                 prompt: {{ required: true }}\n    params:\n{yaml_params}"
+            )
+            .as_str(),
+        )])
+        .unwrap()
+    }
+
+    #[test]
+    fn a_legacy_scalar_format_spec_is_served_as_the_canonical_plural() {
+        // A deployment's own models dir may still say `output_format`; a client
+        // must only ever have one spelling to render.
+        let r = one("      output_format:\n        kind: string\n        enum_values: [glb, obj]\n        default: glb\n");
+        let served = served_model_schema(r.get("x/m").unwrap());
+        assert!(!served.params.contains_key("output_format"));
+        match served.params.get("output_formats") {
+            Some(ParamSpec::StringArray(s)) => {
+                let native = ["glb".to_string(), "obj".to_string()];
+                assert_eq!(s.enum_values, crate::proxy::model3d_convert::deliverable_formats(&native));
+                assert_eq!(s.derivable_values, crate::proxy::model3d_convert::derivable_formats());
+                assert_eq!(s.max_items, Some(1), "a scalar vendor field is one job");
+                assert_eq!(s.default, ["glb"]);
+            }
+            other => panic!("expected a string_array output_formats, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_model_without_formats_is_served_verbatim() {
+        let r = one("      texture: { kind: bool }\n");
+        let m = r.get("x/m").unwrap();
+        let served = served_model_schema(m);
+        assert!(!served.params.contains_key("output_formats"));
+        assert_eq!(served.params.len(), m.params.len());
+    }
+}
+
+#[cfg(test)]
+mod model3d_vendor_cancel_tests {
+    //! A cancelled 3D generation is stopped at the vendor, not only relabelled
+    //! here: a queued fal job nobody cancels still runs, and bills.
+    use super::*;
+    use crate::providers::{
+        CancelOutcome, HealthCheckResult, Model3dExtras, Model3dGenerationHandle,
+        Model3dGenerationPollResult, Model3dProvider, ProviderError, ProviderInstanceConfig,
+    };
+    use std::sync::Mutex;
+
+    /// Records every handle it is asked to cancel.
+    #[derive(Default)]
+    struct RecordingProvider {
+        cancelled: Mutex<Vec<Model3dGenerationHandle>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Model3dProvider for RecordingProvider {
+        fn name(&self) -> &str { "mock" }
+        fn configure(&mut self, _config: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+        async fn generate(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _b: &BaseGenerationRequest,
+            _e: &Model3dExtras,
+            _r: &crate::proxy::materializer::MaterializedRequest,
+        ) -> Result<Model3dGenerationHandle, ProviderError> {
+            unreachable!("not submitted in these tests")
+        }
+        async fn poll_status(&self, _h: &Model3dGenerationHandle) -> Result<Model3dGenerationPollResult, ProviderError> {
+            unreachable!("a cancelled job is never polled")
+        }
+        async fn estimate_cost(
+            &self,
+            m: &crate::capabilities::ModelSchema,
+            _r: &Model3dGenerationRequest,
+        ) -> Result<CostEstimate, ProviderError> {
+            Ok(crate::providers::build_cost_estimate(m.pricing.base_cost_usd, 0.0, CostSource::Estimated, None))
+        }
+        async fn health_check(&self) -> HealthCheckResult {
+            HealthCheckResult { healthy: true, message: "ok".into(), latency_ms: None }
+        }
+        async fn cancel(&self, handle: &Model3dGenerationHandle) -> Result<CancelOutcome, ProviderError> {
+            self.cancelled.lock().unwrap().push(handle.clone());
+            Ok(CancelOutcome::Requested)
+        }
+    }
+
+    async fn state_with(provider: Arc<RecordingProvider>) -> Arc<AppState> {
+        let db = Arc::new(crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let registry = Arc::new(crate::proxy::registry::ProviderRegistry::new());
+        registry.register_mock_model3d(provider).await;
+        let config = Arc::new(crate::config::AppConfig::default());
+        let router = Arc::new(crate::proxy::router::ProxyRouter::new(
+            registry,
+            Arc::new(crate::proxy::cache::GenerationCache::new(&crate::config::CacheGlobalConfig::default())),
+            config,
+            Arc::new(crate::proxy::storage::LocalStore),
+        ));
+        struct NoTemp;
+        #[async_trait::async_trait]
+        impl crate::proxy::materializer::TempStorage for NoTemp {
+            async fn put(&self, k: &str, _b: bytes::Bytes, _c: &str) -> Result<String, crate::proxy::materializer::MaterializeError> {
+                Ok(format!("local://{k}"))
+            }
+            async fn delete(&self, _k: &str) -> Result<(), crate::proxy::materializer::MaterializeError> { Ok(()) }
+        }
+        let mut models = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        models.pop();
+        models.push("models");
+        Arc::new(AppState {
+            router,
+            db,
+            master_key: None,
+            registry: Arc::new(crate::capabilities::CapabilityRegistry::from_dir(&models).unwrap()),
+            materializer: Arc::new(crate::proxy::materializer::Materializer::new(Arc::new(NoTemp), reqwest::Client::new())),
+            rate_limiter: Arc::new(crate::api::middleware::rate_limit::RateLimiter::new()),
+            in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(8)),
+            oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::SingleTenant,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
+            allow_password: true,
+        })
+    }
+
+    fn row(stage_context: Option<serde_json::Value>) -> crate::types::Generation {
+        let now = chrono::Utc::now();
+        serde_json::from_value(serde_json::json!({
+            "id": "litegen-3d-cancel-1", "key_id": null, "model": "mock/mesh-3d", "provider": "mock",
+            "media_type": "model3d", "status": "cancelled", "provider_job_id": "vendor-job-9",
+            "result_url": null, "error_message": null, "progress": 0, "cost_usd": 0.0,
+            "metadata": stage_context.map(|c| serde_json::json!({ "stage_context": c })),
+            "created_at": now, "updated_at": now, "completed_at": now,
+            "org_id": null, "app_id": null,
+        }))
+        .expect("a generation row")
+    }
+
+    #[tokio::test]
+    async fn a_tracked_job_is_cancelled_through_the_instance_that_submitted_it() {
+        let submitted_by = Arc::new(RecordingProvider::default());
+        let registered = Arc::new(RecordingProvider::default());
+        let state = state_with(registered.clone()).await;
+        let handle = Model3dGenerationHandle {
+            provider_job_id: "vendor-job-9".into(),
+            provider: "mock".into(),
+            model: "mock/mesh-3d".into(),
+            stage_context: None,
+        };
+        cancel_model3d_at_vendor(state, row(None), Some((handle, submitted_by.clone()))).await;
+        assert_eq!(submitted_by.cancelled.lock().unwrap().len(), 1, "the submitting instance cancels");
+        assert!(registered.cancelled.lock().unwrap().is_empty(), "not a platform-default instance");
+    }
+
+    #[tokio::test]
+    async fn an_untracked_job_is_rebuilt_from_its_row_and_cancelled() {
+        // Poller-owned, or submitted before a restart: the router holds nothing,
+        // so the handle comes off the row — stage_context included, which is
+        // where fal's cancel URL lives.
+        let registered = Arc::new(RecordingProvider::default());
+        let state = state_with(registered.clone()).await;
+        let ctx = serde_json::json!({ "endpoint": "fal-ai/trellis", "cancel_url": "https://queue.fal.run/x/cancel" });
+        cancel_model3d_at_vendor(state, row(Some(ctx.clone())), None).await;
+        let cancelled = registered.cancelled.lock().unwrap();
+        assert_eq!(cancelled.len(), 1);
+        assert_eq!(cancelled[0].provider_job_id, "vendor-job-9");
+        assert_eq!(cancelled[0].model, "mock/mesh-3d");
+        assert_eq!(cancelled[0].stage_context.as_ref(), Some(&ctx));
+    }
+}
+
+#[cfg(test)]
+mod model3d_webhook_observer_tests {
+    //! A key's webhook fires when the CLIENT's poll terminalises a 3D job — and
+    //! only once. The poller used to be the only dispatch site, but a row the
+    //! client's GET terminalised first never re-entered the poller's window, so
+    //! a caller watching webhooks instead of polling never heard about it.
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::{middleware, routing::{get, post}};
+    use tower::ServiceExt;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn state() -> Arc<AppState> {
+        let db = Arc::new(crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+        let mut config = crate::config::AppConfig::default();
+        config.providers.insert("mock".into(), serde_json::from_value(serde_json::json!({ "enabled": true })).unwrap());
+        let registry = Arc::new(crate::proxy::registry::ProviderRegistry::new());
+        registry.init_from_config(&config).await;
+        let router = Arc::new(crate::proxy::router::ProxyRouter::new(
+            registry,
+            Arc::new(crate::proxy::cache::GenerationCache::new(&crate::config::CacheGlobalConfig::default())),
+            Arc::new(config),
+            Arc::new(crate::proxy::storage::LocalStore),
+        ));
+        struct NoTemp;
+        #[async_trait::async_trait]
+        impl crate::proxy::materializer::TempStorage for NoTemp {
+            async fn put(&self, k: &str, _b: bytes::Bytes, _c: &str) -> Result<String, crate::proxy::materializer::MaterializeError> {
+                Ok(format!("local://{k}"))
+            }
+            async fn delete(&self, _k: &str) -> Result<(), crate::proxy::materializer::MaterializeError> { Ok(()) }
+        }
+        let mut models = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        models.pop();
+        models.push("models");
+        Arc::new(AppState {
+            router,
+            db,
+            // Without a master key, single-tenant mode treats every bearer
+            // token as anonymous (a dev bypass) and no job has a key to look a
+            // webhook up on. A configured master key makes keys real.
+            master_key: Some(MASTER.into()),
+            registry: Arc::new(crate::capabilities::CapabilityRegistry::from_dir(&models).unwrap()),
+            materializer: Arc::new(crate::proxy::materializer::Materializer::new(Arc::new(NoTemp), reqwest::Client::new())),
+            rate_limiter: Arc::new(crate::api::middleware::rate_limit::RateLimiter::new()),
+            in_flight: Arc::new(crate::api::middleware::backpressure::InFlightLimit::new(8)),
+            oauth: crate::auth::oauth::OAuthConfig::default(),
+            mode: crate::config::Mode::SingleTenant,
+            secrets_key: None,
+            dev: crate::config::DevFlags::default(),
+            allow_password: true,
+        })
+    }
+
+    const MASTER: &str = "test-master-key";
+
+    fn app(state: Arc<AppState>) -> axum::Router {
+        let auth_state = state.clone();
+        axum::Router::new()
+            .route("/v1/keys", post(create_api_key))
+            .route("/v1/models3d/generations", post(generate_3d))
+            .route("/v1/models3d/{id}", get(get_3d_status))
+            .layer(middleware::from_fn(move |req: axum::extract::Request, next: middleware::Next| {
+                let s = auth_state.clone();
+                async move {
+                    let headers = req.headers().clone();
+                    crate::api::middleware::auth_middleware(headers, s, req, next).await
+                }
+            }))
+            .with_state(state)
+    }
+
+    async fn call(app: &axum::Router, req: Request<Body>) -> serde_json::Value {
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        assert!(status.is_success(), "{status}: {body}");
+        body
+    }
+
+    #[tokio::test]
+    async fn the_webhook_fires_once_when_the_clients_poll_terminalises_the_job() {
+        let receiver = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/wh")).respond_with(ResponseTemplate::new(200)).mount(&receiver).await;
+
+        let state = state().await;
+        let app = app(state.clone());
+
+        let key = call(&app, Request::post("/v1/keys")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {MASTER}"))
+            .body(Body::from(serde_json::json!({
+                "name": "wh", "scopes": "generate,read", "webhook_url": format!("{}/wh", receiver.uri()),
+            }).to_string()))
+            .unwrap()).await;
+        let bearer = format!("Bearer {}", key["key"].as_str().expect("secret"));
+
+        let submitted = call(&app, Request::post("/v1/models3d/generations")
+            .header("content-type", "application/json")
+            .header("authorization", &bearer)
+            .body(Body::from(r#"{"model":"mock/mesh-3d","prompt":"a fox"}"#))
+            .unwrap()).await;
+        let id = submitted["id"].as_str().unwrap().to_string();
+
+        let mut last = serde_json::Value::Null;
+        for _ in 0..10 {
+            last = call(&app, Request::get(format!("/v1/models3d/{id}")).header("authorization", &bearer).body(Body::empty()).unwrap()).await;
+            if last["status"] == "completed" { break; }
+        }
+        assert_eq!(last["status"], "completed", "{last}");
+        // The poller's next tick must not deliver it a second time.
+        crate::proxy::poller::poll_once(
+            &state.db, &state.router.registry, None, crate::config::Mode::SingleTenant, &state.router.model3d_store,
+        ).await;
+
+        // Deliveries are spawned off the response path; give the first one
+        // time to land, then a little more for a duplicate to show up.
+        for _ in 0..50 {
+            if !receiver.received_requests().await.unwrap().is_empty() { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let deliveries = receiver.received_requests().await.unwrap();
+        assert_eq!(deliveries.len(), 1, "exactly one webhook per terminal generation");
+        let payload: serde_json::Value = serde_json::from_slice(&deliveries[0].body).unwrap();
+        assert_eq!(payload["id"], id);
+        assert_eq!(payload["status"], "completed");
+        assert!(
+            payload["metadata"]["assets"].as_array().is_some_and(|a| a.iter().any(|x| x["kind"] == "mesh")),
+            "the webhook carries the assets the row has: {payload}"
+        );
     }
 }

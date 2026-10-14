@@ -343,20 +343,39 @@ pub struct VideoGenerationPollResult {
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
-/// Extra 3D-specific parameters extracted from a validated request.
+/// The canonical 3D params of a validated request, as every adapter receives
+/// them. What each one becomes on each vendor's wire is tabled in
+/// `providers::model3d` (the module docs) and proven per adapter by tests that
+/// assert the outbound field.
+///
+/// Every field has already passed the model's own spec: a param the model does
+/// not declare arrives as `None` (dropped in lax mode, refused in strict), so
+/// an adapter maps what it is given and never re-validates.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Model3dExtras {
     /// Containers this generation is committed to producing. Never empty —
     /// resolved through `ModelSchema::resolve_output_formats`, so an adapter can
     /// map it straight onto the vendor's field without re-deriving a default.
-    /// Every entry must come back as a `Mesh` file or the generation fails.
+    /// Every entry must come back as a `Mesh` file or the generation fails;
+    /// litegen derives the ones the vendor omits (whatever
+    /// `proxy::model3d_convert::derivable_formats` covers), so an adapter asks
+    /// the vendor for ONE container — see `prefers_vendor_native` there.
     pub output_formats: Vec<String>,
+    /// Texture the mesh rather than returning bare geometry.
     pub texture: Option<bool>,
+    /// PBR materials; `false` means flat shading, not "no material".
     pub pbr: Option<bool>,
+    /// Approximate triangle budget.
     pub target_polycount: Option<u32>,
+    /// `off` | `auto` | `on` (`types::Model3dSymmetry`).
     pub symmetry: Option<String>,
+    /// `triangle` | `quad` (`types::Model3dTopology`).
     pub topology: Option<String>,
+    /// Deliver the mesh with a skeleton.
     pub rig: Option<bool>,
+    /// Vendor fields the canonical vocabulary does not cover, bounded by the
+    /// model's `extra_allowlist` in strict mode. An adapter must never let one
+    /// overwrite a field it derived from a canonical param above.
     pub extra: Option<serde_json::Value>,
 }
 
@@ -366,13 +385,15 @@ pub struct Model3dExtras {
 #[derive(Debug, Clone)]
 pub struct Model3dFile {
     pub kind: crate::types::Model3dAssetKind,
-    /// Container/extension without the dot: "glb", "png", ….
+    /// Container/extension without the dot: "glb", "png", …. Free-form vendor
+    /// text: rehost normalises it before it reaches a storage key.
     pub format: String,
     pub content_type: String,
     pub bytes: Vec<u8>,
-    /// Meshes only; `None` when the provider does not report it.
+    /// Meshes only; `None` when the provider does not report it. Never the
+    /// requested `target_polycount` — that is the ask, not the result.
     pub polycount: Option<u32>,
-    /// Preview/texture assets only.
+    /// Pixel dimensions, for textures and previews whose vendor reports them.
     pub width: Option<u32>,
     pub height: Option<u32>,
 }
@@ -383,16 +404,31 @@ pub struct Model3dGenerationHandle {
     pub provider_job_id: String,
     pub provider: String,
     pub model: String,
-    /// Opaque per-provider continuation state for vendors whose flow has an
-    /// intermediate stage (e.g. Meshy's preview→refine text-to-3D pipeline).
-    /// Only that provider's own `poll_status` ever reads it; the generic poller,
-    /// the DB row, and the API contract all stay single-stage.
+    /// Opaque per-provider continuation state, written by `generate` and
+    /// persisted on the row (`metadata.stage_context`) so the poller can
+    /// rebuild the handle after a restart — fal keeps its queue URLs here.
+    /// Only that provider's own `poll_status` / `cancel` ever read it.
+    ///
+    /// Write-once: nothing persists a change made after submit. A vendor that
+    /// must record a SECOND stage (Meshy's preview → refine) needs more than
+    /// this field — a poll result carrying the new state, both observers of
+    /// completion persisting it, and an atomic claim so the client's poll and
+    /// the poller cannot both start stage two (and bill it twice).
     pub stage_context: Option<serde_json::Value>,
 }
 
-/// Status from polling a 3D generation. On `Completed`, `files` MUST contain
-/// exactly one `Mesh` entry — a completed generation without a mesh is a
-/// contract violation, not a degraded success.
+/// Status from polling a 3D generation.
+///
+/// On `Completed`, `files` MUST carry at least one `Mesh` — whatever the vendor
+/// itself emitted, already downloaded. A completed generation without a mesh is
+/// a contract violation, not a degraded success: every observer of completion
+/// turns it into `failed`. Containers the caller asked for but the vendor did
+/// not emit are derived by the caller of `poll_status`, never by the adapter.
+///
+/// A vendor's own verdict that the job failed — including "finished, but its
+/// result cannot be retrieved" — is `Ok` with `status: Failed`, so it takes the
+/// normal terminal path (and its webhook). `Err` is for not knowing yet:
+/// retryable when asking again can help, non-retryable when it never will.
 #[derive(Debug, Clone)]
 pub struct Model3dGenerationPollResult {
     pub status: crate::types::GenerationStatus,
@@ -438,6 +474,27 @@ pub trait Model3dProvider: Send + Sync {
     ) -> Result<CostEstimate, ProviderError>;
 
     async fn health_check(&self) -> HealthCheckResult;
+
+    /// Ask the vendor to stop a job the caller cancelled. Best-effort: the row
+    /// is already `cancelled` and nothing reads the job again, so this only
+    /// decides whether the VENDOR keeps working (and billing). Vendors without
+    /// a cancel endpoint answer `Unsupported`.
+    async fn cancel(&self, _handle: &Model3dGenerationHandle) -> Result<CancelOutcome, ProviderError> {
+        Ok(CancelOutcome::Unsupported)
+    }
+}
+
+/// What a vendor said when asked to cancel a job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelOutcome {
+    /// Accepted. A queued job will not run; a running one may still finish.
+    Requested,
+    /// The job had already finished; there was nothing to stop.
+    AlreadyFinished,
+    /// The vendor has no record of the job.
+    NotFound,
+    /// This provider has no way to cancel a job.
+    Unsupported,
 }
 
 // ─── Shared Helpers ─────────────────────────────────────────────────────────

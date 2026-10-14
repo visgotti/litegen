@@ -6,7 +6,7 @@ use utoipa::OpenApi;
     info(
         title = "LiteGen API",
         version = env!("CARGO_PKG_VERSION"),
-        description = "Universal proxy for AI image and video generation."
+        description = "Universal proxy for AI image, video and 3D model generation."
     ),
     paths(
         crate::api::handlers::generate_image,
@@ -161,6 +161,12 @@ use utoipa::OpenApi;
         crate::types::Model3dGenerationResponse,
         crate::types::Model3dAsset,
         crate::types::Model3dAssetKind,
+        // The closed 3D vocabularies. Documentation-only on the request (the
+        // fields stay strings so validation owns the error), but named here so
+        // both SDKs generate literal types instead of hand-copying them.
+        crate::types::Model3dFormat,
+        crate::types::Model3dTopology,
+        crate::types::Model3dSymmetry,
         crate::types::ReferenceImage,
         crate::types::RefImageKind,
         crate::types::GenerationStatus,
@@ -272,6 +278,7 @@ use utoipa::OpenApi;
         crate::capabilities::ParamSpecInt,
         crate::capabilities::ParamSpecFloat,
         crate::capabilities::ParamSpecString,
+        crate::capabilities::ParamSpecStringArray,
         crate::capabilities::ParamSpecAspectRatio,
         crate::capabilities::ParamSpecSeed,
         crate::capabilities::SizeSpec,
@@ -334,3 +341,92 @@ use utoipa::OpenApi;
     )
 )]
 pub struct ApiDoc;
+
+#[cfg(test)]
+mod tests {
+    //! What the generated document promises the SDK generators. Both SDKs are
+    //! regenerated from this output, so a shape that silently changes here
+    //! changes every client's types.
+    use super::ApiDoc;
+    use serde_json::{json, Value};
+    use utoipa::OpenApi;
+
+    fn doc() -> Value {
+        serde_json::to_value(ApiDoc::openapi()).expect("openapi serialises")
+    }
+
+    /// The object carrying `properties[name]` for a schema, looking through the
+    /// `allOf` a `#[serde(flatten)]` produces.
+    fn property<'a>(schema: &'a Value, name: &str) -> &'a Value {
+        if let Some(p) = schema["properties"].get(name) {
+            return p;
+        }
+        schema["allOf"]
+            .as_array()
+            .and_then(|parts| parts.iter().find_map(|p| p["properties"].get(name)))
+            .unwrap_or_else(|| panic!("no property '{name}' in {schema}"))
+    }
+
+    fn mentions(v: &Value, needle: &str) -> bool {
+        v.to_string().contains(needle)
+    }
+
+    #[test]
+    fn the_3d_vocabularies_are_named_enum_schemas() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        assert_eq!(
+            s["Model3dFormat"]["enum"],
+            json!(["glb", "gltf", "obj", "stl", "ply", "fbx", "usdz", "usda", "3mf", "dae"]),
+        );
+        assert_eq!(s["Model3dTopology"]["enum"], json!(["triangle", "quad"]));
+        assert_eq!(s["Model3dSymmetry"]["enum"], json!(["off", "auto", "on"]));
+    }
+
+    #[test]
+    fn the_3d_request_types_its_vocabulary_and_deprecates_the_scalar() {
+        let d = doc();
+        let req = &d["components"]["schemas"]["Model3dGenerationRequest"];
+        let formats = property(req, "output_formats");
+        assert!(mentions(formats, "#/components/schemas/Model3dFormat"), "{formats}");
+        assert_eq!(formats["type"], json!(["array", "null"]), "{formats}");
+        // Inlined rather than a `$ref`, because utoipa drops `deprecated` from a
+        // bare reference — and a deprecation nobody can see is not one.
+        let legacy = property(req, "output_format");
+        assert!(mentions(legacy, "\"3mf\""), "carries the vocabulary: {legacy}");
+        assert!(mentions(legacy, "\"deprecated\":true"), "{legacy}");
+        assert!(mentions(property(req, "topology"), "Model3dTopology"));
+        assert!(mentions(property(req, "symmetry"), "Model3dSymmetry"));
+    }
+
+    #[test]
+    fn prompt_is_optional_on_the_wire() {
+        // `PromptSpec.required` decides, per model. A wire-level `required`
+        // would force image-to-3D callers to send `prompt: ""` to models that
+        // have no prompt field at all.
+        let d = doc();
+        let required = d["components"]["schemas"]["BaseGenerationRequest"]["required"].clone();
+        assert_eq!(required, json!(["model"]), "only the model id is structurally required");
+    }
+
+    #[test]
+    fn served_only_fields_are_documented() {
+        // `derivable_values` is computed by the server (the loader refuses it
+        // in yaml); utoipa cannot mark an array property readOnly, so the
+        // description is what tells a client it never sends it.
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        let derivable = &s["ParamSpecStringArray"]["properties"]["derivable_values"];
+        assert!(mentions(derivable, "Computed\\nby the server") || mentions(derivable, "Computed by the server"), "{derivable}");
+        assert!(s["ModelSchema"]["properties"]["docs_url"].is_object(), "{}", s["ModelSchema"]);
+    }
+
+    #[test]
+    fn every_generation_post_documents_the_dropped_params_header() {
+        let d = doc();
+        for path in ["/v1/images/generations", "/v1/videos/generations", "/v1/models3d/generations"] {
+            let h = &d["paths"][path]["post"]["responses"]["200"]["headers"]["X-Litegen-Dropped-Params"];
+            assert!(h.is_object(), "{path} does not document X-Litegen-Dropped-Params");
+        }
+    }
+}

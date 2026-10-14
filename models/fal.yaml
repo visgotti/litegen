@@ -249,27 +249,37 @@ models:
 
   # ─── 3D (mesh) ──────────────────────────────────────────────────────────────
   #
-  # Every field below was read from that endpoint's own OpenAPI document at
-  # https://fal.ai/api/openapi/queue/openapi.json?endpoint_id={slug} (2026-09-12),
-  # and the prices from https://fal.ai/models/{slug}/llms.txt the same day.
+  # Every field below was read from that endpoint's own OpenAPI document,
+  # https://fal.ai/api/openapi/queue/openapi.json?endpoint_id={endpoint}, and
+  # every price from https://fal.ai/models/{endpoint}/llms.txt — first on
+  # 2026-09-12, re-read 2026-10-12. The adapter that maps these params onto
+  # each endpoint's own field names is litegen-core/src/providers/model3d/fal.rs,
+  # and a test there ties each row below to its arm of that adapter's table.
   #
   # `output_formats` declares only what the VENDOR emits. litegen derives
-  # obj/stl/ply locally from any glb (see litegen-core/src/mesh/), so the
-  # advertised, accepted set is wider than these enums — which is why a
-  # glb-only endpoint is still worth having.
+  # obj/stl/ply locally from any glb (see litegen-core/src/mesh/), so the set a
+  # caller may request — what GET /v1/models/{id} serves — is wider than these
+  # enums, which is why a glb-only endpoint is still worth having.
 
   - id: fal/hyper3d-rodin
     provider: fal
     media_type: model3d
     display_name: Hyper3D Rodin (Fal)
     description: Deemos Rodin via Fal. Text- or image-to-3D, and the only fal 3D endpoint that lets you pick the container.
-    # "$0.4 per generations". The HighPack addon costs triple; it is an
-    # extra_allowlist passthrough, so the quote here is the base.
+    docs_url: https://fal.ai/models/fal-ai/hyper3d/rodin/api
+    # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/hyper3d/rodin
+    #   (Hyper3dRodinInput / Hyper3dRodinOutput, re-read 2026-10-12)
+    # @see https://fal.ai/models/fal-ai/hyper3d/rodin/llms.txt
+    # "$0.4 per generations". The HighPack addon "will cost triple the billable
+    # units"; it is an extra_allowlist passthrough, so the quote here is the base.
     pricing:
       base_cost_usd: 0.4
       variable_pricing: { addons_highpack_multiplier: 3 }
     capabilities: { text_to_3d: true, image_to_3d: true }
-    prompt: { required: false, max_length: 4000 }
+    # Hyper3dRodinInput.prompt is `maxLength: 1024`: "Required for Text-to-3D
+    # mode. Optional for Image-to-3D mode." Not required here because images
+    # make it optional; validate_model3d still refuses a request with neither.
+    prompt: { required: false, max_length: 1024 }
     params:
       output_formats:
         kind: string_array
@@ -308,11 +318,17 @@ models:
     media_type: model3d
     display_name: TRELLIS (Fal)
     description: Microsoft TRELLIS via Fal. Image-to-3D only, GLB only — litegen derives obj/stl/ply from it.
+    docs_url: https://fal.ai/models/fal-ai/trellis/api
+    # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/trellis
+    #   (TrellisInput / TrellisOutput, re-read 2026-10-12)
+    # @see https://fal.ai/models/fal-ai/trellis/llms.txt
     # "$0.02 per generations" — the cheapest 3D endpoint in the catalog.
     pricing: { base_cost_usd: 0.02 }
     capabilities: { image_to_3d: true }
-    # TrellisInput marks `image_url` REQUIRED and has no prompt field at all.
-    prompt: { required: false, max_length: 4000 }
+    # TrellisInput marks `image_url` REQUIRED and has no prompt field at all, so
+    # the model takes no prompt: max_length 0 refuses one in strict mode and
+    # drops it in lax mode, rather than accepting text that goes nowhere.
+    prompt: { required: false, max_length: 0 }
     params:
       output_formats:
         kind: string_array
@@ -321,6 +337,8 @@ models:
         default: [glb]
         label: Output formats
         description: TRELLIS emits glb; obj, stl and ply are derived by litegen.
+      # TrellisInput.seed is an unbounded integer; u32 is the range every other
+      # fal endpoint documents.
       seed: { kind: seed, min: 0, max: 4294967295 }
     ref_inputs:
       max_total: 1
@@ -328,6 +346,7 @@ models:
       provider_format: { form: url }
       roles:
         init: { required: true, min_count: 1, max_count: 1 }
+    # texture_size is 512 | 1024 | 2048 (default 1024); mesh_simplify 0.9–0.98.
     extra_allowlist: [mesh_simplify, texture_size, ss_guidance_strength, ss_sampling_steps, slat_guidance_strength, slat_sampling_steps]
     tags: [3d, mesh, trellis]
 
@@ -336,13 +355,18 @@ models:
     media_type: model3d
     display_name: Hunyuan3D v2 (Fal)
     description: Tencent Hunyuan3D v2 via Fal. Image-to-3D only, GLB only — litegen derives obj/stl/ply from it.
-    # "$0.16 per generations", and the docs state a textured mesh is charged
-    # three times a white mesh.
+    docs_url: https://fal.ai/models/fal-ai/hunyuan3d/v2/api
+    # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/hunyuan3d/v2
+    #   (Hunyuan3dV2Input / Hunyuan3dV2Output, re-read 2026-10-12)
+    # @see https://fal.ai/models/fal-ai/hunyuan3d/v2/llms.txt
+    # "$0.16 per generations", and `textured_mesh` says "the price charged would
+    # be 3 times that of white mesh". The quote here is the base either way.
     pricing:
       base_cost_usd: 0.16
       variable_pricing: { textured_mesh_multiplier: 3 }
     capabilities: { image_to_3d: true }
-    prompt: { required: false, max_length: 4000 }
+    # Hunyuan3dV2Input has no prompt field — see fal/trellis above.
+    prompt: { required: false, max_length: 0 }
     params:
       output_formats:
         kind: string_array
@@ -355,7 +379,7 @@ models:
         kind: bool
         default: false
         label: Textured mesh
-        description: Sends `textured_mesh`. Tencent charges 3x for a textured mesh.
+        description: Sends `textured_mesh`. fal charges 3x for a textured mesh.
       seed: { kind: seed, min: 0, max: 4294967295 }
     ref_inputs:
       max_total: 1
@@ -363,5 +387,7 @@ models:
       provider_format: { form: url }
       roles:
         init: { required: true, min_count: 1, max_count: 1 }
+    # octree_resolution 1–1024 (default 256), num_inference_steps 1–50,
+    # guidance_scale 0–20.
     extra_allowlist: [num_inference_steps, guidance_scale, octree_resolution]
     tags: [3d, mesh, hunyuan]

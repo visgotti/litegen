@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::capabilities::schema::*;
-use crate::types::DEFAULT_MODEL3D_FORMAT;
+use crate::types::{Model3dFormat, Model3dSymmetry, Model3dTopology, DEFAULT_MODEL3D_FORMAT};
 
 #[derive(Debug, Error)]
 pub enum LoadError {
@@ -51,13 +51,78 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         return Err(bad(format!("model '{}' has negative base_cost_usd", m.id)));
     }
 
-    for k in m.params.keys() {
+    // `max_length: 0` is how a model says it takes no prompt; requiring one as
+    // well would make every request unsatisfiable.
+    if m.prompt.max_length == Some(0) && m.prompt.required {
+        return Err(bad(format!(
+            "model '{}' prompt is required but max_length is 0 (which means no prompt)", m.id
+        )));
+    }
+
+    for (k, spec) in &m.params {
         if !KNOWN_PARAMS.contains(&k.as_str()) {
             return Err(bad(format!(
                 "model '{}' has unknown param key '{}'; known: {:?}",
                 m.id, k, KNOWN_PARAMS
             )));
         }
+        // A wrong kind is worse than an unknown key: it loads, is advertised
+        // through `GET /v1/models`, and is then refused by the validator as
+        // unsupported on every request that uses it.
+        let kinds = canonical_param_kinds(k);
+        if !kinds.contains(&spec.kind()) {
+            return Err(bad(format!(
+                "model '{}' declares '{}' as kind: {}; it must be kind: {}",
+                m.id, k, spec.kind(), kinds.join(" | ")
+            )));
+        }
+    }
+
+    if let Some(url) = &m.docs_url {
+        let ok = reqwest::Url::parse(url)
+            .is_ok_and(|u| u.scheme() == "https" && u.host_str().is_some_and(|h| !h.is_empty()));
+        if !ok {
+            return Err(bad(format!(
+                "model '{}' docs_url '{}' must be an absolute https:// URL", m.id, url
+            )));
+        }
+    }
+
+    // The closed 3D vocabularies. Validation compares case-insensitively, but
+    // the catalog is what `GET /v1/models/{id}` serves, so it must use the
+    // canonical spelling — and a typo here ("gbl") would otherwise advertise a
+    // container no observer of completion could ever find.
+    let in_vocab = |param: &str, values: &[String], vocab: &[&str]| -> Result<(), LoadError> {
+        match values.iter().find(|v| !vocab.contains(&v.as_str())) {
+            Some(v) => Err(bad(format!(
+                "model '{}' {} value '{}' is not one of {:?}", m.id, param, v, vocab
+            ))),
+            None => Ok(()),
+        }
+    };
+    let formats: Vec<&str> = Model3dFormat::ALL.iter().map(|f| f.as_str()).collect();
+    if let Some(ParamSpec::StringArray(s)) = m.params.get("output_formats") {
+        in_vocab("output_formats", &s.enum_values, &formats)?;
+        in_vocab("output_formats default", &s.default, &formats)?;
+        // Computed by the server from what the vendor emits. A catalog able to
+        // set it could promise conversions litegen cannot perform.
+        if !s.derivable_values.is_empty() {
+            return Err(bad(format!(
+                "model '{}' sets output_formats.derivable_values, which the server computes; remove it",
+                m.id
+            )));
+        }
+    }
+    if let Some(ParamSpec::String(s)) = m.params.get("output_format") {
+        in_vocab("output_format", &s.enum_values, &formats)?;
+    }
+    if let Some(ParamSpec::String(s)) = m.params.get("topology") {
+        let vocab: Vec<&str> = Model3dTopology::ALL.iter().map(|t| t.as_str()).collect();
+        in_vocab("topology", &s.enum_values, &vocab)?;
+    }
+    if let Some(ParamSpec::String(s)) = m.params.get("symmetry") {
+        let vocab: Vec<&str> = Model3dSymmetry::ALL.iter().map(|t| t.as_str()).collect();
+        in_vocab("symmetry", &s.enum_values, &vocab)?;
     }
 
     // `output_formats` sanity.

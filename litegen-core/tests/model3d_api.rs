@@ -7,6 +7,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use litegen::db::sqlite::SqliteDatabase;
 use litegen::db::{DatabaseStore, GenerationWrite};
+use litegen::proxy::model3d_convert::{deliverable_formats, derivable_formats};
 use litegen::types::{GenerationStatus, MediaType, RequestLog};
 use serde_json::json;
 use tower::ServiceExt;
@@ -166,7 +167,14 @@ async fn model_schema_endpoint_serves_a_populated_params_map_for_3d() {
     // the cardinality has to be on the wire, not only in the validator.
     assert_eq!(params["output_formats"]["kind"], "string_array");
     assert_eq!(params["output_formats"]["max_items"], 3);
-    assert_eq!(params["output_formats"]["enum_values"], serde_json::json!(["glb", "obj", "stl"]));
+    // Served as the CALLER's set: the yaml's native [glb, obj, stl] first,
+    // then every container litegen derives — exactly what the validator
+    // accepts.
+    let native = ["glb", "obj", "stl"].map(String::from).to_vec();
+    let served: Vec<String> = serde_json::from_value(params["output_formats"]["enum_values"].clone()).unwrap();
+    assert_eq!(served, deliverable_formats(&native));
+    assert_eq!(served[..3], native[..], "native first, in order");
+    assert_eq!(params["output_formats"]["derivable_values"], serde_json::json!(derivable_formats()));
 }
 
 #[tokio::test]
@@ -901,10 +909,10 @@ async fn the_canonical_result_url_is_the_glb_whatever_order_they_arrive_in() {
 #[tokio::test]
 async fn a_provider_that_under_delivers_an_underivable_format_fails_the_generation() {
     // mock/partial-3d reports success while returning only glb — the way a real
-    // vendor under-delivers when a convert step is skipped. fbx is the case that
-    // still matters: obj/stl/ply are derived locally when a vendor omits them,
-    // so only a container litegen cannot produce itself can go missing. The
-    // caller paid for an fbx they cannot have, so this must fail.
+    // vendor under-delivers when a convert step is skipped — and a glb the
+    // converter cannot read (it requires Draco). litegen would derive a
+    // missing fbx from a glb it can read; from this one nothing can be
+    // derived. The caller paid for an fbx they cannot have, so this must fail.
     let (app, _db) = harness::app_with_mock_3d().await;
     let resp = harness::submit_with(&app, serde_json::json!({
         "model": "mock/partial-3d",
@@ -977,17 +985,19 @@ async fn the_row_answered_path_reaches_the_same_verdict_as_the_live_poll() {
 
 #[tokio::test]
 async fn a_container_the_model_cannot_emit_is_rejected_at_submit() {
-    // Before the vendor is billed, not after.
+    // Before the vendor is billed, not after. Every container litegen names
+    // derives from the mock's glb, so only one outside the converter (Sloyd's
+    // .blend, say) is undeliverable.
     let (app, _db) = harness::app_with_mock_3d().await;
     let resp = harness::submit_with(&app, serde_json::json!({
         "model": "mock/mesh-3d",
         "prompt": "a fox",
-        "output_formats": ["fbx"],
+        "output_formats": ["blend"],
     })).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let err = harness::json_body(resp).await;
     assert!(
-        serde_json::to_string(&err).unwrap().contains("fbx"),
+        serde_json::to_string(&err).unwrap().contains("blend"),
         "the rejection must name the format: {err}",
     );
 }
@@ -1061,4 +1071,69 @@ async fn a_mid_flight_poll_does_not_erase_what_submit_recorded() {
 
     let meta = db.get_generation(&id).await.unwrap().unwrap().metadata.expect("metadata survived");
     assert_eq!(meta["requested_formats"], serde_json::json!(["glb", "obj"]), "{meta}");
+}
+
+#[tokio::test]
+async fn fal_3d_models_are_served_with_their_deliverable_formats_and_vendor_reference() {
+    // A client renders the format picker straight off this spec, so it must
+    // list what the validator accepts (native ∪ derived), name which share a
+    // vendor job, and keep max_items as that vendor-job budget.
+    let (app, _db) = harness::app_with_mock_3d().await;
+    for (id, native, docs_url) in [
+        ("fal/trellis", vec!["glb"], "https://fal.ai/models/fal-ai/trellis/api"),
+        ("fal/hunyuan3d-v2", vec!["glb"], "https://fal.ai/models/fal-ai/hunyuan3d/v2/api"),
+        ("fal/hyper3d-rodin", vec!["glb", "usdz", "fbx", "obj", "stl"], "https://fal.ai/models/fal-ai/hyper3d/rodin/api"),
+    ] {
+        let native: Vec<String> = native.into_iter().map(String::from).collect();
+        let enum_values = json!(deliverable_formats(&native));
+        let resp = app.clone().oneshot(
+            Request::get(format!("/v1/models/{id}")).body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{id}");
+        let schema: serde_json::Value = harness::json_body(resp).await;
+        assert_eq!(schema["docs_url"], docs_url, "{id}");
+        let formats = &schema["params"]["output_formats"];
+        assert_eq!(formats["enum_values"], enum_values, "{id}");
+        assert_eq!(formats["derivable_values"], json!(derivable_formats()), "{id}");
+        for f in ["fbx", "usdz", "3mf", "dae"] {
+            assert!(formats["enum_values"].as_array().unwrap().iter().any(|v| v == f), "{id}: {f} is deliverable");
+        }
+        assert_eq!(formats["max_items"], 1, "{id}");
+    }
+}
+
+#[tokio::test]
+async fn the_models_list_advertises_exactly_the_formats_the_schema_serves() {
+    // Two projections of one fact; a client must not see two answers.
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let resp = app.clone().oneshot(
+        Request::get("/v1/models?media_type=model3d").body(Body::empty()).unwrap(),
+    ).await.unwrap();
+    let list: serde_json::Value = harness::json_body(resp).await;
+    let models = list["data"].as_array().expect("model list");
+    assert!(models.len() >= 7, "the catalog's 3D models are listed: {}", models.len());
+    for m in models {
+        let id = m["id"].as_str().unwrap();
+        let resp = app.clone().oneshot(
+            Request::get(format!("/v1/models/{id}")).body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        let schema: serde_json::Value = harness::json_body(resp).await;
+        let served = schema["params"]["output_formats"]["enum_values"].clone();
+        let advertised = m["capabilities"]["output_formats"].clone();
+        if served.is_null() {
+            assert_eq!(advertised, json!([]), "{id} declares no formats");
+        } else {
+            assert_eq!(advertised, served, "{id}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_omitted_prompt_is_a_validation_error_not_a_parse_error() {
+    // `prompt` is optional on the wire; whether a model needs one is its
+    // PromptSpec's call, answered with a code a client can act on.
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let (status, body) = post_json(&app, "/v1/models3d/generations", json!({ "model": "mock/mesh-3d" })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "prompt_required", "{body}");
 }

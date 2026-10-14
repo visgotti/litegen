@@ -30,9 +30,11 @@ const FAIL_MODEL: &str = "mock/fail-3d";
 const FINISHED_JOB_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// The model id that reports `completed` while delivering only glb, whatever
-/// was asked for. Real vendors under-deliver silently (a convert step that was
-/// skipped, a format that quietly fell back); this is the subject that proves
-/// the delivered-vs-requested guard catches it at all three observers.
+/// was asked for, and a glb the converter cannot read
+/// ([`generate_undecodable_glb`]), so nothing missing can be derived from it.
+/// Real vendors under-deliver silently (a convert step that was skipped, a
+/// format that quietly fell back); this is the subject that proves the
+/// delivered-vs-requested guard catches it at all three observers.
 const PARTIAL_MODEL: &str = "mock/partial-3d";
 
 struct Job {
@@ -78,6 +80,35 @@ impl Default for MockModel3dProvider {
     }
 }
 
+/// The cube as a GLB litegen's converter refuses: it declares Draco
+/// compression as required, as a vendor that compresses its meshes does, and
+/// `mesh` decodes no Draco. Nothing can be derived from it, so whatever
+/// container `mock/partial-3d` leaves out stays missing — the one way a
+/// promised container still goes missing now that every container litegen
+/// names is derivable from a mesh it can read.
+fn generate_undecodable_glb(prompt: &str) -> Vec<u8> {
+    let glb = generate_cube_glb(prompt);
+    let json_len = u32::from_le_bytes([glb[12], glb[13], glb[14], glb[15]]) as usize;
+    let mut json: serde_json::Value = serde_json::from_slice(&glb[20..20 + json_len]).expect("the mock's own glb");
+    json["extensionsUsed"] = serde_json::json!(["KHR_draco_mesh_compression"]);
+    json["extensionsRequired"] = serde_json::json!(["KHR_draco_mesh_compression"]);
+    let mut text = serde_json::to_vec(&json).expect("json");
+    while text.len() % 4 != 0 {
+        text.push(b' ');
+    }
+    let bin = &glb[20 + json_len..];
+    let total = 20 + text.len() + bin.len();
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&text);
+    out.extend_from_slice(bin);
+    out
+}
+
 #[async_trait]
 impl Model3dProvider for MockModel3dProvider {
     fn name(&self) -> &str {
@@ -114,6 +145,7 @@ impl Model3dProvider for MockModel3dProvider {
             .iter()
             .filter(|f| model.id != PARTIAL_MODEL || f.as_str() == "glb")
             .filter_map(|f| match f.as_str() {
+                "glb" if model.id == PARTIAL_MODEL => Some((f.clone(), generate_undecodable_glb(&base.prompt))),
                 "glb" => Some((f.clone(), generate_cube_glb(&base.prompt))),
                 "obj" => Some((f.clone(), generate_cube_obj(&base.prompt))),
                 "stl" => Some((f.clone(), generate_cube_stl(&base.prompt))),
@@ -266,6 +298,7 @@ mod tests {
             media_type: MediaType::Model3d,
             display_name: id.into(),
             description: String::new(),
+            docs_url: None,
             pricing: ModelPricing { base_cost_usd: 0.0, variable_pricing: None },
             capabilities: ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
             prompt: PromptSpec { required: true, min_length: None, max_length: None },
@@ -338,6 +371,16 @@ mod tests {
         assert!(seen.len() >= 3, "expected several polls, got {seen:?}");
         assert!(seen.windows(2).all(|w| w[1] >= w[0]), "progress must be monotonic: {seen:?}");
         assert_eq!(*seen.last().unwrap(), 100);
+    }
+
+    #[test]
+    fn the_partial_models_glb_is_one_the_converter_refuses() {
+        let glb = generate_undecodable_glb("a fox");
+        assert_eq!(&glb[..4], b"glTF");
+        assert_eq!(u32::from_le_bytes([glb[8], glb[9], glb[10], glb[11]]) as usize, glb.len());
+        let err = crate::mesh::read(&glb, crate::mesh::MeshFormat::Glb).unwrap_err();
+        assert!(matches!(err, crate::mesh::MeshError::Unsupported(_)), "{err}");
+        assert!(crate::mesh::read(&generate_cube_glb("a fox"), crate::mesh::MeshFormat::Glb).is_ok());
     }
 
     #[tokio::test]

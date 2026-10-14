@@ -390,12 +390,12 @@ models:
     media_type: model3d
     display_name: Mock Partial-Delivery 3D
     description: >-
-      Reports `completed` while returning only glb, whatever was asked for —
-      the way a real vendor under-delivers when a convert step is skipped.
-      Declares fbx because fbx is the case that still matters: obj/stl/ply are
-      derived locally when a vendor omits them, so only a container litegen
-      cannot produce itself can still go missing. Request `[glb, fbx]` and the
-      generation must FAIL, at every observer.
+      Reports `completed` while returning only a glb, whatever was asked for —
+      and a glb litegen's converter cannot read, because it declares
+      KHR_draco_mesh_compression as required, the way a vendor that compresses
+      its meshes under-delivers. With nothing readable to derive from, every
+      other promised container stays missing: request `[glb, obj]` or
+      `[glb, fbx]` and the generation must FAIL, at every observer.
     pricing: { base_cost_usd: 0.0 }
     capabilities: { text_to_3d: true }
     prompt: { required: true, max_length: 1000 }

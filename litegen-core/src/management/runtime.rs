@@ -16,7 +16,7 @@ use super::types::*;
 use crate::api::middleware::AppState;
 use crate::capabilities::schema::{MediaType, ModelSchema};
 use crate::config::{CacheRouteConfig, DeploymentConfig, ModelRouteConfig, ProviderEnvConfig};
-use crate::proxy::registry::{IMAGE_PROVIDERS, VIDEO_PROVIDERS};
+use crate::proxy::registry::{IMAGE_PROVIDERS, MODEL3D_PROVIDERS, VIDEO_PROVIDERS};
 
 /// `gateway_settings` key holding the [`GatewaySettings`] JSON.
 pub const SETTINGS_KEY: &str = "gateway";
@@ -124,7 +124,7 @@ pub async fn ensure_default_end_user_limits(
 const STRATEGIES: &[&str] = &["fallback", "weighted_round_robin", "lowest_cost", "lowest_latency"];
 
 pub fn known_provider(name: &str) -> bool {
-    IMAGE_PROVIDERS.contains(&name) || VIDEO_PROVIDERS.contains(&name)
+    IMAGE_PROVIDERS.contains(&name) || VIDEO_PROVIDERS.contains(&name) || MODEL3D_PROVIDERS.contains(&name)
 }
 
 pub fn validate_routes(routes: &[RouteSpec]) -> Result<(), String> {
@@ -211,6 +211,7 @@ pub fn validate_runtime_model(state: &AppState, m: &ModelSchema) -> Result<(), S
     let supported = match m.media_type {
         MediaType::Image => IMAGE_PROVIDERS,
         MediaType::Video => VIDEO_PROVIDERS,
+        MediaType::Model3d => MODEL3D_PROVIDERS,
     };
     if !supported.contains(&m.provider.as_str()) {
         return Err(format!("provider '{}' has no {:?} adapter", m.provider, m.media_type).to_lowercase());
@@ -312,6 +313,7 @@ pub async fn provider_view(state: &AppState, store: &dyn ManagementStore, name: 
     let mut modalities = Vec::new();
     if IMAGE_PROVIDERS.contains(&name) { modalities.push("image".to_string()); }
     if VIDEO_PROVIDERS.contains(&name) { modalities.push("video".to_string()); }
+    if MODEL3D_PROVIDERS.contains(&name) { modalities.push("model3d".to_string()); }
     let active = state.router.registry.registered_config(name).await.is_some();
     let secret = effective
         .api_key
@@ -341,7 +343,7 @@ pub async fn provider_view(state: &AppState, store: &dyn ManagementStore, name: 
 /// Every adapter name litegen knows, sorted.
 pub fn all_provider_names() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = Vec::new();
-    for n in IMAGE_PROVIDERS.iter().chain(VIDEO_PROVIDERS) {
+    for n in IMAGE_PROVIDERS.iter().chain(VIDEO_PROVIDERS).chain(MODEL3D_PROVIDERS) {
         if !names.contains(n) {
             names.push(n);
         }

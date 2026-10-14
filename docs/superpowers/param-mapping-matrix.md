@@ -136,28 +136,42 @@ even where provider evidence is strong.
 
 ## 3D (`model3d`)
 
-No vendor 3D adapters exist yet (Meshy/Tripo3D/Stability/Rodin are
-deliberately deferred — see plan amendment 2026-08-20). Every cell in the
-vendor columns below is transcribed from the design spec §9 vendor tables and
-has **never been exercised against a live API or even a wiremock stub of one**.
-Cells tagged `(unconfirmed)` are the exception in the other direction: they do
-**not** appear in §9 at all and were inferred when this table was written, so
-treat them as guesses to verify against vendor docs, not as spec-sourced field
-names.
-Do not upgrade a cell to ✅ on documentation alone — that is exactly the
-mistake this document exists to prevent.
+**fal is the implemented 3D vendor** — `fal/hyper3d-rodin`, `fal/trellis` and
+`fal/hunyuan3d-v2`, mapped by `litegen-core/src/providers/model3d/fal.rs`.
+Every cell below was read from that endpoint's own schema,
+`https://fal.ai/api/openapi/queue/openapi.json?endpoint_id={endpoint}`
+(re-read 2026-10-12), and is proven by name: a wiremock test asserting the
+OUTBOUND field (`fal::tests::…`), a validator test against the shipped catalog
+(`model3d_validation::…`), and the test that ties each `models/fal.yaml` row to
+its arm of the adapter's endpoint table,
+`fal::tests::each_catalog_row_declares_exactly_what_its_endpoint_takes` — so the
+yaml and the adapter cannot drift apart silently. "—" means the endpoint's
+schema has no such field: the row does not declare the param, and validation
+refuses it (strict) or drops and reports it (lax) before the adapter runs.
 
-| litegen param | ParamSpec | Validator rule | Meshy | Tripo3D | Stability | Rodin | Proof |
-|---|---|---|---|---|---|---|---|
-| `prompt` | PromptSpec | required, length | `prompt` | `prompt` | — (image only) | — | ⬜ |
-| `output_formats` | StringArray enum + max_items | deliverable set; vendor-jobs ≤ max_items | `target_formats` ✅ (glb\|obj\|fbx\|stl\|usdz\|3mf; omitted ⇒ all but 3mf) | separate billed convert task; `quad` forces FBX ✅ | fixed GLB, no param ✅ | `geometry_file_format` ✅ (scalar: glb\|usdz\|fbx\|obj\|stl, default glb) | ✅ **PROVEN LIVE 2026-09-12** on fal (`fal/trellis`, real billed run) — see below |
-| `symmetry` ⚠️ | String enum | enum off/auto/on | `symmetry_mode` — **deprecated by Meshy** | — | — | — | ⚠️ we are the only consumer of a param its one vendor deprecated |
-| `texture` | Bool | supported-or-drop | `should_texture` | `texture` (unconfirmed) | — | `material` | ⬜ |
-| `pbr` | Bool | supported-or-drop | (texture_* maps) | `pbr` | — | `material=PBR` | ⬜ |
-| `target_polycount` | Int 100–300000 | range | `target_polycount` | `face_limit` | `vertex_count` | `quality` | ⬜ |
-| `topology` | String enum | enum triangle/quad | `topology` | `quad` (bool) | `remesh` | `mesh_mode` | ⬜ |
-| `rig` | Bool | supported-or-drop | (separate endpoint — unconfirmed) | `rig` (unconfirmed) | — | — | ⬜ |
-| `seed` | Seed | range | — | `model_seed` | `seed` | — | ⬜ |
+| litegen param | ParamSpec | `fal-ai/hyper3d/rodin` | `fal-ai/trellis` | `fal-ai/hunyuan3d/v2` | Proof | Status |
+|---|---|---|---|---|---|---|
+| `prompt` | PromptSpec | `prompt`, ≤ 1024 chars; required when there is no image | — (`max_length: 0`) | — (`max_length: 0`) | `rodin_text_to_3d_sends_rodins_own_field_names` (`body["prompt"]`); `trellis_takes_image_url_and_never_a_prompt_or_a_format` and `hunyuan_takes_input_image_url_and_maps_texture_to_textured_mesh` (no `prompt` key); validator `rodins_prompt_limit_is_1024_characters_not_bytes`, `image_only_models_take_no_prompt`, `text_to_3d_needs_a_prompt_even_where_the_prompt_is_optional` | ✅ |
+| `init` image(s) | RefInputSpec (`form: url`) | `input_image_urls[]` (≤ 5) | `image_url` (required) | `input_image_url` (required) | `rodin_image_to_3d_sends_every_image_as_an_array_and_no_empty_prompt`; trellis/hunyuan tests above; `an_uploaded_image_in_base64_form_is_sent_as_a_data_uri`; validator `image_only_models_require_their_image` | ✅ |
+| `output_formats` | StringArray, `max_items: 1` | `geometry_file_format` — glb as the conversion source, or the vendor-native container asked for (fbx, usdz: `prefers_vendor_native`) | — (glb only) | — (glb only) | `rodin_text_to_3d_sends_rodins_own_field_names` (`glb` for `[glb, obj]`); `rodin_is_asked_for_its_own_fbx_rather_than_a_conversion` (`fbx`); trellis test (no format key); validator `rodin_serves_the_derivable_set_from_one_job_but_not_two_native_formats`, `glb_only_models_deliver_the_whole_derivable_set`; live, 2026-09-12 (below) | ✅ |
+| `seed` | Seed | `seed`, 0..=65535 | `seed`, u32 | `seed`, u32 | rodin and trellis tests (`body["seed"]`); validator `rodins_seed_ceiling_is_its_u16_maximum`; adapter refuses rather than clamps: `requests_fal_would_only_reject_are_refused_before_submitting` | ✅ |
+| `pbr` | Bool | `material`: `PBR` / `Shaded` | — | — | `rodin_text_to_3d_sends_rodins_own_field_names` (`PBR`); `rodin_is_asked_for_its_own_fbx_rather_than_a_conversion` (`Shaded`); validator `texture_and_pbr_go_only_where_the_vendor_has_a_field_for_them` | ✅ |
+| `texture` | Bool | — | — | `textured_mesh` (fal charges 3×) | `hunyuan_takes_input_image_url_and_maps_texture_to_textured_mesh`; validator `texture_and_pbr_go_only_where_the_vendor_has_a_field_for_them` | ✅ |
+| `target_polycount`, `topology`, `symmetry`, `rig`, `negative_prompt` | Int / String / Bool | — | — | — | refused in strict, dropped and cleared in lax: `every_3d_param_is_refused_in_strict_and_dropped_in_lax_where_undeclared` (on TRELLIS); honoured where declared: `every_declared_3d_param_passes_through_on_the_model_that_declares_it` (mock) | ✅ (refusal) |
+| `extra` (allowlisted) | `extra_allowlist` | quality, tier, use_hyper, TAPose, condition_mode, bbox_condition, addons | mesh_simplify, texture_size, ss_*, slat_* | num_inference_steps, guidance_scale, octree_resolution | trellis and hunyuan tests (passed through verbatim); `an_extra_field_never_overrides_a_canonical_one`; validator `a_vendor_field_outside_the_allowlist_is_refused_in_strict_mode` | ✅ |
+
+The vendor's answers are proven the same way: `queue_states_map_to_pending_and_processing`,
+`completed_downloads_the_mesh_and_rodins_textures_with_their_dimensions`,
+`completed_with_an_error_is_failed_with_fals_message_and_type`,
+`a_stored_error_result_is_fals_verdict_but_a_gateway_blip_is_not` (the 422
+`detail`-array and `error_type` paths the live runs could not reach),
+`a_submit_error_carries_fals_message_and_its_retry_verdict`,
+`a_transient_status_failure_stays_retryable`,
+`a_definitive_status_failure_is_not_retried_forever`,
+`a_mesh_that_will_not_download_fails_or_retries_by_cause`,
+`asset_urls_must_resolve_to_a_public_address`,
+`the_key_only_goes_to_the_configured_queue_origin` and
+`cancel_maps_fals_three_answers`.
 
 ### Proof: real billed runs against fal, 2026-09-12
 
@@ -240,29 +254,74 @@ Still unproven by this run: Rodin and Hunyuan3D (not exercised), the `textures`
 array (Rodin-only), and the 422/`error_type` paths, which need a deliberately
 invalid request to trigger.
 
-**`output_formats` is not like the other rows.** Every other param is a hint the
-vendor may ignore; this one is a PROMISE — whatever survives validation must be
-present on a `completed` generation or the generation fails, enforced at all
-three observers of completion. Two consequences for this matrix:
+### `output_formats` is not like the other rows
 
-- `max_items` counts **vendor jobs, not deliverables**. litegen derives
-  glb/obj/stl/ply locally (`litegen-core/src/mesh/`), so the whole derivable set
-  costs one vendor job. Rodin's scalar field therefore satisfies
-  `[glb, obj, stl, ply]` and still correctly refuses `[glb, fbx]`.
-- Only **fbx** and **usdz** can genuinely go missing, so they are the only
-  formats where a vendor's own support actually matters. A cell claiming fbx
-  must be proven by a live call before it is ticked — the cost of being wrong is
-  a billed generation that fails.
-| ref role `init` | RefInputSpec | role declared | `image_url` (b64 ok) | `file_token`\|url | multipart `image` | multipart `images` | ⬜ |
-| ref roles `view-*` | RefInputSpec | role declared | multi-image-to-3d | multiview-to-model | — | `condition_mode` | ⬜ |
+Every other param is a hint the vendor may ignore; this one is a PROMISE —
+whatever survives validation must be present on a `completed` generation or
+the generation fails, enforced at all three observers of completion. Two
+consequences for this matrix:
 
-What today's tests DO prove about the 3D family — none of it belongs in the
-vendor table above, because it is mock-provider coverage, not vendor-mapping
-coverage:
-- `litegen-core/tests/model3d_validation.rs` (Task 8) exercises `validate_model3d` against **synthetic `ModelSchema`s built in the test file — not the mock catalog (`mock.yaml`)**. Pass-through in strict mode is proven only in the weak sense that all 7 declared params SURVIVE validation undropped (`supported_params_pass_through_untouched` asserts `dropped` is empty and re-checks 3 of the 7 values on the returned request); nothing there asserts a param reaches a provider or goes out under any field name. Lax-drop is proven for 4 of them only (`target_polycount`, `pbr`, `rig`, `topology`) and strict-reject for `target_polycount` alone. The remaining coverage is value-level, not per-param: polycount range, `topology` enum mismatch, multiview ref roles, required prompt. The deferred Task 8/9 follow-up — drop/reject proven per param against the real catalog — is still **open**.
-- `litegen-core/src/providers/model3d/mock.rs` (Task 5 — 5 tests: progress ramp, one-mesh terminal poll, per-prompt distinctness, the `fail` model, unknown job id) plus its GLB writer `litegen-core/src/providers/model3d/glb.rs` (6 more at HEAD, on the container/mesh JSON/determinism/triangle count plus the outward-winding test added with the 3D review fixes — 11 between the two files; an earlier revision of this line credited all of them to `mock.rs` and counted 5 here) and `litegen-core/tests/model3d_api.rs` (Task 10) exercise the full request→response→poll lifecycle end to end against the mock provider — proving the *litegen-internal* plumbing works, not that any vendor mapping is right.
-- `litegen-core/tests/catalog_conformance.rs`'s new `model3d_*` tests (Task 19, below) assert the family's structural contract (mode-vs-ref-role coherence, enum vocabularies, no image/video-only params, sane polycount bounds) across every advertised `model3d` row.
+- `max_items` counts **vendor jobs, not deliverables**. litegen derives every
+  container it can read locally (`litegen-core/src/mesh/`; since the
+  2026-10-12 rewrite that is all ten — glb, gltf, obj, stl, ply, fbx, usdz, usda,
+  3mf, dae — see `3d-format-conversion.md`), so any set of them costs one vendor
+  job. Rodin's scalar field therefore serves `[glb, fbx]` from one job: its own
+  fbx (`prefers_vendor_native`) with the glb derived from it. Before the
+  rewrite fbx was underivable and that request was refused as two jobs. The
+  API serves this to clients as `params.output_formats.derivable_values` beside
+  the widened `enum_values`
+  (`model3d_api::fal_3d_models_are_served_with_their_deliverable_formats_and_vendor_reference`).
+- A promised container can still go missing when the vendor's own file is one
+  the converter cannot read — a Draco-compressed glb, say — because nothing is
+  then derivable from it. `mock/partial-3d` is exactly that case, and the
+  completion guard fails it at every observer. A vendor's own fbx or usdz still
+  matters, as the higher-fidelity export `prefers_vendor_native` asks for: a cell
+  claiming one must be proven by a live call before it is ticked.
 
-None of that substitutes for a real vendor test. The vendor table stays all
-⬜ until a real adapter lands and gets a wiremock test asserting the outbound
-field name — the same bar Image/Video are held to above.
+### Not yet implemented: first-party vendors
+
+Design notes for the vendors the design spec names, transcribed from its §9
+vendor tables. **None of these is implemented**, and no cell here has been
+exercised against the vendor. Cells tagged `(unconfirmed)` do not appear in §9
+at all — guesses to verify against vendor docs, not spec-sourced field names.
+
+| litegen param | Meshy | Tripo3D | Stability | Rodin (direct) | Status |
+|---|---|---|---|---|---|
+| `prompt` | `prompt` | `prompt` | — (image only) | — | ⬜ |
+| `output_formats` | `target_formats` (glb\|obj\|fbx\|stl\|usdz\|3mf; omitted ⇒ all but 3mf) | separate billed convert task; `quad` forces FBX | fixed GLB, no param | `geometry_file_format` (scalar) | ⬜ |
+| `symmetry` ⚠️ | `symmetry_mode` — **deprecated by Meshy** | — | — | — | ⚠️ we are the only consumer of a param its one vendor deprecated |
+| `texture` | `should_texture` | `texture` (unconfirmed) | — | `material` | ⬜ |
+| `pbr` | (texture_* maps) | `pbr` | — | `material=PBR` | ⬜ |
+| `target_polycount` | `target_polycount` | `face_limit` | `vertex_count` | `quality` | ⬜ |
+| `topology` | `topology` | `quad` (bool) | `remesh` | `mesh_mode` | ⬜ |
+| `rig` | (separate endpoint — unconfirmed) | `rig` (unconfirmed) | — | — | ⬜ |
+| `seed` | — | `model_seed` | `seed` | — | ⬜ |
+| ref role `init` | `image_url` (b64 ok) | `file_token`\|url | multipart `image` | multipart `images` | ⬜ |
+| ref roles `view-*` | multi-image-to-3d | multiview-to-model | — | `condition_mode` | ⬜ |
+
+### Contract coverage that is not vendor mapping
+
+None of this belongs in the vendor tables, because none of it proves a vendor
+field name — but it is what makes the family behave the same on every model:
+
+- `litegen-core/tests/model3d_validation.rs` — the validator against synthetic
+  schemas (the mechanics of every rule) AND against the shipped catalog: each
+  canonical 3D param refused in strict and dropped-and-cleared in lax on a
+  model that does not declare it, and honoured on one that does. This closes
+  the Task 8/9 follow-up the previous revision of this list left open.
+- `litegen-core/tests/model3d_conformance.rs` — the catalog-wide contract on the
+  CURRENT spelling (`output_formats`): glb in every declared set, every
+  container in the `Model3dFormat` vocabulary, defaults satisfiable within
+  `max_items`, the served set a superset of the native one, a `docs_url` on
+  every vendor row, no-prompt models never requiring one, image-only models
+  requiring their image.
+- `litegen-core/tests/model3d_api.rs` — the HTTP lifecycle end to end against
+  the mock provider, including what `GET /v1/models/{id}` serves.
+- `litegen-core/tests/multitenant_api.rs` — a job the client's poll completes
+  lands in the app's own bucket, and a DB error on a poll never answers with
+  another org's job.
+- `providers/model3d/mock.rs` and `providers/model3d/glb.rs` — the mock's
+  progress ramp, real GLB bytes, failure model and outward winding.
+- `tests/live_model3d.rs` — one `#[ignore]`d, self-skipping billed run against
+  `fal/trellis` (`FAL_KEY`), asserting fal still answers in the shapes the
+  wiremock suite mocks.

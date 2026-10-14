@@ -39,7 +39,7 @@ pub fn validate_image(
     let mut dropped = Vec::new();
     let strict = req.base.strict;
 
-    check_prompt(&schema.prompt, &req.base.prompt)?;
+    check_prompt(schema, &mut req.base.prompt, strict, &mut dropped)?;
 
     macro_rules! check_param {
         ($field:expr, $key:literal, $variant:pat => $body:block) => {
@@ -182,7 +182,7 @@ pub fn validate_video(
     let mut dropped = Vec::new();
     let strict = req.base.strict;
 
-    check_prompt(&schema.prompt, &req.base.prompt)?;
+    check_prompt(schema, &mut req.base.prompt, strict, &mut dropped)?;
 
     // seed, negative_prompt — same as image
     if req.base.seed.is_some() {
@@ -358,7 +358,7 @@ pub fn validate_model3d(
     let mut dropped = Vec::new();
     let strict = req.base.strict;
 
-    check_prompt(&schema.prompt, &req.base.prompt)?;
+    check_prompt(schema, &mut req.base.prompt, strict, &mut dropped)?;
 
     // seed / negative_prompt — identical treatment to image and video.
     if req.base.seed.is_some() {
@@ -578,13 +578,69 @@ pub fn validate_model3d(
     }
 
     check_refs(schema, &mut req.base.reference_images, strict, &mut dropped)?;
+
+    // The mode is inferred from the images that survived `check_refs`: none
+    // means text-to-3D. That needs a model with a text arm, and a prompt to
+    // generate from — a model whose prompt is optional only because its IMAGE
+    // arm can do without one (Rodin) would otherwise submit an empty request
+    // for the vendor to reject, after the quota is reserved. A model whose
+    // `init` role is required never gets here without an image.
+    if req.base.reference_images.is_empty() {
+        if !schema.capabilities.text_to_3d {
+            return Err(ValidationError::new(
+                "ref_role_required",
+                format!("'{}' has no text-to-3D mode; send a reference image", schema.id),
+                Some("reference_images"),
+            ));
+        }
+        if req.base.prompt.trim().is_empty() {
+            return Err(ValidationError::new(
+                "prompt_required",
+                "text-to-3D needs a prompt; send one, or a reference image for image-to-3D",
+                Some("prompt"),
+            ));
+        }
+    }
+
     check_extra(schema, &mut req.base.extra, strict, &mut dropped)?;
 
     Ok(Model3dValidationOutput { request: req, dropped })
 }
 
-fn check_prompt(spec: &PromptSpec, value: &str) -> Result<(), ValidationError> {
-    if value.trim().is_empty() {
+/// Check the prompt against the model's `PromptSpec`.
+///
+/// `max_length: 0` declares a model that takes NO prompt — an image-only
+/// endpoint whose vendor schema has no prompt field (fal's TRELLIS and
+/// Hunyuan3D v2). Sending one there is an unsupported param like any other:
+/// refused in strict mode, dropped and reported in lax mode. Never silently
+/// ignored, which is what forwarding nothing while answering 200 would be.
+///
+/// Lengths count characters, not bytes: vendor limits come from JSON Schema
+/// `maxLength`, which counts code points, so a byte count would refuse a
+/// non-ASCII prompt the vendor itself accepts.
+fn check_prompt(
+    schema: &ModelSchema,
+    prompt: &mut String,
+    strict: bool,
+    dropped: &mut Vec<String>,
+) -> Result<(), ValidationError> {
+    let spec = &schema.prompt;
+    let empty = prompt.trim().is_empty();
+    if spec.max_length == Some(0) {
+        if !empty {
+            if strict {
+                return Err(ValidationError::new(
+                    "param_unsupported",
+                    format!("'{}' takes no prompt; omit it, or send strict: false to have it dropped", schema.id),
+                    Some("prompt"),
+                ));
+            }
+            dropped.push("prompt".into());
+            prompt.clear();
+        }
+        return Ok(());
+    }
+    if empty {
         if spec.required {
             return Err(ValidationError::new(
                 "prompt_required",
@@ -594,20 +650,21 @@ fn check_prompt(spec: &PromptSpec, value: &str) -> Result<(), ValidationError> {
         }
         return Ok(());
     }
+    let len = prompt.chars().count();
     if let Some(min) = spec.min_length {
-        if value.len() < min {
+        if len < min {
             return Err(ValidationError::new(
                 "prompt_too_short",
-                format!("prompt length {} < {}", value.len(), min),
+                format!("prompt length {} < {}", len, min),
                 Some("prompt"),
             ));
         }
     }
     if let Some(max) = spec.max_length {
-        if value.len() > max {
+        if len > max {
             return Err(ValidationError::new(
                 "prompt_too_long",
-                format!("prompt length {} > {}", value.len(), max),
+                format!("prompt length {} > {}", len, max),
                 Some("prompt"),
             ));
         }
@@ -1034,9 +1091,8 @@ impl FromRequest<Arc<AppState>> for ValidatedModel3d {
         let req: Model3dGenerationRequest = serde_json::from_value(json).map_err(|e| {
             ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &e.to_string(), None, ""))
         })?;
-        let schema = state.registry.get(&req.base.model)
-            .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.base.model), None, &req.base.model)))?
-            .clone();
+        let schema = state.registry.resolve(&req.base.model)
+            .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.base.model), None, &req.base.model)))?;
         let schema = Arc::new(schema);
         require_media_type(&schema, MediaType::Model3d)?;
         match validate_model3d(&schema, req) {

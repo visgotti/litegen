@@ -44,11 +44,22 @@ struct TrackedJob<H> {
 /// one point a job is tracked, and every observer of completion reads it back
 /// from here. It is also written into `metadata.requested_formats` on the
 /// terminal row, because the row outlives this map.
+///
+/// It also keeps the provider INSTANCE that submitted the job. With a per-org
+/// BYO credential that instance is the only one holding the key the vendor
+/// knows this job by: polling through the platform-default instance instead
+/// asked the vendor with the operator's key (or no key at all), so a client's
+/// `GET /v1/models3d/{id}` could never advance a BYO job and every one waited on
+/// the background poller. The same instance answers `cancel`.
 #[derive(Clone)]
 struct Model3dJob {
     handle: Model3dGenerationHandle,
     usage: Option<UsageInfo>,
     requested_formats: Vec<String>,
+    provider: Arc<dyn crate::providers::Model3dProvider>,
+    /// Unix seconds at submit. Every poll reports this, not the poll time, so
+    /// `created` means the same thing on every observer of one generation.
+    created: i64,
 }
 
 /// The main proxy router that resolves model routes, applies routing
@@ -737,7 +748,7 @@ impl ProxyRouter {
         // One submitted job produces one mesh, so billing is flat per generation
         // — `n` is meaningless here, exactly as it is for video.
         let base_cost = schema.pricing.base_cost_usd;
-        let (_, total) = apply_markup(base_cost, self.config.cost_markup_percent);
+        let (_, total) = apply_markup(base_cost, self.cost_markup_percent());
         let usage_info = Some(UsageInfo {
             cost_usd: total,
             tokens: crate::providers::usd_to_tokens(total, USD_PER_TOKEN),
@@ -754,9 +765,10 @@ impl ProxyRouter {
         };
 
         let local_id = format!("litegen-3d-{}", uuid::Uuid::new_v4());
+        let created = chrono::Utc::now().timestamp();
         self.model3d_jobs.write().await.insert(
             local_id.clone(),
-            Model3dJob { handle, usage: usage_info.clone(), requested_formats },
+            Model3dJob { handle, usage: usage_info.clone(), requested_formats, provider, created },
         );
 
         Ok(Model3dGenerationResponse {
@@ -768,7 +780,7 @@ impl ProxyRouter {
             progress: 0,
             error: None,
             usage: usage_info,
-            created: chrono::Utc::now().timestamp(),
+            created,
         })
     }
 
@@ -792,15 +804,10 @@ impl ProxyRouter {
             let jobs = self.model3d_jobs.read().await;
             jobs.get(id).cloned()
         };
-        let Model3dJob { handle, usage, requested_formats } =
+        let Model3dJob { handle, usage, requested_formats, provider, created } =
             job.ok_or_else(|| ProxyError::NotFound(format!("3d job '{}' not found", id)))?;
 
-        let provider = self
-            .registry
-            .model3d_provider_for(&handle.provider)
-            .await
-            .ok_or_else(|| ProxyError::ProviderNotConfigured(handle.provider.clone()))?;
-
+        // The instance that submitted the job — see `Model3dJob`.
         let poll = provider.poll_status(&handle).await.map_err(|e| ProxyError::ProviderError {
             provider: handle.provider.clone(),
             error: e.to_string(),
@@ -870,23 +877,27 @@ impl ProxyRouter {
             error: poll.error,
             // The triple quoted at submit, not `None` — see `get_video_status`.
             usage,
-            created: chrono::Utc::now().timestamp(),
+            created,
         };
         enforce_requested_formats(&mut resp, &requested_formats);
         Ok(resp)
     }
 
-    /// Drop an in-flight 3D job WITHOUT polling it.
+    /// Drop an in-flight 3D job WITHOUT polling it, handing back what is needed
+    /// to stop it at the vendor.
     ///
     /// Called when the generation is cancelled. The persisted row is terminal at
     /// that point, but the router still held the job, so the next
     /// `GET /v1/models3d/{id}` polled the provider anyway, saw `Completed`,
     /// re-hosted the assets and wrote `completed` over the cancelled row —
     /// i.e. cancellation did not stop the job, it just delayed it by one poll.
-    /// Returns whether a job was actually tracked (false for an already-terminal
-    /// or poller-owned generation, which is not an error).
-    pub async fn forget_model3d_job(&self, id: &str) -> bool {
-        self.model3d_jobs.write().await.remove(id).is_some()
+    /// `None` for an already-terminal or poller-owned generation, which is not
+    /// an error.
+    pub async fn forget_model3d_job(
+        &self,
+        id: &str,
+    ) -> Option<(Model3dGenerationHandle, Arc<dyn crate::providers::Model3dProvider>)> {
+        self.model3d_jobs.write().await.remove(id).map(|j| (j.handle, j.provider))
     }
 
     /// Video's counterpart to [`forget_model3d_job`](Self::forget_model3d_job).
@@ -946,7 +957,7 @@ impl ProxyRouter {
             }
         })?;
 
-        let markup = self.config.cost_markup_percent;
+        let markup = self.cost_markup_percent();
         if markup > 0.0 {
             let (m, total) = apply_markup(est.base_cost_usd, markup);
             est.markup_usd = m;
@@ -1576,5 +1587,110 @@ mod model3d_router_tests {
             Arc::new(LocalModel3dStorage::new("https://cdn.example.com".into()));
         let assets = rehost_model3d_files(&store, Some("tenant-9/meshes"), "g1", &[mesh_file()]).await.unwrap();
         assert!(assets[0].url.contains("/tenant-9/meshes/g1/model.glb"), "got {}", assets[0].url);
+    }
+
+    // ─── The instance that submitted a job is the one that polls it ─────────
+
+    async fn router_with_operator_fal(server: &wiremock::MockServer) -> ProxyRouter {
+        let mut config = crate::config::AppConfig::default();
+        config.providers.insert(
+            "fal".into(),
+            serde_json::from_value(serde_json::json!({ "api_key": "operator-key", "api_base": server.uri() })).unwrap(),
+        );
+        let registry = Arc::new(crate::proxy::registry::ProviderRegistry::new());
+        registry.init_from_config(&config).await;
+        ProxyRouter::new(
+            registry,
+            Arc::new(crate::proxy::cache::GenerationCache::new(&crate::config::CacheGlobalConfig::default())),
+            Arc::new(config),
+            Arc::new(crate::proxy::storage::LocalStore),
+        )
+    }
+
+    fn trellis() -> crate::capabilities::ModelSchema {
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.pop();
+        p.push("models");
+        crate::capabilities::CapabilityRegistry::from_dir(&p).unwrap().get("fal/trellis").unwrap().clone()
+    }
+
+    fn org_key() -> crate::providers::ProviderCredentials {
+        crate::providers::ProviderCredentials { api_key: Some("org-key".into()), ..Default::default() }
+    }
+
+    async fn submit_byo(router: &ProxyRouter) -> Model3dGenerationResponse {
+        let base = crate::types::BaseGenerationRequest {
+            prompt: String::new(),
+            model: "fal/trellis".into(),
+            n: 1,
+            negative_prompt: None,
+            seed: None,
+            reference_images: vec![],
+            strict: true,
+            extra: None,
+            metadata: None,
+        };
+        let extras = crate::providers::Model3dExtras {
+            output_formats: vec!["glb".into()],
+            texture: None, pbr: None, target_polycount: None,
+            symmetry: None, topology: None, rig: None, extra: None,
+        };
+        let refs = crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".into(),
+                form: crate::proxy::materializer::MaterializedRefForm::Url("https://example.com/robot.png".into()),
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+        router.generate_model3d(&trellis(), &base, &extras, &refs, Some(org_key())).await.expect("submit")
+    }
+
+    #[tokio::test]
+    async fn a_byo_job_is_polled_with_the_credential_that_submitted_it() {
+        // Polling through the platform-default instance asked fal about an org's
+        // job with the OPERATOR's key, so `GET /v1/models3d/{id}` could never
+        // advance a BYO job. fal knows a request only under the key that made it.
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let job = format!("{}/fal-ai/trellis/requests/byo-1", server.uri());
+        Mock::given(method("POST")).and(path("/fal-ai/trellis")).and(header("authorization", "Key org-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "request_id": "byo-1", "status_url": format!("{job}/status"), "response_url": job,
+            })))
+            .mount(&server).await;
+        Mock::given(method("GET")).and(path("/fal-ai/trellis/requests/byo-1/status")).and(header("authorization", "Key org-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "status": "IN_PROGRESS" })))
+            .mount(&server).await;
+
+        let router = router_with_operator_fal(&server).await;
+        let submitted = submit_byo(&router).await;
+        let polled = router.get_model3d_status(&submitted.id, None, None).await.expect("polled with the org key");
+        assert_eq!(polled.status, GenerationStatus::Processing);
+        assert_eq!(polled.created, submitted.created, "`created` is the submit time on every poll");
+
+        for r in server.received_requests().await.unwrap() {
+            assert_eq!(r.headers.get("authorization").unwrap(), "Key org-key", "{} went out under another key", r.url);
+        }
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_job_hands_back_what_cancels_it_at_the_vendor() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/fal-ai/trellis"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "request_id": "byo-2" })))
+            .mount(&server).await;
+        Mock::given(method("PUT")).and(path("/fal-ai/trellis/requests/byo-2/cancel")).and(header("authorization", "Key org-key"))
+            .respond_with(ResponseTemplate::new(202).set_body_json(serde_json::json!({ "status": "CANCELLATION_REQUESTED" })))
+            .mount(&server).await;
+
+        let router = router_with_operator_fal(&server).await;
+        let submitted = submit_byo(&router).await;
+        let (handle, provider) = router.forget_model3d_job(&submitted.id).await.expect("tracked");
+        assert_eq!(provider.cancel(&handle).await.unwrap(), crate::providers::CancelOutcome::Requested);
+        assert!(router.forget_model3d_job(&submitted.id).await.is_none(), "forgotten once");
+        assert!(matches!(router.get_model3d_status(&submitted.id, None, None).await, Err(ProxyError::NotFound(_))));
     }
 }
