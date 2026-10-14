@@ -2,62 +2,31 @@ import { useEffect, useState } from 'react';
 import { client } from '../sdk-client';
 import type { ModelInfo, ModelSchema } from '@litegen/sdk';
 import { showToast } from './toast-store';
+import { buildCurl, capabilityLabels, describePrompt, describeSpec, refRoleRows } from './model-detail';
+import { docsUrlOf } from '../playground/params';
 
-function buildCurl(model: ModelInfo): string {
-  const endpoint =
-    model.media_type === 'model3d' ? '/v1/models3d/generations'
-    : model.media_type === 'video' ? '/v1/videos/generations'
-    : '/v1/images/generations';
-  const body = model.media_type === 'image'
-    ? { model: model.id, prompt: 'a photo of a cat', n: 1 }
-    : { model: model.id, prompt: 'a photo of a cat' };
-  return [
-    `curl -X POST $LITEGEN_BASE${endpoint} \\`,
-    `  -H "Authorization: Bearer $LITEGEN_KEY" \\`,
-    `  -H "Content-Type: application/json" \\`,
-    `  -d '${JSON.stringify(body)}'`,
-  ].join('\n');
-}
-
-/** Display name for every `ModelCapabilities` boolean flag, in the order the
- *  chips are rendered. Keep this in step with the schema: a flag with no entry
- *  here is invisible in the UI, and a model whose flags are ALL missing renders
- *  as '—', which reads as "no capabilities" rather than "not labelled yet". */
-const CAP_LABELS: Record<string, string> = {
-  supports_text_to_image: 'Text → image',
-  supports_image_to_image: 'Image → image',
-  supports_inpainting: 'Inpainting',
-  supports_text_to_video: 'Text → video',
-  supports_image_to_video: 'Image → video',
-  supports_first_frame: 'First-frame ref',
-  supports_last_frame: 'Last-frame ref',
-  supports_text_to_3d: 'Text → 3D',
-  supports_image_to_3d: 'Image → 3D',
-  supports_multiview_to_3d: 'Multiview → 3D',
-  supports_texture: 'Textures',
-  supports_pbr: 'PBR materials',
-  supports_rig: 'Auto-rigging',
-};
-
-/** Labels for the capability flags a model reports as true, CAP_LABELS order. */
-// eslint-disable-next-line react-refresh/only-export-components -- pure helper, exported for its unit test
-export function capabilityLabels(capabilities: unknown): string[] {
-  const flags = (capabilities ?? {}) as Record<string, unknown>;
-  return Object.entries(CAP_LABELS).filter(([k]) => flags[k]).map(([, label]) => label);
+/** The schema fetch, tagged with the model it belongs to: the drawer derives
+ *  "loading" from a mismatched id instead of resetting state inside an effect. */
+interface Loaded {
+  id: string;
+  schema: ModelSchema | null;
+  err: string;
 }
 
 export default function ModelDetail({ model, onClose }: { model: ModelInfo; onClose: () => void }) {
-  const [schema, setSchema] = useState<ModelSchema | null>(null);
-  const [err, setErr] = useState('');
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setSchema(null); setErr('');
     client.models.getSchema(model.id)
-      .then(s => { if (!cancelled) setSchema(s); })
-      .catch(e => { if (!cancelled) setErr((e as Error).message); });
+      .then(s => { if (!cancelled) setLoaded({ id: model.id, schema: s, err: '' }); })
+      .catch(e => { if (!cancelled) setLoaded({ id: model.id, schema: null, err: (e as Error).message }); });
     return () => { cancelled = true; };
   }, [model.id]);
+
+  const current = loaded?.id === model.id ? loaded : null;
+  const schema = current?.schema ?? null;
+  const err = current?.err ?? '';
 
   const caps = capabilityLabels(model.capabilities);
   // ModelCapabilities.supported_sizes is string[] | undefined
@@ -66,14 +35,19 @@ export default function ModelDetail({ model, onClose }: { model: ModelInfo; onCl
   const formats: string[] = (model.capabilities?.output_formats as string[] | undefined) ?? [];
   // ModelSchema.params is { [key: string]: unknown } | undefined; cast for describeSpec
   const params = (schema?.params ?? {}) as Record<string, { kind?: string; [k: string]: unknown }>;
+  const roles = refRoleRows(schema);
+  const maxTotal = (schema as unknown as { ref_inputs?: { max_total?: number } } | null)?.ref_inputs?.max_total;
+  const passthrough = (schema?.extra_allowlist ?? []) as string[];
+  const docsUrl = docsUrlOf(schema ?? undefined);
 
   const copyCurl = async () => {
-    try { await navigator.clipboard.writeText(buildCurl(model)); showToast('curl command copied'); }
+    try { await navigator.clipboard.writeText(buildCurl(model, schema)); showToast('curl command copied'); }
     catch { showToast('Failed to copy', 'error'); }
   };
 
   const card: React.CSSProperties = { background: '#0d1117', border: '1px solid #30363d', borderRadius: 8, padding: 14, marginBottom: 16 };
   const h4: React.CSSProperties = { margin: '0 0 10px', fontSize: 13, color: '#8b949e', textTransform: 'uppercase', letterSpacing: '0.05em' };
+  const row: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', gap: 12, padding: '5px 0', borderBottom: '1px solid #21262d', fontSize: 13 };
 
   return (
     <div data-testid="model-detail-panel" style={{
@@ -84,7 +58,14 @@ export default function ModelDetail({ model, onClose }: { model: ModelInfo; onCl
         <h3 style={{ margin: 0, color: '#e6edf3' }}>{model.name ?? model.id}</h3>
         <button className="btn btn-secondary" data-testid="model-detail-close" onClick={onClose}>Close</button>
       </div>
-      <p style={{ color: '#8b949e', fontFamily: 'monospace', fontSize: 13, marginBottom: 16 }}>{model.id}</p>
+      <p style={{ color: '#8b949e', fontFamily: 'monospace', fontSize: 13, marginBottom: docsUrl ? 4 : 16 }}>{model.id}</p>
+      {docsUrl && (
+        <p style={{ margin: '0 0 16px', fontSize: 13 }}>
+          <a href={docsUrl} target="_blank" rel="noreferrer" data-testid="model-detail-docs" style={{ color: 'var(--accent, #25b6ed)' }}>
+            Provider API reference ↗
+          </a>
+        </p>
+      )}
 
       <div style={card}>
         <div style={h4}>Capabilities</div>
@@ -115,29 +96,52 @@ export default function ModelDetail({ model, onClose }: { model: ModelInfo; onCl
       </div>
 
       <div style={card}>
-        <div style={h4}>Params &amp; allowed values</div>
+        <div style={h4}>Inputs</div>
         {err && <div className="alert alert-error">{err}</div>}
+        {!schema && !err && <div style={{ color: '#8b949e', fontSize: 13 }}>Loading…</div>}
+        {schema && (
+          <>
+            <div data-testid="model-detail-prompt" style={row}>
+              <span style={{ color: '#e6edf3', fontFamily: 'monospace' }}>prompt</span>
+              <span style={{ color: '#8b949e', textAlign: 'right' }}>{describePrompt(schema)}</span>
+            </div>
+            {roles.map(r => (
+              <div key={r.role} data-testid={`model-detail-ref-${r.role}`} style={row}>
+                <span style={{ color: '#e6edf3' }}>
+                  {r.label} <code style={{ color: '#8b949e', fontSize: 11 }}>{r.role}</code>
+                </span>
+                <span style={{ color: '#8b949e' }}>{r.rule}</span>
+              </div>
+            ))}
+            {roles.length > 1 && maxTotal != null && (
+              <div style={{ ...row, borderBottom: 'none' }}>
+                <span style={{ color: '#8b949e' }}>Images per request</span>
+                <span style={{ color: '#8b949e' }}>up to {maxTotal}</span>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      <div style={card}>
+        <div style={h4}>Params &amp; allowed values</div>
         {!schema && !err && <div style={{ color: '#8b949e', fontSize: 13 }}>Loading…</div>}
         {schema && Object.keys(params).length === 0 && <div style={{ color: '#6e7681', fontSize: 13 }}>No tunable params.</div>}
         {schema && Object.entries(params).map(([name, spec]) => (
-          <div key={name} data-testid={`param-${name}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid #21262d', fontSize: 13 }}>
+          <div key={name} data-testid={`param-${name}`} style={row}>
             <span style={{ color: '#e6edf3', fontFamily: 'monospace' }}>{name}</span>
-            <span style={{ color: '#8b949e' }}>{describeSpec(spec)}</span>
+            <span style={{ color: '#8b949e', textAlign: 'right' }}>{describeSpec(spec)}</span>
           </div>
         ))}
+        {passthrough.length > 0 && (
+          <div data-testid="model-detail-extra" style={{ marginTop: 10, color: '#8b949e', fontSize: 13 }}>
+            Provider passthrough (<code>extra</code>):{' '}
+            <span style={{ color: '#e6edf3', fontFamily: 'monospace' }}>{passthrough.join(', ')}</span>
+          </div>
+        )}
       </div>
 
       <button className="btn btn-secondary" data-testid="model-detail-copy-curl" onClick={copyCurl}>Copy as curl</button>
     </div>
   );
-}
-
-/** Compact one-line summary of a param spec (kind + allowed/range + default). */
-function describeSpec(spec: { kind?: string; [k: string]: unknown }): string {
-  const kind = spec.kind ?? 'value';
-  const allowed = (spec.allowed as string[] | undefined) ?? (spec.enum_values as string[] | undefined);
-  if (Array.isArray(allowed) && allowed.length) return `${kind}: ${allowed.join(' | ')}`;
-  if (spec.min != null || spec.max != null) return `${kind} ${spec.min ?? ''}–${spec.max ?? ''}`;
-  if (spec.default != null) return `${kind} (default ${String(spec.default)})`;
-  return kind;
 }

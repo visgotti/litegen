@@ -165,10 +165,18 @@ export function ModelsReference() {
                             </dd>
                             <dt>{t('prompt')}</dt>
                             <dd>
-                              {m.promptLimits.required ? t('required') : t('optional')}
-                              {m.promptLimits.maxLength
-                                ? ` · ${t('maxChars', { n: m.promptLimits.maxLength })}`
-                                : ''}
+                              {/* max_length 0 is the catalog's "takes no prompt at all"
+                                  (an image-only model), not a zero-character limit. */}
+                              {m.promptLimits.maxLength === 0 ? (
+                                t('noPrompt')
+                              ) : (
+                                <>
+                                  {m.promptLimits.required ? t('required') : t('optional')}
+                                  {m.promptLimits.maxLength
+                                    ? ` · ${t('maxChars', { n: m.promptLimits.maxLength })}`
+                                    : ''}
+                                </>
+                              )}
                             </dd>
                             {m.params.length > 0 && (
                               <>
@@ -180,6 +188,9 @@ export function ModelsReference() {
                                         <code>{p.name}</code>{' '}
                                         <span className={styles.kind}>{p.kind}</span>
                                         {p.enum && <> {p.enum.join(' | ')}</>}
+                                        {p.name === 'output_formats' && (
+                                          <span className={styles.default}> · {t('formatsNote')}</span>
+                                        )}
                                         {(p.min !== undefined || p.max !== undefined) && (
                                           <>
                                             {' '}
@@ -189,7 +200,9 @@ export function ModelsReference() {
                                         {p.default !== undefined && (
                                           <span className={styles.default}>
                                             {' '}
-                                            {t('defaultEq', { v: String(p.default) })}
+                                            {t('defaultEq', {
+                                              v: Array.isArray(p.default) ? p.default.join(', ') : String(p.default),
+                                            })}
                                           </span>
                                         )}
                                       </li>

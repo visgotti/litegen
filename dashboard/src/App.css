@@ -591,7 +591,13 @@ tr:hover {
 .pg-avail-setup { color: var(--muted); }
 .pg-params { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
 .pg-param-row { display: flex; flex-direction: column; gap: 4px; }
-.pg-param-label { display: flex; justify-content: space-between; align-items: center; font-size: 13px; text-transform: none; }
+/* The name, then the reset/applicability group — siblings rather than both in
+   the <label>, which would make the reset button the label's control. */
+.pg-param-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.pg-param-label { display: flex; align-items: center; gap: 6px; font-size: 13px; text-transform: none; }
+.pg-param-label-end { display: inline-flex; align-items: center; gap: 8px; }
+.pg-param-reset { background: none; border: none; padding: 0; font-size: 11px; color: var(--accent); cursor: pointer; }
+.pg-param-reset:hover { text-decoration: underline; }
 .pg-param-applies { font-size: 11px; color: var(--muted); }
 .pg-param-description { font-size: 11px; line-height: 1.4; color: var(--muted); }
 /* A set of containers, not a choice between them — see ParamField's
@@ -601,6 +607,37 @@ tr:hover {
 .pg-param-set-item input:disabled + * ,
 .pg-param-set-item:has(input:disabled) { color: var(--muted); cursor: not-allowed; }
 .pg-param-set-cap { font-size: 11px; color: var(--muted); }
+/* Reference images: one block per role the selected models accept. */
+.pg-refs { display: flex; flex-direction: column; gap: 10px; margin: 0 0 16px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; }
+.pg-refs-title { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 600; color: var(--text-soft); text-transform: uppercase; letter-spacing: 0.04em; }
+.pg-ref-role { display: flex; flex-direction: column; gap: 6px; }
+.pg-ref-key { font-size: 11px; color: var(--muted); }
+.pg-ref-required { font-size: 10px; font-weight: 600; letter-spacing: 0.03em; padding: 1px 6px; border-radius: 10px; color: var(--warning); background: var(--warning-bg); }
+.pg-ref-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.pg-ref-item { display: flex; align-items: center; gap: 8px; font-size: 12px; min-width: 0; }
+.pg-ref-thumb { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; background: var(--bg-deep); flex: none; }
+.pg-ref-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-soft); }
+.pg-ref-remove { flex: none; display: inline-flex; padding: 4px; background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); cursor: pointer; }
+.pg-ref-remove:hover:not(:disabled) { color: var(--danger); border-color: var(--danger-border); }
+.pg-ref-add { display: flex; gap: 6px; align-items: center; }
+.pg-ref-add .input { flex: 1; min-width: 0; }
+.pg-ref-upload { position: relative; overflow: hidden; cursor: pointer; }
+/* Visually hidden but still focusable through its label. */
+.pg-ref-file { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.pg-ref-error { font-size: 11px; color: var(--danger); }
+/* Provider passthrough (`extra`). */
+.pg-extras { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin: 0 0 16px; display: flex; flex-direction: column; gap: 8px; }
+.pg-extras summary { cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.pg-extras summary .pg-param-applies { margin-left: auto; }
+.pg-extras[open] summary { margin-bottom: 6px; }
+.pg-extras > .pg-param-row + .pg-param-row { margin-top: 8px; }
+.pg-extras a { color: var(--accent); }
+/* Why a run is blocked — informational, not an error: nothing has failed. */
+.pg-problems { list-style: none; margin: 8px 0; padding: 8px 10px; border-radius: 6px; background: var(--warning-bg); color: var(--warning); font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
+.pg-problems-inline { margin: 8px 0 0; font-size: 12px; color: var(--warning); }
+.pg-dropped { margin: 0 0 10px; padding: 6px 10px; border-radius: 6px; background: var(--warning-bg); color: var(--warning); font-size: 12px; }
+.pg-tile-dropped { color: var(--warning); }
+.pg-docs-link { display: inline-block; margin-top: 4px; font-size: 12px; color: var(--accent); }
 .pg-cost { font-size: 13px; color: var(--success); margin: 8px 0; }
 .pg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
 .pg-grid-empty { color: var(--muted); padding: 24px; text-align: center; }

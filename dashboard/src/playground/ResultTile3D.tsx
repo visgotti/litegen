@@ -44,6 +44,12 @@ export default function ResultTile3D({ tile, onRerun }: Props) {
       <div className="pg-tile-meta">
         {tile.costUsd != null && <span>${tile.costUsd.toFixed(3)}</span>}
         {tile.latencyMs != null && <span>{tile.latencyMs}ms</span>}
+        {tile.droppedParams && tile.droppedParams.length > 0 && (
+          <span className="pg-tile-dropped" data-testid={`pg-tile-dropped-${tile.modelId}`}
+            title="Strict mode was off, so the server dropped these instead of rejecting the request">
+            dropped: {tile.droppedParams.join(', ')}
+          </span>
+        )}
       </div>
     </div>
   );

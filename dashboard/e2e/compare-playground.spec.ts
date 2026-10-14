@@ -43,15 +43,35 @@ test('compare mode: unified params from diverse schemas + multi-model generation
 
   // Per-model Request JSON proves buildRequest drops params a model doesn't declare.
   await page.getByTestId('pg-prompt').fill('a red fox');
-  await page.getByTestId('pg-view-requests').click();
-  const reqs = JSON.parse(await page.getByTestId('pg-requests-json').innerText());
-  const gptImage = reqs.find((r: { modelId: string }) => r.modelId === 'openai/gpt-image-1').request;
-  const flux = reqs.find((r: { modelId: string }) => r.modelId === 'bfl/flux-pro-1.1').request;
+  const requestsFor = async () => {
+    await page.getByTestId('pg-view-requests').click();
+    const reqs = JSON.parse(await page.getByTestId('pg-requests-json').innerText());
+    return {
+      gptImage: reqs.find((r: { modelId: string }) => r.modelId === 'openai/gpt-image-1').request,
+      flux: reqs.find((r: { modelId: string }) => r.modelId === 'bfl/flux-pro-1.1').request,
+    };
+  };
+  // Untouched params are never sent — each model applies its own default
+  // rather than one the panel invented.
+  let { gptImage, flux } = await requestsFor();
   expect(gptImage.prompt).toBe('a red fox');
-  expect('quality' in gptImage).toBe(true); // gpt-image-1 declares quality
-  expect('quality' in flux).toBe(false);    // flux does NOT → dropped
-  expect('size' in gptImage).toBe(true);
-  expect('size' in flux).toBe(true);
+  expect('quality' in gptImage).toBe(false);
+  expect('size' in gptImage).toBe(false);
+  expect('size' in flux).toBe(false);
+
+  // Once set, each param goes only to the models that declare it.
+  await page.getByTestId('pg-param-quality').selectOption('high');
+  await page.getByTestId('pg-param-size').selectOption('1024x1024');
+  ({ gptImage, flux } = await requestsFor());
+  expect(gptImage.quality).toBe('high'); // gpt-image-1 declares quality
+  expect('quality' in flux).toBe(false);  // flux does NOT → dropped
+  expect(gptImage.size).toBe('1024x1024');
+  expect(flux.size).toBe('1024x1024');
+
+  // "reset" forgets the value: back to the model's default, off the wire.
+  await page.getByTestId('pg-param-quality-reset').click();
+  ({ gptImage } = await requestsFor());
+  expect('quality' in gptImage).toBe(false);
 
   // (B) Generation with MOCK models (runnable here) → one tile per model with an image.
   await page.getByTestId('pg-model-openai/gpt-image-1').locator('input').uncheck();

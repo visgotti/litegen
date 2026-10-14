@@ -111,7 +111,11 @@ export function useFanOut(): FanOut {
               timeoutMs: MODEL3D_POLL_TIMEOUT_MS,
             });
             const submitted = await job.submitted;
-            keys.forEach(k => patch(k, { status: 'polling', progress: submitted.progress ?? 0 }));
+            // Same memoized submission — no second POST. Non-empty only in lax
+            // mode, where the server drops what the model can't take instead of
+            // rejecting the whole request; the tile says what went missing.
+            const droppedParams = await job.droppedParams;
+            keys.forEach(k => patch(k, { status: 'polling', progress: submitted.progress ?? 0, droppedParams }));
 
             let final = submitted;
             for await (const update of client.models3d.poll(submitted.id, {

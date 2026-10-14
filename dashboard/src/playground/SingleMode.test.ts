@@ -5,7 +5,26 @@ import { describe, expect, it, vi } from 'vitest';
 // request-body builder, so the real client is never needed.
 vi.mock('../sdk-client', () => ({ client: {} }));
 
-const { buildGenerationBody, omitImageOnlyParams } = await import('./SingleMode');
+const { buildGenerationBody, effectiveSize, omitImageOnlyParams } = await import('./SingleMode');
+
+describe('effectiveSize', () => {
+  const options = ['512x512', '1024x1024'];
+
+  it("keeps the user's pick while the model offers it", () => {
+    expect(effectiveSize('1024x1024', options)).toBe('1024x1024');
+  });
+
+  it("falls back to the model's first size when the pick is unset or not offered", () => {
+    // A switch between models must never carry a size the new one lacks.
+    expect(effectiveSize('', options)).toBe('512x512');
+    expect(effectiveSize('2048x2048', options)).toBe('512x512');
+  });
+
+  it('passes a typed size through for a model with free-form sizes', () => {
+    expect(effectiveSize('640x480', [])).toBe('640x480');
+    expect(effectiveSize('', [])).toBe('');
+  });
+});
 
 const form = {
   model: 'mock/mesh-3d',
@@ -56,6 +75,16 @@ describe('buildGenerationBody', () => {
 
   it('carries strict through unchanged', () => {
     expect(buildGenerationBody({ ...form, strict: false }, 'model3d').strict).toBe(false);
+  });
+
+  // `prompt.max_length == 0` (fal/trellis, fal/hunyuan3d-v2): a prompt left
+  // over from the previously selected model would be a 400 in strict mode.
+  it('sends no prompt to a model that takes none', () => {
+    expect(buildGenerationBody(form, 'model3d', 'unused')).not.toHaveProperty('prompt');
+  });
+
+  it('leaves a blank prompt off the wire rather than sending ""', () => {
+    expect(buildGenerationBody({ ...form, prompt: '  ' }, 'model3d', 'optional')).not.toHaveProperty('prompt');
   });
 });
 

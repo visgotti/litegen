@@ -167,6 +167,17 @@ describe('meshOf', () => {
     expect(meshOf([PREVIEW, MESH, TEXTURE])).toBe(MESH);
   });
 
+  it('prefers the glb, as the backend does for result_url, over an earlier gltf', () => {
+    // litegen converts to gltf too, so both can come back; the viewer could
+    // render either, but the inspector must show the same mesh the row links.
+    const gltf = { kind: 'mesh' as const, url: 'https://cdn.example/r/model.gltf', format: 'gltf' };
+    const obj = { kind: 'mesh' as const, url: 'https://cdn.example/r/model.obj', format: 'obj' };
+    const glb = { kind: 'mesh' as const, url: 'https://cdn.example/r/model.glb', format: 'GLB' };
+    expect(meshOf([obj, gltf, glb])).toBe(glb);
+    // No glb: the next renderable one, not the first listed.
+    expect(meshOf([obj, gltf])).toBe(gltf);
+  });
+
   it('falls back to result_url when no mesh is listed', () => {
     expect(meshOf([PREVIEW], 'https://cdn.example/r/mesh.obj')).toEqual({
       kind: 'mesh', url: 'https://cdn.example/r/mesh.obj', format: 'obj',

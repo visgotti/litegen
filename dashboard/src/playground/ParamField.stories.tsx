@@ -97,28 +97,87 @@ export const PartialApplicability: Story = {
   args: field('rig', { kind: 'bool', default: false, label: 'Auto-rig' }, ['mock/all-params-3d']),
 };
 
-// ─── The 3D params (as models/mock.yaml declares them) ─────────────────────
+// ─── The 3D params (shaped like GET /v1/models/{id}) ─────────────────────────
 
-const OUTPUT_FORMAT: ParamSpec = {
-  kind: 'string', enum_values: ['glb', 'obj', 'fbx', 'usdz'], default: 'glb',
-  label: 'Output format', description: 'Mesh container. Only GLB/glTF previews in the browser.',
-};
+/** `output_formats` as served: `enum_values` is everything a caller may ask
+ *  for, `max_items` counts provider jobs, and `derivable_values` lists the
+ *  formats litegen derives from one source — any subset of which is ONE job. */
+function formats(extra: Record<string, unknown>): ParamSpec {
+  return { kind: 'string_array', default: ['glb'], label: 'Output formats', ...extra } as unknown as ParamSpec;
+}
+/** Every container litegen converts — the shape every 3D model serves today:
+ *  one vendor job yields all ten, so the cap cannot bind. */
+const ALL_TEN = ['glb', 'gltf', 'obj', 'stl', 'ply', '3mf', 'dae', 'fbx', 'usdz', 'usda'];
+const EVERY_FORMAT_ONE_JOB = formats({
+  enum_values: ALL_TEN,
+  derivable_values: ALL_TEN,
+  max_items: 1,
+  description: 'TRELLIS emits glb; litegen converts it to every other container.',
+});
+/** A model offering containers litegen cannot convert, each a provider job of
+ *  its own (Rodin's shape before litegen learned fbx and usdz). Nothing serves
+ *  this today; it is the case the budget rule exists for. */
+const PARTLY_DERIVABLE_FORMATS = formats({
+  enum_values: ['glb', 'usdz', 'fbx', 'obj', 'stl', 'ply'],
+  derivable_values: ['glb', 'obj', 'stl', 'ply'],
+  max_items: 1,
+});
 const TOPOLOGY: ParamSpec = { kind: 'string', enum_values: ['triangle', 'quad'], default: 'triangle', label: 'Topology' };
 const SYMMETRY: ParamSpec = { kind: 'string', enum_values: ['off', 'auto', 'on'], default: 'auto', label: 'Symmetry' };
 const TARGET_POLYCOUNT: ParamSpec = {
   kind: 'int', min: 100, max: 300000, label: 'Target polycount', description: 'Approximate triangle budget.',
 };
 
+/** Today's case: every format comes out of the one provider job, so any
+ *  combination is allowed and the hint says so. */
+export const OutputFormatsAnyCombination: Story = {
+  args: { ...field('output_formats', EVERY_FORMAT_ONE_JOB, ['fal/trellis']), value: ['glb', 'fbx', 'usdz'] },
+};
+
+/** A container litegen cannot convert is a provider job of its own: with any
+ *  shared format ticked, the vendor-only ones are disabled (and vice versa). */
+export const OutputFormatsOneJob: Story = {
+  args: field('output_formats', PARTLY_DERIVABLE_FORMATS),
+};
+
+/** Every derivable container ticked — still one provider job. */
+export const OutputFormatsWholeDerivableSet: Story = {
+  args: { ...field('output_formats', PARTLY_DERIVABLE_FORMATS), value: ['glb', 'obj', 'stl', 'ply'] },
+};
+
+/** A server that predates `derivable_values`: every format counts as its own
+ *  job, so `max_items: 1` means exactly one box. */
+export const OutputFormatsWithoutDerivableValues: Story = {
+  args: field('output_formats', formats({ enum_values: ['glb', 'obj', 'stl'], max_items: 1 })),
+};
+
 export const Topology: Story = { args: field('topology', TOPOLOGY) };
 export const Symmetry: Story = { args: field('symmetry', SYMMETRY) };
-export const OutputFormat: Story = { args: field('output_format', OUTPUT_FORMAT) };
 export const TargetPolycount: Story = { args: field('target_polycount', TARGET_POLYCOUNT) };
+
+// ─── Unset vs set ───────────────────────────────────────────────────────────
+//
+// An untouched param is never sent, so each model applies its own default; a
+// control with no declared default shows that rather than inventing a value.
+
+/** No declared default: an empty input whose placeholder says the model decides. */
+export const UnsetNumber: Story = { args: field('target_polycount', TARGET_POLYCOUNT) };
+
+/** No declared default: the select leads with "Model default", which sends nothing. */
+export const EnumWithoutDefault: Story = {
+  args: field('quality', { kind: 'string', enum_values: ['low', 'medium', 'high'] }),
+};
+
+/** Set by the user: "reset" clears it back to the model's default. */
+export const SetWithReset: Story = {
+  args: { ...field('target_polycount', TARGET_POLYCOUNT), value: 20000, onReset: fn() },
+};
 
 /** The whole panel for `mock/all-params-3d` + `mock/mesh-3d` selected together. */
 export const All3DParamsPanel: Story = {
   render: () => (
     <>
-      <Controlled {...field('output_format', OUTPUT_FORMAT)} />
+      <Controlled {...field('output_formats', EVERY_FORMAT_ONE_JOB)} />
       <Controlled {...field('texture', { kind: 'bool', default: true, label: 'Textures' })} />
       <Controlled {...field('pbr', { kind: 'bool', default: false, label: 'PBR materials' }, ['mock/all-params-3d'])} />
       <Controlled {...field('rig', { kind: 'bool', default: false, label: 'Auto-rig' }, ['mock/all-params-3d'])} />

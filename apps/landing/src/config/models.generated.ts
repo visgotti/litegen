@@ -4,7 +4,8 @@ export interface ModelParam {
   name: string;
   kind: string;
   enum?: string[];
-  default?: string | number | boolean;
+  /** An array for a set-valued param (`output_formats`). */
+  default?: string | number | boolean | string[];
   min?: number;
   max?: number;
 }
@@ -1086,7 +1087,7 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": false,
-      "maxLength": 4000
+      "maxLength": 0
     },
     "params": [
       {
@@ -1119,7 +1120,7 @@ export const MODELS: ModelEntry[] = [
       "mesh",
       "hunyuan"
     ],
-    "referenceUrl": "https://fal.ai/docs/documentation"
+    "referenceUrl": "https://fal.ai/models/fal-ai/hunyuan3d/v2/api"
   },
   {
     "id": "fal/hyper3d-rodin",
@@ -1151,7 +1152,7 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": false,
-      "maxLength": 4000
+      "maxLength": 1024
     },
     "params": [
       {
@@ -1188,7 +1189,7 @@ export const MODELS: ModelEntry[] = [
       "mesh",
       "rodin"
     ],
-    "referenceUrl": "https://fal.ai/docs/documentation"
+    "referenceUrl": "https://fal.ai/models/fal-ai/hyper3d/rodin/api"
   },
   {
     "id": "fal/ltx-2.3",
@@ -1453,7 +1454,7 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": false,
-      "maxLength": 4000
+      "maxLength": 0
     },
     "params": [
       {
@@ -1481,7 +1482,7 @@ export const MODELS: ModelEntry[] = [
       "mesh",
       "trellis"
     ],
-    "referenceUrl": "https://fal.ai/docs/documentation"
+    "referenceUrl": "https://fal.ai/models/fal-ai/trellis/api"
   },
   {
     "id": "fal/video",

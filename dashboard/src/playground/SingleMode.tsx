@@ -7,11 +7,44 @@ import {
   removePlaygroundHistory,
 } from '../playground-history';
 import type { PlaygroundHistoryEntry } from '../playground-history';
-import type { ModelInfo, Model3dGenerationRequest, Model3dGenerationResponse, Model3dAsset } from '@litegen/sdk';
+import type { ModelInfo, Model3dGenerationRequest, Model3dGenerationResponse, Model3dAsset, ParamSpec } from '@litegen/sdk';
 import ModelPreview from '../components/ModelPreview';
+import ParamField from './ParamField';
+import RefImagesField from './RefImagesField';
+import ExtraParamsField from './ExtraParamsField';
+import { useUnifiedParams } from './useUnifiedParams';
+import {
+  availabilityOf,
+  docsUrlOf,
+  extraFromBody,
+  paramsFromBody,
+  promptLength,
+  promptMaxLength,
+  promptUsage,
+  refsFromBody,
+  requestProblems,
+  schemaInputs,
+  sizeEnumOptions,
+  sortModels,
+} from './params';
+import { withoutInlineRefs } from './ref-images';
+import type { Availability } from './types';
 import { MODEL3D_POLL_TIMEOUT_MS } from './useFanOut';
 
 type Tab = 'image' | 'request' | 'response';
+
+/** Params Single Mode has dedicated controls for — they predate the
+ *  schema-driven panel and keep their own test ids — so the panel skips them. */
+const DEDICATED = new Set(['seed', 'negative_prompt', 'size']);
+
+/** How the model list is grouped. Live models cost money; mock ones run
+ *  locally for free; setup ones exist in the catalog but their provider has no
+ *  key here, so they run and fail (the error says which key is missing). */
+const GROUPS: Array<{ availability: Availability; label: string }> = [
+  { availability: 'live', label: 'Live' },
+  { availability: 'mock', label: 'Mock (free, local)' },
+  { availability: 'setup', label: 'Needs provider setup' },
+];
 
 /** Extract a mesh asset list from a stored/live response body, if it's one. Used
  *  to tell a 3D result apart from an image one without threading media_type
@@ -28,12 +61,14 @@ function meshAssetsFromResponse(body: Record<string, unknown>): Model3dAsset[] |
 async function generateModel3dJob(
   body: Record<string, unknown>,
   onProgress: (p: number) => void,
+  onDropped: (params: string[]) => void,
 ): Promise<Model3dGenerationResponse> {
   // An explicit budget, not the SDK's 5-minute default: a queued vendor job
   // can outlive that while the server job completes and is billed.
   const pollOpts = { intervalMs: 1500, timeoutMs: MODEL3D_POLL_TIMEOUT_MS };
   const job = client.models3d.generate(body as Model3dGenerationRequest, pollOpts);
   const submitted = await job.submitted;
+  onDropped(await job.droppedParams);
   onProgress(submitted.progress ?? 0);
   let final = submitted;
   for await (const update of client.models3d.poll(submitted.id, pollOpts)) {
@@ -75,9 +110,14 @@ export interface FormState {
 export function buildGenerationBody(
   form: FormState,
   mediaType: 'image' | 'model3d',
+  prompt: 'required' | 'optional' | 'unused' = 'required',
 ): Record<string, unknown> {
   const isModel3d = mediaType === 'model3d';
-  const body: Record<string, unknown> = { model: form.model, prompt: form.prompt };
+  const body: Record<string, unknown> = { model: form.model };
+  // A model that takes no prompt (`prompt.max_length == 0`) must not be sent
+  // one — strict mode rejects it — even if one is left over from the model
+  // selected before. A blank prompt is simply omitted: the field is optional.
+  if (prompt !== 'unused' && form.prompt.trim() !== '') body.prompt = form.prompt;
   if (!isModel3d) body.n = form.n;
   body.strict = form.strict;
   if (form.negativePrompt) body.negative_prompt = form.negativePrompt;
@@ -97,6 +137,18 @@ export function omitImageOnlyParams(body: Record<string, unknown>): Record<strin
   return rest;
 }
 
+/**
+ * The size actually sent: the user's pick while the model offers it, else the
+ * model's first size, else whatever was typed for a free-form size. Derived
+ * rather than stored, so a model switch can never carry a size the new model
+ * does not offer — and there is no schema effect racing a stale response.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper, exported for its unit test
+export function effectiveSize(chosen: string, options: string[]): string {
+  if (options.length === 0) return chosen;
+  return options.includes(chosen) ? chosen : options[0];
+}
+
 const DEFAULT_FORM: FormState = {
   model: '',
   prompt: '',
@@ -109,7 +161,6 @@ const DEFAULT_FORM: FormState = {
 
 export default function SingleMode() {
   const [models, setModels] = useState<ModelInfo[]>([]);
-  const [sizeOptions, setSizeOptions] = useState<string[]>([]);
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('image');
@@ -118,54 +169,46 @@ export default function SingleMode() {
   const [imageData, setImageData] = useState<{ b64_json?: string | null; url?: string | null } | null>(null);
   const [resultMediaType, setResultMediaType] = useState<'image' | 'model3d'>('image');
   const [meshAssets, setMeshAssets] = useState<Model3dAsset[]>([]);
+  const [droppedParams, setDroppedParams] = useState<string[]>([]);
   const [progress, setProgress] = useState<number | null>(null);
   const [history, setHistory] = useState<PlaygroundHistoryEntry[]>([]);
   const [error, setError] = useState('');
 
-  // Load image models on mount
+  // The schema-driven half of the form — params, reference images, provider
+  // passthrough — shares Compare Mode's machinery for the one selected model.
+  const unified = useUnifiedParams(form.model ? [form.model] : [], DEDICATED);
+  const schema = unified.schemasById[form.model];
+  const selected = models.find(m => m.id === form.model);
+  const isModel3dSelected = selected?.media_type === 'model3d';
+  const mediaType: 'image' | 'model3d' = isModel3dSelected ? 'model3d' : 'image';
+
+  const sizeSpec = (schema?.params as Record<string, ParamSpec> | undefined)?.size;
+  const sizeOptions = sizeSpec ? sizeEnumOptions(sizeSpec) : [];
+  const size = effectiveSize(form.size, sizeOptions);
+
+  // Before the schema arrives, only the prompt can be judged.
+  const problems = schema
+    ? requestProblems(schema, { prompt: form.prompt, refs: unified.form.refs })
+    : form.prompt.trim() ? [] : ['needs a prompt'];
+
+  // Load every image and 3D model on mount, mock and real alike — the full
+  // inspector lives here, so every model has to be reachable from it.
   useEffect(() => {
     client.models.list()
       .then(allModels => {
-        const imageModels = allModels.filter(
-          m => m.provider === 'mock' && (m.media_type === 'image' || m.media_type === 'model3d'),
-        );
-        setModels(imageModels);
-        if (imageModels.length > 0) {
-          // Prefer the visual mock model so the Playground shows real visible output
-          const visual = imageModels.find(m => m.id === 'mock/visual-image-gen');
-          const defaultModel = visual ?? imageModels[0];
-          setForm(prev => ({ ...prev, model: defaultModel.id }));
+        const usable = sortModels(allModels.filter(m => m.media_type === 'image' || m.media_type === 'model3d'));
+        setModels(usable);
+        if (usable.length > 0) {
+          // Prefer the visual mock model so the Playground shows real visible
+          // output without spending anything.
+          const fallback = usable.find(m => m.id === 'mock/visual-image-gen')
+            ?? usable.find(m => availabilityOf(m) === 'mock')
+            ?? usable[0];
+          setForm(prev => ({ ...prev, model: fallback.id }));
         }
       })
       .catch(e => setError(e.message));
   }, []);
-
-  // Load size options when model changes
-  useEffect(() => {
-    if (!form.model) return;
-    client.models.getSchema(form.model)
-      .then((schema: unknown) => {
-        const s = schema as Record<string, unknown>;
-        const params = s?.params as Record<string, unknown> | undefined;
-        const sizeParam = params?.size as Record<string, unknown> | undefined;
-        const rawValues = sizeParam?.values as Array<unknown> | undefined;
-        // Schema returns sizes as [w, h] tuples; convert to "WxH" strings for the API.
-        const values: string[] | undefined = rawValues?.map(v =>
-          Array.isArray(v) ? `${v[0]}x${v[1]}` : String(v),
-        );
-        if (values && values.length > 0) {
-          setSizeOptions(values);
-          setForm(prev => ({ ...prev, size: values[0] }));
-        } else {
-          setSizeOptions([]);
-          setForm(prev => ({ ...prev, size: '' }));
-        }
-      })
-      .catch(() => {
-        setSizeOptions([]);
-        setForm(prev => ({ ...prev, size: '' }));
-      });
-  }, [form.model]);
 
   // Load history on mount
   useEffect(() => {
@@ -176,65 +219,71 @@ export default function SingleMode() {
     setHistory(getPlaygroundHistory());
   }, []);
 
-  // Size and N are image-only controls; see buildGenerationBody.
-  const isModel3dSelected = models.find(m => m.id === form.model)?.media_type === 'model3d';
+  /** A model switch starts its params afresh: values chosen for one model's
+   *  schema mean nothing (or something else) on another's. Reference images
+   *  stay — trying one input image on several models is the common case — and
+   *  each model is only sent the roles it declares. */
+  const selectModel = (model: string) => {
+    setForm(prev => ({ ...prev, model, size: '' }));
+    unified.setForm(prev => ({ ...prev, params: {}, extra: {} }));
+  };
 
-  const handleGenerate = async () => {
-    if (!form.prompt.trim()) return;
+  const usage = schema ? promptUsage(schema) : 'required';
+  const promptMax = promptMaxLength(schema);
+
+  /** The full request: the dedicated fields plus the schema-driven ones. */
+  const buildBody = (): Record<string, unknown> => ({
+    ...buildGenerationBody({ ...form, size }, mediaType, usage),
+    ...schemaInputs(schema, unified.form),
+  });
+
+  /** Runs one request for `model` and records it; shared by Generate and Re-submit. */
+  const runRequest = async (model: string, prompt: string, body: Record<string, unknown>) => {
+    const isModel3d = models.find(m => m.id === model)?.media_type === 'model3d';
     setLoading(true);
     setError('');
     setProgress(null);
-
-    const isModel3d = models.find(m => m.id === form.model)?.media_type === 'model3d';
+    setDroppedParams([]);
     setResultMediaType(isModel3d ? 'model3d' : 'image');
     if (isModel3d) setMeshAssets([]); else setImageData(null);
-
-    const body = buildGenerationBody(form, isModel3d ? 'model3d' : 'image');
-
     setRequestJson(JSON.stringify(body, null, 2));
 
     try {
+      let responseBody: Record<string, unknown>;
       if (isModel3d) {
-        const final = await generateModel3dJob(body, setProgress);
-        setResponseJson(JSON.stringify(final, null, 2));
+        const final = await generateModel3dJob(body, setProgress, setDroppedParams);
         setMeshAssets(final.assets ?? []);
-        setActiveTab('image');
-
-        const entry: PlaygroundHistoryEntry = {
-          id: crypto.randomUUID(),
-          model: form.model,
-          prompt: form.prompt,
-          timestamp: new Date().toISOString(),
-          requestBody: body,
-          responseBody: final as unknown as Record<string, unknown>,
-        };
-        pushPlaygroundHistory(entry);
-        refreshHistory();
+        responseBody = final as unknown as Record<string, unknown>;
       } else {
         // Cast body to ImageGenerationRequest — the server accepts extra fields gracefully.
         const res = await client.images.generate(body as Parameters<typeof client.images.generate>[0]);
-        setResponseJson(JSON.stringify(res, null, 2));
         setImageData(res.data?.[0] ?? null);
-        setActiveTab('image');
-
-        // Save to history
-        const entry: PlaygroundHistoryEntry = {
-          id: crypto.randomUUID(),
-          model: form.model,
-          prompt: form.prompt,
-          timestamp: new Date().toISOString(),
-          requestBody: body,
-          responseBody: res as Record<string, unknown>,
-        };
-        pushPlaygroundHistory(entry);
-        refreshHistory();
+        responseBody = res as Record<string, unknown>;
       }
+      setResponseJson(JSON.stringify(responseBody, null, 2));
+      setActiveTab('image');
+
+      pushPlaygroundHistory({
+        id: crypto.randomUUID(),
+        model,
+        prompt,
+        timestamp: new Date().toISOString(),
+        // Uploaded images are megabytes of base64; localStorage holds ~5 MB.
+        requestBody: withoutInlineRefs(body),
+        responseBody,
+      });
+      refreshHistory();
     } catch (e: unknown) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
       setProgress(null);
     }
+  };
+
+  const handleGenerate = async () => {
+    if (problems.length > 0) return;
+    await runRequest(form.model, form.prompt, buildBody());
   };
 
   const handleHistoryClick = (entry: PlaygroundHistoryEntry) => {
@@ -245,12 +294,19 @@ export default function SingleMode() {
       prompt: entry.prompt,
       negativePrompt: (req.negative_prompt as string) ?? '',
       seed: req.seed != null ? String(req.seed) : '',
-      size: (req.size as string) ?? prev.size,
+      size: (req.size as string) ?? '',
       n: (req.n as number) ?? 1,
       strict: req.strict != null ? (req.strict as boolean) : true,
     }));
+    unified.setForm(prev => ({
+      ...prev,
+      params: paramsFromBody(req),
+      refs: refsFromBody(req),
+      extra: extraFromBody(req),
+    }));
     setRequestJson(JSON.stringify(req, null, 2));
     setResponseJson(JSON.stringify(entry.responseBody, null, 2));
+    setDroppedParams([]);
     const assets = meshAssetsFromResponse(entry.responseBody);
     if (assets) {
       setResultMediaType('model3d');
@@ -271,52 +327,7 @@ export default function SingleMode() {
     await new Promise(r => setTimeout(r, 0));
     const isModel3d = models.find(m => m.id === entry.model)?.media_type === 'model3d';
     const body = isModel3d ? omitImageOnlyParams(entry.requestBody) : entry.requestBody;
-    setLoading(true);
-    setError('');
-    setProgress(null);
-    setRequestJson(JSON.stringify(body, null, 2));
-    try {
-      if (isModel3d) {
-        const final = await generateModel3dJob(body, setProgress);
-        setResponseJson(JSON.stringify(final, null, 2));
-        setResultMediaType('model3d');
-        setMeshAssets(final.assets ?? []);
-        setActiveTab('image');
-
-        const newEntry: PlaygroundHistoryEntry = {
-          id: crypto.randomUUID(),
-          model: entry.model,
-          prompt: entry.prompt,
-          timestamp: new Date().toISOString(),
-          requestBody: body,
-          responseBody: final as unknown as Record<string, unknown>,
-        };
-        pushPlaygroundHistory(newEntry);
-        refreshHistory();
-      } else {
-        const res = await client.images.generate(body as Parameters<typeof client.images.generate>[0]);
-        setResponseJson(JSON.stringify(res, null, 2));
-        setResultMediaType('image');
-        setImageData(res.data?.[0] ?? null);
-        setActiveTab('image');
-
-        const newEntry: PlaygroundHistoryEntry = {
-          id: crypto.randomUUID(),
-          model: entry.model,
-          prompt: entry.prompt,
-          timestamp: new Date().toISOString(),
-          requestBody: body,
-          responseBody: res as Record<string, unknown>,
-        };
-        pushPlaygroundHistory(newEntry);
-        refreshHistory();
-      }
-    } catch (e: unknown) {
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
-      setProgress(null);
-    }
+    await runRequest(entry.model, entry.prompt, body);
   };
 
   const handleDeleteHistory = (id: string, e: React.MouseEvent) => {
@@ -324,6 +335,8 @@ export default function SingleMode() {
     removePlaygroundHistory(id);
     refreshHistory();
   };
+
+  const docsUrl = docsUrlOf(schema);
 
   return (
     <div>
@@ -333,43 +346,73 @@ export default function SingleMode() {
         {/* Left column — Input form */}
         <div className="playground-panel">
           <div className="playground-form-group">
-            <label>Model</label>
+            <label htmlFor="playground-model-input">Model</label>
             <select
+              id="playground-model-input"
               data-testid="playground-model"
               className="input"
               style={{ width: '100%' }}
               value={form.model}
               disabled={loading}
-              onChange={e => setForm(prev => ({ ...prev, model: e.target.value }))}
+              onChange={e => selectModel(e.target.value)}
             >
-              {models.map(m => (
-                <option key={m.id} value={m.id}>{m.id}</option>
-              ))}
+              {GROUPS.map(g => {
+                const inGroup = models.filter(m => availabilityOf(m) === g.availability);
+                return inGroup.length ? (
+                  <optgroup key={g.availability} label={g.label}>
+                    {inGroup.map(m => (
+                      <option key={m.id} value={m.id}>{m.id}</option>
+                    ))}
+                  </optgroup>
+                ) : null;
+              })}
             </select>
-            {(() => {
-              const selected = models.find(m => m.id === form.model);
-              return selected?.description ? (
-                <p
-                  data-testid="playground-model-description"
-                  style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-muted, #888)', lineHeight: 1.4 }}
-                >
-                  {selected.description}
-                </p>
-              ) : null;
-            })()}
+            {selected?.description ? (
+              <p
+                data-testid="playground-model-description"
+                style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-muted, #888)', lineHeight: 1.4 }}
+              >
+                {selected.description}
+              </p>
+            ) : null}
+            {docsUrl && (
+              <a href={docsUrl} target="_blank" rel="noreferrer" data-testid="playground-model-docs"
+                className="pg-docs-link">
+                Provider API reference ↗
+              </a>
+            )}
           </div>
 
-          <div className="playground-form-group">
-            <label>Prompt</label>
-            <textarea
-              data-testid="playground-prompt"
-              rows={3}
-              required
-              value={form.prompt}
-              onChange={e => setForm(prev => ({ ...prev, prompt: e.target.value }))}
-              placeholder="Describe the image..."
-            />
-          </div>
+          {usage === 'unused' ? (
+            // Hidden, not just disabled: this model has no prompt to take, and
+            // the body never carries one for it (see buildGenerationBody).
+            <p className="pg-param-description" data-testid="playground-prompt-unused" style={{ margin: '0 0 12px' }}>
+              This model takes no prompt — it generates from the input image.
+            </p>
+          ) : (
+            <div className="playground-form-group">
+              <label htmlFor="playground-prompt-input" data-testid="playground-prompt-label">
+                Prompt{usage === 'optional' ? ' (optional with a reference image)' : ''}
+              </label>
+              <textarea
+                id="playground-prompt-input"
+                data-testid="playground-prompt"
+                rows={3}
+                value={form.prompt}
+                onChange={e => setForm(prev => ({ ...prev, prompt: e.target.value }))}
+                placeholder={isModel3dSelected ? 'Describe the 3D model...' : 'Describe the image...'}
+              />
+              {promptMax != null && (
+                <span className="pg-param-description" data-testid="playground-prompt-count">
+                  {promptLength(form.prompt).toLocaleString()} / {promptMax.toLocaleString()} characters
+                </span>
+              )}
+            </div>
+          )}
+
+          <RefImagesField roles={unified.roles} refs={unified.form.refs} maxTotal={unified.maxRefs}
+            totalSelected={1} disabled={loading}
+            onChange={refs => unified.setForm(prev => ({ ...prev, refs }))} />
 
           <div className="playground-form-group">
             <label>Negative Prompt (optional)</label>
@@ -402,7 +445,7 @@ export default function SingleMode() {
                   data-testid="playground-size"
                   className="input"
                   style={{ width: '100%' }}
-                  value={form.size}
+                  value={size}
                   disabled={isModel3dSelected}
                   onChange={e => setForm(prev => ({ ...prev, size: e.target.value }))}
                 >
@@ -416,7 +459,7 @@ export default function SingleMode() {
                   type="text"
                   className="input"
                   style={{ width: '100%', boxSizing: 'border-box' }}
-                  value={form.size}
+                  value={size}
                   disabled={isModel3dSelected}
                   onChange={e => setForm(prev => ({ ...prev, size: e.target.value }))}
                   placeholder="e.g. 1024x1024"
@@ -450,6 +493,21 @@ export default function SingleMode() {
             </p>
           )}
 
+          {unified.merged.length > 0 && (
+            <div className="pg-params" data-testid="playground-params">
+              {unified.merged.map(p => (
+                <ParamField key={p.name} name={p.name} spec={p.spec} models={p.models}
+                  totalSelected={1} value={unified.params[p.name]}
+                  onChange={v => unified.setParam(p.name, v)}
+                  onReset={p.name in unified.form.params ? () => unified.resetParam(p.name) : undefined} />
+              ))}
+            </div>
+          )}
+
+          <ExtraParamsField extras={unified.extras} values={unified.form.extra} totalSelected={1}
+            docsUrl={docsUrl} disabled={loading}
+            onChange={(key, raw) => unified.setForm(prev => ({ ...prev, extra: { ...prev.extra, [key]: raw } }))} />
+
           <div className="playground-form-group">
             <div className="toggle-row">
               <input
@@ -469,11 +527,16 @@ export default function SingleMode() {
             data-testid="playground-generate"
             className="btn btn-primary"
             style={{ width: '100%' }}
-            disabled={loading || !form.prompt.trim()}
+            disabled={loading || problems.length > 0}
             onClick={handleGenerate}
           >
             {loading ? (progress != null ? `Generating… ${progress}%` : 'Generating...') : 'Generate'}
           </button>
+          {problems.length > 0 && !loading && (
+            <p className="pg-problems-inline" data-testid="playground-problems">
+              This model {problems.join(', ')}.
+            </p>
+          )}
         </div>
 
         {/* Right column — Output panel */}
@@ -501,6 +564,13 @@ export default function SingleMode() {
               Response JSON
             </button>
           </div>
+
+          {droppedParams.length > 0 && (
+            <div className="pg-dropped" data-testid="playground-dropped"
+              title="Strict mode was off, so the server dropped these instead of rejecting the request">
+              Not supported by this model, so dropped: <code>{droppedParams.join(', ')}</code>
+            </div>
+          )}
 
           {activeTab === 'image' && (
             <div className="playground-image-area">

@@ -4,7 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { parse } from 'yaml';
-import { deriveModel, deriveModels, buildProviderModels } from './derive-models.mjs';
+import { deriveModel, deriveModels, buildProviderModels, PROVIDER_DOCS } from './derive-models.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MODELS_DIR = join(HERE, '..', '..', '..', 'models');
@@ -84,6 +84,35 @@ test('deriveModel maps 3D capability flags', () => {
   assert.equal(e.capabilities.imageTo3d, true);
   assert.equal(e.capabilities.multiviewTo3d, false);
   assert.equal(e.capabilities.textToImage, false);
+});
+
+test('a model links its own docs_url, else its provider docs', () => {
+  const own = deriveModel({
+    id: 'fal/trellis', provider: 'fal', media_type: 'model3d',
+    docs_url: 'https://fal.ai/models/fal-ai/trellis/api',
+  });
+  assert.equal(own.referenceUrl, 'https://fal.ai/models/fal-ai/trellis/api');
+  const fallback = deriveModel({ id: 'fal/flux/schnell', provider: 'fal', media_type: 'image' });
+  assert.equal(fallback.referenceUrl, PROVIDER_DOCS.fal);
+  // Only https is trusted, mirroring the catalog loader's rule.
+  const insecure = deriveModel({ id: 'x/y', provider: 'fal', media_type: 'image', docs_url: 'http://example.com' });
+  assert.equal(insecure.referenceUrl, PROVIDER_DOCS.fal);
+});
+
+test('a model that takes no prompt keeps maxLength 0', () => {
+  const m = deriveModel({ id: 'fal/trellis', provider: 'fal', media_type: 'model3d', prompt: { required: false, max_length: 0 } });
+  assert.deepEqual(m.promptLimits, { required: false, minLength: undefined, maxLength: 0 });
+});
+
+test('a 3D format set is the vendor\'s own list, with its array default intact', () => {
+  // The gateway adds the containers it converts to; the page states that
+  // rather than mirroring a rule that grows with litegen's mesh support.
+  const formats = deriveModel({
+    id: 'fal/trellis', provider: 'fal', media_type: 'model3d',
+    params: { output_formats: { kind: 'string_array', enum_values: ['glb'], max_items: 1, default: ['glb'] } },
+  }).params.find((p) => p.name === 'output_formats');
+  assert.deepEqual(formats.enum, ['glb']);
+  assert.deepEqual(formats.default, ['glb']);
 });
 
 test('deriveModels sorts by id', () => {
