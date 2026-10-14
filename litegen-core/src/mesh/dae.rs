@@ -167,6 +167,13 @@ const MAX_PARSED_VALUES: usize = 48_000_000;
 /// file is refused. Real hierarchies are a few dozen deep; the scene's own
 /// algorithms are iterative, so this bounds work, not the stack.
 const MAX_NODE_DEPTH: usize = 512;
+/// Transform elements on one `<node>`. Exporters write a handful (Maya's
+/// pivot stacks run to about a dozen); each animated sample recomposes the
+/// whole stack, so without a ceiling one node's stack multiplies every sample.
+const MAX_NODE_OPS: usize = 128;
+/// Channel references summed over every `<animation_clip>`: a clip resamples
+/// each channel it names, so clips sharing one big animation multiply it.
+const MAX_CLIP_CHANNELS: usize = 2_000_000;
 
 /// Largest input offset accepted on a primitive `<input>`. Offsets select
 /// columns of the interleaved `<p>` list; real files use a handful.
@@ -911,7 +918,8 @@ struct Op {
 }
 
 struct NodeInfo<'a> {
-    ops: Vec<Op>,
+    /// Shared by every `instance_node` copy of the same element: parsed once.
+    ops: Rc<Vec<Op>>,
     parts: Vec<Part<'a>>,
     sid: Option<&'a str>,
     id: Option<&'a str>,
@@ -942,6 +950,9 @@ struct Reader<'a> {
     skin_cache: HashMap<String, usize>,
     info: Vec<NodeInfo<'a>>,
     nodes_by_element: HashMap<usize, Vec<usize>>,
+    /// Each `<node>` element's transform stack, parsed once however many
+    /// `instance_node` copies re-enter it.
+    ops_by_element: HashMap<usize, Rc<Vec<Op>>>,
     /// Morph controllers → the scene nodes that draw them, for weight channels.
     morph_nodes: HashMap<usize, Vec<usize>>,
     /// MORPH_WEIGHT `<source>`s and their arrays → (morph controller, target
@@ -982,6 +993,7 @@ impl<'a> Reader<'a> {
             skin_cache: HashMap::new(),
             info: Vec::new(),
             nodes_by_element: HashMap::new(),
+            ops_by_element: HashMap::new(),
             morph_nodes: HashMap::new(),
             weight_arrays: None,
             is_root: Vec::new(),
@@ -2221,7 +2233,7 @@ impl<'a> Reader<'a> {
             self.warn("the document has no visual scene; every geometry was placed at the origin unmaterialled".into());
             for g in self.doc.library("library_geometries", "geometry") {
                 let binding = Rc::new(Binding { entries: Vec::new(), signature: String::new() });
-                let ir = self.push_node(None, None, Vec::new(), None)?;
+                let ir = self.push_node(None, None, Rc::new(Vec::new()), None)?;
                 self.info[ir].parts.push(Part { source: PartSource::Geometry(g), binding, skeletons: Vec::new() });
             }
             return Ok(());
@@ -2250,7 +2262,7 @@ impl<'a> Reader<'a> {
             if depth > MAX_NODE_DEPTH {
                 return Err(unsupported(format!("nodes nest deeper than {MAX_NODE_DEPTH}")));
             }
-            let ops = parse_ops(el)?;
+            let ops = self.node_ops(el)?;
             let ir = self.push_node(Some(el), parent, ops, el.attr("name"))?;
             for c in &el.children {
                 match c.name.as_str() {
@@ -2295,7 +2307,21 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    fn push_node(&mut self, el: Option<&'a Element>, parent: Option<usize>, ops: Vec<Op>, name: Option<&'a str>) -> Result<usize, MeshError> {
+    /// `el`'s transform stack, parsed and charged on first use and shared
+    /// after: an `instance_node` re-enters its target once per copy, and
+    /// re-parsing per copy made memory grow as copies x transforms.
+    fn node_ops(&mut self, el: &'a Element) -> Result<Rc<Vec<Op>>, MeshError> {
+        if let Some(ops) = self.ops_by_element.get(&mat_ptr(el)) {
+            return Ok(ops.clone());
+        }
+        let ops = parse_ops(el)?;
+        self.charge(ops.iter().map(|o| o.values.len()).sum(), "node transforms")?;
+        let ops = Rc::new(ops);
+        self.ops_by_element.insert(mat_ptr(el), ops.clone());
+        Ok(ops)
+    }
+
+    fn push_node(&mut self, el: Option<&'a Element>, parent: Option<usize>, ops: Rc<Vec<Op>>, name: Option<&'a str>) -> Result<usize, MeshError> {
         if self.scene.nodes.len() >= MAX_NODES {
             return Err(unsupported(format!("the scene has more than {MAX_NODES} nodes (counting instance_node copies)")));
         }
@@ -2399,7 +2425,7 @@ impl<'a> Reader<'a> {
                 ir
             } else {
                 let name = self.scene.nodes[ir].name.as_ref().map(|n| format!("{n}_part{gi}"));
-                let child = self.push_node(None, Some(ir), Vec::new(), None)?;
+                let child = self.push_node(None, Some(ir), Rc::new(Vec::new()), None)?;
                 self.scene.nodes[child].name = name;
                 child
             };
@@ -2717,31 +2743,27 @@ impl<'a> Reader<'a> {
                 *x = true;
             }
         }
-        // Every channel, and for every <animation> the channels under it.
+        // Every channel, and for every <animation> the channels under it. The
+        // walk is depth-first, so an animation's own and descendant channels
+        // are one contiguous run of `channels`: a [start, end) range each.
+        // (Listing every channel under every enclosing animation instead cost
+        // channels x nesting depth — gigabytes from a 20 MB document.)
         let mut channels: Vec<&'a Element> = Vec::new();
-        let mut under: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut under: HashMap<usize, (usize, usize)> = HashMap::new();
         enum Walk<'a> {
             Enter(&'a Element),
-            Leave,
+            Leave(usize, usize),
         }
-        let mut path: Vec<usize> = Vec::new();
         let mut stack: Vec<Walk<'a>> = tops.iter().rev().map(|a| Walk::Enter(a)).collect();
         while let Some(w) = stack.pop() {
             match w {
-                Walk::Leave => {
-                    path.pop();
+                Walk::Leave(animation, start) => {
+                    under.insert(animation, (start, channels.len()));
                 }
                 Walk::Enter(a) => {
-                    path.push(mat_ptr(a));
-                    for c in &a.children {
-                        if c.name == "channel" {
-                            channels.push(c);
-                            for p in &path {
-                                under.entry(*p).or_default().push(channels.len() - 1);
-                            }
-                        }
-                    }
-                    stack.push(Walk::Leave);
+                    let start = channels.len();
+                    channels.extend(a.children.iter().filter(|c| c.name == "channel"));
+                    stack.push(Walk::Leave(mat_ptr(a), start));
                     for c in a.children.iter().rev().filter(|c| c.name == "animation") {
                         stack.push(Walk::Enter(c));
                     }
@@ -2754,12 +2776,23 @@ impl<'a> Reader<'a> {
             let name = if tops.len() == 1 { tops[0].attr("name").filter(|s| !s.is_empty()).map(str::to_string) } else { None };
             groups.push((name, (0..channels.len()).collect()));
         } else {
+            // Clips may each instance the same large animation; every clip
+            // then holds (and later resamples) all of its channels again.
+            let mut referenced = 0usize;
             for clip_el in clips {
                 let mut chans: BTreeSet<usize> = BTreeSet::new();
                 for ia in kids(clip_el, "instance_animation") {
                     let url = ia.attr("url").unwrap_or("");
                     let a = self.doc.resolve(url, "animation", "animation_clip instance_animation")?;
-                    chans.extend(under.get(&mat_ptr(a)).into_iter().flatten().copied());
+                    if let Some(&(start, end)) = under.get(&mat_ptr(a)) {
+                        referenced = referenced.saturating_add(end - start);
+                        if referenced > MAX_CLIP_CHANNELS {
+                            return Err(unsupported(format!(
+                                "the animation clips reference more than {MAX_CLIP_CHANNELS} channels in total"
+                            )));
+                        }
+                        chans.extend(start..end);
+                    }
                 }
                 let name = clip_el.attr("name").or(clip_el.attr("id")).filter(|s| !s.is_empty()).map(str::to_string);
                 groups.push((name, chans.into_iter().collect()));
@@ -3020,7 +3053,7 @@ impl<'a> Reader<'a> {
         let mut prev_q: Option<[f64; 4]> = None;
         let mut scratch = vec![0.0f64; 16];
         for &t in &times {
-            let mut now = ops.clone();
+            let mut now: Vec<Op> = ops.as_ref().clone();
             for (op, sel, c) in curves {
                 let Some(o) = now.get_mut(*op) else { continue };
                 scratch.resize(c.dim, 0.0);
@@ -3491,6 +3524,12 @@ fn parse_ops(node: &Element) -> Result<Vec<Op>, MeshError> {
         let values = parse_f64_list(&c.text, &format!("node {} <{}>", q(nid), c.name))?;
         if values.len() != want {
             return Err(malformed(format!("node {} <{}> has {} values, expected {want}", q(nid), c.name, values.len())));
+        }
+        if ops.len() >= MAX_NODE_OPS {
+            return Err(unsupported(format!(
+                "node {} has more than {MAX_NODE_OPS} transform elements; every animated sample recomposes them all",
+                q(nid)
+            )));
         }
         ops.push(Op { sid: c.attr("sid").map(str::to_string), kind, values });
     }
@@ -5746,5 +5785,34 @@ mod tests {
         let body = scene_doc(&geom("g", &TRI, ""), r##"<node id="n"><instance_geometry url="#g"/></node>"##);
         assert_eq!(read_doc(&body).unwrap_err(), MeshError::Empty);
         assert!(matches!(read_doc(""), Err(MeshError::Empty) | Err(MeshError::Malformed(_))));
+    }
+
+    #[test]
+    fn deeply_nested_animations_index_their_channels_in_linear_time() {
+        // 500 nested <animation>s around 100k channels: indexing every channel
+        // under every enclosing animation used to cost 50M entries here.
+        let mut body = String::from("<library_animations>");
+        for i in 0..500 {
+            body.push_str(&format!(r#"<animation id="a{i}">"#));
+        }
+        for _ in 0..100_000 {
+            body.push_str(r#"<channel source="" target=""/>"#);
+        }
+        for _ in 0..500 {
+            body.push_str("</animation>");
+        }
+        body.push_str("</library_animations>");
+        body.push_str(&tri_doc(""));
+        let started = std::time::Instant::now();
+        let _ = read_doc(&body);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_node_with_an_absurd_transform_stack_is_refused() {
+        let stacked = |n: usize| tri_doc(&"<translate>0 0 0</translate>".repeat(n));
+        assert!(read_doc(&stacked(MAX_NODE_OPS)).is_ok(), "the ceiling itself is allowed");
+        let e = read_doc(&stacked(MAX_NODE_OPS + 1)).unwrap_err();
+        assert!(e.to_string().contains("transform elements"), "{e}");
     }
 }
