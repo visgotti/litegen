@@ -1,0 +1,140 @@
+/* Budgets, Spend, End users and Gateway pages. Uses the theme tokens from App.css. */
+
+.mg-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+
+.mg-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.mg-card-head h3 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--text-strong);
+}
+
+.mg-muted { color: var(--muted); }
+.mg-small { font-size: 12px; margin-top: 4px; }
+
+.mg-hint {
+  color: var(--muted);
+  font-size: 13px;
+  margin: -4px 0 16px;
+}
+
+.mg-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.mg-form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mg-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.mg-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.mg-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mg-meter { margin-bottom: 8px; }
+.mg-meter-text { font-size: 14px; margin-bottom: 6px; }
+
+.mg-meter-track {
+  height: 8px;
+  background: var(--surface-2);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.mg-meter-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+.mg-ok { background: var(--success); }
+.mg-warning { background: var(--warning); }
+.mg-exhausted { background: var(--danger); }
+.mg-uncapped { background: var(--accent); }
+
+.mg-models summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+
+.mg-model-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 4px 12px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px 0;
+  font-size: 13px;
+}
+
+.mg-model-list label { display: flex; gap: 6px; align-items: center; }
+
+.mg-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.mg-tabs button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.mg-tabs button.active {
+  color: var(--text-strong);
+  border-bottom-color: var(--accent);
+}
+
+.mg-bar-cell { width: 40%; }
+
+.mg-bar {
+  height: 10px;
+  background: var(--gradient-brand);
+  border-radius: 5px;
+  min-width: 2px;
+}
+
+.mg-code {
+  width: 100%;
+  min-height: 220px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.mg-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
