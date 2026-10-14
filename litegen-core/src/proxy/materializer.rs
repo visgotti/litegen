@@ -21,6 +21,14 @@ pub enum MaterializeError {
     Decode(String),
 }
 
+/// Where a conversion would park a reference image a vendor must fetch by URL,
+/// and the `Cleanup` guard deletes afterwards.
+///
+/// No conversion uses it today: an uploaded image bound for a URL-taking vendor
+/// travels inline as a `data:` URI instead. Parking it here only works for a
+/// store that mints publicly fetchable URLs AND for a vendor that fetches before
+/// the submit returns — and async vendors fetch later, after `Cleanup` has run.
+/// A future presigned-URL path must keep the object alive until the job ends.
 #[async_trait::async_trait]
 pub trait TempStorage: Send + Sync {
     async fn put(&self, key: &str, bytes: Bytes, content_type: &str) -> Result<String, MaterializeError>;
@@ -103,16 +111,19 @@ impl Materializer {
             });
         };
         let mut out_refs = Vec::with_capacity(refs.len());
-        let mut keys = Vec::new();
         for r in refs {
             let role = r.role.clone().or_else(|| ri.default_role.clone())
                 .ok_or_else(|| MaterializeError::Ref("ref missing role".into()))?;
-            let form = self.convert(&role, r, &ri.provider_format, ctx, &mut keys).await?;
+            let form = self.convert(&role, r, &ri.provider_format, ctx).await?;
             out_refs.push(MaterializedRef { role, form });
         }
+        // No conversion uploads anything any more (see the `→ Url` arms in
+        // `convert`), so there is nothing to clean up. The guard stays wired to
+        // the store so a future conversion that does upload is cleaned up
+        // without touching every caller.
         Ok(MaterializedRequest {
             refs: out_refs,
-            cleanup: Cleanup { storage: Some(self.storage.clone()), keys },
+            cleanup: Cleanup { storage: Some(self.storage.clone()), keys: Vec::new() },
         })
     }
 
@@ -122,7 +133,6 @@ impl Materializer {
         r: ReferenceImage,
         target: &RefProviderFormat,
         ctx: &MaterializeContext,
-        keys: &mut Vec<String>,
     ) -> Result<MaterializedRefForm, MaterializeError> {
         match (r.kind, target) {
             (RefImageKind::Url, RefProviderFormat::Url) => Ok(MaterializedRefForm::Url(r.value)),
@@ -147,13 +157,19 @@ impl Materializer {
                     .ok_or_else(|| MaterializeError::Ref(format!("no field_map entry for role '{}'", role)))?;
                 Ok(MaterializedRefForm::MultipartField { field_name: fname, bytes: bytes.into(), content_type: "application/octet-stream".into() })
             }
+            // An uploaded image bound for a URL-taking vendor travels INLINE, as a
+            // `data:` URI. Uploading it to temp storage instead cannot work: the
+            // local store mints `local://` URLs no vendor can fetch, and even a
+            // public bucket would race an async vendor — the temp object is
+            // deleted when the submit returns, while a queued job (fal) fetches
+            // its input only once a runner picks it up.
+            // @see <https://fal.ai/docs/documentation/model-apis/fal-cdn> (data URIs)
             (RefImageKind::Base64, RefProviderFormat::Url) => {
                 let raw = strip_data_prefix(&r.value);
-                let bytes = B64.decode(raw).map_err(|e| MaterializeError::Decode(e.to_string()))?;
-                let key = format!("tmp/refs/{}", uuid::Uuid::new_v4());
-                let url = self.storage.put(&key, bytes.into(), "application/octet-stream").await?;
-                keys.push(key);
-                Ok(MaterializedRefForm::Url(url))
+                // Decoded only to prove it is base64 — the URI carries the
+                // caller's text, which is already in the form a data URI needs.
+                B64.decode(raw).map_err(|e| MaterializeError::Decode(e.to_string()))?;
+                Ok(MaterializedRefForm::Url(base64_data_uri(raw, data_uri_mime(&r.value))))
             }
             (RefImageKind::Base64, RefProviderFormat::Multipart(crate::capabilities::RefProviderFormatMultipart { field_map })) => {
                 let raw = strip_data_prefix(&r.value);
@@ -162,14 +178,17 @@ impl Materializer {
                     .ok_or_else(|| MaterializeError::Ref(format!("no field_map entry for role '{}'", role)))?;
                 Ok(MaterializedRefForm::MultipartField { field_name: fname, bytes: bytes.into(), content_type: "application/octet-stream".into() })
             }
+            // Inline for the same reason as a base64 upload above.
             (RefImageKind::Blob, RefProviderFormat::Url) => {
                 let (bytes, ct) = ctx.blob_parts.get(&r.value).cloned().ok_or_else(|| {
                     MaterializeError::Ref(format!("blob part '{}' not present", r.value))
                 })?;
-                let key = format!("tmp/refs/{}", uuid::Uuid::new_v4());
-                let url = self.storage.put(&key, bytes, &ct).await?;
-                keys.push(key);
-                Ok(MaterializedRefForm::Url(url))
+                let mime = sniff_image_mime(&bytes).or_else(|| image_mime(&ct));
+                Ok(MaterializedRefForm::Url(format!(
+                    "data:{};base64,{}",
+                    mime.unwrap_or("application/octet-stream"),
+                    B64.encode(&bytes),
+                )))
             }
             (RefImageKind::Blob, RefProviderFormat::Base64) => {
                 let (bytes, _ct) = ctx.blob_parts.get(&r.value).cloned().ok_or_else(|| {
@@ -240,6 +259,52 @@ pub fn strip_data_prefix(s: &str) -> &str {
         }
     }
     s
+}
+
+/// The MIME type of an image, read from its leading bytes. `None` for anything
+/// that is not PNG, JPEG, GIF or WebP.
+pub fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
+        [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
+        [b'G', b'I', b'F', b'8', ..] => Some("image/gif"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// `ct` when it is one of the image types `sniff_image_mime` knows — a caller's
+/// claim is only trusted as far as a vendor will.
+fn image_mime(ct: &str) -> Option<&'static str> {
+    match ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "image/png" => Some("image/png"),
+        "image/jpeg" | "image/jpg" => Some("image/jpeg"),
+        "image/gif" => Some("image/gif"),
+        "image/webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// The MIME type a `data:` URI declares, when `s` is one.
+fn data_uri_mime(s: &str) -> Option<&str> {
+    let meta = s.strip_prefix("data:")?.split(',').next()?;
+    meta.split(';').next().filter(|m| !m.is_empty())
+}
+
+/// An inline `data:` URI for base64 image content (standard alphabet, no
+/// prefix) — the form a URL-taking vendor accepts for an uploaded image.
+///
+/// The MIME type comes from the bytes themselves; a caller-declared `hint` is
+/// used only when the bytes are not a recognised image, and only if it names
+/// one. Only the first 16 characters are decoded, which is enough for every
+/// signature `sniff_image_mime` checks.
+pub fn base64_data_uri(b64: &str, hint: Option<&str>) -> String {
+    let head: String = b64.chars().take(16).collect();
+    let sniffed = B64.decode(&head).ok().and_then(|b| sniff_image_mime(&b));
+    let mime = sniffed
+        .or_else(|| hint.and_then(image_mime))
+        .unwrap_or("application/octet-stream");
+    format!("data:{mime};base64,{b64}")
 }
 
 /// Adapter that wraps the existing storage backend with the TempStorage trait.
