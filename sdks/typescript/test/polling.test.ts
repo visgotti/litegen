@@ -7,7 +7,8 @@ import {
   waitForModel3d,
   MODEL3D_DEFAULT_TIMEOUT_MS,
 } from "../src/polling";
-import { LiteGenPollingTimeoutError } from "../src/errors";
+import { LiteGenAPIError, LiteGenPollingTimeoutError, LiteGenTimeoutError } from "../src/errors";
+import { parseRetryAfter } from "../src/client";
 
 type Update = { status: string; progress: number };
 
@@ -128,5 +129,80 @@ describe("waitForCompletion", () => {
     const final = await waitForCompletion("v1", getStatus, { intervalMs: 0 });
     expect(final.status).toBe("completed");
     expect(final.progress).toBe(100);
+  });
+});
+
+describe("transient status-read failures", () => {
+  const apiError = (status: number, retryAfterMs?: number) =>
+    new LiteGenAPIError(status, { message: `HTTP ${status}`, type: "http_error" }, retryAfterMs);
+  // What a 30-minute 3D wait is likely to meet; throwing any of them would
+  // abandon a job that keeps running (and billing) on the server.
+  const transient = () => [
+    apiError(429, 0),
+    apiError(503),
+    new LiteGenTimeoutError(),
+    new TypeError("fetch failed"),
+  ];
+
+  /** A getStatus that throws each error in `seq` and returns each status, in order. */
+  function flaky(seq: Array<Error | { status: string }>) {
+    const calls = { n: 0 };
+    const getStatus = async (_id: string) => {
+      const item = seq[Math.min(calls.n, seq.length - 1)]!;
+      calls.n += 1;
+      if (item instanceof Error) throw item;
+      return item;
+    };
+    return { getStatus, calls };
+  }
+
+  it("rides out a rate limit, a 503, a timeout and a dropped connection", async () => {
+    const seq = [...transient(), { status: "processing" }, ...transient(), { status: "completed" }];
+    const { getStatus, calls } = flaky(seq);
+    const seen: string[] = [];
+    for await (const u of pollJob("j", getStatus, { intervalMs: 0, timeoutMs: 5000 })) seen.push(u.status);
+    expect(seen).toEqual(["processing", "completed"]);
+    expect(calls.n).toBe(seq.length);
+  });
+
+  it.each([400, 401, 403, 404, 409])("throws a %i at once", async (status) => {
+    const { getStatus, calls } = flaky([apiError(status)]);
+    await expect(waitForModel3d("j", getStatus as never, { intervalMs: 0 })).rejects.toMatchObject({ status });
+    expect(calls.n).toBe(1);
+  });
+
+  it("does not retry an abort or a programming error", async () => {
+    for (const err of [new DOMException("aborted", "AbortError"), new TypeError("x is not a function")]) {
+      const { getStatus, calls } = flaky([err]);
+      await expect(waitForModel3d("j", getStatus as never, { intervalMs: 0 })).rejects.toBe(err);
+      expect(calls.n).toBe(1);
+    }
+  });
+
+  it("gives up after five failures in a row", async () => {
+    const { getStatus, calls } = flaky([apiError(502)]);
+    await expect(waitForModel3d("j", getStatus as never, { intervalMs: 0 })).rejects.toMatchObject({ status: 502 });
+    expect(calls.n).toBe(6); // the first read and five retries
+  });
+
+  it("waits out Retry-After only until its deadline", async () => {
+    const { getStatus } = flaky([{ status: "processing" }, apiError(429, 30_000)]);
+    const started = Date.now();
+    const err = await waitForModel3d("j", getStatus as never, { intervalMs: 0, timeoutMs: 200 }).catch((e) => e);
+    expect(err).toBeInstanceOf(LiteGenPollingTimeoutError);
+    expect((err as LiteGenPollingTimeoutError).lastStatus).toBe("processing");
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("reads Retry-After as seconds or an HTTP date", () => {
+    expect(parseRetryAfter("2")).toBe(2000);
+    expect(parseRetryAfter("-3")).toBe(0);
+    expect(parseRetryAfter("Wed, 21 Oct 2015 07:28:00 GMT")).toBe(0);
+    const inAMinute = parseRetryAfter(new Date(Date.now() + 60_000).toUTCString()) ?? 0;
+    expect(inAMinute).toBeGreaterThan(50_000);
+    expect(inAMinute).toBeLessThanOrEqual(60_000);
+    expect(parseRetryAfter(null)).toBeUndefined();
+    expect(parseRetryAfter(" ")).toBeUndefined();
+    expect(parseRetryAfter("soon")).toBeUndefined();
   });
 });

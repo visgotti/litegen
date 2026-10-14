@@ -62,6 +62,30 @@ describe("client.models3d", () => {
     expect(seen).toEqual([33, 100]);
   });
 
+  it("retries a rate-limited status read after its Retry-After", async () => {
+    // The per-key RPM limit covers status reads too; a 429 mid-wait must not
+    // abandon a job that is still running.
+    const answers = [
+      new Response(JSON.stringify({ error: { message: "Rate limit exceeded", type: "rate_limit_exceeded", code: 429 } }), {
+        status: 429,
+        headers: { "content-type": "application/json", "retry-after": "0" },
+      }),
+      new Response("", { status: 503, headers: { "retry-after": "0" } }),
+      jsonResponse({ id: "j", status: "completed", progress: 100, assets: [{ kind: "mesh", url: "https://cdn.test/m.glb" }] }),
+    ];
+    let reads = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).endsWith("/generations")) return jsonResponse({ id: "j", status: "pending", progress: 0 });
+      return answers[reads++];
+    });
+    const final = await clientWith(fetchMock as unknown as typeof fetch).models3d.generate(
+      { model: "mock/mesh-3d", prompt: "a fox" } as never,
+      { intervalMs: 0 },
+    );
+    expect(final.status).toBe("completed");
+    expect(reads).toBe(3);
+  });
+
   it("estimateCost posts to /v1/models3d/cost", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       expect(String(url)).toContain("/v1/models3d/cost");
@@ -70,6 +94,36 @@ describe("client.models3d", () => {
     const c = clientWith(fetchMock as unknown as typeof fetch);
     const est = await c.models3d.estimateCost({ model: "mock/mesh-3d", prompt: "a fox" } as never);
     expect(est.total_cost_usd).toBe(0.1);
+  });
+
+  // An abort listener added to an already-aborted signal never fires, so these
+  // requests used to go out anyway: a cancelled run could still start a job.
+  it("sends nothing when the caller's signal is already aborted", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: "j", status: "pending", progress: 0 }));
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const job = clientWith(fetchMock as unknown as typeof fetch).models3d.generate(
+      { model: "mock/mesh-3d", prompt: "a fox" } as never,
+      { signal: ctrl.signal },
+    );
+    await expect(job.submitted).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing when the signal aborts while the CSRF token is fetched", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: "j", status: "pending", progress: 0 }));
+    const ctrl = new AbortController();
+    const c = new LiteGenClient({
+      baseUrl: "https://litegen.test",
+      fetch: fetchMock as unknown as typeof fetch,
+      getCsrfToken: async () => {
+        ctrl.abort();
+        return "csrf";
+      },
+    });
+    const job = c.models3d.generate({ model: "mock/mesh-3d", prompt: "a fox" } as never, { signal: ctrl.signal });
+    await expect(job.submitted).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

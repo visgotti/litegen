@@ -325,6 +325,13 @@ export interface ConvertModel3dOptions {
   /** The container to convert it to. */
   to: Schemas["Model3dFormat"];
   signal?: AbortSignal;
+  /**
+   * Milliseconds for the whole call (the upload, the conversion and the
+   * response headers) in place of the client-wide `timeoutMs`, 60 s unless
+   * set. A large file outlives that: 100 MB over a 10 Mbps uplink takes 80 s
+   * to upload alone, and the converter takes up to 128 MiB.
+   */
+  timeoutMs?: number;
 }
 
 /** Response header naming what a conversion lost, comma-joined (omitted when nothing was). */
@@ -334,6 +341,18 @@ const CONVERSION_LOSSES_HEADER = "x-litegen-conversion-losses";
 function dispositionFilename(value: string | null): string | null {
   const m = value ? /filename="?([^";]+)"?/i.exec(value) : null;
   return m?.[1] ?? null;
+}
+
+/**
+ * A `Retry-After` value (delta-seconds or an HTTP date) in milliseconds.
+ * @internal
+ */
+export function parseRetryAfter(value: string | null): number | undefined {
+  if (!value?.trim()) return undefined;
+  const secs = Number(value);
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
 }
 
 /** Filters for `models.list` (`GET /v1/models`). */
@@ -538,12 +557,18 @@ export class LiteGenClient {
     body?: unknown,
     signal?: AbortSignal,
     extraHeaders?: Record<string, string>,
+    timeoutMs: number = this.timeoutMs,
   ): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
     const headers = await this.buildHeaders(method, extraHeaders);
+    // An abort listener added to an already-aborted signal never fires, so a
+    // caller that cancelled before this point (or while the CSRF token was
+    // fetched) would otherwise still send the request — for a submit, a paid
+    // job.
+    if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
 
     const ctrl = new AbortController();
-    const timeout = setTimeout(() => ctrl.abort(), this.timeoutMs);
+    const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
     if (signal) {
       signal.addEventListener("abort", () => ctrl.abort(), { once: true });
     }
@@ -585,7 +610,7 @@ export class LiteGenClient {
         // Non-JSON error body; keep the default detail.
       }
       this.onError?.(res.status, parsedBody);
-      throw new LiteGenAPIError(res.status, detail);
+      throw new LiteGenAPIError(res.status, detail, parseRetryAfter(res.headers.get("retry-after")));
     }
     return res;
   }
@@ -885,6 +910,7 @@ class Models3dNamespace {
       input,
       opts.signal,
       { "Content-Type": "application/octet-stream" },
+      opts.timeoutMs,
     );
     return {
       blob: await res.blob(),
