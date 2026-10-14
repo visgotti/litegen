@@ -10,18 +10,18 @@ export interface ProviderCapability {
 }
 
 export const PROVIDER_CAPABILITIES: Record<string, ProviderCapability> = {
-  "bedrock": { provider: "bedrock", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true } },
   "bfl": { provider: "bfl", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: false } },
   "bytedance": { provider: "bytedance", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
   "fal": { provider: "fal", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true } },
   "google": { provider: "google", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
-  "hunyuan": { provider: "hunyuan", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true } },
+  "hunyuan": { provider: "hunyuan", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
   "ideogram": { provider: "ideogram", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: false } },
   "kling": { provider: "kling", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
   "leonardo": { provider: "leonardo", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true } },
   "luma": { provider: "luma", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
   "minimax": { provider: "minimax", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
-  "openai": { provider: "openai", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
+  "mock": { provider: "mock", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: true } },
+  "openai": { provider: "openai", inputs: { text: true, image: true, multi: true }, outputs: { image: true, video: false } },
   "pixverse": { provider: "pixverse", inputs: { text: true, image: true, multi: true }, outputs: { image: false, video: true } },
   "recraft": { provider: "recraft", inputs: { text: true, image: false, multi: false }, outputs: { image: true, video: false } },
   "replicate": { provider: "replicate", inputs: { text: true, image: true, multi: false }, outputs: { image: true, video: true } },

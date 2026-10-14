@@ -16,7 +16,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT = join(HERE, '..', 'src', 'components', 'infra-flow', 'capabilities.generated.ts');
 
 try {
-  const res = await fetch(`${BASE}/v1/models`);
+  // GET /v1/models needs a key; without one a gateway answers 401 and the
+  // committed snapshot is kept (fail-open, as below).
+  const key = process.env.LITEGEN_API_KEY;
+  const res = await fetch(`${BASE}/v1/models`, key ? { headers: { Authorization: `Bearer ${key}` } } : undefined);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const json = await res.json();
   const caps = deriveCapabilities(json.data ?? []);
