@@ -454,8 +454,12 @@ impl FalModel3dProvider {
                 .timeout(std::time::Duration::from_secs(600))
                 .build()
                 .expect("failed to build HTTP client"),
-            asset_client: crate::util::ssrf::no_redirect_client_with_timeout(
+            // 600 s caps a large mesh's whole transfer; 60 s of silence fails a
+            // stalled one early. Downloads run inline in the poller's tick, so
+            // a CDN that stops sending used to hold up every row for 10 min.
+            asset_client: crate::util::ssrf::no_redirect_download_client(
                 std::time::Duration::from_secs(600),
+                std::time::Duration::from_secs(60),
             ),
             public_assets_only: true,
             max_asset_bytes: MAX_ASSET_BYTES,
@@ -563,9 +567,17 @@ impl FalModel3dProvider {
     /// CDN URLs are public, and the key must never reach another host.
     async fn fetch_asset(&self, url: &str) -> Result<(Vec<u8>, String), AssetError> {
         if self.public_assets_only {
-            crate::util::ssrf::validate_public_url(url)
-                .await
-                .map_err(|why| AssetError::Gone(format!("asset URL refused: {why}")))?;
+            crate::util::ssrf::check_public_url(url).await.map_err(|why| match why {
+                // A resolver blip is not a verdict on the URL: retried, the
+                // download of a result fal keeps for 30 days can still succeed.
+                crate::util::ssrf::UrlCheckError::Lookup(e) => AssetError::Transient(ProviderError::RequestFailed {
+                    message: format!("fal 3d asset host lookup failed: {e}"),
+                    status_code: None,
+                    provider_error: None,
+                    retryable: true,
+                }),
+                crate::util::ssrf::UrlCheckError::Refused(e) => AssetError::Gone(format!("asset URL refused: {e}")),
+            })?;
         }
         let mut resp = self.asset_client.get(url).send().await.map_err(|e| {
             AssetError::Transient(ProviderError::RequestFailed {
@@ -777,7 +789,10 @@ impl Model3dProvider for FalModel3dProvider {
             message: format!("fal 3d submit response could not be read: {e}"),
             status_code: Some(status.as_u16()),
             provider_error: None,
-            retryable: true,
+            // A 2xx means fal already queued (and will bill) the job; its
+            // request id was in the body we lost, so resubmitting would start a
+            // second job. Only an unreadable failure reply is worth retrying.
+            retryable: !status.is_success(),
         })?;
         let reply = QueueReply { status, error_type, json: serde_json::from_str(&text).ok(), text };
 
@@ -1711,6 +1726,20 @@ mod tests {
         assert!(failed.error.unwrap().contains("refused"));
         let fetched = server.received_requests().await.unwrap().iter().any(|r| r.url.path() == "/files/m.glb");
         assert!(!fetched, "the private URL must never be requested");
+    }
+
+    #[tokio::test]
+    async fn a_resolver_failure_on_an_asset_is_retried_not_terminal() {
+        // `.invalid` never resolves (RFC 2606). A lookup failure says nothing
+        // about the URL, so it must not fail a job fal already finished.
+        let server = MockServer::start().await;
+        let mut p = provider(&server);
+        p.public_assets_only = true;
+        match p.fetch_asset("https://litegen-asset-host.invalid/m.glb").await {
+            Err(AssetError::Transient(e)) => assert!(e.is_retryable(), "{e}"),
+            Err(AssetError::Gone(why)) => panic!("a lookup failure was treated as permanent: {why}"),
+            Ok(_) => panic!("an unresolvable host cannot be fetched"),
+        }
     }
 
     #[tokio::test]
