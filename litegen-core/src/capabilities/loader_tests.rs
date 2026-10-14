@@ -218,6 +218,123 @@ models:
     }
 
     #[test]
+    fn rejects_a_canonical_param_declared_with_the_wrong_kind() {
+        // It would load, `supports_pbr` would say yes, and the validator — which
+        // reads `pbr` only as a Bool — would refuse it on every request.
+        let err = model3d_yaml("      pbr: { kind: string, enum_values: [on, off] }\n").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("'pbr'") && msg.contains("kind: bool"), "{msg}");
+    }
+
+    #[test]
+    fn duration_seconds_may_be_a_float_or_an_int() {
+        for kind in ["float", "int"] {
+            let r = yaml(&format!(r#"
+models:
+  - id: x/v
+    provider: x
+    media_type: video
+    display_name: V
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ text_to_video: true }}
+    prompt: {{ required: true }}
+    params:
+      duration_seconds: {{ kind: {kind}, min: 1, max: 10 }}
+"#));
+            assert!(r.is_ok(), "{kind}: {:?}", r.err());
+        }
+    }
+
+    #[test]
+    fn rejects_a_docs_url_that_is_not_absolute_https() {
+        for bad in ["http://fal.ai/models/x/api", "fal.ai/models/x/api", "/models/x/api", "https://"] {
+            let err = yaml(&format!(r#"
+models:
+  - id: x/m
+    provider: x
+    media_type: image
+    display_name: M
+    docs_url: "{bad}"
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ text_to_image: true }}
+    prompt: {{ required: true }}
+"#)).unwrap_err();
+            assert!(err.to_string().contains("docs_url"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn an_https_docs_url_loads_and_is_kept() {
+        let r = yaml(r#"
+models:
+  - id: x/m
+    provider: x
+    media_type: image
+    display_name: M
+    docs_url: https://fal.ai/models/fal-ai/trellis/api
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true }
+"#).unwrap();
+        assert_eq!(
+            r.get("x/m").unwrap().docs_url.as_deref(),
+            Some("https://fal.ai/models/fal-ai/trellis/api"),
+        );
+    }
+
+    #[test]
+    fn rejects_an_output_format_outside_the_3d_vocabulary() {
+        // A typo here would advertise a container no observer of completion
+        // could ever find, failing every generation that asked for it.
+        let err = model3d_yaml(
+            "      output_formats:\n        kind: string_array\n        enum_values: [glb, gbl]\n",
+        ).unwrap_err();
+        assert!(err.to_string().contains("'gbl'"), "{err}");
+    }
+
+    #[test]
+    fn the_3d_vocabulary_is_spelled_canonically() {
+        // Validation folds case, but the catalog is what clients are served.
+        let err = model3d_yaml(
+            "      output_formats:\n        kind: string_array\n        enum_values: [glb, OBJ]\n",
+        ).unwrap_err();
+        assert!(err.to_string().contains("'OBJ'"), "{err}");
+    }
+
+    #[test]
+    fn rejects_topology_and_symmetry_outside_their_vocabularies() {
+        let err = model3d_yaml("      topology: { kind: string, enum_values: [triangle, voxel] }\n").unwrap_err();
+        assert!(err.to_string().contains("'voxel'"), "{err}");
+        let err = model3d_yaml("      symmetry: { kind: string, enum_values: [off, mirror] }\n").unwrap_err();
+        assert!(err.to_string().contains("'mirror'"), "{err}");
+    }
+
+    #[test]
+    fn rejects_a_required_prompt_that_may_not_be_sent() {
+        let err = yaml(r#"
+models:
+  - id: x/m
+    provider: x
+    media_type: model3d
+    display_name: M
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { image_to_3d: true }
+    prompt: { required: true, max_length: 0 }
+"#).unwrap_err();
+        assert!(err.to_string().contains("max_length is 0"), "{err}");
+    }
+
+    #[test]
+    fn derivable_values_cannot_be_set_from_yaml() {
+        // It is computed by the server from what the vendor emits; a catalog
+        // that could set it could promise conversions litegen cannot perform.
+        let err = model3d_yaml(
+            "      output_formats:\n        kind: string_array\n        enum_values: [glb]\n        derivable_values: [fbx]\n",
+        ).unwrap_err();
+        assert!(err.to_string().contains("derivable_values"), "{err}");
+    }
+
+    #[test]
     fn for_provider_groups_correctly() {
         let r = CapabilityRegistry::from_yaml_strs(&[
             ("a.yaml", "models:\n  - id: x/a\n    provider: x\n    media_type: image\n    display_name: A\n    pricing: { base_cost_usd: 0.01 }\n    capabilities: { text_to_image: true }\n    prompt: { required: true }\n  - id: x/b\n    provider: x\n    media_type: image\n    display_name: B\n    pricing: { base_cost_usd: 0.01 }\n    capabilities: { text_to_image: true }\n    prompt: { required: true }\n"),

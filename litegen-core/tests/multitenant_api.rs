@@ -1762,3 +1762,109 @@ async fn app_storage_viewer_read_only() {
         del_viewer.status, del_viewer.body
     );
 }
+
+// ─── 3D: observers of completion keep tenancy ─────────────────────────────────
+//
+// A 3D generation has two observers of completion — the client's
+// `GET /v1/models3d/{id}` and the background poller — and which one wins must
+// not decide whose bucket a mesh lands in, nor who may read it.
+
+async fn submit_3d(c: &mut Client, auth: &str) -> String {
+    let r = c
+        .post_with(
+            "/v1/models3d/generations",
+            json!({ "model": "mock/mesh-3d", "prompt": "a low-poly fox" }),
+            &[("authorization", auth)],
+        )
+        .await;
+    assert_eq!(r.status, 200, "3d submit failed: {:?}", r.body);
+    r.body["id"].as_str().expect("generation id").to_string()
+}
+
+#[tokio::test]
+async fn a_3d_generation_completed_by_the_clients_poll_lands_in_the_apps_bucket() {
+    // The GET path re-hosted into the OPERATOR's store before it resolved the
+    // app's BYO bucket; the client polls faster than the poller ticks, so it is
+    // the observer that usually wins.
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let s3 = MockServer::start().await;
+    Mock::given(method("PUT")).respond_with(ResponseTemplate::new(200)).mount(&s3).await;
+
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (app_id, secret) = signup_app_and_key(&mut c, "stg-3d").await;
+    let csrf = c.csrf().await;
+    let put = c
+        .put_with(
+            &format!("/v1/apps/{app_id}/storage"),
+            json!({
+                "bucket_name": "mesh-bucket",
+                "region": "us-east-1",
+                "endpoint_url": s3.uri(),
+                "custom_public_url": "https://cdn.example.test",
+                "access_key_id": "AKIATEST",
+                "secret_access_key": "secret"
+            }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(put.status, 200, "put storage failed: {:?}", put.body);
+
+    let mut bearer = Client::new(&app.base);
+    let auth = format!("Bearer {secret}");
+    let id = submit_3d(&mut bearer, &auth).await;
+
+    let mut last = Value::Null;
+    for _ in 0..10 {
+        let p = bearer.get_with(&format!("/v1/models3d/{id}"), &[("authorization", &auth)]).await;
+        assert_eq!(p.status, 200, "{:?}", p.body);
+        last = p.body;
+        if last["status"] != "pending" && last["status"] != "processing" {
+            break;
+        }
+    }
+    assert_eq!(last["status"], "completed", "{last}");
+    let mesh = last["assets"].as_array().expect("assets").iter().find(|a| a["kind"] == "mesh").expect("a mesh");
+    assert_eq!(mesh["url"], format!("https://cdn.example.test/litegen/3d/{id}/model.glb"));
+
+    let puts: Vec<String> = s3
+        .received_requests()
+        .await
+        .expect("recorded requests")
+        .iter()
+        .map(|r| r.url.path().to_string())
+        .collect();
+    assert!(puts.contains(&format!("/mesh-bucket/litegen/3d/{id}/model.glb")), "mesh not in the app's bucket: {puts:?}");
+    assert!(puts.iter().all(|p| p.starts_with("/mesh-bucket/litegen/3d/")), "every asset goes to the app's bucket: {puts:?}");
+}
+
+#[tokio::test]
+async fn a_db_error_on_a_3d_poll_never_answers_with_another_orgs_job() {
+    // The row read used to be `if let Ok(Some(gen))`: a DB error skipped the
+    // tenant check, and the router — which still tracked the job — answered.
+    // A caller in org B holding org A's generation id got A's mesh URLs.
+    let app = spawn_app().await;
+    let mut a = Client::new(&app.base);
+    let (_app_a, secret_a) = signup_app_and_key(&mut a, "f11-a").await;
+    let mut b = Client::new(&app.base);
+    let (_app_b, secret_b) = signup_app_and_key(&mut b, "f11-b").await;
+
+    let id = submit_3d(&mut a, &format!("Bearer {secret_a}")).await;
+
+    // Fault injection: the generations table disappears under the running app,
+    // so every read of it errors while the router still tracks A's job.
+    let url = format!("sqlite://{}?mode=rwc", app.db_path().display());
+    let pool = sqlx::sqlite::SqlitePool::connect(&url).await.expect("open sqlite");
+    sqlx::query("ALTER TABLE generations RENAME TO generations_unavailable")
+        .execute(&pool)
+        .await
+        .expect("break the table");
+    pool.close().await;
+
+    let p = b.get_with(&format!("/v1/models3d/{id}"), &[("authorization", &format!("Bearer {secret_b}"))]).await;
+    assert_eq!(p.status, 500, "a DB error must be an error, not an unchecked answer: {:?}", p.body);
+    let raw = p.body.to_string();
+    assert!(!raw.contains("assets") && !raw.contains(&id), "nothing of A's job may leak to B: {raw}");
+}

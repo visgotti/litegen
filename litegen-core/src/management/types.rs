@@ -400,7 +400,7 @@ pub struct StoredProviderConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProviderConfigView {
     pub name: String,
-    /// Media this adapter can serve: image, video.
+    /// Media this adapter can serve: image, video, model3d.
     pub modalities: Vec<String>,
     /// Whether a live instance is registered and serving requests.
     pub active: bool,

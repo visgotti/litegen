@@ -53,32 +53,42 @@ What already works:
   that `ImageStore::store`'s content-type sniffing cannot save a `.glb` as
   `.png`. An `.fbx` or `.usdz` survives rehost intact.
 
-What does not:
+What did not, at the time of writing — each item now marked with where it stands (2026-10-12):
 
 1. **Nothing checks delivered against requested.** No code path compares
    `Model3dAsset.format` to the requested `output_format`. `mock/all-params-3d`
    advertises `[glb, obj, fbx, usdz]` (`models/mock.yaml:333`) while
    `MockModel3dProvider::generate` takes `_extras` and ignores it — so a request
    for `usdz` validates, bills, completes, and returns a `.glb`.
+   ✅ Fixed in `7465c8b`: delivered ⊇ requested is enforced at all three
+   observers of completion, and the mock honours `output_formats`.
 2. **`format` is a free-form `String`** (`types/mod.rs:186`) with the legal
    values living only in a doc comment. No allowlist, no case-folding, and it is
    interpolated straight into the storage key — a vendor-supplied `format`
    containing `/` or `..` becomes part of the S3 path.
+   ✅ Fixed: `sanitize_model3d_format` normalises it before it reaches a key, and
+   the request vocabulary is the `Model3dFormat` enum the loader enforces.
 3. **`mesh()` returns the *first* Mesh asset** (`types/mod.rs:222`), and that
    backs the `result_url` column. Under any multi-format design, whichever file
    the adapter pushed first silently becomes the canonical URL.
+   ✅ Fixed: `mesh()` and the poller prefer the glb.
 4. **Rehost de-dupes on stem, not `(stem, format)`** (`proxy/router.rs:1261`), so
    a second mesh lands at `model_1.fbx` — contradicting the function's own doc
    comment promising `model.<ext>`.
+   ✅ Fixed: rehost keys on `(stem, format)`.
 5. **Multi-file formats are structurally broken.** The mesh stem is hardcoded
    `"model"`. An `.obj`+`.mtl` pair or `.gltf`+`.bin`+textures gets renamed, and
    the reference *inside* the mesh file stops resolving. Only self-contained
    containers (glb, fbx?, usdz, stl, ply) survive. FBX is the open question —
    FBX textures are normally *external*; embedding is optional.
+   ⚠️ Still true. Mitigated, not solved: every container litegen derives is
+   self-contained, and Rodin's PBR maps arrive as separate `texture` assets.
 6. **No real vendor is wired.** `models/mock.yaml` is the only catalog file
    declaring `media_type: model3d`, and `MockModel3dProvider` is the only
    production `Model3dProvider` impl. Every "the adapter will…" statement is
    unexercised.
+   ✅ Fixed in `aa656f8`: fal.ai (Rodin, TRELLIS, Hunyuan3D v2), proven by billed
+   runs on 2026-09-12 and by a wiremock suite asserting every outbound field.
 
 ## 3. How unified are the params?
 
@@ -195,6 +205,14 @@ produce ourselves.
 
 ### Still rejected: fbx, usdz, and cross-vendor conversion
 
+> **Superseded for fbx and usdz on 2026-10-12.** `litegen-core/src/mesh/` now
+> reads and writes all ten containers in `Model3dFormat` — fbx and usdz among
+> them, with no Autodesk SDK and no USD tooling — render-verified against
+> independent readers; method and results in `3d-format-conversion.md`. A
+> vendor's own fbx/usdz is still preferred when it offers one
+> (`model3d_convert::prefers_vendor_native`). Point 3, cross-vendor conversion,
+> stands. The reasoning below is kept as the record of the earlier decision.
+
 1. **FBX writing is legally encumbered.** The Autodesk FBX SDK license is the
    only complete path; open writers produce files that fail to load in the DCC
    tools that are the entire reason to want FBX. (Sourced from Unity's
@@ -261,7 +279,8 @@ retired the Edify NIM preview 2025-06-06 and current status is unconfirmed.
 1. ✅ **Nothing** — `output_formats` and local conversion are built and tested
    against the mock, which is the only subject that can exercise both arms of
    the delivered-vs-requested guard. Done 2026-09-12.
-2. **fal.ai** — key already in hand; unlocks Tripo/Rodin/Hunyuan/Trellis behind
+2. ✅ **fal.ai** — shipped 2026-09-12 (Rodin, TRELLIS, Hunyuan3D v2), completed
+   2026-10-12. Key already in hand; unlocks Tripo/Rodin/Hunyuan/Trellis behind
    one adapter. Accept the per-slug `match`. **Start here.** Note that local
    conversion has already removed the main objection to a GLB-only slug: a fal
    model declaring `output_formats: [glb]` now delivers obj, stl and ply too.

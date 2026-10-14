@@ -158,6 +158,7 @@ impl ProviderRegistry {
     pub async fn configure_provider(&self, name: &str, config: ProviderInstanceConfig) -> bool {
         if build_image_provider(name, &config).is_none()
             && build_video_provider(name, &config).is_none()
+            && build_model3d_provider(name, &config).is_none()
         {
             return false;
         }
@@ -170,6 +171,7 @@ impl ProviderRegistry {
     pub async fn unregister_provider(&self, name: &str) {
         self.image_providers.write().await.remove(name);
         self.video_providers.write().await.remove(name);
+        self.model3d_providers.write().await.remove(name);
         self.provider_configs.write().await.remove(name);
     }
 
@@ -333,6 +335,19 @@ impl ProviderRegistry {
             });
         }
         for (name, provider) in self.video_providers.read().await.iter() {
+            let hc = provider.health_check().await;
+            results.push(ProviderHealth {
+                provider: name.clone(),
+                healthy: hc.healthy,
+                message: Some(hc.message),
+                latency_ms: hc.latency_ms,
+                last_checked: Some(now),
+            });
+        }
+        // 3D instances are separate objects with their own checks (fal's 3D
+        // adapter validates its key against fal's Platform API); a vendor that
+        // serves only 3D would otherwise never appear in `/health` at all.
+        for (name, provider) in self.model3d_providers.read().await.iter() {
             let hc = provider.health_check().await;
             results.push(ProviderHealth {
                 provider: name.clone(),
@@ -924,5 +939,50 @@ mod tests {
         reg.register_provider("mock", ProviderInstanceConfig::default()).await;
         assert!(reg.model3d_provider_for("mock").await.is_some());
         assert!(reg.model3d_provider_for("stability").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn health_covers_providers_that_only_serve_3d() {
+        // `/health` and `/health/ready` both read this list; a 3D-only vendor
+        // missing from it could never report a revoked key.
+        struct Only3d;
+        #[async_trait::async_trait]
+        impl Model3dProvider for Only3d {
+            fn name(&self) -> &str { "mock" }
+            fn configure(&mut self, _c: ProviderInstanceConfig) {}
+            fn is_configured(&self) -> bool { true }
+            async fn generate(
+                &self,
+                _m: &crate::capabilities::ModelSchema,
+                _b: &crate::types::BaseGenerationRequest,
+                _e: &crate::providers::Model3dExtras,
+                _r: &crate::proxy::materializer::MaterializedRequest,
+            ) -> Result<crate::providers::Model3dGenerationHandle, crate::providers::ProviderError> {
+                unreachable!()
+            }
+            async fn poll_status(
+                &self,
+                _h: &crate::providers::Model3dGenerationHandle,
+            ) -> Result<crate::providers::Model3dGenerationPollResult, crate::providers::ProviderError> {
+                unreachable!()
+            }
+            async fn estimate_cost(
+                &self,
+                _m: &crate::capabilities::ModelSchema,
+                _r: &crate::types::Model3dGenerationRequest,
+            ) -> Result<crate::types::CostEstimate, crate::providers::ProviderError> {
+                unreachable!()
+            }
+            async fn health_check(&self) -> crate::providers::HealthCheckResult {
+                crate::providers::HealthCheckResult { healthy: false, message: "3d key revoked".into(), latency_ms: None }
+            }
+        }
+
+        let registry = ProviderRegistry::new();
+        registry.register_mock_model3d(Arc::new(Only3d)).await;
+        let health = registry.health_check_all().await;
+        assert_eq!(health.len(), 1, "{health:?}");
+        assert!(!health[0].healthy);
+        assert_eq!(health[0].message.as_deref(), Some("3d key revoked"));
     }
 }

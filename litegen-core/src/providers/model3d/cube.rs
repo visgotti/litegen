@@ -39,7 +39,7 @@ pub fn generate_cube_obj(prompt: &str) -> Vec<u8> {
             c[0] * scale, c[1] * scale, c[2] * scale
         ));
     }
-    for tri in CUBE_INDICES.chunks_exact(3) {
+    for tri in CUBE_INDICES.as_chunks::<3>().0 {
         s.push_str(&format!("f {} {} {}\n", tri[0] + 1, tri[1] + 1, tri[2] + 1));
     }
     s.into_bytes()
@@ -70,7 +70,7 @@ pub fn generate_cube_stl(prompt: &str) -> Vec<u8> {
     out.extend_from_slice(&header);
     out.extend_from_slice(&tri_count.to_le_bytes());
 
-    for tri in CUBE_INDICES.chunks_exact(3) {
+    for tri in CUBE_INDICES.as_chunks::<3>().0 {
         let (a, b, c) = (v(tri[0]), v(tri[1]), v(tri[2]));
         let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
         let w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];

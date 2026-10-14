@@ -4,6 +4,7 @@
 //! supports which knob.
 
 use litegen::api::middleware::validator::validate_model3d;
+use litegen::proxy::model3d_convert::is_derivable;
 use litegen::capabilities::*;
 use litegen::types::*;
 // Both globs export a `MediaType` and a `ModelPricing` (capabilities::schema
@@ -20,6 +21,7 @@ fn schema_with(params: HashMap<String, ParamSpec>) -> ModelSchema {
         media_type: MediaType::Model3d,
         display_name: "Mock Mesh 3D".into(),
         description: String::new(),
+        docs_url: None,
         pricing: ModelPricing { base_cost_usd: 0.0, variable_pricing: None },
         capabilities: ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
         prompt: PromptSpec { required: true, min_length: None, max_length: None },
@@ -73,8 +75,7 @@ fn formats_param(values: &[&str], max_items: Option<usize>) -> ParamSpec {
         enum_values: values.iter().map(|s| s.to_string()).collect(),
         max_items,
         default: vec!["glb".to_string()],
-        label: None,
-        description: None,
+        ..Default::default()
     })
 }
 
@@ -92,18 +93,19 @@ fn a_format_the_model_cannot_emit_is_rejected_in_both_modes() {
     ]));
     for strict in [true, false] {
         let mut r = req(strict);
-        r.output_formats = Some(vec!["glb".into(), "fbx".into()]);
+        // Neither emitted nor derivable: Sloyd's .blend, say.
+        r.output_formats = Some(vec!["glb".into(), "blend".into()]);
         let err = validate_model3d(&schema, r).unwrap_err();
         assert_eq!(err.code, "param_enum_mismatch", "strict={strict}");
         assert_eq!(err.param.as_deref(), Some("output_formats"));
         // A declared param with an unsupported VALUE is a client error in both
         // modes — dropping it in lax mode would silently downgrade the promise.
-        assert!(err.message.contains("fbx"), "the error must name the format: {}", err.message);
+        assert!(err.message.contains("blend"), "the error must name the format: {}", err.message);
     }
 }
 
 #[test]
-fn max_items_bounds_what_the_PROVIDER_must_produce_not_what_may_be_asked_for() {
+fn max_items_bounds_what_the_provider_must_produce_not_what_may_be_asked_for() {
     // Rodin's shape: `geometry_file_format` is a scalar, so it emits exactly one
     // container per job. That no longer caps the CALLER, because obj/stl/ply are
     // derived locally from the one glb — which is the whole point of local
@@ -117,12 +119,12 @@ fn max_items_bounds_what_the_PROVIDER_must_produce_not_what_may_be_asked_for() {
     assert_eq!(out.request.output_formats.as_deref().unwrap().len(), 4);
 
     // But a container we CANNOT derive has to come from the vendor itself, so
-    // glb + fbx genuinely is two jobs and a scalar-field vendor cannot do it.
+    // glb + blend genuinely is two jobs and a scalar-field vendor cannot do it.
     let schema = schema_with(HashMap::from([
-        ("output_formats".to_string(), formats_param(&["glb", "fbx"], Some(1))),
+        ("output_formats".to_string(), formats_param(&["glb", "blend"], Some(1))),
     ]));
     let mut r = req(true);
-    r.output_formats = Some(vec!["glb".into(), "fbx".into()]);
+    r.output_formats = Some(vec!["glb".into(), "blend".into()]);
     let err = validate_model3d(&schema, r).unwrap_err();
     assert_eq!(err.code, "param_too_many");
     assert_eq!(err.param.as_deref(), Some("output_formats"));
@@ -143,7 +145,7 @@ fn a_derivable_format_is_accepted_even_when_the_model_does_not_emit_it() {
     // A format nobody can produce is still refused, and the message lists what
     // is actually deliverable rather than only what the vendor emits.
     let mut r = req(true);
-    r.output_formats = Some(vec!["usdz".into()]);
+    r.output_formats = Some(vec!["blend".into()]);
     let err = validate_model3d(&schema, r).unwrap_err();
     assert_eq!(err.code, "param_enum_mismatch");
     assert!(err.message.contains("stl"), "must advertise the derivable set: {}", err.message);
@@ -371,4 +373,257 @@ fn prompt_is_still_required() {
     r.base.prompt = "   ".into();
     let err = validate_model3d(&schema, r).unwrap_err();
     assert_eq!(err.code, "prompt_required");
+}
+
+// ─── Against the shipped catalog ────────────────────────────────────────────
+//
+// The synthetic schemas above prove the mechanics. These prove the catalog a
+// deployment actually serves: every canonical 3D param, refused or dropped on
+// a real model that does not declare it and honoured on one that does, plus
+// the vendor limits the fal rows encode. A catalog edit that loosens any of
+// them fails here, before it can be billed.
+
+fn catalog() -> CapabilityRegistry {
+    let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    dir.pop();
+    dir.push("models");
+    CapabilityRegistry::from_dir(&dir).expect("the shipped catalog loads")
+}
+
+fn real(id: &str) -> ModelSchema {
+    catalog().get(id).unwrap_or_else(|| panic!("{id} is not in the shipped catalog")).clone()
+}
+
+fn image_ref() -> ReferenceImage {
+    ReferenceImage { kind: RefImageKind::Url, value: "https://example.com/robot.png".into(), role: Some("init".into()) }
+}
+
+/// A request a given real model accepts as-is: an image for the image-only
+/// models, a prompt for the rest.
+fn valid_for(schema: &ModelSchema, strict: bool) -> Model3dGenerationRequest {
+    let mut r = req(strict);
+    r.base.model = schema.id.clone();
+    if schema.capabilities.text_to_3d {
+        r.base.prompt = "a low-poly fox".into();
+    } else {
+        r.base.prompt = String::new();
+        r.base.reference_images = vec![image_ref()];
+    }
+    r
+}
+
+type Setter = fn(&mut Model3dGenerationRequest);
+type IsSet = fn(&Model3dGenerationRequest) -> bool;
+
+/// Every canonical 3D param, as (name, set-it, is-it-still-set).
+fn every_3d_param() -> Vec<(&'static str, Setter, IsSet)> {
+    vec![
+        ("texture", |r| r.texture = Some(true), |r| r.texture.is_some()),
+        ("pbr", |r| r.pbr = Some(true), |r| r.pbr.is_some()),
+        ("rig", |r| r.rig = Some(true), |r| r.rig.is_some()),
+        ("target_polycount", |r| r.target_polycount = Some(5000), |r| r.target_polycount.is_some()),
+        ("symmetry", |r| r.symmetry = Some("auto".into()), |r| r.symmetry.is_some()),
+        ("topology", |r| r.topology = Some("quad".into()), |r| r.topology.is_some()),
+        ("negative_prompt", |r| r.base.negative_prompt = Some("blurry".into()), |r| r.base.negative_prompt.is_some()),
+    ]
+}
+
+#[test]
+fn every_3d_param_is_refused_in_strict_and_dropped_in_lax_where_undeclared() {
+    // fal/trellis declares output_formats and seed and nothing else.
+    let schema = real("fal/trellis");
+    for (param, set, is_set) in every_3d_param() {
+        assert!(!schema.params.contains_key(param), "fixture assumption: trellis does not declare {param}");
+
+        let mut r = valid_for(&schema, true);
+        set(&mut r);
+        let err = validate_model3d(&schema, r).unwrap_err();
+        assert_eq!(err.code, "param_unsupported", "{param}");
+        assert_eq!(err.param.as_deref(), Some(param));
+
+        let mut r = valid_for(&schema, false);
+        set(&mut r);
+        let out = validate_model3d(&schema, r).unwrap_or_else(|e| panic!("{param} in lax: {e:?}"));
+        assert!(out.dropped.iter().any(|d| d == param), "{param} must be reported dropped: {:?}", out.dropped);
+        assert!(!is_set(&out.request), "{param} must be cleared from the request, not just reported");
+    }
+}
+
+#[test]
+fn every_declared_3d_param_passes_through_on_the_model_that_declares_it() {
+    // mock/all-params-3d is the catalog's full-surface subject.
+    let schema = real("mock/all-params-3d");
+    for (param, set, is_set) in every_3d_param() {
+        if param == "negative_prompt" {
+            continue; // no 3D model in the catalog declares it
+        }
+        let mut r = valid_for(&schema, true);
+        set(&mut r);
+        let out = validate_model3d(&schema, r).unwrap_or_else(|e| panic!("{param}: {e:?}"));
+        assert!(out.dropped.is_empty(), "{param}: {:?}", out.dropped);
+        assert!(is_set(&out.request), "{param} must survive validation");
+    }
+}
+
+#[test]
+fn rodins_seed_ceiling_is_its_u16_maximum() {
+    // Hyper3dRodinInput.seed is 0..=65535; fal answers more with a 422.
+    let schema = real("fal/hyper3d-rodin");
+    let mut r = valid_for(&schema, true);
+    r.base.seed = Some(65_535);
+    assert!(validate_model3d(&schema, r).is_ok());
+    let mut r = valid_for(&schema, true);
+    r.base.seed = Some(65_536);
+    let err = validate_model3d(&schema, r).unwrap_err();
+    assert_eq!(err.code, "param_out_of_range");
+    assert_eq!(err.param.as_deref(), Some("seed"));
+}
+
+#[test]
+fn rodins_prompt_limit_is_1024_characters_not_bytes() {
+    // Hyper3dRodinInput.prompt is `maxLength: 1024`, which JSON Schema counts
+    // in characters. A byte count would refuse a non-ASCII prompt fal accepts.
+    let schema = real("fal/hyper3d-rodin");
+    let mut r = valid_for(&schema, true);
+    r.base.prompt = "é".repeat(1024); // 2048 bytes, 1024 characters
+    assert!(validate_model3d(&schema, r).is_ok(), "1024 characters is within the limit");
+    let mut r = valid_for(&schema, true);
+    r.base.prompt = "a".repeat(1025);
+    let err = validate_model3d(&schema, r).unwrap_err();
+    assert_eq!(err.code, "prompt_too_long");
+}
+
+#[test]
+fn image_only_models_take_no_prompt() {
+    // TrellisInput and Hunyuan3dV2Input define no prompt field. A prompt sent
+    // there would have gone nowhere while the call answered 200.
+    for id in ["fal/trellis", "fal/hunyuan3d-v2"] {
+        let schema = real(id);
+        assert_eq!(schema.prompt.max_length, Some(0), "{id}");
+
+        let mut r = valid_for(&schema, true);
+        r.base.prompt = "a fox".into();
+        let err = validate_model3d(&schema, r).unwrap_err();
+        assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_unsupported", Some("prompt")), "{id}");
+
+        let mut r = valid_for(&schema, false);
+        r.base.prompt = "a fox".into();
+        let out = validate_model3d(&schema, r).unwrap();
+        assert!(out.dropped.iter().any(|d| d == "prompt"), "{id}: {:?}", out.dropped);
+        assert!(out.request.base.prompt.is_empty(), "{id}: a dropped prompt is cleared");
+    }
+}
+
+#[test]
+fn image_only_models_require_their_image() {
+    for id in ["fal/trellis", "fal/hunyuan3d-v2"] {
+        let schema = real(id);
+        let mut r = valid_for(&schema, true);
+        r.base.reference_images.clear();
+        let err = validate_model3d(&schema, r).unwrap_err();
+        assert_eq!(err.code, "ref_role_required", "{id}: {}", err.message);
+    }
+}
+
+#[test]
+fn text_to_3d_needs_a_prompt_even_where_the_prompt_is_optional() {
+    // Rodin's prompt is optional because images make it so — but a request
+    // with neither has nothing to generate from and fal would refuse it.
+    let schema = real("fal/hyper3d-rodin");
+    assert!(!schema.prompt.required, "fixture assumption");
+
+    let mut r = valid_for(&schema, true);
+    r.base.prompt = "  ".into();
+    let err = validate_model3d(&schema, r).unwrap_err();
+    assert_eq!((err.code.as_str(), err.param.as_deref()), ("prompt_required", Some("prompt")));
+
+    let mut r = valid_for(&schema, true);
+    r.base.prompt = String::new();
+    r.base.reference_images = vec![image_ref()];
+    assert!(validate_model3d(&schema, r).is_ok(), "image-to-3D needs no prompt");
+}
+
+#[test]
+fn rodin_serves_the_derivable_set_from_one_job_but_not_two_native_formats() {
+    let schema = real("fal/hyper3d-rodin");
+    let ask = |formats: &[&str]| {
+        let mut r = valid_for(&schema, true);
+        r.output_formats = Some(formats.iter().map(|f| f.to_string()).collect());
+        validate_model3d(&schema, r)
+    };
+    assert!(ask(&["glb", "obj", "stl", "ply"]).is_ok(), "one glb, three derived");
+    assert!(ask(&["fbx"]).is_ok(), "one native fbx");
+    assert!(ask(&["usdz"]).is_ok(), "one native usdz");
+    // The budget follows what the converter can make. While fbx cannot be
+    // derived, glb + fbx needs two Rodin jobs and a scalar field gives one;
+    // once it can, one Rodin job (fbx) serves both.
+    if is_derivable("fbx") {
+        assert!(ask(&["glb", "fbx"]).is_ok(), "fbx from Rodin, glb derived from it");
+    } else {
+        assert_eq!(ask(&["glb", "fbx"]).unwrap_err().code, "param_too_many", "two vendor jobs");
+        assert_eq!(ask(&["fbx", "obj"]).unwrap_err().code, "param_too_many", "obj cannot be derived from fbx");
+    }
+    let threemf = ask(&["3mf"]);
+    if is_derivable("3mf") {
+        assert!(threemf.is_ok(), "derived from the glb");
+    } else {
+        assert_eq!(threemf.unwrap_err().code, "param_enum_mismatch", "Rodin cannot emit 3mf and we cannot derive it");
+    }
+}
+
+#[test]
+fn glb_only_models_deliver_the_whole_derivable_set() {
+    for id in ["fal/trellis", "fal/hunyuan3d-v2", "mock/mesh-3d"] {
+        let schema = real(id);
+        let mut r = valid_for(&schema, true);
+        r.output_formats = Some(vec!["obj".into(), "stl".into(), "ply".into()]);
+        assert!(validate_model3d(&schema, r).is_ok(), "{id}");
+
+        // Every container the converter makes, fbx and usdz included.
+        let mut r = valid_for(&schema, true);
+        r.output_formats = Some(litegen::proxy::model3d_convert::derivable_formats());
+        assert!(validate_model3d(&schema, r).is_ok(), "{id}: the whole derivable set");
+
+        let mut r = valid_for(&schema, true);
+        r.output_formats = Some(vec!["blend".into()]);
+        let err = validate_model3d(&schema, r).unwrap_err();
+        assert_eq!(err.code, "param_enum_mismatch", "{id}");
+        assert!(err.message.contains("ply"), "{id}: the error lists what is deliverable: {}", err.message);
+    }
+}
+
+#[test]
+fn texture_and_pbr_go_only_where_the_vendor_has_a_field_for_them() {
+    // Hunyuan3D maps `texture` onto `textured_mesh`; Rodin maps `pbr` onto
+    // `material`. Neither has the other's knob.
+    let hunyuan = real("fal/hunyuan3d-v2");
+    let mut r = valid_for(&hunyuan, true);
+    r.texture = Some(true);
+    assert!(validate_model3d(&hunyuan, r).is_ok());
+    let mut r = valid_for(&hunyuan, true);
+    r.pbr = Some(true);
+    assert_eq!(validate_model3d(&hunyuan, r).unwrap_err().param.as_deref(), Some("pbr"));
+
+    let rodin = real("fal/hyper3d-rodin");
+    let mut r = valid_for(&rodin, true);
+    r.pbr = Some(false);
+    assert!(validate_model3d(&rodin, r).is_ok());
+    let mut r = valid_for(&rodin, true);
+    r.texture = Some(true);
+    assert_eq!(validate_model3d(&rodin, r).unwrap_err().param.as_deref(), Some("texture"));
+}
+
+#[test]
+fn a_vendor_field_outside_the_allowlist_is_refused_in_strict_mode() {
+    // `extra` is the escape hatch for endpoint fields the canonical vocabulary
+    // does not cover — bounded by each model's extra_allowlist.
+    let schema = real("fal/trellis");
+    let mut r = valid_for(&schema, true);
+    r.base.extra = Some(serde_json::json!({ "mesh_simplify": 0.95, "texture_size": 2048 }));
+    assert!(validate_model3d(&schema, r).is_ok());
+    let mut r = valid_for(&schema, true);
+    r.base.extra = Some(serde_json::json!({ "geometry_file_format": "fbx" }));
+    let err = validate_model3d(&schema, r).unwrap_err();
+    assert_eq!(err.code, "extra_key_unsupported");
+    assert_eq!(err.param.as_deref(), Some("extra.geometry_file_format"));
 }

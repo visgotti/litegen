@@ -33,11 +33,18 @@ pub struct ModelPricing {
     pub variable_pricing: Option<serde_json::Value>,
 }
 
+/// How a model treats the request's `prompt`. Lengths count characters.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PromptSpec {
+    /// An empty or omitted prompt is refused with `prompt_required`. 3D models
+    /// that take images set this false, yet still need a prompt when a request
+    /// carries no image (text-to-3D).
     #[serde(default = "default_true")]
     pub required: bool,
     #[serde(default)] pub min_length: Option<usize>,
+    /// `0` means the model takes no prompt at all (an image-only endpoint
+    /// whose vendor has no prompt field): a client should not offer one, and a
+    /// non-empty prompt is refused in strict mode and dropped in lax mode.
     #[serde(default)] pub max_length: Option<usize>,
 }
 
@@ -91,15 +98,39 @@ pub struct ParamSpecString {
 /// emits GLB with no choice at all. `max_items` is how a model states which of
 /// those it is, so an unsatisfiable request fails in validation rather than
 /// after the vendor has been billed.
+///
+/// For `output_formats` the catalog yaml and the API describe two different
+/// sets, on purpose:
+///
+/// - **yaml** `enum_values` declares what the VENDOR emits natively — the only
+///   thing a catalog author can verify against the vendor's schema.
+/// - **`GET /v1/models/{id}`** serves what a CALLER may request: the native
+///   set plus every container litegen derives locally, with `derivable_values`
+///   saying which those are. That is the same set the validator accepts, so a
+///   client rendering `params` offers exactly what will be honoured.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct ParamSpecStringArray {
+    /// Accepted members. See the type docs for what this means in yaml versus
+    /// in an API response.
     #[serde(default)] pub enum_values: Vec<String>,
-    /// Upper bound on how many members one request may ask for. `None` means
-    /// "as many as are declared".
+    /// For `output_formats`: how many VENDOR jobs one request may need — not
+    /// how many members it may name. Every member of `derivable_values` comes
+    /// out of one source container, so a request costs
+    /// `|requested \ derivable_values| + (requested ∩ derivable_values ≠ ∅ ? 1 : 0)`
+    /// jobs, and more than `max_items` is refused with `param_too_many`.
+    /// `None` means no limit.
     #[serde(default)] pub max_items: Option<usize>,
     /// Applied when the caller omits the param entirely. Empty means the
     /// resolver falls back to `glb`.
     #[serde(default)] pub default: Vec<String>,
+    /// The members litegen produces locally from a single vendor job (for
+    /// `output_formats`, whatever its mesh converter covers — today `glb`,
+    /// `obj`, `stl`, `ply`). Present only in API
+    /// responses, and only when the model's vendor emits at least one of them —
+    /// with nothing readable to convert from, nothing is derivable. Computed
+    /// by the server; the catalog loader refuses a yaml that sets it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derivable_values: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
@@ -206,6 +237,12 @@ pub struct ModelSchema {
     pub media_type: MediaType,
     pub display_name: String,
     #[serde(default)] pub description: String,
+    /// The vendor's own API reference page for the endpoint this model calls —
+    /// the page to re-read when a field mapping is questioned. An absolute
+    /// `https://` URL (the loader refuses anything else); every non-mock 3D
+    /// model carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docs_url: Option<String>,
     pub pricing: ModelPricing,
     pub capabilities: ModelCapabilityFlags,
     pub prompt: PromptSpec,
@@ -241,6 +278,7 @@ impl ModelSchema {
                 enum_values: s.enum_values.clone(),
                 max_items: Some(1),
                 default: s.default.clone().into_iter().collect(),
+                derivable_values: Vec::new(),
                 label: s.label.clone(),
                 description: s.description.clone(),
             }),
@@ -311,5 +349,46 @@ pub const KNOWN_PARAMS: &[&str] = &[
     "topology",
     "rig",
 ];
+
+/// The `ParamSpec` kind(s) a canonical param may be declared with: exactly the
+/// kind its validator reads.
+///
+/// One table, so a param's typing is decided once. A param declared with any
+/// other kind would load, advertise itself through `GET /v1/models`, and then
+/// be refused by the validator as unsupported — so the loader rejects it at
+/// boot instead. Empty for a name outside [`KNOWN_PARAMS`].
+pub fn canonical_param_kinds(name: &str) -> &'static [&'static str] {
+    match name {
+        "seed" => &["seed"],
+        "negative_prompt" | "quality" | "style" | "resolution" => &["string"],
+        "steps" | "fps" => &["int"],
+        "guidance_scale" | "strength" => &["float"],
+        // Most vendors take fractional seconds; Runway takes whole ones.
+        "duration_seconds" => &["float", "int"],
+        "size" => &["size"],
+        "aspect_ratio" => &["aspect_ratio"],
+        "output_formats" => &["string_array"],
+        "output_format" | "symmetry" | "topology" => &["string"],
+        "texture" | "pbr" | "rig" => &["bool"],
+        "target_polycount" => &["int"],
+        _ => &[],
+    }
+}
+
+impl ParamSpec {
+    /// The `kind` tag this spec is written with in yaml and on the wire.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ParamSpec::Bool(_) => "bool",
+            ParamSpec::Int(_) => "int",
+            ParamSpec::Float(_) => "float",
+            ParamSpec::String(_) => "string",
+            ParamSpec::StringArray(_) => "string_array",
+            ParamSpec::Size(_) => "size",
+            ParamSpec::AspectRatio(_) => "aspect_ratio",
+            ParamSpec::Seed(_) => "seed",
+        }
+    }
+}
 
 fn default_true() -> bool { true }
