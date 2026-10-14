@@ -6,7 +6,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const MASTER_KEY = process.env.PLAYWRIGHT_MASTER_KEY ?? 'test-master-key-please-rotate';
-const BINARY_PATH = path.resolve(__dirname, '../litegen-core/target/release/litegen');
+// The release binary by default; LITEGEN_E2E_BINARY points at another build —
+// e.g. target/debug/litegen, to iterate without a release compile.
+const BINARY_PATH = process.env.LITEGEN_E2E_BINARY
+  ? path.resolve(process.env.LITEGEN_E2E_BINARY)
+  : path.resolve(__dirname, '../litegen-core/target/release/litegen');
 const MODELS_DIR = path.resolve(__dirname, '../models');
 
 export default defineConfig({

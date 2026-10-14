@@ -2,8 +2,15 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { client } from '../sdk-client';
 import type { Generation, PaginatedResponse } from '@litegen/sdk';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
+import { showToast } from '../components/toast-store';
 
 const ACTIVE_STATUSES = new Set(['pending', 'processing']);
+
+/** The HTTP status an SDK error carries (`LiteGenError.status`), when it has one. */
+function httpStatusOf(err: unknown): number | undefined {
+  const status = (err as { status?: unknown } | null | undefined)?.status;
+  return typeof status === 'number' ? status : undefined;
+}
 
 function StatusBadge({ id, status }: { id: string; status: string }) {
   return (
@@ -79,7 +86,16 @@ export default function Generations() {
       await client.generations.cancel(id);
       load(page);
     } catch (e: unknown) {
-      setError((e as Error).message);
+      // A cancel that fails is about one row, never the page: keep the list.
+      // 409 is the routine race — the job reached a terminal state between the
+      // last refresh and the click — so refresh to show the state it actually
+      // ended in, and say why the cancel did not apply.
+      if (httpStatusOf(e) === 409) {
+        showToast('It finished before the cancel arrived, so there was nothing left to cancel.', 'warning');
+        load(page);
+      } else {
+        showToast(`Cancel failed: ${(e as Error).message}`, 'error');
+      }
     } finally {
       setCancelling(prev => {
         const next = new Set(prev);

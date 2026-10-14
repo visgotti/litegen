@@ -438,9 +438,22 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   // (mock provider could already complete by now — be tolerant)
   const genStatus = await page.locator(`[data-testid="gen-status-${videoId}"]`).textContent();
   if (genStatus && (genStatus.includes('pending') || genStatus.includes('processing'))) {
+    // The status shown can be up to one 3s refresh old, and the mock video
+    // finishes quickly — so the cancel can arrive after the job already ended.
+    // Branch on what the server actually answered rather than on the cell.
+    const cancelResp = page.waitForResponse(
+      r => r.request().method() === 'PATCH' && r.url().includes(`/v1/generations/${videoId}`),
+    );
     await page.locator(`[data-testid="gen-cancel-${videoId}"]`).click();
-    // After cancel, status should change to 'cancelled'
-    await expect(page.locator(`[data-testid="gen-status-${videoId}"]`)).toContainText('cancelled', { timeout: 5_000 });
+    const cancelStatus = (await cancelResp).status();
+    if (cancelStatus === 200) {
+      await expect(page.locator(`[data-testid="gen-status-${videoId}"]`)).toContainText('cancelled', { timeout: 5_000 });
+    } else {
+      // 409: it finished first. The list must survive that (it used to be
+      // replaced by an error banner) and show the state the job really reached.
+      expect(cancelStatus).toBe(409);
+      await expect(page.locator(`[data-testid="gen-status-${videoId}"]`)).toContainText(/completed|failed/i, { timeout: 5_000 });
+    }
   } else {
     // The mock provider can complete before we reach the cancel button; don't
     // silently skip — assert the generation reached a real terminal state instead.

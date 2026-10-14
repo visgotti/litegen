@@ -22,30 +22,36 @@ export default function TracePanel({ logId, onClose }: TracePanelProps) {
   const [tab, setTab] = useState<Tab>(() => {
     return (localStorage.getItem(TAB_KEY) as Tab) || 'visual';
   });
-  const [log, setLog] = useState<RequestLog | null>(null);
-  const [artifact, setArtifact] = useState<RequestArtifact | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  // The fetch result, tagged with the log it belongs to. Loading is derived from
+  // a mismatched id rather than reset inside the effect, and a superseded fetch
+  // is ignored: opening log B while log A's request is still in flight must not
+  // let A's answer land in B's panel.
+  const [loaded, setLoaded] = useState<{
+    id: string;
+    log: RequestLog | null;
+    artifact: RequestArtifact | null;
+    error: string;
+  } | null>(null);
 
   useEffect(() => {
-    if (!logId) {
-      setLog(null);
-      setArtifact(null);
-      setError('');
-      return;
-    }
-    setLoading(true);
-    setError('');
+    if (!logId) return;
+    let cancelled = false;
     Promise.all([
       fetchLog(logId),
       client.logs.getArtifact(logId).catch(() => null),
     ]).then(([l, a]) => {
-      setLog(l);
-      setArtifact(a);
+      if (!cancelled) setLoaded({ id: logId, log: l, artifact: a, error: '' });
     }).catch(e => {
-      setError(e.message);
-    }).finally(() => setLoading(false));
+      if (!cancelled) setLoaded({ id: logId, log: null, artifact: null, error: (e as Error).message });
+    });
+    return () => { cancelled = true; };
   }, [logId]);
+
+  const current = logId && loaded?.id === logId ? loaded : null;
+  const log = current?.log ?? null;
+  const artifact = current?.artifact ?? null;
+  const error = current?.error ?? '';
+  const loading = Boolean(logId) && current == null;
 
   const switchTab = (t: Tab) => {
     setTab(t);
