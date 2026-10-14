@@ -21,6 +21,11 @@ const LATENCY_HISTORY_CAP: usize = 16;
 /// same rate, or the same generation would quote two different token counts.
 const USD_PER_TOKEN: f64 = 0.001;
 
+/// How long the router keeps a submitted 3D job in memory. The poller reaps a
+/// generation still active after 2 hours, so a job older than this has a
+/// terminal row and nothing left to poll it through.
+const MODEL3D_JOB_MAX_AGE_SECS: i64 = 3 * 60 * 60;
+
 /// An in-flight async job plus the `usage` triple quoted when it was submitted.
 ///
 /// The consumer contract reads `usage` off the POLL response, not the submit
@@ -736,7 +741,14 @@ impl ProxyRouter {
                     last_error = Some(e);
                     if !retryable { break; }
                 }
-                Err(_) => last_error = Some(ProviderError::Timeout { timeout_ms: 120_000 }),
+                Err(_) => {
+                    // A queue submit is not idempotent: dropping the future does
+                    // not withdraw a job the vendor may already have accepted,
+                    // so re-POSTing here can queue (and bill) a second and a
+                    // third job that nothing ever tracks or cancels.
+                    last_error = Some(ProviderError::Timeout { timeout_ms: 120_000 });
+                    break;
+                }
             }
         }
 
@@ -766,10 +778,18 @@ impl ProxyRouter {
 
         let local_id = format!("litegen-3d-{}", uuid::Uuid::new_v4());
         let created = chrono::Utc::now().timestamp();
-        self.model3d_jobs.write().await.insert(
-            local_id.clone(),
-            Model3dJob { handle, usage: usage_info.clone(), requested_formats, provider, created },
-        );
+        {
+            let mut jobs = self.model3d_jobs.write().await;
+            // Only a client GET that itself observes completion (or a cancel)
+            // removes a job; one the poller finishes for a webhook-only caller
+            // would otherwise stay here, provider instance and all, until a
+            // restart. Past the poller's 2 h reap age no observer can need it.
+            jobs.retain(|_, j| created - j.created < MODEL3D_JOB_MAX_AGE_SECS);
+            jobs.insert(
+                local_id.clone(),
+                Model3dJob { handle, usage: usage_info.clone(), requested_formats, provider, created },
+            );
+        }
 
         Ok(Model3dGenerationResponse {
             id: local_id,
@@ -1692,5 +1712,85 @@ mod model3d_router_tests {
         assert_eq!(provider.cancel(&handle).await.unwrap(), crate::providers::CancelOutcome::Requested);
         assert!(router.forget_model3d_job(&submitted.id).await.is_none(), "forgotten once");
         assert!(matches!(router.get_model3d_status(&submitted.id, None, None).await, Err(ProxyError::NotFound(_))));
+    }
+
+    // ─── A submit that times out is never sent again ─────────────────────────
+
+    /// Counts submits and never answers, like a vendor that accepted the job
+    /// but whose reply never arrives.
+    struct NeverAnswers(Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl crate::providers::Model3dProvider for NeverAnswers {
+        fn name(&self) -> &str { "mock" }
+        fn configure(&mut self, _c: crate::providers::ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+        async fn generate(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _b: &crate::types::BaseGenerationRequest,
+            _e: &crate::providers::Model3dExtras,
+            _r: &crate::proxy::materializer::MaterializedRequest,
+        ) -> Result<crate::providers::Model3dGenerationHandle, crate::providers::ProviderError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            unreachable!("the router times the submit out first")
+        }
+        async fn poll_status(
+            &self,
+            _h: &crate::providers::Model3dGenerationHandle,
+        ) -> Result<crate::providers::Model3dGenerationPollResult, crate::providers::ProviderError> {
+            unreachable!()
+        }
+        async fn estimate_cost(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _r: &crate::types::Model3dGenerationRequest,
+        ) -> Result<crate::types::CostEstimate, crate::providers::ProviderError> {
+            unreachable!()
+        }
+        async fn health_check(&self) -> crate::providers::HealthCheckResult {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timed_out_3d_submit_is_not_resubmitted() {
+        // The vendor may already have queued (and will bill) the first submit;
+        // resubmitting would start more jobs that nothing tracks.
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let registry = Arc::new(crate::proxy::registry::ProviderRegistry::new());
+        registry.register_mock_model3d(Arc::new(NeverAnswers(calls.clone()))).await;
+        let router = ProxyRouter::new(
+            registry,
+            Arc::new(crate::proxy::cache::GenerationCache::new(&crate::config::CacheGlobalConfig::default())),
+            Arc::new(crate::config::AppConfig::default()),
+            Arc::new(crate::proxy::storage::LocalStore),
+        );
+        let schema = crate::capabilities::ModelSchema {
+            id: "mock/slow-3d".into(), provider: "mock".into(), media_type: crate::capabilities::MediaType::Model3d,
+            display_name: "slow".into(), description: String::new(), docs_url: None,
+            pricing: crate::capabilities::ModelPricing { base_cost_usd: 0.0, variable_pricing: None },
+            capabilities: crate::capabilities::ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
+            prompt: crate::capabilities::PromptSpec { required: true, min_length: None, max_length: None },
+            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], tags: vec![],
+        };
+        let base = crate::types::BaseGenerationRequest {
+            prompt: "a fox".into(), model: "mock/slow-3d".into(), n: 1, negative_prompt: None, seed: None,
+            reference_images: vec![], strict: true, extra: None, metadata: None,
+        };
+        let extras = crate::providers::Model3dExtras {
+            output_formats: vec!["glb".into()],
+            texture: None, pbr: None, target_polycount: None,
+            symmetry: None, topology: None, rig: None, extra: None,
+        };
+        let refs = crate::proxy::materializer::MaterializedRequest {
+            refs: vec![],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+
+        let out = router.generate_model3d(&schema, &base, &extras, &refs, None).await;
+        assert!(matches!(out, Err(ProxyError::AllDeploymentsFailed { .. })), "{:?}", out.err());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "a timed-out submit must not be sent again");
     }
 }
