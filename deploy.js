@@ -368,6 +368,8 @@ async function deployProxy() {
     ];
     for (const k of [
       'LITEGEN_CORS_ORIGINS',
+      // The public origin 3D asset URLs are minted from (https://app.litegen.ai/api).
+      'LITEGEN__SERVER__PUBLIC_BASE_URL',
       // Hosted multi-tenant mode: open signup creates orgs, master key is platform-admin,
       // SECRETS_KEY enables per-app BYO provider-credential encryption. COOKIE_INSECURE_DEV
       // lets session cookies work over plain http until TLS is fronted.
