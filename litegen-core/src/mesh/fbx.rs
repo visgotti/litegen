@@ -401,11 +401,11 @@ mod tests {
         AnimPath, Animation, Channel, Interpolation, Material, MorphTarget, Node, Primitive, SceneMesh, Skin,
         SkinWeights, Transform,
     };
-    use super::super::{self as mesh, math};
+    use super::super::math;
     use super::*;
 
     fn write_prepared(scene: &Scene) -> Vec<u8> {
-        mesh::write_scene(scene, MeshFormat::Fbx, WriteOptions::default())
+        super::super::write_scene(scene, MeshFormat::Fbx, WriteOptions::default())
             .unwrap_or_else(|e| panic!("write: {e}"))
             .package
             .files
@@ -414,7 +414,7 @@ mod tests {
     }
 
     fn read_back(bytes: &[u8]) -> SceneRead {
-        mesh::read_scene(bytes, MeshFormat::Fbx, &NoSidecars).unwrap_or_else(|e| panic!("read: {e}"))
+        super::super::read_scene(bytes, MeshFormat::Fbx, &NoSidecars).unwrap_or_else(|e| panic!("read: {e}"))
     }
 
     /// World-space triangles of a posed scene.
@@ -852,7 +852,7 @@ Connections:  {
 	C: "OO",20,11
 }
 "#;
-        let r = mesh::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars).unwrap();
+        let r = super::super::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars).unwrap();
         let m = pose::flatten(&r.scene).unwrap();
         let ys: Vec<f32> = m.positions.iter().map(|p| p[1]).collect();
         let xs: Vec<f32> = m.positions.iter().map(|p| p[0]).collect();
@@ -896,7 +896,7 @@ Connections:  {
 	C: "OO",20,10
 }
 "#;
-        let r = mesh::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars).unwrap();
+        let r = super::super::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars).unwrap();
         assert_eq!(r.scene.roots.len(), 1, "one correction root");
         let m = pose::flatten(&r.scene).unwrap();
         // 100 cm up (file +Z) is 1 m up (+Y).
@@ -932,12 +932,12 @@ Connections:  {
 	C: "OO",20,10
 }
 "#;
-        let r = mesh::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars).unwrap();
+        let r = super::super::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars).unwrap();
         let m = pose::flatten(&r.scene).unwrap();
         assert_eq!(m.triangle_count(), 3);
         for t in m.indices.chunks(3) {
             let tri = [m.positions[t[0] as usize], m.positions[t[1] as usize], m.positions[t[2] as usize]];
-            assert!(mesh::Mesh::facet_normal(&tri)[2] > 0.0, "fan reversed the winding");
+            assert!(super::super::Mesh::facet_normal(&tri)[2] > 0.0, "fan reversed the winding");
         }
     }
 
@@ -1019,9 +1019,9 @@ Connections:  {
         let rel = rel.as_str().unwrap().into_owned();
         let stripped = super::super::fbx_write::tests_support::strip_video_content(&s).unwrap();
         let files = vec![PackageFile { path: rel.clone(), bytes: s.images[0].data.clone() }];
-        let r = mesh::read_scene(&stripped, MeshFormat::Fbx, &MemorySidecars { files: &files }).unwrap();
+        let r = super::super::read_scene(&stripped, MeshFormat::Fbx, &MemorySidecars { files: &files }).unwrap();
         assert_eq!(r.scene.images.len(), 1, "{rel}");
-        let r = mesh::read_scene(&stripped, MeshFormat::Fbx, &NoSidecars).unwrap();
+        let r = super::super::read_scene(&stripped, MeshFormat::Fbx, &NoSidecars).unwrap();
         assert!(r.scene.images.is_empty());
         assert!(r.warnings.iter().any(|w| w.contains(&rel)), "{:?}", r.warnings);
     }
@@ -1056,7 +1056,7 @@ Connections:  {
         // (three.js, Unity) drew the model 40 % darker than its author did.
         let files = vec![PackageFile { path: "t.png".into(), bytes: fixtures::quadrant_png() }];
         let side = MemorySidecars { files: &files };
-        let read = |src: String| mesh::read_scene(src.as_bytes(), MeshFormat::Fbx, &side).unwrap_or_else(|e| panic!("{e}")).scene;
+        let read = |src: String| super::super::read_scene(src.as_bytes(), MeshFormat::Fbx, &side).unwrap_or_else(|e| panic!("{e}")).scene;
         let s = read(phong_doc(1.0, true));
         let m = &s.materials[0];
         assert!(m.base_color_texture.is_some(), "the map was found");
@@ -1076,7 +1076,7 @@ Connections:  {
         // only what both readings agree on, and says what that cost.
         let mut s = fixtures::textured();
         s.materials[0].base_color = [0.5, 0.25, 1.0, 1.0];
-        let w = mesh::write_scene(&s, MeshFormat::Fbx, WriteOptions::default()).unwrap();
+        let w = super::super::write_scene(&s, MeshFormat::Fbx, WriteOptions::default()).unwrap();
         assert!(w.losses.iter().any(|l| l.kind == LossKind::Materials && l.what.contains("tint")), "{:?}", w.losses);
         let back = read_back(&w.package.files[0].bytes).scene;
         let m = back.materials.iter().find(|m| m.base_color_texture.is_some()).unwrap();
@@ -1115,7 +1115,7 @@ Connections:  {
         let kinds: Vec<LossKind> = losses(&s).iter().map(|l| l.kind).collect();
         assert_eq!(kinds, [LossKind::Materials, LossKind::Alpha, LossKind::TextureSampling]);
         // And write_scene reports them.
-        let w = mesh::write_scene(&s, MeshFormat::Fbx, WriteOptions::default()).unwrap();
+        let w = super::super::write_scene(&s, MeshFormat::Fbx, WriteOptions::default()).unwrap();
         assert!(w.losses.iter().any(|x| x.to_string().contains("double-sided")));
     }
 
@@ -1142,7 +1142,7 @@ Connections:  {
     }
 
     fn world_triangle(src: &str, t: Option<f32>) -> Vec<[f64; 3]> {
-        let r = mesh::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars).unwrap_or_else(|e| panic!("{e}"));
+        let r = super::super::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars).unwrap_or_else(|e| panic!("{e}"));
         let pose = match t {
             Some(t) => pose::sample_pose(&r.scene, 0, t),
             None => pose::default_pose(&r.scene),
@@ -1344,7 +1344,7 @@ Connections:  {
     #[test]
     fn reads_assimps_skin_and_animation_without_a_bind_pose() {
         let r = SceneRead { scene: read_assimp(ASSIMP_SKINNED), warnings: Vec::new() };
-        let src = mesh::read_scene(ASSIMP_SKINNED_SOURCE, MeshFormat::Glb, &NoSidecars).unwrap().scene;
+        let src = super::super::read_scene(ASSIMP_SKINNED_SOURCE, MeshFormat::Glb, &NoSidecars).unwrap().scene;
         assert_eq!(r.scene.skins.len(), 1);
         assert_same_geometry(&src, &pose::default_pose(&src), &r.scene, &pose::default_pose(&r.scene), 1e-4, "assimp skin, rest");
         // The source keeps only linear single-axis rotations (see the
@@ -1436,14 +1436,14 @@ Connections:  {
     #[test]
     fn an_out_of_range_polygon_index_is_malformed() {
         let src = super::super::fbx_write::tests_support::ascii_cube().replace("a: 0,1,-3", "a: 0,7,-3");
-        let e = mesh::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars).unwrap_err();
+        let e = super::super::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars).unwrap_err();
         assert!(matches!(e, MeshError::Malformed(_)), "{e:?}");
     }
 
     #[test]
     fn an_unterminated_polygon_list_is_malformed() {
         let src = super::super::fbx_write::tests_support::ascii_cube().replace("a: 0,1,-3", "a: 0,1,2");
-        let e = mesh::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars).unwrap_err();
+        let e = super::super::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars).unwrap_err();
         assert!(matches!(e, MeshError::Malformed(_)), "{e:?}");
     }
 
@@ -1476,7 +1476,7 @@ Connections:  {
         let src = super::super::fbx_write::tests_support::ascii_cube()
             .replace("C: \"OO\",10,0", "C: \"OO\",10,11\n\tC: \"OO\",11,10");
         let src = src.replace("Objects:  {", "Objects:  {\n\tModel: 11, \"Model::loop\", \"Null\" {\n\t}");
-        let e = mesh::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars);
+        let e = super::super::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars);
         assert!(e.is_err(), "{e:?}");
     }
 
@@ -1485,7 +1485,7 @@ Connections:  {
         // One channel, a shape at 50% and one at 100%, at 75% and animated
         // from 0 to 100% over a second.
         let src = "; FBX 7.4.0 project file\nFBXHeaderExtension:  {\n\tFBXVersion: 7400\n}\nGlobalSettings:  {\n\tProperties70:  {\n\t\tP: \"UnitScaleFactor\", \"double\", \"Number\", \"\",100\n\t}\n}\nObjects:  {\n\tModel: 10, \"Model::m\", \"Mesh\" {\n\t}\n\tGeometry: 99, \"Geometry::tri\", \"Mesh\" {\n\t\tVertices: *9 {\n\t\t\ta: 0,0,0,1,0,0,0,1,0\n\t\t}\n\t\tPolygonVertexIndex: *3 {\n\t\t\ta: 0,1,-3\n\t\t}\n\t}\n\tDeformer: 20, \"Deformer::bs\", \"BlendShape\" {\n\t}\n\tDeformer: 21, \"SubDeformer::smile\", \"BlendShapeChannel\" {\n\t\tDeformPercent: 75\n\t\tFullWeights: *2 {\n\t\t\ta: 50,100\n\t\t}\n\t}\n\tGeometry: 30, \"Geometry::half\", \"Shape\" {\n\t\tIndexes: *1 {\n\t\t\ta: 2\n\t\t}\n\t\tVertices: *3 {\n\t\t\ta: 1,0,0\n\t\t}\n\t}\n\tGeometry: 31, \"Geometry::full\", \"Shape\" {\n\t\tIndexes: *1 {\n\t\t\ta: 2\n\t\t}\n\t\tVertices: *3 {\n\t\t\ta: 0,2,0\n\t\t}\n\t}\n\tAnimationStack: 40, \"AnimStack::take\", \"\" {\n\t}\n\tAnimationLayer: 41, \"AnimLayer::base\", \"\" {\n\t}\n\tAnimationCurveNode: 42, \"AnimCurveNode::DeformPercent\", \"\" {\n\t}\n\tAnimationCurve: 43, \"AnimCurve::\", \"\" {\n\t\tKeyTime: *2 {\n\t\t\ta: 0,46186158000\n\t\t}\n\t\tKeyValueFloat: *2 {\n\t\t\ta: 0,100\n\t\t}\n\t\tKeyAttrFlags: *1 {\n\t\t\ta: 4\n\t\t}\n\t\tKeyAttrDataFloat: *4 {\n\t\t\ta: 0,0,0,0\n\t\t}\n\t\tKeyAttrRefCount: *1 {\n\t\t\ta: 2\n\t\t}\n\t}\n}\nConnections:  {\n\tC: \"OO\",10,0\n\tC: \"OO\",99,10\n\tC: \"OO\",20,99\n\tC: \"OO\",21,20\n\tC: \"OO\",30,21\n\tC: \"OO\",31,21\n\tC: \"OO\",41,40\n\tC: \"OO\",42,41\n\tC: \"OP\",42,21,\"DeformPercent\"\n\tC: \"OP\",43,42,\"d|DeformPercent\"\n}\n";
-        let r = mesh::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars).unwrap();
+        let r = super::super::read_scene(src.as_bytes(), MeshFormat::Fbx, &NoSidecars).unwrap();
         let m = &r.scene.meshes[0];
         assert_eq!(m.target_names, ["smile@50", "smile"]);
         assert_eq!(m.weights, [0.5, 0.5]);
