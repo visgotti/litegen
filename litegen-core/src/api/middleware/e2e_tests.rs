@@ -396,11 +396,12 @@ models:
     //
     // The model `mock/image-gen-url` uses provider_format=url.
     // The client sends a blob ref `{type: "blob", value: "img"}` + an `img` file part.
-    // The materializer should (a) upload the bytes to InMemoryStorage, (b) the provider
-    // gets a URL form, and (c) cleanup deletes the key after the response.
+    // The bytes reach the provider INLINE, as a `data:` URI — temp storage is
+    // never touched. Parking them there minted `local://` URLs no vendor could
+    // fetch, and would race any async vendor that fetches after submit returns.
 
     #[tokio::test]
-    async fn test_multipart_blob_to_url_uploads_and_cleans_up() {
+    async fn test_multipart_blob_to_url_travels_inline_without_temp_storage() {
         let registry = registry_with_url_format();
         let storage = Arc::new(InMemoryStorage::default());
         let storage_clone = storage.clone();
@@ -464,24 +465,12 @@ models:
             resp.status()
         );
 
-        // Verify the blob was uploaded to temp storage
-        assert_eq!(
-            storage.uploaded_count(),
-            1,
-            "expected 1 upload to temp storage"
-        );
+        assert_eq!(storage.uploaded_count(), 0, "the blob travels inline, not via temp storage");
 
-        // Drop response (triggers Cleanup via tokio::spawn)
+        // Nothing was parked, so the cleanup guard has nothing to delete.
         drop(resp);
-
-        // Give the spawned cleanup task a moment to run
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        assert_eq!(
-            storage.deleted_count(),
-            1,
-            "expected 1 delete from temp storage (cleanup)"
-        );
+        assert_eq!(storage.deleted_count(), 0);
     }
 
     // ─── Test 4: POST /v1/images/cost returns total_cost_usd: 0.0 for mock/image-gen
