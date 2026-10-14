@@ -65,15 +65,41 @@ pub fn is_disallowed_ip(ip: IpAddr) -> bool {
 /// Validate that `url` is safe to fetch server-side. Returns `Err(reason)` if
 /// the scheme is unsupported, the host is missing, fails to resolve, or
 /// resolves to any disallowed address.
+/// Why [`check_public_url`] refused a URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UrlCheckError {
+    /// The resolver failed (timeout, SERVFAIL, EAI_AGAIN, no answer). Asking
+    /// again later can succeed, so a caller fetching a vendor's result should
+    /// retry rather than fail a finished job over one resolver blip.
+    Lookup(String),
+    /// The URL itself is unacceptable: bad scheme, no host, or an address
+    /// inside the deployment. It never will be.
+    Refused(String),
+}
+
+impl std::fmt::Display for UrlCheckError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UrlCheckError::Lookup(s) | UrlCheckError::Refused(s) => f.write_str(s),
+        }
+    }
+}
+
+/// [`check_public_url`] with the reason flattened to text, for callers that
+/// treat every refusal alike.
 pub async fn validate_public_url(url: &str) -> Result<(), String> {
-    let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid url: {e}"))?;
+    check_public_url(url).await.map_err(|e| e.to_string())
+}
+
+pub async fn check_public_url(url: &str) -> Result<(), UrlCheckError> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| UrlCheckError::Refused(format!("invalid url: {e}")))?;
 
     match parsed.scheme() {
         "http" | "https" => {}
-        other => return Err(format!("unsupported url scheme: {other}")),
+        other => return Err(UrlCheckError::Refused(format!("unsupported url scheme: {other}"))),
     }
 
-    let host = parsed.host_str().ok_or_else(|| "url has no host".to_string())?;
+    let host = parsed.host_str().ok_or_else(|| UrlCheckError::Refused("url has no host".to_string()))?;
     let port = parsed.port_or_known_default().unwrap_or(443);
 
     // If the host is an IP literal, check it directly (no DNS). `host_str()`
@@ -86,7 +112,7 @@ pub async fn validate_public_url(url: &str) -> Result<(), String> {
         .unwrap_or(host);
     if let Ok(ip) = host_unbracketed.parse::<IpAddr>() {
         if is_disallowed_ip(ip) {
-            return Err("url targets a disallowed (private/loopback/link-local) address".to_string());
+            return Err(UrlCheckError::Refused("url targets a disallowed (private/loopback/link-local) address".to_string()));
         }
         return Ok(());
     }
@@ -95,15 +121,15 @@ pub async fn validate_public_url(url: &str) -> Result<(), String> {
     let mut any = false;
     let addrs = tokio::net::lookup_host((host, port))
         .await
-        .map_err(|e| format!("dns resolution failed: {e}"))?;
+        .map_err(|e| UrlCheckError::Lookup(format!("dns resolution failed: {e}")))?;
     for addr in addrs {
         any = true;
         if is_disallowed_ip(addr.ip()) {
-            return Err("url resolves to a disallowed (private/loopback/link-local) address".to_string());
+            return Err(UrlCheckError::Refused("url resolves to a disallowed (private/loopback/link-local) address".to_string()));
         }
     }
     if !any {
-        return Err("host did not resolve".to_string());
+        return Err(UrlCheckError::Lookup("host did not resolve".to_string()));
     }
     Ok(())
 }
@@ -137,10 +163,35 @@ pub fn no_redirect_client_with_timeout(timeout: std::time::Duration) -> reqwest:
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+/// [`no_redirect_client_with_timeout`] for large downloads: the total `timeout`
+/// still caps the transfer, and `idle` additionally fails one that stops
+/// sending, so a stalled body costs `idle`, not the whole `timeout`.
+pub fn no_redirect_download_client(timeout: std::time::Duration, idle: std::time::Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(timeout)
+        .read_timeout(idle)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    #[tokio::test]
+    async fn a_lookup_failure_is_told_apart_from_a_refusal() {
+        assert!(matches!(
+            check_public_url("https://litegen-ssrf-test.invalid/x").await,
+            Err(UrlCheckError::Lookup(_))
+        ));
+        assert!(matches!(check_public_url("http://127.0.0.1/x").await, Err(UrlCheckError::Refused(_))));
+        assert!(matches!(check_public_url("ftp://example.com/x").await, Err(UrlCheckError::Refused(_))));
+        // The string form callers already use is unchanged.
+        assert!(validate_public_url("http://127.0.0.1/x").await.unwrap_err().contains("disallowed"));
+    }
 
     #[tokio::test]
     async fn no_redirect_client_times_out_on_a_hung_host() {
