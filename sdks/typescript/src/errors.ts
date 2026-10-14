@@ -22,8 +22,13 @@ export class LiteGenAPIError extends LiteGenError {
   /** The model the failed request named, on validation errors. */
   readonly model?: string;
   readonly providerError?: unknown;
+  /**
+   * The wait the server's `Retry-After` header asked for (a 429 or 503), in
+   * milliseconds; undefined when it sent none.
+   */
+  readonly retryAfterMs?: number;
 
-  constructor(status: number, detail: ErrorDetail) {
+  constructor(status: number, detail: ErrorDetail, retryAfterMs?: number) {
     super(detail.message);
     this.name = "LiteGenAPIError";
     this.status = status;
@@ -37,6 +42,7 @@ export class LiteGenAPIError extends LiteGenError {
     this.param = typeof detail.param === "string" ? detail.param : undefined;
     this.model = typeof detail.model === "string" ? detail.model : undefined;
     this.providerError = detail.provider_error ?? undefined;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 

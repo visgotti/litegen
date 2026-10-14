@@ -127,3 +127,35 @@ describe("models3d.convertFormats", () => {
     expect(caps.max_input_bytes).toBe(134217728);
   });
 });
+
+describe("models3d.convert timeout", () => {
+  /** A fetch that answers after `ms`, or rejects the way fetch does when its signal aborts. */
+  function slowFetch(ms: number) {
+    return vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          const t = setTimeout(() => resolve(objResponse()), ms);
+          init?.signal?.addEventListener("abort", () => {
+            clearTimeout(t);
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          });
+        }),
+    );
+  }
+
+  // The client-wide timer covers the upload and the conversion, which a
+  // large file outlives; the call can say how long it needs.
+  it("takes a per-call timeout in place of the client-wide one", async () => {
+    const client = new LiteGenClient({
+      baseUrl: "https://litegen.test",
+      apiKey: "sk_test",
+      timeoutMs: 30,
+      fetch: slowFetch(120) as unknown as typeof fetch,
+    });
+    await expect(client.models3d.convert(GLB, { from: "glb", to: "obj" })).rejects.toMatchObject({
+      name: "LiteGenTimeoutError",
+    });
+    const out = await client.models3d.convert(GLB, { from: "glb", to: "obj", timeoutMs: 2000 });
+    expect(out.format).toBe("obj");
+  });
+});

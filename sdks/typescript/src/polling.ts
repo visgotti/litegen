@@ -1,5 +1,5 @@
 import type { components } from "./generated/schema";
-import { LiteGenPollingTimeoutError } from "./errors";
+import { LiteGenAPIError, LiteGenPollingTimeoutError, LiteGenTimeoutError } from "./errors";
 
 type VideoResponse = components["schemas"]["VideoGenerationResponse"];
 type Model3dResponse = components["schemas"]["Model3dGenerationResponse"];
@@ -37,6 +37,40 @@ export const MODEL3D_KIND = "3D generation";
  */
 export const MODEL3D_DEFAULT_TIMEOUT_MS = 30 * 60_000;
 
+/**
+ * Consecutive failed status reads a poll rides out before throwing the last
+ * one. A status read is a GET, safe to repeat, and over a 30-minute 3D wait a
+ * rate-limit 429, a 503 while the proxy sheds load, or a dropped connection is
+ * likely; giving up on one throws away a job that keeps running, and billing,
+ * on the server.
+ */
+const MAX_POLL_RETRIES = 5;
+const MAX_RETRY_DELAY_MS = 30_000;
+
+/** What `fetch` rejects with when a request got no answer at all. */
+const NETWORK_ERROR_MESSAGES = new Set([
+  "fetch failed", // Node (undici)
+  "Failed to fetch", // Chromium
+  "NetworkError when attempting to fetch resource.", // Firefox
+  "Load failed", // Safari
+  "Network request failed", // React Native
+]);
+
+/**
+ * Milliseconds to wait before reading the status again after `err`, the
+ * `failures`-th failure in a row, or undefined when `err` is final.
+ */
+function retryDelayMs(err: unknown, failures: number, intervalMs: number): number | undefined {
+  if (err instanceof LiteGenAPIError) {
+    if (err.status !== 429 && err.status < 500) return undefined;
+    if (err.retryAfterMs !== undefined) return err.retryAfterMs;
+  } else if (!(err instanceof LiteGenTimeoutError)) {
+    const e = err as { name?: unknown; message?: unknown };
+    if (e?.name !== "TypeError" || !NETWORK_ERROR_MESSAGES.has(String(e.message))) return undefined;
+  }
+  return Math.min(intervalMs * 2 ** (failures - 1), MAX_RETRY_DELAY_MS);
+}
+
 /** `opts` with the 3D family's default timeout filled in where none was given. */
 function withModel3dDefaults(opts: WaitForCompletionOptions = {}): WaitForCompletionOptions {
   return { ...opts, timeoutMs: opts.timeoutMs ?? MODEL3D_DEFAULT_TIMEOUT_MS };
@@ -49,6 +83,10 @@ function withModel3dDefaults(opts: WaitForCompletionOptions = {}): WaitForComple
  * 3D — providers that don't report fine-grained progress simply step toward
  * 100. Iteration stops after the first terminal status (`completed` / `failed`
  * / `cancelled`), which is the final value yielded.
+ *
+ * A status read that fails transiently (a 429 or 5xx, a timeout, a dropped
+ * connection) is retried, after the server's `Retry-After` when it sent one,
+ * up to five times in a row; any other error is thrown at once.
  *
  * `pollVideo` / `poll3d` are thin instantiations of this generator, not
  * separate implementations — a new async media family gets polling for free
@@ -65,6 +103,7 @@ export async function* pollJob<T extends WithStatus>(
   const deadline = Date.now() + timeoutMs;
 
   let last: T | undefined;
+  let failures = 0;
   while (true) {
     if (opts.signal?.aborted) {
       throw new DOMException("Polling aborted", "AbortError");
@@ -72,7 +111,15 @@ export async function* pollJob<T extends WithStatus>(
     if (Date.now() > deadline) {
       throw new LiteGenPollingTimeoutError(id, last?.status, kind);
     }
-    last = await getStatus(id);
+    try {
+      last = await getStatus(id);
+    } catch (err) {
+      const delay = retryDelayMs(err, ++failures, intervalMs);
+      if (delay === undefined || failures > MAX_POLL_RETRIES) throw err;
+      await sleep(Math.min(delay, Math.max(0, deadline - Date.now())), opts.signal);
+      continue;
+    }
+    failures = 0;
     yield last;
     if (TERMINAL_STATUSES.has(last.status)) {
       return last;
