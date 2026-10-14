@@ -1,0 +1,21 @@
+#usda 1.0
+(
+    defaultPrim = "Mover"
+    timeCodesPerSecond = 10
+)
+
+def Xform "Mover"
+{
+    float3 xformOp:translate.timeSamples = {
+        0: (0, 0, 0),
+        5: (1, 0, 0),
+    }
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Mesh "M"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    }
+}

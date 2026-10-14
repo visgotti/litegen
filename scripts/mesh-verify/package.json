@@ -1,0 +1,14 @@
+{
+  "name": "mesh-verify",
+  "private": true,
+  "type": "module",
+  "description": "Render-verifies litegen's mesh conversion matrix with independent loaders (three.js, the engine behind <model-viewer>) and validators (Khronos glTF-Validator, Apple usdchecker, assimp).",
+  "scripts": {
+    "verify": "node verify.mjs"
+  },
+  "dependencies": {
+    "gltf-validator": "2.0.0-dev.3.10",
+    "playwright-core": "1.60.0",
+    "three": "0.183.2"
+  }
+}

@@ -1,0 +1,134 @@
+#usda 1.0
+(
+    "Composition arcs, authored for litegen's USD reader tests."
+    defaultPrim = "World"
+    metersPerUnit = 1
+    subLayers = [@comp_sub.usda@]
+    timeCodesPerSecond = 10
+    upAxis = "Y"
+)
+
+class "_Lifted"
+{
+    float3 xformOp:translate = (0, 5, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+
+def Xform "World"
+{
+    def Mesh "Proto" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        rel material:binding = </World/Proto/Local>
+
+        def Material "Local"
+        {
+            token outputs:surface.connect = </World/Proto/Local/S.outputs:surface>
+
+            def Shader "S"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0, 1, 0)
+                token outputs:surface
+            }
+        }
+    }
+
+    def "Instance" (
+        prepend references = </World/Proto>
+    )
+    {
+        float3 xformOp:translate = (3, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Xform "Lifted" (
+        inherits = </_Lifted>
+    )
+    {
+        def Mesh "Tri"
+        {
+            int[] faceVertexCounts = [3]
+            int[] faceVertexIndices = [0, 1, 2]
+            point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        }
+    }
+
+    def Xform "Shapes" (
+        variants = {
+            string shape = "quad"
+        }
+        prepend variantSets = "shape"
+    )
+    {
+        variantSet "shape" = {
+            "quad" {
+                def Mesh "Quad"
+                {
+                    int[] faceVertexCounts = [4]
+                    int[] faceVertexIndices = [0, 1, 2, 3]
+                    point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+                }
+            }
+            "tri" {
+                def Mesh "Tri"
+                {
+                    int[] faceVertexCounts = [3]
+                    int[] faceVertexIndices = [0, 1, 2]
+                    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+                }
+            }
+        }
+    }
+
+    def Xform "Unselected" (
+        prepend variantSets = "look"
+    )
+    {
+        variantSet "look" = {
+            "a" {
+                def Mesh "A"
+                {
+                    int[] faceVertexCounts = [3]
+                    int[] faceVertexIndices = [0, 1, 2]
+                    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+                }
+            }
+        }
+    }
+
+    def Mesh "Inactive" (
+        active = false
+    )
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    }
+
+    def Xform "Payloaded" (
+        prepend payload = @comp_payload.usda@</Thing>
+    )
+    {
+    }
+
+    def Xform "Timed" (
+        prepend references = @comp_anim.usda@ (offset = 10; scale = 2)
+    )
+    {
+    }
+}
+
+over "Detached"
+{
+    def Mesh "NotDrawn"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    }
+}

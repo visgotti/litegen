@@ -104,9 +104,13 @@ fn read_refuses_an_empty_mesh_rather_than_returning_one() {
 #[test]
 fn keeps_uvs_and_keeps_color_describe_the_lossiness_table() {
     assert!(MeshFormat::Glb.keeps_uvs() && MeshFormat::Glb.keeps_color());
-    assert!(MeshFormat::Obj.keeps_uvs() && !MeshFormat::Obj.keeps_color());
+    // A single-file OBJ carries colour as per-vertex colour (`v x y z r g b`).
+    assert!(MeshFormat::Obj.keeps_uvs() && MeshFormat::Obj.keeps_color());
     assert!(!MeshFormat::Ply.keeps_uvs() && MeshFormat::Ply.keeps_color());
     assert!(!MeshFormat::Stl.keeps_uvs() && !MeshFormat::Stl.keeps_color());
+    // 3MF keeps texture coordinates only beside a texture, which the flat mesh
+    // cannot carry; its colour survives as a base material.
+    assert!(!MeshFormat::ThreeMf.keeps_uvs() && MeshFormat::ThreeMf.keeps_color());
 }
 
 #[test]

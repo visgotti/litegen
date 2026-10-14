@@ -1,0 +1,113 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>loader probe</title>
+<script type="importmap">
+{ "imports": { "three": "/three/build/three.module.js", "three/addons/": "/three/examples/jsm/" } }
+</script>
+<style>body{margin:0;font:12px monospace} canvas{display:block}</style>
+</head>
+<body>
+<canvas id="c" width="480" height="360"></canvas>
+<pre id="out">running</pre>
+<script type="module">
+import * as THREE from 'three';
+import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
+import { ThreeMFLoader } from 'three/addons/loaders/3MFLoader.js';
+import { KMZLoader } from 'three/addons/loaders/KMZLoader.js';
+
+const logs = [];
+for (const lvl of ['warn', 'error']) {
+  const orig = console[lvl].bind(console);
+  console[lvl] = (...a) => { logs.push(lvl + ': ' + a.map(String).join(' ').slice(0, 200)); orig(...a); };
+}
+const params = new URLSearchParams(location.search);
+const files = (params.get('files') || '').split(',').filter(Boolean);
+const renderFile = params.get('render');
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const r3 = (v) => Array.from(v).map(x => +(+x).toFixed(3));
+
+async function load(f) {
+  const url = '/files/' + f;
+  const ext = f.split('.').pop().toLowerCase();
+  if (ext === 'dae') {
+    const text = await (await fetch(url)).text();
+    const res = new ColladaLoader().parse(text, '/files/');
+    return res.scene;
+  }
+  const buf = await (await fetch(url)).arrayBuffer();
+  if (ext === '3mf') return new ThreeMFLoader().parse(buf);
+  if (ext === 'zae' || ext === 'kmz') return new KMZLoader().parse(buf).scene;
+  throw new Error('unknown ext');
+}
+
+function summarize(root) {
+  const byUuid = {};
+  root.traverse(o => { byUuid[o.uuid] = o.name || o.type; });
+  const objs = [];
+  root.updateMatrixWorld(true);
+  root.traverse(o => {
+    const e = { type: o.type, name: o.name };
+    if (!o.position.equals(new THREE.Vector3())) e.pos = r3(o.position.toArray());
+    if (o.quaternion.w !== 1) e.quat = r3(o.quaternion.toArray());
+    if (o.isMesh) {
+      const g = o.geometry;
+      e.attrs = Object.fromEntries(Object.entries(g.attributes).map(([k, a]) => [k, a.count + 'x' + a.itemSize]));
+      if (g.attributes.uv) e.uv = r3(g.attributes.uv.array.slice(0, 12));
+      if (g.attributes.color) e.color = r3(g.attributes.color.array.slice(0, 12));
+      if (g.groups.length) e.groups = g.groups.map(x => `${x.start}+${x.count}:m${x.materialIndex}`);
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      e.mats = mats.map(m => ({ type: m.type, name: m.name, color: m.color && m.color.getHexString(), opacity: m.opacity,
+        transparent: m.transparent, side: m.side, vertexColors: m.vertexColors,
+        map: m.map ? (m.map.image ? `${m.map.image.width}x${m.map.image.height}` : 'pending') : null,
+        normalMap: !!m.normalMap, emissive: m.emissive && m.emissive.getHexString() }));
+      if (o.isSkinnedMesh) {
+        e.bones = o.skeleton.bones.map(b => b.name);
+        e.boneInv = o.skeleton.boneInverses.map(m => r3(m.elements.slice(12, 15)));
+        e.bindMatrixT = r3(o.bindMatrix.elements.slice(12, 15));
+      }
+    }
+    objs.push(e);
+  });
+  const anims = (root.animations || []).map(c => ({ name: c.name, duration: +c.duration.toFixed(3),
+    tracks: c.tracks.map(t => {
+      const [id, prop] = [t.name.slice(0, t.name.lastIndexOf('.')), t.name.slice(t.name.lastIndexOf('.') + 1)];
+      return `${byUuid[id] || id}.${prop} n=${t.times.length} interp=${t.getInterpolation()} t=${r3(t.times)} v1=${r3(t.values.slice(t.getValueSize(), 2 * t.getValueSize()))}`;
+    }) }));
+  return { objs, anims };
+}
+
+const results = {};
+for (const f of files) {
+  logs.length = 0;
+  try {
+    const root = await load(f);
+    await sleep(800);
+    results[f] = { ...summarize(root), logs: [...logs] };
+    if (f === renderFile) {
+      const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true, preserveDrawingBuffer: true });
+      renderer.setClearColor(0xdddddd);
+      const scene = new THREE.Scene();
+      scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+      const dl = new THREE.DirectionalLight(0xffffff, 1.5); dl.position.set(0, 0, 5); scene.add(dl);
+      scene.add(root);
+      root.traverse(o => { if (o.isMesh) { const ms = Array.isArray(o.material) ? o.material : [o.material]; ms.forEach(m => m.side = THREE.DoubleSide); } });
+      const box = new THREE.Box3().setFromObject(root);
+      const c = box.getCenter(new THREE.Vector3()); const s = box.getSize(new THREE.Vector3());
+      const cam = new THREE.PerspectiveCamera(30, 480 / 360, 0.01, 1e5);
+      const up = params.get('up') === 'z';
+      if (up) { cam.up.set(0, 0, 1); cam.position.set(c.x, c.y - Math.max(s.x, s.z) * 2.5, c.z + s.z * 0.8); }
+      else { cam.position.set(c.x, c.y, c.z + Math.max(s.x, s.y) * 2.2); }
+      cam.lookAt(c);
+      renderer.render(scene, cam);
+    }
+  } catch (e) {
+    results[f] = { error: String(e && e.stack || e).slice(0, 600), logs: [...logs] };
+  }
+}
+window.__results = results;
+document.getElementById('out').textContent = 'DONE\n' + JSON.stringify(results, null, 1);
+</script>
+</body>
+</html>

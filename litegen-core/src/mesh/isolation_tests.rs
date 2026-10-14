@@ -18,12 +18,32 @@ use std::path::Path;
 const MODULE_FILES: &[&str] = &[
     "mod.rs",
     "ir.rs",
+    "math.rs",
+    "scene.rs",
+    "pose.rs",
+    "package.rs",
+    "fixtures.rs",
+    "zip.rs",
+    "xml.rs",
     "glb.rs",
     "obj.rs",
     "stl.rs",
+    "threemf.rs",
+    "dae.rs",
+    "fbx.rs",
+    "fbx_dom.rs",
+    "fbx_read.rs",
+    "fbx_write.rs",
     "ply.rs",
+    "usd.rs",
+    "usd_read.rs",
+    "usd_stage.rs",
+    "usd_write.rs",
+    "usda.rs",
+    "usdc.rs",
     "tests.rs",
     "matrix_tests.rs",
+    "scene_matrix_tests.rs",
     "isolation_tests.rs",
 ];
 
@@ -89,29 +109,39 @@ fn every_module_file_is_declared() {
 }
 
 #[test]
-fn the_only_third_party_crate_in_reach_is_serde_json_and_only_for_gltf() {
-    // std-only is the rule for the code that parses untrusted vendor bytes: a
-    // new crate there is a new supply-chain surface on the poll path. glb.rs is
-    // the one production exception, because the glTF JSON chunk is genuinely
-    // JSON and hand-rolling a parser for it would be worse than the dependency.
+fn third_party_crates_stay_in_the_one_file_that_needs_each() {
+    // The code that parses untrusted vendor bytes is std-only by default: a new
+    // crate there is a new supply-chain surface on the poll path. The
+    // exceptions are crates that are ALREADY compiled into litegen through
+    // other dependencies (so they add no code to the binary), each confined to
+    // the one file whose format genuinely needs it:
     //
-    // `matrix_tests.rs` is exempt for a different reason: its GLB regressions
-    // construct glTF documents field by field — a hand-built file with one
-    // field deliberately broken is the only way to test a case our own writer
-    // would never produce. That is fixture construction, not a dependency the
-    // module carries.
-    const EXEMPT: &[&str] = &["glb.rs", "matrix_tests.rs", SELF];
+    // - serde_json: glTF's JSON chunk is genuinely JSON (glb.rs).
+    // - miniz_oxide: DEFLATE, for ZIP entries (zip.rs) and FBX's zlib-compressed
+    //   arrays (fbx.rs). Already linked through flate2 (png, tower-http).
+    // - quick_xml: 3MF and Collada are XML (xml.rs, which the codecs use).
+    //   Already linked through rust-s3.
+    //
+    // `matrix_tests.rs` may use serde_json to construct glTF documents field by
+    // field — fixture construction, not a dependency the module carries.
+    const ALLOWED: &[(&str, &[&str])] = &[
+        ("serde_json", &["glb.rs", "matrix_tests.rs"]),
+        ("miniz_oxide", &["zip.rs", "fbx.rs"]),
+        ("quick_xml", &["xml.rs"]),
+    ];
     for name in MODULE_FILES {
-        if EXEMPT.contains(name) {
+        if *name == SELF {
             continue;
         }
         let src = std::fs::read_to_string(module_dir().join(name)).unwrap();
         for (n, line) in src.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("").trim();
-            assert!(
-                !code.contains("serde_json"),
-                "{name}:{}: only glb.rs may use serde_json", n + 1,
-            );
+            for (krate, files) in ALLOWED {
+                assert!(
+                    !code.contains(krate) || files.contains(name),
+                    "{name}:{}: only {files:?} may use {krate}", n + 1,
+                );
+            }
         }
     }
 }

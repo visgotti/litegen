@@ -1,0 +1,63 @@
+#usda 1.0
+(
+    "Layer doc string"
+    customLayerData = {
+        string creator = "litegen test"
+    }
+    defaultPrim = "Root"
+    endTimeCode = 10
+    framesPerSecond = 24
+    metersPerUnit = 0.01
+    startTimeCode = 0
+    timeCodesPerSecond = 24
+    upAxis = "Z"
+)
+
+# a line comment
+// a C++ style comment
+/* a block
+   comment */
+
+class "_Proto"
+{
+    custom float protoValue = 1
+}
+
+def Xform "Root" (
+    kind = "component"
+    inherits = </_Proto>
+)
+{
+    string s1 = "quote\" backslash\\ newline\n tab\t"
+    string s2 = 'single "quoted" text'
+    string s3 = """multi
+line"""
+    string s4 = "unicode é ✓"
+    asset a1 = @textures/my file.png@
+    asset a2 = @@@weird@name.png@@@
+    custom double myCustom = 3.5
+    uniform token tk = "uniformToken"
+    token[] tokArr = ["a", "b"]
+    int[] emptyArr = []
+    bool flag = true
+    double3 xformOp:translate.timeSamples = {
+        0: (0, 0, 0),
+        2.5: (1, 0, 0),
+        10: (2, 0, 0),
+    }
+    quatf xformOp:orient = (1, 0, 0, 0)
+    float3 xformOp:scale = (1, 1, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    float blocked = None
+
+    def Scope "Child_1"
+    {
+    }
+}
+
+over "OverOnly"
+{
+    def Xform "AddedByOver"
+    {
+    }
+}
