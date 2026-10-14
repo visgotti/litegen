@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, Callable, Iterator, Mapping
+from urllib.parse import quote
 
 import httpx
 
@@ -50,6 +51,10 @@ class LiteGenClient:
         self.logs = _LogsNamespace(self)
         self.keys = _KeysNamespace(self)
         self.cache = _CacheNamespace(self)
+        self.limits = _LimitsNamespace(self)
+        self.end_users = _EndUsersNamespace(self)
+        self.spend = _SpendNamespace(self)
+        self.admin = _AdminNamespace(self)
 
     def close(self) -> None:
         self._http.close()
@@ -278,6 +283,16 @@ class _KeysNamespace:
     def revoke(self, key_id: str) -> Any:
         return self._c._request("DELETE", f"/v1/keys/{key_id}")
 
+    def get(self, key_id: str) -> Any:
+        return self._c._request("GET", f"/v1/keys/{_q(key_id)}")
+
+    def block(self, key_id: str) -> Any:
+        """Refuse every request made with this key until unblocked."""
+        return self._c._request("POST", f"/v1/keys/{_q(key_id)}/block")
+
+    def unblock(self, key_id: str) -> Any:
+        return self._c._request("POST", f"/v1/keys/{_q(key_id)}/unblock")
+
 
 class _CacheNamespace:
     def __init__(self, client: LiteGenClient) -> None:
@@ -285,3 +300,282 @@ class _CacheNamespace:
 
     def clear(self) -> Any:
         return self._c._request("DELETE", "/v1/cache")
+
+
+# ─── Management: limits, end users, spend, gateway admin ─────────────────────
+
+
+def _q(value: str) -> str:
+    """Percent-encode one path segment."""
+    return quote(value, safe="")
+
+
+def _drop_none(d: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in d.items() if v is not None}
+
+
+class _LimitsNamespace:
+    """Budgets and limits (``/v1/limits``, ``…/limits`` on keys, orgs, apps, members).
+
+    A limits body (``LimitsInput``) takes ``max_budget_usd``, ``soft_budget_usd``,
+    ``budget_duration`` (``30s``/``30m``/``12h``/``30d``/``1w``/``1mo``),
+    ``allowed_models``, ``max_parallel_requests``, ``rpm_limit`` and ``metadata``.
+    ``set_*`` replaces every field; ``reset_*`` zeroes the current window's spend.
+    """
+
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    def list(self, *, entity_type: str | None = None, org_id: str | None = None) -> list[Any]:
+        resp = self._c._request(
+            "GET", "/v1/limits", params=_drop_none({"entity_type": entity_type, "org_id": org_id})
+        )
+        return resp["data"]
+
+    def me(self) -> Any:
+        """The limits that apply to the caller: its key, org, app and member rows."""
+        return self._c._request("GET", "/v1/limits/me")["data"]
+
+    def get_key(self, key_id: str) -> Any:
+        return self._c._request("GET", f"/v1/keys/{_q(key_id)}/limits")
+
+    def set_key(self, key_id: str, limits: Mapping[str, Any]) -> Any:
+        return self._c._request("PUT", f"/v1/keys/{_q(key_id)}/limits", json=dict(limits))
+
+    def delete_key(self, key_id: str) -> Any:
+        return self._c._request("DELETE", f"/v1/keys/{_q(key_id)}/limits")
+
+    def reset_key(self, key_id: str) -> Any:
+        return self._c._request("POST", f"/v1/keys/{_q(key_id)}/limits/reset")
+
+    def get_org(self, org_id: str) -> Any:
+        return self._c._request("GET", f"/v1/orgs/{_q(org_id)}/limits")
+
+    def set_org(self, org_id: str, limits: Mapping[str, Any]) -> Any:
+        return self._c._request("PUT", f"/v1/orgs/{_q(org_id)}/limits", json=dict(limits))
+
+    def delete_org(self, org_id: str) -> Any:
+        return self._c._request("DELETE", f"/v1/orgs/{_q(org_id)}/limits")
+
+    def reset_org(self, org_id: str) -> Any:
+        return self._c._request("POST", f"/v1/orgs/{_q(org_id)}/limits/reset")
+
+    def get_app(self, app_id: str) -> Any:
+        return self._c._request("GET", f"/v1/apps/{_q(app_id)}/limits")
+
+    def set_app(self, app_id: str, limits: Mapping[str, Any]) -> Any:
+        return self._c._request("PUT", f"/v1/apps/{_q(app_id)}/limits", json=dict(limits))
+
+    def delete_app(self, app_id: str) -> Any:
+        return self._c._request("DELETE", f"/v1/apps/{_q(app_id)}/limits")
+
+    def reset_app(self, app_id: str) -> Any:
+        return self._c._request("POST", f"/v1/apps/{_q(app_id)}/limits/reset")
+
+    def get_member(self, org_id: str, user_id: str) -> Any:
+        return self._c._request("GET", f"/v1/orgs/{_q(org_id)}/members/{_q(user_id)}/limits")
+
+    def set_member(self, org_id: str, user_id: str, limits: Mapping[str, Any]) -> Any:
+        return self._c._request(
+            "PUT", f"/v1/orgs/{_q(org_id)}/members/{_q(user_id)}/limits", json=dict(limits)
+        )
+
+    def delete_member(self, org_id: str, user_id: str) -> Any:
+        return self._c._request("DELETE", f"/v1/orgs/{_q(org_id)}/members/{_q(user_id)}/limits")
+
+    def reset_member(self, org_id: str, user_id: str) -> Any:
+        return self._c._request("POST", f"/v1/orgs/{_q(org_id)}/members/{_q(user_id)}/limits/reset")
+
+
+class _EndUsersNamespace:
+    """End users (your callers' customers), named per request with ``x-litegen-end-user``.
+
+    ``org_id`` is for the platform admin only, to act on another org.
+    """
+
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    def list(self, *, org_id: str | None = None) -> list[Any]:
+        return self._c._request("GET", "/v1/end-users", params=_drop_none({"org_id": org_id}))["data"]
+
+    def create(
+        self,
+        end_user_id: str,
+        *,
+        alias: str | None = None,
+        blocked: bool = False,
+        metadata: Mapping[str, Any] | None = None,
+        limits: Mapping[str, Any] | None = None,
+        org_id: str | None = None,
+    ) -> Any:
+        body = _drop_none({"id": end_user_id, "alias": alias, "metadata": metadata, "limits": limits})
+        body["blocked"] = blocked
+        return self._c._request(
+            "POST", "/v1/end-users", json=body, params=_drop_none({"org_id": org_id})
+        )
+
+    def get(self, end_user_id: str, *, org_id: str | None = None) -> Any:
+        return self._c._request(
+            "GET", f"/v1/end-users/{_q(end_user_id)}", params=_drop_none({"org_id": org_id})
+        )
+
+    def update(
+        self,
+        end_user_id: str,
+        *,
+        alias: str | None = None,
+        blocked: bool | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        org_id: str | None = None,
+    ) -> Any:
+        body = _drop_none({"alias": alias, "blocked": blocked, "metadata": metadata})
+        return self._c._request(
+            "PATCH", f"/v1/end-users/{_q(end_user_id)}", json=body, params=_drop_none({"org_id": org_id})
+        )
+
+    def delete(self, end_user_id: str, *, org_id: str | None = None) -> Any:
+        return self._c._request(
+            "DELETE", f"/v1/end-users/{_q(end_user_id)}", params=_drop_none({"org_id": org_id})
+        )
+
+    def block(self, end_user_id: str, *, org_id: str | None = None) -> Any:
+        return self._c._request(
+            "POST", f"/v1/end-users/{_q(end_user_id)}/block", params=_drop_none({"org_id": org_id})
+        )
+
+    def unblock(self, end_user_id: str, *, org_id: str | None = None) -> Any:
+        return self._c._request(
+            "POST", f"/v1/end-users/{_q(end_user_id)}/unblock", params=_drop_none({"org_id": org_id})
+        )
+
+    def get_limits(self, end_user_id: str, *, org_id: str | None = None) -> Any:
+        return self._c._request(
+            "GET", f"/v1/end-users/{_q(end_user_id)}/limits", params=_drop_none({"org_id": org_id})
+        )
+
+    def set_limits(self, end_user_id: str, limits: Mapping[str, Any], *, org_id: str | None = None) -> Any:
+        return self._c._request(
+            "PUT",
+            f"/v1/end-users/{_q(end_user_id)}/limits",
+            json=dict(limits),
+            params=_drop_none({"org_id": org_id}),
+        )
+
+    def delete_limits(self, end_user_id: str, *, org_id: str | None = None) -> Any:
+        return self._c._request(
+            "DELETE", f"/v1/end-users/{_q(end_user_id)}/limits", params=_drop_none({"org_id": org_id})
+        )
+
+    def reset_limits(self, end_user_id: str, *, org_id: str | None = None) -> Any:
+        return self._c._request(
+            "POST", f"/v1/end-users/{_q(end_user_id)}/limits/reset", params=_drop_none({"org_id": org_id})
+        )
+
+
+class _SpendNamespace:
+    """Spend reports (``/v1/spend/report``) and the attributed request log (``/v1/spend/logs``).
+
+    Filters: ``from_``/``to`` (RFC 3339 or ``YYYY-MM-DD``), ``org_id`` (platform
+    admin only), ``app_id``, ``key_id``, ``user_id``, ``end_user``, ``model``,
+    ``provider``, ``tag``.
+    """
+
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    @staticmethod
+    def _filters(from_: str | None, filters: Mapping[str, Any]) -> dict[str, Any]:
+        return _drop_none({"from": from_, **filters})
+
+    def report(self, *, group_by: str = "day", from_: str | None = None, **filters: Any) -> Any:
+        params = self._filters(from_, filters)
+        params["group_by"] = group_by
+        return self._c._request("GET", "/v1/spend/report", params=params)
+
+    def logs(self, *, page: int = 1, per_page: int = 50, from_: str | None = None, **filters: Any) -> Any:
+        params = self._filters(from_, filters)
+        params.update(page=page, per_page=per_page)
+        return self._c._request("GET", "/v1/spend/logs", params=params)
+
+
+class _AdminModelsNamespace:
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    def list(self) -> list[Any]:
+        """Every model, catalog and runtime, enabled or not."""
+        return self._c._request("GET", "/v1/admin/models")["data"]
+
+    def get(self, model_id: str) -> Any:
+        return self._c._request("GET", f"/v1/admin/models/{model_id}")
+
+    def create(self, schema: Mapping[str, Any]) -> Any:
+        """Add a model at runtime; ``schema`` is a ``models/*.yaml`` row as JSON."""
+        return self._c._request("POST", "/v1/admin/models", json=dict(schema))
+
+    def replace(self, model_id: str, schema: Mapping[str, Any]) -> Any:
+        return self._c._request("PUT", f"/v1/admin/models/{model_id}", json=dict(schema))
+
+    def set_disabled(self, model_id: str, disabled: bool) -> Any:
+        return self._c._request("PATCH", f"/v1/admin/models/{model_id}", json={"disabled": disabled})
+
+    def delete(self, model_id: str) -> Any:
+        return self._c._request("DELETE", f"/v1/admin/models/{model_id}")
+
+
+class _AdminProvidersNamespace:
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    def list(self) -> list[Any]:
+        """Every provider adapter and its effective config; secrets are masked."""
+        return self._c._request("GET", "/v1/admin/providers")["data"]
+
+    def get(self, name: str) -> Any:
+        return self._c._request("GET", f"/v1/admin/providers/{_q(name)}")
+
+    def configure(self, name: str, **config: Any) -> Any:
+        """Set ``api_key``, ``api_keys``, ``key_id``, ``key_secret``, ``api_base``,
+        ``model_mapping``, ``extra_headers``, ``options``, ``region`` or ``enabled``."""
+        return self._c._request("PUT", f"/v1/admin/providers/{_q(name)}", json=config)
+
+    def reset(self, name: str) -> Any:
+        """Drop the runtime config; the provider falls back to its env/YAML config."""
+        return self._c._request("DELETE", f"/v1/admin/providers/{_q(name)}")
+
+
+class _AdminRoutesNamespace:
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    def get(self) -> Any:
+        return self._c._request("GET", "/v1/admin/routes")
+
+    def replace(self, routes: list[Mapping[str, Any]]) -> Any:
+        return self._c._request("PUT", "/v1/admin/routes", json={"routes": [dict(r) for r in routes]})
+
+    def reset(self) -> Any:
+        return self._c._request("DELETE", "/v1/admin/routes")
+
+
+class _AdminSettingsNamespace:
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    def get(self) -> Any:
+        return self._c._request("GET", "/v1/admin/settings")
+
+    def update(self, **settings: Any) -> Any:
+        """Replace the gateway settings; an omitted field is cleared."""
+        return self._c._request("PUT", "/v1/admin/settings", json=settings)
+
+
+class _AdminNamespace:
+    """Gateway admin: runtime models, provider configs, routes and settings."""
+
+    def __init__(self, client: LiteGenClient) -> None:
+        self.models = _AdminModelsNamespace(client)
+        self.providers = _AdminProvidersNamespace(client)
+        self.routes = _AdminRoutesNamespace(client)
+        self.settings = _AdminSettingsNamespace(client)

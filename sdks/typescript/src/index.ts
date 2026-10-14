@@ -130,3 +130,36 @@ export type RefProviderFormat = components["schemas"]["RefProviderFormat"];
 export type RefProviderFormatMultipart = components["schemas"]["RefProviderFormatMultipart"];
 export type PromptSpec = components["schemas"]["PromptSpec"];
 export type ModelCapabilityFlags = components["schemas"]["ModelCapabilityFlags"];
+
+// Management API (budgets/limits, end users, spend, gateway admin).
+export type EntityType = components["schemas"]["EntityType"];
+export type EntityLimits = components["schemas"]["EntityLimits"];
+export type LimitsInput = components["schemas"]["LimitsInput"];
+export type KeyActiveResponse = components["schemas"]["KeyActiveResponse"];
+export type DeletedResponse = components["schemas"]["DeletedResponse"];
+export type EndUser = components["schemas"]["EndUser"];
+export type EndUserView = components["schemas"]["EndUserView"];
+export type CreateEndUserRequest = components["schemas"]["CreateEndUserRequest"];
+export type UpdateEndUserRequest = components["schemas"]["UpdateEndUserRequest"];
+export type SpendGroupBy = components["schemas"]["SpendGroupBy"];
+export type SpendReportRow = components["schemas"]["SpendReportRow"];
+export type SpendReportResponse = components["schemas"]["SpendReportResponse"];
+export type SpendLogEntry = components["schemas"]["SpendLogEntry"];
+export type SpendLogsResponse = components["schemas"]["SpendLogsResponse"];
+export type ModelSource = components["schemas"]["ModelSource"];
+export type AdminModelView = components["schemas"]["AdminModelView"];
+export type ProviderSettings = components["schemas"]["ProviderSettings"];
+export type PutProviderConfigRequest = components["schemas"]["PutProviderConfigRequest"];
+export type ProviderConfigView = components["schemas"]["ProviderConfigView"];
+export type RouteDeployment = components["schemas"]["RouteDeployment"];
+export type RouteSpec = components["schemas"]["RouteSpec"];
+export type RoutesDocument = components["schemas"]["RoutesDocument"];
+export type GatewaySettings = components["schemas"]["GatewaySettings"];
+export type GatewaySettingsView = components["schemas"]["GatewaySettingsView"];
+export type {
+  ListLimitsOptions,
+  EndUserOptions,
+  SpendFilterOptions,
+  SpendReportOptions,
+  SpendLogsOptions,
+} from "./client";

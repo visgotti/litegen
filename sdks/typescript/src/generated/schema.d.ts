@@ -139,6 +139,140 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/admin/models — Every model (catalog and runtime, enabled or not). */
+        get: operations["admin_list_models"];
+        put?: never;
+        /**
+         * POST /v1/admin/models — Add a model at runtime (LiteLLM `/model/new`).
+         * @description The body is a full model schema, the same shape as a `models/*.yaml` row,
+         *     and passes the same validation. The vendor model called is the part of the
+         *     id after `<provider>/` (or the provider's `model_mapping`).
+         */
+        post: operations["admin_create_model"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/models/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/admin/models/{id} */
+        get: operations["admin_get_model"];
+        /** PUT /v1/admin/models/{id} — Replace a runtime model's schema (LiteLLM `/model/update`). */
+        put: operations["admin_replace_model"];
+        post?: never;
+        /** DELETE /v1/admin/models/{id} — Remove a runtime model (LiteLLM `/model/delete`). */
+        delete: operations["admin_delete_model"];
+        options?: never;
+        head?: never;
+        /**
+         * PATCH /v1/admin/models/{id} — Enable or disable any model platform-wide
+         *     (LiteLLM `/model/block`). Disabled models disappear from `/v1/models` and
+         *     generation requests for them answer 404 `model_not_found`.
+         */
+        patch: operations["admin_patch_model"];
+        trace?: never;
+    };
+    "/v1/admin/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/admin/providers — Every provider adapter with its effective config. Secrets are masked. */
+        get: operations["admin_list_providers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/providers/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/admin/providers/{name} */
+        get: operations["admin_get_provider"];
+        /**
+         * PUT /v1/admin/providers/{name} — Set a provider's keys, api_base, model
+         *     mapping, headers, options or enabled flag at runtime. Secret fields left
+         *     out keep their stored value; every unset field falls back to env/YAML.
+         *     In-flight jobs finish on the instance they started with.
+         */
+        put: operations["admin_put_provider"];
+        post?: never;
+        /**
+         * DELETE /v1/admin/providers/{name} — Drop the runtime config; the provider
+         *     reverts to its env/YAML config, or goes out of service if it has none.
+         */
+        delete: operations["admin_delete_provider"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/routes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/admin/routes — Model routes in effect (fallbacks, load balancing, caching). */
+        get: operations["admin_get_routes"];
+        /**
+         * PUT /v1/admin/routes — Replace every model route at runtime. Order matters:
+         *     the first route whose pattern matches a model wins.
+         */
+        put: operations["admin_put_routes"];
+        post?: never;
+        /** DELETE /v1/admin/routes — Drop the runtime routes and go back to litegen.yaml's. */
+        delete: operations["admin_delete_routes"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/admin/settings */
+        get: operations["admin_get_settings"];
+        /**
+         * PUT /v1/admin/settings — Replace the gateway settings (markup, budget alert
+         *     webhook, default end-user budget). An omitted field is cleared.
+         */
+        put: operations["admin_put_settings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/apps/{app_id}": {
         parameters: {
             query?: never;
@@ -170,6 +304,42 @@ export interface paths {
         /** PUT /v1/apps/{app_id}/allowed-models — Set this app's model access (app write). */
         put: operations["put_app_allowed_models"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/apps/{app_id}/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/apps/{app_id}/limits */
+        get: operations["get_app_limits"];
+        /** PUT /v1/apps/{app_id}/limits — Budget and caps for one application (LiteLLM team budget). */
+        put: operations["put_app_limits"];
+        post?: never;
+        /** DELETE /v1/apps/{app_id}/limits */
+        delete: operations["delete_app_limits"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/apps/{app_id}/limits/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/apps/{app_id}/limits/reset */
+        post: operations["reset_app_limits"];
         delete?: never;
         options?: never;
         head?: never;
@@ -470,6 +640,122 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/end-users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/end-users — End users seen in, or created for, the organization. */
+        get: operations["list_end_users"];
+        put?: never;
+        /**
+         * POST /v1/end-users — Register an end user ahead of its first request,
+         *     optionally with limits.
+         */
+        post: operations["create_end_user"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/end-users/{end_user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/end-users/{end_user_id} */
+        get: operations["get_end_user"];
+        put?: never;
+        post?: never;
+        /**
+         * DELETE /v1/end-users/{end_user_id} — Remove the end user and its limits.
+         *     Its spend history stays in the request logs.
+         */
+        delete: operations["delete_end_user"];
+        options?: never;
+        head?: never;
+        /** PATCH /v1/end-users/{end_user_id} — Change alias, blocked or metadata. */
+        patch: operations["update_end_user"];
+        trace?: never;
+    };
+    "/v1/end-users/{end_user_id}/block": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/end-users/{end_user_id}/block — Refuse this end user's requests (403 `end_user_blocked`). */
+        post: operations["block_end_user"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/end-users/{end_user_id}/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/end-users/{end_user_id}/limits */
+        get: operations["get_end_user_limits"];
+        /**
+         * PUT /v1/end-users/{end_user_id}/limits — An end user's budget and caps.
+         *     Registers the end user if it was never seen.
+         */
+        put: operations["put_end_user_limits"];
+        post?: never;
+        /** DELETE /v1/end-users/{end_user_id}/limits */
+        delete: operations["delete_end_user_limits"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/end-users/{end_user_id}/limits/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/end-users/{end_user_id}/limits/reset */
+        post: operations["reset_end_user_limits"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/end-users/{end_user_id}/unblock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/end-users/{end_user_id}/unblock */
+        post: operations["unblock_end_user"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/generations": {
         parameters: {
             query?: never;
@@ -591,6 +877,63 @@ export interface paths {
         patch: operations["patch_api_key_handler"];
         trace?: never;
     };
+    "/v1/keys/{id}/block": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/keys/{id}/block — Refuse every request made with this key until unblocked. */
+        post: operations["block_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/keys/{id}/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/keys/{id}/limits */
+        get: operations["get_key_limits"];
+        /**
+         * PUT /v1/keys/{id}/limits — Set the key's budget window, soft budget, model
+         *     allowlist, rpm and parallel caps. Independent of the key's lifetime
+         *     `token_quota`; both apply.
+         */
+        put: operations["put_key_limits"];
+        post?: never;
+        /** DELETE /v1/keys/{id}/limits */
+        delete: operations["delete_key_limits"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/keys/{id}/limits/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/keys/{id}/limits/reset — Zero the key's window spend. */
+        post: operations["reset_key_limits"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/keys/{id}/rotate": {
         parameters: {
             query?: never;
@@ -632,6 +975,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/keys/{id}/unblock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/keys/{id}/unblock */
+        post: operations["unblock_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/keys/{id}/webhook-deliveries": {
         parameters: {
             query?: never;
@@ -644,6 +1004,43 @@ export interface paths {
          *     Live: `curl https://app.litegen.ai/api/v1/keys/{id}/webhook-deliveries -H "Authorization: Bearer sk_live_..."`
          */
         get: operations["list_webhook_deliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/limits — Every limits row in the caller's organization. */
+        get: operations["list_limits"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/limits/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /v1/limits/me — The limits that apply to the calling key or session:
+         *     its key, org, app and member rows (LiteLLM's `/key/info` for the caller).
+         */
+        get: operations["my_limits"];
         put?: never;
         post?: never;
         delete?: never;
@@ -796,6 +1193,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/orgs/{id}/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/orgs/{id}/limits */
+        get: operations["get_org_limits"];
+        /** PUT /v1/orgs/{id}/limits — Budget and caps shared by everything in the org. */
+        put: operations["put_org_limits"];
+        post?: never;
+        /** DELETE /v1/orgs/{id}/limits */
+        delete: operations["delete_org_limits"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/orgs/{id}/limits/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/orgs/{id}/limits/reset */
+        post: operations["reset_org_limits"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/orgs/{id}/members": {
         parameters: {
             query?: never;
@@ -830,6 +1263,45 @@ export interface paths {
         head?: never;
         /** PATCH /v1/orgs/{id}/members/{user_id} — Change a member's role (requires member:write). */
         patch: operations["patch_member"];
+        trace?: never;
+    };
+    "/v1/orgs/{id}/members/{user_id}/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/orgs/{id}/members/{user_id}/limits */
+        get: operations["get_member_limits"];
+        /**
+         * PUT /v1/orgs/{id}/members/{user_id}/limits — A member's budget inside the
+         *     org, covering their session generations and every key they own.
+         */
+        put: operations["put_member_limits"];
+        post?: never;
+        /** DELETE /v1/orgs/{id}/members/{user_id}/limits */
+        delete: operations["delete_member_limits"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/orgs/{id}/members/{user_id}/limits/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/orgs/{id}/members/{user_id}/limits/reset */
+        post: operations["reset_member_limits"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/v1/orgs/{id}/transfer-owner": {
@@ -903,6 +1375,40 @@ export interface paths {
          *     Live: `curl https://app.litegen.ai/api/v1/providers -H "Authorization: Bearer sk_live_..."`
          */
         get: operations["list_providers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/spend/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/spend/logs — Attributed request log (key, user, end user, tags), newest first. */
+        get: operations["spend_logs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/spend/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/spend/report — Spend and request counts grouped by one dimension. */
+        get: operations["spend_report"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1051,6 +1557,18 @@ export interface components {
         AddMemberRequest: {
             email: string;
             role: components["schemas"]["Role"];
+        };
+        /** @description Response for `GET /v1/admin/models`. */
+        AdminModelListResponse: {
+            data: components["schemas"]["AdminModelView"][];
+        };
+        /** @description Admin view of one model: its full schema plus management state. */
+        AdminModelView: {
+            /** @description Disabled models are hidden from `/v1/models` and refused at generation. */
+            disabled: boolean;
+            id: string;
+            schema: components["schemas"]["ModelSchema"];
+            source: components["schemas"]["ModelSource"];
         };
         /** @description API key for authenticating with the LiteGen proxy. */
         ApiKey: {
@@ -1310,6 +1828,12 @@ export interface components {
         /** @enum {string} */
         CostSource: "dynamic" | "estimated";
         CreateApiKeyRequest: {
+            /**
+             * Format: date-time
+             * @description Optional expiry; after this instant the key is rejected at auth. None =
+             *     never expires. Enforced in auth_middleware and honoured on PATCH too.
+             */
+            expires_at?: string | null;
             name: string;
             /**
              * Format: int32
@@ -1328,6 +1852,14 @@ export interface components {
         };
         CreateAppRequest: {
             name: string;
+        };
+        /** @description Request body for `POST /v1/end-users`. */
+        CreateEndUserRequest: {
+            alias?: string | null;
+            blocked?: boolean;
+            id: string;
+            limits?: null | components["schemas"]["LimitsInput"];
+            metadata?: unknown;
         };
         CreateOrgRequest: {
             name: string;
@@ -1378,6 +1910,10 @@ export interface components {
         CsrfResponse: {
             csrf_token: string;
         };
+        /** @description Response for management DELETE endpoints. */
+        DeletedResponse: {
+            deleted: boolean;
+        };
         /** @description A single deployment in a routing chain. */
         Deployment: {
             /**
@@ -1405,6 +1941,98 @@ export interface components {
              */
             weight?: number;
         };
+        /**
+         * @description An end user: a caller of the tenant's own product, identified per request by
+         *     the `x-litegen-end-user` header. Rows are created on first sight or through
+         *     the API.
+         */
+        EndUser: {
+            alias?: string | null;
+            /** @description A blocked end user's requests are refused with 403 `end_user_blocked`. */
+            blocked: boolean;
+            /** Format: date-time */
+            created_at: string;
+            id: string;
+            /** Format: date-time */
+            last_seen_at?: string | null;
+            metadata?: unknown;
+            org_id: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description Response for `GET /v1/end-users`. */
+        EndUserListResponse: {
+            data: components["schemas"]["EndUserView"][];
+        };
+        /** @description End user plus its limits, as returned by the end-user endpoints. */
+        EndUserView: components["schemas"]["EndUser"] & {
+            limits?: null | components["schemas"]["EntityLimits"];
+        };
+        /**
+         * @description Budget and access limits for one key, org, app, org member or end user.
+         *
+         *     `spend_usd` is the spend inside the current budget window. With a
+         *     `budget_duration` the window resets (spend back to 0) at `budget_reset_at`;
+         *     without one the budget is a lifetime cap.
+         */
+        EntityLimits: {
+            /** @description Model ids this principal may generate with. None = no restriction. */
+            allowed_models?: string[] | null;
+            /** @description Window length: `30s`, `30m`, `12h`, `30d`, `1w` or `1mo`. None = never resets. */
+            budget_duration?: string | null;
+            /**
+             * Format: date-time
+             * @description When the current window ends and `spend_usd` resets.
+             */
+            budget_reset_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            entity_id: string;
+            entity_type: components["schemas"]["EntityType"];
+            /**
+             * Format: double
+             * @description Hard cap in USD for the current window. Requests that would exceed it
+             *     are refused with 402 `budget_exceeded`. None = unlimited.
+             */
+            max_budget_usd?: number | null;
+            /**
+             * Format: int32
+             * @description Concurrent in-flight generation cap. None = unlimited.
+             */
+            max_parallel_requests?: number | null;
+            /** @description Free-form JSON object for the caller's own bookkeeping. */
+            metadata?: unknown;
+            /** @description Owning org (None only for keys minted with no tenant). */
+            org_id?: string | null;
+            /**
+             * Format: int32
+             * @description Requests-per-minute cap. None = unlimited.
+             */
+            rpm_limit?: number | null;
+            /**
+             * Format: date-time
+             * @description When the soft budget was crossed in the current window, if it was.
+             */
+            soft_budget_alerted_at?: string | null;
+            /**
+             * Format: double
+             * @description Alert threshold in USD. Crossing it records a `budget.soft_limit_reached`
+             *     audit entry and fires the gateway's alert webhook once per window.
+             */
+            soft_budget_usd?: number | null;
+            /**
+             * Format: double
+             * @description Spend inside the current window, including in-flight reservations.
+             */
+            spend_usd: number;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /**
+         * @description Which principal a limits row belongs to.
+         * @enum {string}
+         */
+        EntityType: "key" | "org" | "app" | "member" | "end_user";
         ErrorDetail: {
             code?: string | null;
             message: string;
@@ -1413,6 +2041,32 @@ export interface components {
         };
         ErrorResponse: {
             error: components["schemas"]["ErrorDetail"];
+        };
+        /** @description Gateway-wide settings editable at runtime. */
+        GatewaySettings: {
+            /** @description URL that receives budget alerts (soft budget crossed, hard budget hit). */
+            alert_webhook_url?: string | null;
+            /**
+             * Format: double
+             * @description Percent added on top of provider cost when billing. Overrides the config value.
+             */
+            cost_markup_percent?: number | null;
+            /** @description Window for that default end-user budget. */
+            default_end_user_budget_duration?: string | null;
+            /**
+             * Format: double
+             * @description Default hard budget (USD) for an end user with no limits of its own.
+             */
+            default_end_user_max_budget_usd?: number | null;
+        };
+        /**
+         * @description Response for `GET /v1/admin/settings`: the stored overrides plus the
+         *     values in effect.
+         */
+        GatewaySettingsView: {
+            /** Format: double */
+            effective_cost_markup_percent: number;
+            settings: components["schemas"]["GatewaySettings"];
         };
         /** @description A DB-backed generation row (video or image, currently used for video). */
         Generation: {
@@ -1538,6 +2192,12 @@ export interface components {
             id: string;
             role: string;
         };
+        /** @description Response for key block/unblock. */
+        KeyActiveResponse: {
+            /** Format: uuid */
+            id: string;
+            is_active: boolean;
+        };
         /** @description Latency percentiles for the last N minutes. */
         LatencyPercentiles: {
             /** Format: double */
@@ -1550,6 +2210,28 @@ export interface components {
             sample_count: number;
             /** Format: int64 */
             window_minutes: number;
+        };
+        /**
+         * @description Request body for `PUT …/limits`. A full replacement of the configurable
+         *     fields: an omitted field is cleared. Accumulated spend is kept unless the
+         *     budget window changes, which starts a fresh window from now.
+         */
+        LimitsInput: {
+            allowed_models?: string[] | null;
+            budget_duration?: string | null;
+            /** Format: double */
+            max_budget_usd?: number | null;
+            /** Format: int32 */
+            max_parallel_requests?: number | null;
+            metadata?: unknown;
+            /** Format: int32 */
+            rpm_limit?: number | null;
+            /** Format: double */
+            soft_budget_usd?: number | null;
+        };
+        /** @description Response for `GET /v1/limits`. */
+        LimitsListResponse: {
+            data: components["schemas"]["EntityLimits"][];
         };
         /** @description Response for `GET /health/live`. */
         LivenessResponse: {
@@ -1649,6 +2331,11 @@ export interface components {
             ref_inputs?: null | components["schemas"]["RefInputSpec"];
             tags?: string[];
         };
+        /**
+         * @description Where a served model definition comes from.
+         * @enum {string}
+         */
+        ModelSource: "catalog" | "runtime";
         ModelUsageStat: {
             /** Format: double */
             avg_latency_ms: number;
@@ -1906,6 +2593,10 @@ export interface components {
             current_password?: string | null;
             new_password?: string | null;
         };
+        /** @description Request body for `PATCH /v1/admin/models/{id}`. */
+        PatchModelStateRequest: {
+            disabled: boolean;
+        };
         PatchUserRequest: {
             is_active?: boolean | null;
             role?: null | components["schemas"]["Role"];
@@ -1956,6 +2647,34 @@ export interface components {
             /** @description Provider name (e.g. "openai", "stability", "replicate"). */
             provider: string;
         };
+        /** @description Response for `GET /v1/admin/providers`. */
+        ProviderConfigListResponse: {
+            data: components["schemas"]["ProviderConfigView"][];
+        };
+        /** @description Admin view of one provider: what is configured, with every secret masked. */
+        ProviderConfigView: {
+            /** @description Whether a live instance is registered and serving requests. */
+            active: boolean;
+            api_base?: string | null;
+            enabled: boolean;
+            /** @description Header names only; values can carry secrets. */
+            extra_header_names: string[];
+            has_secret: boolean;
+            /** @description Last 4 characters of the effective key, e.g. `…a1b2`. Never the secret. */
+            key_hint?: string | null;
+            /** @description Media this adapter can serve: image, video. */
+            modalities: string[];
+            model_mapping: {
+                [key: string]: string;
+            };
+            name: string;
+            options?: unknown;
+            region?: string | null;
+            /** @description Where the effective config comes from: `env`, `runtime` or `none`. */
+            source: string;
+            /** Format: date-time */
+            updated_at?: string | null;
+        };
         /** @description Public view of a stored BYO provider credential — NEVER the plaintext secret. */
         ProviderCredentialInfo: {
             /** Format: date-time */
@@ -1971,6 +2690,23 @@ export interface components {
             latency_ms?: number | null;
             message?: string | null;
             provider: string;
+        };
+        /**
+         * @description Non-secret part of a runtime provider config. Unset fields fall back to the
+         *     provider's env/YAML config.
+         */
+        ProviderSettings: {
+            api_base?: string | null;
+            /** @description False takes the provider out of service until re-enabled. */
+            enabled?: boolean | null;
+            extra_headers?: {
+                [key: string]: string;
+            } | null;
+            model_mapping?: {
+                [key: string]: string;
+            } | null;
+            options?: unknown;
+            region?: string | null;
         };
         ProviderUsageStat: {
             /** Format: double */
@@ -2021,6 +2757,16 @@ export interface components {
             region?: string | null;
             /** @description Write-only. */
             secret_access_key?: string | null;
+        };
+        /**
+         * @description Request body for `PUT /v1/admin/providers/{name}`. Secret fields left out
+         *     keep their stored (or env) value, so an api_base change needs no key.
+         */
+        PutProviderConfigRequest: components["schemas"]["ProviderSettings"] & {
+            api_key?: string | null;
+            api_keys?: string | null;
+            key_id?: string | null;
+            key_secret?: string | null;
         };
         ReadinessChecks: {
             db: boolean;
@@ -2133,6 +2879,35 @@ export interface components {
             token_quota?: number | null;
             webhook_url?: string | null;
         };
+        /** @description One provider a route can dispatch to. */
+        RouteDeployment: {
+            /** Format: int32 */
+            max_retries?: number;
+            provider: string;
+            /** Format: int32 */
+            rpm_limit?: number;
+            /** Format: int64 */
+            timeout_seconds?: number;
+            /** Format: int32 */
+            weight?: number;
+        };
+        /** @description A model route: which providers serve models matching `model`, and how. */
+        RouteSpec: {
+            cache_enabled?: boolean | null;
+            /** Format: int64 */
+            cache_ttl_seconds?: number | null;
+            deployments: components["schemas"]["RouteDeployment"][];
+            /** @description Exact model id, `prefix/*` or `*`. */
+            model: string;
+            /** @description `fallback` (default), `weighted_round_robin`, `lowest_cost` or `lowest_latency`. */
+            strategy?: string | null;
+        };
+        /** @description Body and response for `GET`/`PUT /v1/admin/routes`. */
+        RoutesDocument: {
+            routes: components["schemas"]["RouteSpec"][];
+            /** @description `config` while the routes come from litegen.yaml, `runtime` once replaced through the API. */
+            source?: string | null;
+        };
         /** @enum {string} */
         RoutingStrategy: "fallback" | "weighted_round_robin" | "lowest_cost" | "lowest_latency";
         Session: {
@@ -2198,6 +2973,68 @@ export interface components {
             /** Format: int32 */
             multiple_of?: number | null;
         };
+        /**
+         * @description Dimension a spend report is grouped by.
+         * @enum {string}
+         */
+        SpendGroupBy: "day" | "model" | "provider" | "media_type" | "status" | "org" | "app" | "key" | "user" | "end_user" | "tag";
+        /** @description One request in the spend log, with its attribution. */
+        SpendLogEntry: {
+            app_id?: string | null;
+            /** Format: double */
+            cost_usd: number;
+            /** Format: date-time */
+            created_at: string;
+            end_user?: string | null;
+            id: string;
+            key_id?: string | null;
+            /** Format: int64 */
+            latency_ms: number;
+            media_type: string;
+            model: string;
+            org_id?: string | null;
+            provider: string;
+            status: string;
+            tags: string[];
+            user_id?: string | null;
+        };
+        /** @description Response for `GET /v1/spend/logs`. */
+        SpendLogsResponse: {
+            data: components["schemas"]["SpendLogEntry"][];
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            per_page: number;
+            /** Format: int64 */
+            total: number;
+        };
+        /** @description Response for `GET /v1/spend/report`. */
+        SpendReportResponse: {
+            data: components["schemas"]["SpendReportRow"][];
+            /** Format: date-time */
+            from?: string | null;
+            group_by: components["schemas"]["SpendGroupBy"];
+            /** Format: date-time */
+            to?: string | null;
+            /** Format: double */
+            total_cost_usd: number;
+            /** Format: int64 */
+            total_requests: number;
+        };
+        /** @description One group of a spend report. */
+        SpendReportRow: {
+            /** Format: double */
+            cost_usd: number;
+            /** Format: int64 */
+            failed_requests: number;
+            /**
+             * @description The group value (a day `YYYY-MM-DD`, model id, key id, …). Null when the
+             *     requests carried no value for the dimension (e.g. no end user).
+             */
+            group?: string | null;
+            /** Format: int64 */
+            requests: number;
+        };
         TransferOwnerRequest: {
             new_owner_id: string;
         };
@@ -2216,6 +3053,12 @@ export interface components {
         };
         UpdateAppRequest: {
             name: string;
+        };
+        /** @description Request body for `PATCH /v1/end-users/{id}`. Omitted fields are unchanged. */
+        UpdateEndUserRequest: {
+            alias?: string | null;
+            blocked?: boolean | null;
+            metadata?: unknown;
         };
         UpdateMemberRequest: {
             role: components["schemas"]["Role"];
@@ -2254,8 +3097,14 @@ export interface components {
         };
         VideoGenerationRequest: components["schemas"]["BaseGenerationRequest"] & {
             aspect_ratio?: string | null;
-            /** Format: double */
-            duration_seconds?: number;
+            /**
+             * Format: double
+             * @description Absent means the model's own `duration_seconds` default (resolved by
+             *     `resolve_duration_seconds`), not a fixed 5s: models whose minimum is
+             *     higher (fal/ltx-2.3, bedrock nova-reel) rejected every request that
+             *     omitted it.
+             */
+            duration_seconds?: number | null;
             /** Format: int32 */
             fps?: number | null;
             resolution?: string | null;
@@ -2577,6 +3426,504 @@ export interface operations {
             };
         };
     };
+    admin_list_models: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description All models with management state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminModelListResponse"];
+                };
+            };
+            /** @description Gateway admin required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_create_model: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelSchema"];
+            };
+        };
+        responses: {
+            /** @description Model created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminModelView"];
+                };
+            };
+            /** @description Invalid model */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Model id already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_get_model: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Model id (may contain slashes) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Model with management state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminModelView"];
+                };
+            };
+            /** @description Unknown model */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_replace_model: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Model id (may contain slashes) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelSchema"];
+            };
+        };
+        responses: {
+            /** @description Model replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminModelView"];
+                };
+            };
+            /** @description Invalid model, or id mismatch */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description No such runtime model */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Catalog models are read-only */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_delete_model: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Model id (may contain slashes) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletedResponse"];
+                };
+            };
+            /** @description No such runtime model */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Catalog models are read-only */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_patch_model: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Model id (may contain slashes) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PatchModelStateRequest"];
+            };
+        };
+        responses: {
+            /** @description Model state updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminModelView"];
+                };
+            };
+            /** @description Unknown model */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_list_providers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Provider configs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderConfigListResponse"];
+                };
+            };
+            /** @description Gateway admin required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_get_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Provider adapter name, e.g. openai */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Provider config */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderConfigView"];
+                };
+            };
+            /** @description Unknown provider */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_put_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Provider adapter name, e.g. openai */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutProviderConfigRequest"];
+            };
+        };
+        responses: {
+            /** @description Provider config applied */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderConfigView"];
+                };
+            };
+            /** @description Invalid config */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unknown provider */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_delete_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Provider adapter name, e.g. openai */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Runtime config removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderConfigView"];
+                };
+            };
+            /** @description Unknown provider or no runtime config */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_get_routes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Routes in effect */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutesDocument"];
+                };
+            };
+        };
+    };
+    admin_put_routes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RoutesDocument"];
+            };
+        };
+        responses: {
+            /** @description Routes in effect */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutesDocument"];
+                };
+            };
+            /** @description Invalid routes */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_delete_routes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Routes in effect */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutesDocument"];
+                };
+            };
+        };
+    };
+    admin_get_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Gateway settings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GatewaySettingsView"];
+                };
+            };
+        };
+    };
+    admin_put_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GatewaySettings"];
+            };
+        };
+        responses: {
+            /** @description Gateway settings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GatewaySettingsView"];
+                };
+            };
+            /** @description Invalid settings */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_app: {
         parameters: {
             query?: never;
@@ -2787,6 +4134,147 @@ export interface operations {
                 };
             };
             /** @description App not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_app_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application id */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description App limits */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description App or limits not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    put_app_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application id */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LimitsInput"];
+            };
+        };
+        responses: {
+            /** @description Updated app limits */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description Invalid limits */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description App not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_app_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application id */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Limits removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletedResponse"];
+                };
+            };
+            /** @description App or limits not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    reset_app_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application id */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Limits with spend reset */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description App or limits not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -3455,6 +4943,379 @@ export interface operations {
             };
         };
     };
+    list_end_users: {
+        parameters: {
+            query?: {
+                /** @description Platform admin only: act on another org. */
+                org_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description End users */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EndUserListResponse"];
+                };
+            };
+        };
+    };
+    create_end_user: {
+        parameters: {
+            query?: {
+                /** @description Platform admin only: act on another org. */
+                org_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateEndUserRequest"];
+            };
+        };
+        responses: {
+            /** @description End user created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EndUserView"];
+                };
+            };
+            /** @description Invalid end user */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_end_user: {
+        parameters: {
+            query?: {
+                /** @description Platform admin only: act on another org. */
+                org_id?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description End user id */
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description End user */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EndUserView"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_end_user: {
+        parameters: {
+            query?: {
+                /** @description Platform admin only: act on another org. */
+                org_id?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description End user id */
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletedResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    update_end_user: {
+        parameters: {
+            query?: {
+                /** @description Platform admin only: act on another org. */
+                org_id?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description End user id */
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateEndUserRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated end user */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EndUserView"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    block_end_user: {
+        parameters: {
+            query?: {
+                /** @description Platform admin only: act on another org. */
+                org_id?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description End user id */
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Blocked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EndUserView"];
+                };
+            };
+        };
+    };
+    get_end_user_limits: {
+        parameters: {
+            query?: {
+                /** @description Platform admin only: act on another org. */
+                org_id?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description End user id */
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description End-user limits */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description No limits set */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    put_end_user_limits: {
+        parameters: {
+            query?: {
+                /** @description Platform admin only: act on another org. */
+                org_id?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description End user id */
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LimitsInput"];
+            };
+        };
+        responses: {
+            /** @description Updated limits */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description Invalid limits */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_end_user_limits: {
+        parameters: {
+            query?: {
+                /** @description Platform admin only: act on another org. */
+                org_id?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description End user id */
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Limits removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletedResponse"];
+                };
+            };
+            /** @description No limits set */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    reset_end_user_limits: {
+        parameters: {
+            query?: {
+                /** @description Platform admin only: act on another org. */
+                org_id?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description End user id */
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Limits with spend reset */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description No limits set */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    unblock_end_user: {
+        parameters: {
+            query?: {
+                /** @description Platform admin only: act on another org. */
+                org_id?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description End user id */
+                end_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unblocked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EndUserView"];
+                };
+            };
+        };
+    };
     list_generations: {
         parameters: {
             query?: {
@@ -3633,6 +5494,8 @@ export interface operations {
             /** @description Image generated successfully */
             200: {
                 headers: {
+                    /** @description Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped. */
+                    "X-Litegen-Dropped-Params"?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -3803,6 +5666,179 @@ export interface operations {
             };
         };
     };
+    block_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description API key id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Key blocked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeyActiveResponse"];
+                };
+            };
+            /** @description Key not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_key_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description API key id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Key limits */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description Key or limits not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    put_key_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description API key id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LimitsInput"];
+            };
+        };
+        responses: {
+            /** @description Updated key limits */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description Invalid limits */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Key not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_key_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description API key id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Limits removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletedResponse"];
+                };
+            };
+            /** @description Key or limits not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    reset_key_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description API key id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Limits with spend reset */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description Key or limits not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     rotate_api_key: {
         parameters: {
             query?: never;
@@ -3876,6 +5912,38 @@ export interface operations {
             };
         };
     };
+    unblock_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description API key id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Key unblocked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeyActiveResponse"];
+                };
+            };
+            /** @description Key not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_webhook_deliveries: {
         parameters: {
             query?: {
@@ -3909,6 +5977,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_limits: {
+        parameters: {
+            query?: {
+                /** @description key | org | app | member | end_user */
+                entity_type?: string | null;
+                /** @description Platform admin only: list another org's limits. */
+                org_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Limits rows */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LimitsListResponse"];
+                };
+            };
+            /** @description Bad entity_type */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    my_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Limits applying to the caller */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LimitsListResponse"];
                 };
             };
         };
@@ -4354,6 +6485,147 @@ export interface operations {
             };
         };
     };
+    get_org_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Org limits */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description No limits set */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    put_org_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LimitsInput"];
+            };
+        };
+        responses: {
+            /** @description Updated org limits */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description Invalid limits */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Org not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_org_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Limits removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletedResponse"];
+                };
+            };
+            /** @description No limits set */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    reset_org_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Limits with spend reset */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description No limits set */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_members: {
         parameters: {
             query?: never;
@@ -4523,6 +6795,155 @@ export interface operations {
                 };
             };
             /** @description Member not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_member_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization id */
+                id: string;
+                /** @description Member user id */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Member limits */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description No limits set */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    put_member_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization id */
+                id: string;
+                /** @description Member user id */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LimitsInput"];
+            };
+        };
+        responses: {
+            /** @description Updated member limits */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description Invalid limits */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Member not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_member_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization id */
+                id: string;
+                /** @description Member user id */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Limits removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletedResponse"];
+                };
+            };
+            /** @description No limits set */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    reset_member_limits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization id */
+                id: string;
+                /** @description Member user id */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Limits with spend reset */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityLimits"];
+                };
+            };
+            /** @description No limits set */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -4710,6 +7131,122 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProviderCatalogEntry"][];
+                };
+            };
+        };
+    };
+    spend_logs: {
+        parameters: {
+            query?: {
+                /** @description day | model | provider | media_type | status | org | app | key | user | end_user | tag (report only; default day) */
+                group_by?: string | null;
+                /** @description Inclusive lower bound: RFC 3339 timestamp or `YYYY-MM-DD`. */
+                from?: string | null;
+                /** @description Inclusive upper bound: RFC 3339 timestamp or `YYYY-MM-DD` (the whole day). */
+                to?: string | null;
+                /** @description Platform admin only: another org. Omit for the caller's org (or every org, for a hosted platform admin). */
+                org_id?: string | null;
+                app_id?: string | null;
+                key_id?: string | null;
+                user_id?: string | null;
+                end_user?: string | null;
+                model?: string | null;
+                provider?: string | null;
+                tag?: string | null;
+                /** @description Spend logs only (default 1). */
+                page?: number | null;
+                /** @description Spend logs only (default 50, max 500). */
+                per_page?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Spend log page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpendLogsResponse"];
+                };
+            };
+            /** @description Bad date */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    spend_report: {
+        parameters: {
+            query?: {
+                /** @description day | model | provider | media_type | status | org | app | key | user | end_user | tag (report only; default day) */
+                group_by?: string | null;
+                /** @description Inclusive lower bound: RFC 3339 timestamp or `YYYY-MM-DD`. */
+                from?: string | null;
+                /** @description Inclusive upper bound: RFC 3339 timestamp or `YYYY-MM-DD` (the whole day). */
+                to?: string | null;
+                /** @description Platform admin only: another org. Omit for the caller's org (or every org, for a hosted platform admin). */
+                org_id?: string | null;
+                app_id?: string | null;
+                key_id?: string | null;
+                user_id?: string | null;
+                end_user?: string | null;
+                model?: string | null;
+                provider?: string | null;
+                tag?: string | null;
+                /** @description Spend logs only (default 1). */
+                page?: number | null;
+                /** @description Spend logs only (default 50, max 500). */
+                per_page?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Grouped spend */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpendReportResponse"];
+                };
+            };
+            /** @description Bad group_by or date */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -4996,6 +7533,8 @@ export interface operations {
             /** @description Video generation started */
             200: {
                 headers: {
+                    /** @description Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped. */
+                    "X-Litegen-Dropped-Params"?: string;
                     [name: string]: unknown;
                 };
                 content: {
