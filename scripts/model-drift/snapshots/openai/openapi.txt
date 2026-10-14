@@ -124,7 +124,7 @@
             "type": "null"
           }
         ],
-        "default": "gpt-image-1.5"
+        "default": "gpt-image-2.5-sunburst"
       },
       "moderation": {
         "anyOf": [
@@ -263,14 +263,20 @@
   "POST /images/edits (multipart/form-data)": {
     "properties": {
       "background": {
-        "default": "auto",
-        "enum": [
-          "transparent",
-          "opaque",
-          "auto"
+        "anyOf": [
+          {
+            "enum": [
+              "transparent",
+              "opaque",
+              "auto"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
         ],
-        "nullable": true,
-        "type": "string"
+        "default": "auto"
       },
       "image": {
         "anyOf": [
@@ -320,38 +326,46 @@
               "gpt-image-2.5-sunburst-2026-09-08",
               "gpt-image-2.5-flare",
               "gpt-image-2.5-flare-2026-09-08",
-              "dall-e-2",
               "gpt-image-1",
               "gpt-image-1-mini",
-              "chatgpt-image-latest"
+              "chatgpt-image-latest",
+              "dall-e-2"
             ],
             "type": "string"
           }
-        ],
-        "default": "gpt-image-1.5",
-        "nullable": true
+        ]
       },
       "n": {
         "default": 1,
         "maximum": 10,
         "minimum": 1,
-        "nullable": true,
-        "type": "integer"
+        "type": [
+          "integer",
+          "null"
+        ]
       },
       "output_compression": {
         "default": 100,
-        "nullable": true,
-        "type": "integer"
+        "type": [
+          "integer",
+          "null"
+        ]
       },
       "output_format": {
-        "default": "png",
-        "enum": [
-          "png",
-          "jpeg",
-          "webp"
+        "anyOf": [
+          {
+            "enum": [
+              "png",
+              "jpeg",
+              "webp"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
         ],
-        "nullable": true,
-        "type": "string"
+        "default": "png"
       },
       "partial_images": {
         "anyOf": [
@@ -370,26 +384,36 @@
         "type": "string"
       },
       "quality": {
-        "default": "auto",
-        "enum": [
-          "standard",
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max",
-          "auto"
+        "anyOf": [
+          {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "auto",
+              "standard"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
         ],
-        "nullable": true,
-        "type": "string"
+        "default": "auto"
       },
       "response_format": {
+        "deprecated": true,
         "enum": [
           "url",
-          "b64_json"
+          "b64_json",
+          null
         ],
-        "nullable": true,
-        "type": "string"
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "size": {
         "anyOf": [
@@ -398,29 +422,34 @@
           },
           {
             "enum": [
-              "256x256",
-              "512x512",
               "1024x1024",
               "1536x1024",
               "1024x1536",
-              "auto"
+              "auto",
+              "256x256",
+              "512x512"
             ],
             "type": "string"
+          },
+          {
+            "type": "null"
           }
         ],
-        "default": "1024x1024",
-        "nullable": true
+        "default": "auto"
       },
       "stream": {
         "default": false,
-        "nullable": true,
-        "type": "boolean"
+        "type": [
+          "boolean",
+          "null"
+        ]
       },
       "user": {
         "type": "string"
       }
     },
     "required": [
+      "model",
       "prompt",
       "image"
     ],
@@ -429,14 +458,20 @@
   "POST /images/generations (application/json)": {
     "properties": {
       "background": {
-        "default": "auto",
-        "enum": [
-          "transparent",
-          "opaque",
-          "auto"
+        "anyOf": [
+          {
+            "enum": [
+              "transparent",
+              "opaque",
+              "auto"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
         ],
-        "nullable": true,
-        "type": "string"
+        "default": "auto"
       },
       "model": {
         "anyOf": [
@@ -452,47 +487,62 @@
               "gpt-image-2.5-sunburst-2026-09-08",
               "gpt-image-2.5-flare",
               "gpt-image-2.5-flare-2026-09-08",
-              "dall-e-2",
-              "dall-e-3",
               "gpt-image-1",
-              "gpt-image-1-mini"
+              "gpt-image-1-mini",
+              "chatgpt-image-latest",
+              "dall-e-2",
+              "dall-e-3"
             ],
             "type": "string"
           }
-        ],
-        "default": "dall-e-2",
-        "nullable": true
+        ]
       },
       "moderation": {
-        "default": "auto",
-        "enum": [
-          "low",
-          "auto"
+        "anyOf": [
+          {
+            "enum": [
+              "low",
+              "auto"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
         ],
-        "nullable": true,
-        "type": "string"
+        "default": "auto"
       },
       "n": {
         "default": 1,
         "maximum": 10,
         "minimum": 1,
-        "nullable": true,
-        "type": "integer"
+        "type": [
+          "integer",
+          "null"
+        ]
       },
       "output_compression": {
         "default": 100,
-        "nullable": true,
-        "type": "integer"
+        "type": [
+          "integer",
+          "null"
+        ]
       },
       "output_format": {
-        "default": "png",
-        "enum": [
-          "png",
-          "jpeg",
-          "webp"
+        "anyOf": [
+          {
+            "enum": [
+              "png",
+              "jpeg",
+              "webp"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
         ],
-        "nullable": true,
-        "type": "string"
+        "default": "png"
       },
       "partial_images": {
         "anyOf": [
@@ -511,28 +561,37 @@
         "type": "string"
       },
       "quality": {
-        "default": "auto",
-        "enum": [
-          "standard",
-          "hd",
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max",
-          "auto"
+        "anyOf": [
+          {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "auto",
+              "standard",
+              "hd"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
         ],
-        "nullable": true,
-        "type": "string"
+        "default": "auto"
       },
       "response_format": {
-        "default": "url",
+        "deprecated": true,
         "enum": [
           "url",
-          "b64_json"
+          "b64_json",
+          null
         ],
-        "nullable": true,
-        "type": "string"
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "size": {
         "anyOf": [
@@ -551,160 +610,38 @@
               "1024x1792"
             ],
             "type": "string"
+          },
+          {
+            "type": "null"
           }
         ],
-        "default": "auto",
-        "nullable": true
+        "default": "auto"
       },
       "stream": {
         "default": false,
-        "nullable": true,
-        "type": "boolean"
+        "type": [
+          "boolean",
+          "null"
+        ]
       },
       "style": {
-        "default": "vivid",
+        "deprecated": true,
         "enum": [
           "vivid",
-          "natural"
+          "natural",
+          null
         ],
-        "nullable": true,
-        "type": "string"
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "user": {
         "type": "string"
       }
     },
     "required": [
-      "prompt"
-    ],
-    "type": "object"
-  },
-  "POST /videos (application/json)": {
-    "properties": {
-      "input_reference": {
-        "properties": {
-          "file_id": {
-            "type": "string"
-          },
-          "image_url": {
-            "format": "uri",
-            "maxLength": 20971520,
-            "type": "string"
-          }
-        },
-        "required": [],
-        "type": "object"
-      },
-      "model": {
-        "anyOf": [
-          {
-            "type": "string"
-          },
-          {
-            "enum": [
-              "sora-2",
-              "sora-2-pro",
-              "sora-2-2025-10-06",
-              "sora-2-pro-2025-10-06",
-              "sora-2-2025-12-08"
-            ],
-            "type": "string"
-          }
-        ]
-      },
-      "prompt": {
-        "maxLength": 32000,
-        "minLength": 1,
-        "type": "string"
-      },
-      "seconds": {
-        "enum": [
-          "4",
-          "8",
-          "12"
-        ],
-        "type": "string"
-      },
-      "size": {
-        "enum": [
-          "720x1280",
-          "1280x720",
-          "1024x1792",
-          "1792x1024"
-        ],
-        "type": "string"
-      }
-    },
-    "required": [
-      "prompt"
-    ],
-    "type": "object"
-  },
-  "POST /videos (multipart/form-data)": {
-    "properties": {
-      "input_reference": {
-        "oneOf": [
-          {
-            "format": "binary",
-            "type": "string"
-          },
-          {
-            "properties": {
-              "file_id": {
-                "type": "string"
-              },
-              "image_url": {
-                "format": "uri",
-                "maxLength": 20971520,
-                "type": "string"
-              }
-            },
-            "required": [],
-            "type": "object"
-          }
-        ]
-      },
-      "model": {
-        "anyOf": [
-          {
-            "type": "string"
-          },
-          {
-            "enum": [
-              "sora-2",
-              "sora-2-pro",
-              "sora-2-2025-10-06",
-              "sora-2-pro-2025-10-06",
-              "sora-2-2025-12-08"
-            ],
-            "type": "string"
-          }
-        ]
-      },
-      "prompt": {
-        "maxLength": 32000,
-        "minLength": 1,
-        "type": "string"
-      },
-      "seconds": {
-        "enum": [
-          "4",
-          "8",
-          "12"
-        ],
-        "type": "string"
-      },
-      "size": {
-        "enum": [
-          "720x1280",
-          "1280x720",
-          "1024x1792",
-          "1792x1024"
-        ],
-        "type": "string"
-      }
-    },
-    "required": [
+      "model",
       "prompt"
     ],
     "type": "object"

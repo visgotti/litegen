@@ -1,0 +1,14 @@
+{
+  "POST /init-image (application/json)": {
+    "properties": {
+      "extension": {
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "required": [
+      "extension"
+    ],
+    "type": "object"
+  }
+}

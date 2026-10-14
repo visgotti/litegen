@@ -131,8 +131,13 @@
         "type": "string"
       },
       "negative_prompt": {
-        "maxLength": 10000,
-        "type": "string"
+        "allOf": [
+          {
+            "maxLength": 10000,
+            "type": "string"
+          },
+          {}
+        ]
       },
       "output_format": {
         "default": "png",
@@ -144,9 +149,14 @@
         "type": "string"
       },
       "prompt": {
-        "maxLength": 10000,
-        "minLength": 1,
-        "type": "string"
+        "allOf": [
+          {
+            "maxLength": 10000,
+            "minLength": 1,
+            "type": "string"
+          },
+          {}
+        ]
       },
       "seed": {
         "default": 0,

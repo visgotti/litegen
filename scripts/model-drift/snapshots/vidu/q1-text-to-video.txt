@@ -1,0 +1,16 @@
+POST /ent/v2/text2video · viduq1
+Body parameters
+model | string | Required | viduq1
+prompt | string | Required | 5000
+duration | integer | Optional | 5 5
+seed | integer | Optional | 0
+aspect_ratio | string | Optional | 16:9 16:9 9:16 3:4 4:3 1:1
+resolution | string | Optional | 5s 1080p 1080p
+audio | boolean | Optional | 
+payload | string | Optional | 1,048,576
+off_peak | boolean | Optional | 48
+watermark | boolean | Optional | watermarked_url
+wm_position | integer | Optional | 1 2 3 4 1
+wm_url | string | Optional | 
+meta_data | string | Optional | 
+callback_url | string | Optional | callback_url status

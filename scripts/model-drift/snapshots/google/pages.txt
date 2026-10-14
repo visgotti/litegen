@@ -5,6 +5,7 @@ models/gemini-2.5-flash-image
 models/gemini-3-pro-image
 models/gemini-3.1-flash-image
 models/gemini-3.1-flash-lite-image
+models/gemini-nano-banana-2.1
 models/gemini-omni-flash
 models/imagen
 models/veo-2.0-generate-001

@@ -1,0 +1,31 @@
+id `string`
+model `string`
+status `string`
+  values: `queued`, `running`, `cancelled`, `succeeded`, `failed`
+content `object`
+last_frame_url `string`
+video_url `string`
+created_at `integer`
+draft `boolean`
+  values: `true`, `false`
+draft_task_id `string`
+duration `integer`
+error `object / null`
+code `string`
+message `string`
+execution_expires_after `integer`
+frames `integer`
+framespersecond `integer`
+generate_audio `boolean`
+  values: `true`, `false`
+output_format `string`
+priority `integer`
+ratio `string`
+resolution `string`
+safety_identifier `string`
+seed `integer`
+service_tier `string`
+updated_at `integer`
+usage `object`
+completion_tokens `integer`
+total_tokens `integer`

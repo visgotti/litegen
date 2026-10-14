@@ -1,9 +1,12 @@
+# v2 models
 alibaba/wan-3.0
 anime-xl
 aurora-upscaler-creative
 aurora-upscaler-precise
+bfl/flux-3-image
 bfl/flux-3-video
 bytedance/seedance-2.5
+bytedance/seedream-5.0-flash
 concept-art
 dialogue-v3
 flux-dev
@@ -15,6 +18,7 @@ gemini-2.5-flash-image
 gemini-image-2
 gemini-omni-flash
 google/gemini-omni-1.1-flash-preview
+google/nano-banana-2.1
 gpt-image-1.5
 gpt-image-2
 graphic-design
@@ -26,10 +30,10 @@ happy-horse
 happy-horse-1.1
 ideogram-v3.0
 ideogram-v4.0
+ideogram/ideogram-4.5
 ideogram/p-image-ideogram
 illustrative-albedo
 kino-xl
-kling-2.1
 kling-2.5
 kling-2.5-turbo-standard
 kling-2.6
@@ -45,6 +49,7 @@ ltxv-2.3-fast
 ltxv-2.3-pro
 lucid-origin
 lucid-realism
+meshy/meshy-7
 motion_2.0
 motion_2.0-fast
 music-v1
@@ -75,3 +80,84 @@ veo-3.1-generate-001
 veo-3.1-lite
 wan-2.6
 wan-2.7
+
+# v2 parameters of our models' twins
+kling-2.5 duration {"type":"integer","enum":[5,10],"default":5}
+kling-2.5 guidances {"type":"object"}
+kling-2.5 guidances.end_frame {"type":"array","maxItems":1}
+kling-2.5 guidances.start_frame {"type":"array","maxItems":1}
+kling-2.5 height {"type":"integer","default":1080,"minimum":0,"maximum":9007199254740991}
+kling-2.5 mode {"type":"string","enum":["RESOLUTION_720","RESOLUTION_1080"],"default":"RESOLUTION_1080"}
+kling-2.5 prompt {"type":"string","minLength":1,"maxLength":2500}
+kling-2.5 prompt_enhance {"type":"string","enum":["AUTO","ON","OFF"],"default":"AUTO"}
+kling-2.5 quantity {"type":"number","default":1,"minimum":1,"maximum":1}
+kling-2.5 width {"type":"integer","default":1920,"minimum":0,"maximum":9007199254740991}
+motion_2.0 controls {"type":"array","maxItems":1}
+motion_2.0 elements {"type":"array","default":[]}
+motion_2.0 frame_interpolation {"type":"boolean","default":true}
+motion_2.0 guidances {"type":"object"}
+motion_2.0 guidances.start_frame {"type":"array","maxItems":1}
+motion_2.0 height {}
+motion_2.0 mode {"type":"string","enum":["RESOLUTION_480","RESOLUTION_720"],"default":"RESOLUTION_480"}
+motion_2.0 negative_prompt {"type":"string","maxLength":1000}
+motion_2.0 prompt {"type":"string","minLength":1,"maxLength":9999}
+motion_2.0 prompt_enhance {"type":"string","enum":["AUTO","ON","OFF"],"default":"AUTO"}
+motion_2.0 quantity {"type":"number","default":1,"minimum":1,"maximum":1}
+motion_2.0 seed {"type":"number","minimum":0,"maximum":2147483637}
+motion_2.0 style_ids {"type":"array","default":[]}
+motion_2.0 width {}
+veo-3.1-fast-generate-001 audio {"type":"boolean","default":true}
+veo-3.1-fast-generate-001 duration {"type":"integer","enum":[4,6,8],"default":8}
+veo-3.1-fast-generate-001 end_frame {"type":"object"}
+veo-3.1-fast-generate-001 end_frame.data {"type":"string"}
+veo-3.1-fast-generate-001 end_frame.height {"type":"integer"}
+veo-3.1-fast-generate-001 end_frame.id {"type":"string"}
+veo-3.1-fast-generate-001 end_frame.type {"type":"string","enum":["UPLOADED","GENERATED","VARIATION","URL","BASE64"]}
+veo-3.1-fast-generate-001 end_frame.url {"type":"string"}
+veo-3.1-fast-generate-001 end_frame.width {"type":"integer"}
+veo-3.1-fast-generate-001 guidances {"type":"object"}
+veo-3.1-fast-generate-001 guidances.end_frame {"type":"array","maxItems":1}
+veo-3.1-fast-generate-001 guidances.start_frame {"type":"array","maxItems":1}
+veo-3.1-fast-generate-001 height {"type":"integer","enum":[720,1080,1280,1920,2160,3840],"default":720}
+veo-3.1-fast-generate-001 mode {"type":"string","enum":["RESOLUTION_720","RESOLUTION_1080","RESOLUTION_2160"],"default":"RESOLUTION_720"}
+veo-3.1-fast-generate-001 motion_has_audio {"type":"boolean","default":true}
+veo-3.1-fast-generate-001 negative_prompt {"type":"string","maxLength":1000}
+veo-3.1-fast-generate-001 prompt {"type":"string","minLength":1,"maxLength":9999}
+veo-3.1-fast-generate-001 quantity {"type":"integer","default":1,"minimum":1,"maximum":1}
+veo-3.1-fast-generate-001 seed {"type":"number","minimum":0,"maximum":4294967295}
+veo-3.1-fast-generate-001 start_frame {"type":"object"}
+veo-3.1-fast-generate-001 start_frame.data {"type":"string"}
+veo-3.1-fast-generate-001 start_frame.height {"type":"integer"}
+veo-3.1-fast-generate-001 start_frame.id {"type":"string"}
+veo-3.1-fast-generate-001 start_frame.type {"type":"string","enum":["UPLOADED","GENERATED","VARIATION","URL","BASE64"]}
+veo-3.1-fast-generate-001 start_frame.url {"type":"string"}
+veo-3.1-fast-generate-001 start_frame.width {"type":"integer"}
+veo-3.1-fast-generate-001 width {"type":"integer","enum":[720,1080,1280,1920,2160,3840],"default":1280}
+veo-3.1-generate-001 audio {"type":"boolean","default":true}
+veo-3.1-generate-001 duration {"type":"integer","enum":[4,6,8],"default":8}
+veo-3.1-generate-001 end_frame {"type":"object"}
+veo-3.1-generate-001 end_frame.data {"type":"string"}
+veo-3.1-generate-001 end_frame.height {"type":"integer"}
+veo-3.1-generate-001 end_frame.id {"type":"string"}
+veo-3.1-generate-001 end_frame.type {"type":"string","enum":["UPLOADED","GENERATED","VARIATION","URL","BASE64"]}
+veo-3.1-generate-001 end_frame.url {"type":"string"}
+veo-3.1-generate-001 end_frame.width {"type":"integer"}
+veo-3.1-generate-001 guidances {"type":"object"}
+veo-3.1-generate-001 guidances.end_frame {"type":"array","maxItems":1}
+veo-3.1-generate-001 guidances.image_reference {"type":"array","maxItems":3}
+veo-3.1-generate-001 guidances.start_frame {"type":"array","maxItems":1}
+veo-3.1-generate-001 height {"type":"integer","enum":[720,1080,1280,1920,2160,3840],"default":720}
+veo-3.1-generate-001 mode {"type":"string","enum":["RESOLUTION_720","RESOLUTION_1080","RESOLUTION_2160"],"default":"RESOLUTION_720"}
+veo-3.1-generate-001 motion_has_audio {"type":"boolean","default":true}
+veo-3.1-generate-001 negative_prompt {"type":"string","maxLength":1000}
+veo-3.1-generate-001 prompt {"type":"string","minLength":1,"maxLength":9999}
+veo-3.1-generate-001 quantity {"type":"integer","default":1,"minimum":1,"maximum":1}
+veo-3.1-generate-001 seed {"type":"number","minimum":0,"maximum":4294967295}
+veo-3.1-generate-001 start_frame {"type":"object"}
+veo-3.1-generate-001 start_frame.data {"type":"string"}
+veo-3.1-generate-001 start_frame.height {"type":"integer"}
+veo-3.1-generate-001 start_frame.id {"type":"string"}
+veo-3.1-generate-001 start_frame.type {"type":"string","enum":["UPLOADED","GENERATED","VARIATION","URL","BASE64"]}
+veo-3.1-generate-001 start_frame.url {"type":"string"}
+veo-3.1-generate-001 start_frame.width {"type":"integer"}
+veo-3.1-generate-001 width {"type":"integer","enum":[720,1080,1280,1920,2160,3840],"default":1280}

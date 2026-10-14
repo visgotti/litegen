@@ -1,0 +1,27 @@
+POST /ent/v2/start-end2video · viduq3-turbo
+Body parameters
+model | string | Required | viduq3-turbo
+images | array | Required | 0.8 1.25 1:4 4:1 50 10
+prompt | string | Optional | 20000
+duration | integer | Optional | 5 1-16
+seed | integer | Optional | 
+resolution | string | Optional | 1-16s 720p 540p 720p 1080p
+audio | boolean | Optional | 
+payload | string | Optional | 1048576
+off_peak | boolean | Optional | false true false 48
+callback_url | string | Optional | callback_url processing success failed
+
+POST /ent/v2/start-end2video · viduq3-pro-fast (not carried)
+
+POST /ent/v2/start-end2video · viduq3-pro
+Body parameters
+model | string | Required | viduq3-pro
+images | array | Required | 0.8 1.25 1:4 4:1 50 10
+prompt | string | Optional | 20000
+duration | integer | Optional | 5 1-16
+seed | integer | Optional | 
+resolution | string | Optional | 
+audio | boolean | Optional | 
+payload | string | Optional | 1048576
+off_peak | boolean | Optional | false true false 48
+callback_url | string | Optional | callback_url processing success failed

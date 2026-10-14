@@ -44,138 +44,6 @@ export interface ModelEntry {
 
 export const MODELS: ModelEntry[] = [
   {
-    "id": "bedrock/amazon.nova-canvas-v1:0",
-    "provider": "bedrock",
-    "displayName": "Amazon Nova Canvas",
-    "description": "Amazon Nova Canvas text-to-image (+ conditioning) via Bedrock InvokeModel (sync).",
-    "mediaType": "image",
-    "output": "image",
-    "capabilities": {
-      "textToImage": true,
-      "imageToImage": true,
-      "inpainting": false,
-      "textToVideo": false,
-      "imageToVideo": false
-    },
-    "sizes": [],
-    "aspectRatios": [],
-    "maxRefImages": 1,
-    "refRoles": [
-      {
-        "name": "init",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 1024
-    },
-    "params": [
-      {
-        "name": "negative_prompt",
-        "kind": "string"
-      },
-      {
-        "name": "seed",
-        "kind": "seed",
-        "min": 0,
-        "max": 2147483646
-      },
-      {
-        "name": "guidance_scale",
-        "kind": "float",
-        "min": 1.1,
-        "max": 10
-      },
-      {
-        "name": "quality",
-        "kind": "string",
-        "enum": [
-          "standard",
-          "premium"
-        ],
-        "default": "standard"
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.04
-    },
-    "tags": [
-      "text-to-image",
-      "image-to-image"
-    ],
-    "referenceUrl": "https://docs.aws.amazon.com/nova/latest/userguide/getting-started-api.html"
-  },
-  {
-    "id": "bedrock/amazon.nova-reel-v1:1",
-    "provider": "bedrock",
-    "displayName": "Amazon Nova Reel",
-    "description": "Amazon Nova Reel text-to-video / image-to-video (async; output to S3).",
-    "mediaType": "video",
-    "output": "video",
-    "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": true,
-      "imageToVideo": true
-    },
-    "sizes": [],
-    "aspectRatios": [],
-    "maxRefImages": 1,
-    "refRoles": [
-      {
-        "name": "first_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 512
-    },
-    "params": [
-      {
-        "name": "seed",
-        "kind": "seed",
-        "min": 0,
-        "max": 2147483646
-      },
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "default": 6,
-        "min": 6,
-        "max": 6
-      },
-      {
-        "name": "fps",
-        "kind": "int",
-        "default": 24,
-        "min": 24,
-        "max": 24
-      },
-      {
-        "name": "resolution",
-        "kind": "string",
-        "enum": [
-          "1280x720"
-        ]
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.48
-    },
-    "tags": [
-      "text-to-video",
-      "image-to-video"
-    ],
-    "referenceUrl": "https://docs.aws.amazon.com/nova/latest/userguide/getting-started-api.html"
-  },
-  {
     "id": "bfl/flux-2-klein-9b",
     "provider": "bfl",
     "displayName": "FLUX.2 [klein] 9B",
@@ -617,7 +485,8 @@ export const MODELS: ModelEntry[] = [
           "480p",
           "720p",
           "1080p"
-        ]
+        ],
+        "default": "1080p"
       }
     ],
     "pricing": {
@@ -1398,7 +1267,7 @@ export const MODELS: ModelEntry[] = [
     "id": "google/gemini-2.5-flash-image",
     "provider": "google",
     "displayName": "Gemini 2.5 Flash (image)",
-    "description": "Gemini 2.5 Flash image generation. Shuts down 2026-10-02; migrate to google/gemini-3.1-flash-image.",
+    "description": "Gemini 2.5 Flash image generation. Deprecated; shuts down 2027-03-15 — migrate to google/gemini-3.1-flash-lite-image.",
     "mediaType": "image",
     "output": "image",
     "capabilities": {
@@ -1415,6 +1284,8 @@ export const MODELS: ModelEntry[] = [
       "3:2",
       "3:4",
       "4:3",
+      "4:5",
+      "5:4",
       "9:16",
       "16:9",
       "21:9"
@@ -1497,7 +1368,7 @@ export const MODELS: ModelEntry[] = [
     "id": "google/gemini-3.1-flash-image",
     "provider": "google",
     "displayName": "Gemini 3.1 Flash Image (Nano Banana 2)",
-    "description": "Google's current general-purpose image model (GA 2026-05-28).",
+    "description": "Nano Banana 2 (GA 2026-05-28). Deprecated 2026-10-06, no shutdown date announced; Google's successor is gemini-nano-banana-2.1.",
     "mediaType": "image",
     "output": "image",
     "capabilities": {
@@ -1606,7 +1477,7 @@ export const MODELS: ModelEntry[] = [
     "id": "google/veo-3.1-fast-generate-preview",
     "provider": "google",
     "displayName": "Veo 3.1 Fast (preview)",
-    "description": "Faster, cheaper Veo 3.1 preview variant (with audio).",
+    "description": "Faster, cheaper Veo 3.1 preview variant (with audio). Google shuts the Veo 3.1 previews down on 2026-10-22; its replacement, gemini-omni-1.1-flash, is not carried.",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -1673,7 +1544,7 @@ export const MODELS: ModelEntry[] = [
     "id": "google/veo-3.1-generate-preview",
     "provider": "google",
     "displayName": "Veo 3.1 (preview)",
-    "description": "Veo 3.1 preview — adds reference images and richer control. Paid-tier, preview model id (subject to change).",
+    "description": "Veo 3.1 preview — adds reference images and richer control. Paid-tier, preview model id. Google shuts the Veo 3.1 previews down on 2026-10-22; its replacement, gemini-omni-1.1-flash, is not carried.",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -1739,7 +1610,7 @@ export const MODELS: ModelEntry[] = [
     "id": "google/veo-3.1-lite-generate-preview",
     "provider": "google",
     "displayName": "Veo 3.1 Lite (preview)",
-    "description": "Cheapest Veo 3.1 preview tier (with audio).",
+    "description": "Cheapest Veo 3.1 preview tier (with audio). Google shuts the Veo 3.1 previews down on 2026-10-22; its replacement, gemini-omni-1.1-flash, is not carried.",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -2507,102 +2378,6 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://developer.ideogram.ai/"
   },
   {
-    "id": "kling/kling-v1-5",
-    "provider": "kling",
-    "displayName": "Kling Image v1.5",
-    "description": "Kling (Kolors) v1.5 text-to-image.",
-    "mediaType": "image",
-    "output": "image",
-    "capabilities": {
-      "textToImage": true,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": false,
-      "imageToVideo": false
-    },
-    "sizes": [],
-    "aspectRatios": [
-      "16:9",
-      "9:16",
-      "1:1",
-      "4:3",
-      "3:4",
-      "3:2",
-      "2:3"
-    ],
-    "maxRefImages": 0,
-    "refRoles": [],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 2500
-    },
-    "params": [
-      {
-        "name": "negative_prompt",
-        "kind": "string"
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.035
-    },
-    "tags": [
-      "text-to-image"
-    ],
-    "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
-  },
-  {
-    "id": "kling/kling-v2",
-    "provider": "kling",
-    "displayName": "Kling Image v2",
-    "description": "Kling (Kolors) text-to-image + subject reference.",
-    "mediaType": "image",
-    "output": "image",
-    "capabilities": {
-      "textToImage": true,
-      "imageToImage": true,
-      "inpainting": false,
-      "textToVideo": false,
-      "imageToVideo": false
-    },
-    "sizes": [],
-    "aspectRatios": [
-      "16:9",
-      "9:16",
-      "1:1",
-      "4:3",
-      "3:4",
-      "3:2",
-      "2:3"
-    ],
-    "maxRefImages": 1,
-    "refRoles": [
-      {
-        "name": "subject",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 2500
-    },
-    "params": [
-      {
-        "name": "negative_prompt",
-        "kind": "string"
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.04
-    },
-    "tags": [
-      "text-to-image",
-      "image-to-image"
-    ],
-    "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
-  },
-  {
     "id": "kling/kling-v2-1",
     "provider": "kling",
     "displayName": "Kling Image v2.1",
@@ -2705,127 +2480,6 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image",
       "image-to-image"
-    ],
-    "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
-  },
-  {
-    "id": "kling/video-kling-v1-6",
-    "provider": "kling",
-    "displayName": "Kling Video v1.6",
-    "description": "Kling v1.6 text/image-to-video.",
-    "mediaType": "video",
-    "output": "video",
-    "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": true,
-      "imageToVideo": true
-    },
-    "sizes": [],
-    "aspectRatios": [
-      "16:9",
-      "9:16",
-      "1:1"
-    ],
-    "maxRefImages": 2,
-    "refRoles": [
-      {
-        "name": "first_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      },
-      {
-        "name": "last_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 2500
-    },
-    "params": [
-      {
-        "name": "negative_prompt",
-        "kind": "string"
-      },
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "default": 5,
-        "min": 5,
-        "max": 10
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.5
-    },
-    "tags": [
-      "text-to-video",
-      "image-to-video"
-    ],
-    "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
-  },
-  {
-    "id": "kling/video-kling-v2-1",
-    "provider": "kling",
-    "displayName": "Kling Video v2.1",
-    "description": "Kling v2.1 image-to-video (first frame + image_tail last frame).",
-    "mediaType": "video",
-    "output": "video",
-    "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": false,
-      "imageToVideo": true
-    },
-    "sizes": [],
-    "aspectRatios": [
-      "16:9",
-      "9:16",
-      "1:1"
-    ],
-    "maxRefImages": 2,
-    "refRoles": [
-      {
-        "name": "first_frame",
-        "required": true,
-        "min": 1,
-        "max": 1
-      },
-      {
-        "name": "last_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 2500
-    },
-    "params": [
-      {
-        "name": "negative_prompt",
-        "kind": "string"
-      },
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "default": 5,
-        "min": 5,
-        "max": 10
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 1
-    },
-    "tags": [
-      "image-to-video"
     ],
     "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
   },
@@ -4129,7 +3783,7 @@ export const MODELS: ModelEntry[] = [
     "id": "openai/gpt-image-1",
     "provider": "openai",
     "displayName": "GPT Image 1",
-    "description": "DEPRECATED: OpenAI shuts gpt-image-1 down on 2026-10-23 (replacement gpt-image-2). OpenAI GPT Image 1. Text-to-image plus prompt-driven editing and inpainting via the images/edits endpoint.",
+    "description": "DEPRECATED: OpenAI shuts gpt-image-1 down on 2026-10-23 (replacement gpt-image-2.5-sunburst or gpt-image-2.5-flare). OpenAI GPT Image 1. Text-to-image plus prompt-driven editing and inpainting via the images/edits endpoint.",
     "mediaType": "image",
     "output": "image",
     "capabilities": {
@@ -4363,124 +4017,6 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image",
       "inpainting",
-      "premium"
-    ],
-    "referenceUrl": "https://platform.openai.com/docs/guides/image-generation"
-  },
-  {
-    "id": "openai/sora",
-    "provider": "openai",
-    "displayName": "Sora 2",
-    "description": "DEPRECATED: OpenAI is shutting down the Videos API and every Sora 2 model on 2026-09-24 with no replacement offered. Sora 2 text-to-video and image-to-video (maps to the `sora-2` model).",
-    "mediaType": "video",
-    "output": "video",
-    "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": true,
-      "imageToVideo": true
-    },
-    "sizes": [],
-    "aspectRatios": [
-      "16:9",
-      "9:16"
-    ],
-    "maxRefImages": 1,
-    "refRoles": [
-      {
-        "name": "init",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 4000
-    },
-    "params": [
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "default": 4,
-        "min": 4,
-        "max": 12
-      },
-      {
-        "name": "resolution",
-        "kind": "string",
-        "enum": [
-          "720p"
-        ],
-        "default": "720p"
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.5
-    },
-    "tags": [
-      "text-to-video",
-      "image-to-video"
-    ],
-    "referenceUrl": "https://platform.openai.com/docs/guides/image-generation"
-  },
-  {
-    "id": "openai/sora-2-pro",
-    "provider": "openai",
-    "displayName": "Sora 2 Pro",
-    "description": "DEPRECATED: shutting down 2026-09-24 with the rest of the Videos API. Higher-fidelity Sora 2 Pro (maps to `sora-2-pro`); adds 1080p sizes.",
-    "mediaType": "video",
-    "output": "video",
-    "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": true,
-      "imageToVideo": true
-    },
-    "sizes": [],
-    "aspectRatios": [
-      "16:9",
-      "9:16"
-    ],
-    "maxRefImages": 1,
-    "refRoles": [
-      {
-        "name": "init",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 4000
-    },
-    "params": [
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "default": 4,
-        "min": 4,
-        "max": 12
-      },
-      {
-        "name": "resolution",
-        "kind": "string",
-        "enum": [
-          "720p",
-          "1080p"
-        ],
-        "default": "1080p"
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 1
-    },
-    "tags": [
-      "text-to-video",
-      "image-to-video",
       "premium"
     ],
     "referenceUrl": "https://platform.openai.com/docs/guides/image-generation"
@@ -6544,7 +6080,7 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 5000
+      "maxLength": 2000
     },
     "params": [
       {
@@ -6552,7 +6088,7 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 5,
         "min": 1,
-        "max": 8
+        "max": 10
       },
       {
         "name": "resolution",
@@ -6615,7 +6151,7 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 5,
         "min": 1,
-        "max": 8
+        "max": 10
       },
       {
         "name": "resolution",
@@ -6675,7 +6211,7 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 5000
+      "maxLength": 20000
     },
     "params": [
       {

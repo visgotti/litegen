@@ -1,0 +1,130 @@
+# black-forest-labs/flux-1.1-pro
+served by POST /v1/models/black-forest-labs/flux-1.1-pro/predictions (versionless): true
+disabled for predictions: false
+
+# price
+$0.04 per output image [image_output_count]
+
+# input schema of the served version
+{
+  "POST /predictions (application/json)": {
+    "properties": {
+      "context": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "nullable": true,
+        "type": "object"
+      },
+      "created_at": {
+        "format": "date-time",
+        "nullable": true,
+        "type": "string"
+      },
+      "id": {
+        "nullable": true,
+        "type": "string"
+      },
+      "input": {
+        "properties": {
+          "aspect_ratio": {
+            "default": "1:1",
+            "enum": [
+              "custom",
+              "1:1",
+              "16:9",
+              "3:2",
+              "2:3",
+              "4:5",
+              "5:4",
+              "9:16",
+              "3:4",
+              "4:3"
+            ],
+            "type": "string"
+          },
+          "height": {
+            "maximum": 1440,
+            "minimum": 256,
+            "type": "integer"
+          },
+          "image_prompt": {
+            "format": "uri",
+            "type": "string"
+          },
+          "output_format": {
+            "default": "webp",
+            "enum": [
+              "webp",
+              "jpg",
+              "png"
+            ],
+            "type": "string"
+          },
+          "output_quality": {
+            "default": 80,
+            "maximum": 100,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "prompt_upsampling": {
+            "default": false,
+            "type": "boolean"
+          },
+          "safety_tolerance": {
+            "default": 2,
+            "maximum": 6,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "seed": {
+            "type": "integer"
+          },
+          "width": {
+            "maximum": 1440,
+            "minimum": 256,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "output_file_prefix": {
+        "nullable": true,
+        "type": "string"
+      },
+      "webhook": {
+        "format": "uri",
+        "maxLength": 65536,
+        "minLength": 1,
+        "nullable": true,
+        "type": "string"
+      },
+      "webhook_events_filter": {
+        "default": [
+          "start",
+          "output",
+          "logs",
+          "completed"
+        ],
+        "items": {
+          "enum": [
+            "start",
+            "output",
+            "logs",
+            "completed"
+          ],
+          "type": "string"
+        },
+        "nullable": true,
+        "type": "array"
+      }
+    },
+    "type": "object"
+  }
+}

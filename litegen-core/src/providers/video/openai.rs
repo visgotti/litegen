@@ -448,11 +448,10 @@ mod tests {
     use wiremock::{MockServer, Mock, ResponseTemplate};
     use wiremock::matchers::{method, path};
 
+    /// Sora left the catalog when OpenAI shut it down (2026-09-24); its last catalog row is kept as a test fixture.
     fn ref_schema(id: &str) -> crate::capabilities::ModelSchema {
-        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        p.pop();
-        p.push("models");
-        let r = crate::capabilities::CapabilityRegistry::from_dir(&p).expect("load");
+        let yaml = include_str!("../../../tests/fixtures/retired-models.yaml");
+        let r = crate::capabilities::CapabilityRegistry::from_yaml_strs(&[("retired-models.yaml", yaml)]).expect("load");
         r.get(id).expect("model").clone()
     }
 

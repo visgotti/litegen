@@ -32,10 +32,13 @@ No API keys are needed. Every source is a public spec or docs page.
   pricing verified against the vendor docs, or add it to the definition's
   `acknowledged` list with the reason we skip it. Which one is a product
   decision.
-- **`missing upstream`**: a model we carry no longer appears in any source.
-  Check the vendor's changelog or deprecations page. Retired means remove or
-  replace the model. Renamed means fix the mapping, and the adapter too if it
-  sends the old id.
+- **`missing upstream`**: a vendor id we map no longer appears in any source.
+  A model maps to every id its adapter sends (one per endpoint it routes to,
+  such as text-to-video and image-to-video), so one endpoint going away is
+  reported even while the others remain. Check the vendor's changelog or
+  deprecations page. Retired means remove or replace the model, or drop the
+  capability that used the endpoint. Renamed means fix the mapping, and the
+  adapter too if it sends the old id.
 - **An announced, future shutdown:** add it to `SCHEDULED_SHUTDOWNS` in
   `litegen-core/tests/catalog_conformance.rs`. The model stays advertised
   while the vendor still serves it. From the day after the date, the test
@@ -56,6 +59,11 @@ No API keys are needed. Every source is a public spec or docs page.
   - **`(canary)`**: sources returned ids, but none of ours. The page was
     restructured.
   - **`(config)`**: the definition and `models/*.yaml` disagree.
+  - **`(typings)`**: a carried vendor id appears in no typings snapshot, so
+    nothing compares that model's request schema with `models/*.yaml`. Add or
+    re-scope a source that covers it. Only when the vendor publishes no
+    request schema at all, list the model in the definition's `untyped` with
+    the reason.
 
   The vendor moved something, so the definition needs updating. Never "fix" a
   failure by deleting the source or by loosening the pattern until it matches
@@ -68,7 +76,8 @@ No API keys are needed. Every source is a public spec or docs page.
 ```js
 export default {
   provider: 'runway',
-  // litegen model id → the id the vendor documents (what the adapter sends)
+  // litegen model id → the id the vendor documents (what the adapter sends);
+  // an array when the adapter routes the model to several endpoints — every one must stay listed
   models: { 'runway/gen4-turbo': 'gen4_turbo' /* … every model in models/runway.yaml */ },
   sources: [{
     key: 'openapi',                                    // names snapshots/runway/openapi.txt
@@ -78,6 +87,8 @@ export default {
     snapshot: (spec, _body, { ours }) => openapiExcerpt(spec, { paths: ENDPOINTS, ours }),
   }],
   acknowledged: [{ pattern: /-\d{4}-\d{2}-\d{2}$/, reason: 'dated snapshot alias' }],
+  // only for a model whose vendor publishes no request schema (rare): litegen id → reason
+  untyped: {},
 };
 ```
 
@@ -85,6 +96,12 @@ export default {
   request schemas of the endpoints the adapter uses, or from the model
   families we carry for aggregators like fal and Replicate. Don't pull every
   string on the page.
+- **Every carried model needs typings coverage.** Each vendor id must appear
+  in at least one typings snapshot (a non-index source with its own
+  `snapshot`), or the run fails with `(typings)`. An id list or an index page
+  does not count: it says the model exists, not what it accepts. An index
+  source whose snapshot is a request schema (its ids are field names, say)
+  counts when it sets `typings: true`.
 - **Snapshots are typings evidence.** `openapiExcerpt` keeps structural keys
   only, since prose churns every week. For unions discriminated by `model`, it
   keeps only the branches for models we carry. `yamlPrune(markdownExcerpt(…))`

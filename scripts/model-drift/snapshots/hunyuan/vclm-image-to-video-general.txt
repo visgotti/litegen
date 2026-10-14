@@ -1,3 +1,4 @@
+// action SubmitImageToVideoGeneralJob
 type SubmitImageToVideoGeneralJobRequestParams struct {
 	// 输入图片
 	// Base64 和 Url 必须提供一个，如果都提供以ImageUrl为准。
@@ -20,6 +21,14 @@ type SubmitImageToVideoGeneralJobRequestParams struct {
 
 	// 默认在生成视频的右下角添加“ AI 生成”字样，如需替换为其他的标识图片，需前往 控制台 申请开启显示标识自主完成。
 	LogoParam *LogoParam `json:"LogoParam,omitnil,omitempty" name:"LogoParam"`
+}
+
+type Image struct {
+	// 图片Base64
+	Base64 *string `json:"Base64,omitnil,omitempty" name:"Base64"`
+
+	// 图片Url
+	Url *string `json:"Url,omitnil,omitempty" name:"Url"`
 }
 
 type DescribeImageToVideoGeneralJobResponseParams struct {

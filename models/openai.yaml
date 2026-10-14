@@ -3,8 +3,10 @@ models:
   # replacements are "gpt-image-2, gpt-image-1, or gpt-image-1-mini".
   # gpt-image-1-mini / gpt-image-1.5 / chatgpt-image-latest are themselves
   # scheduled for shutdown on 2026-12-01, and gpt-image-1 on 2026-10-23
-  # (replacement gpt-image-2). GPT Image 2.5 (Sunburst, Flare; released
-  # 2026-09-08) is what OpenAI recommends for new integrations.
+  # (replacement gpt-image-2.5-sunburst or -flare). GPT Image 2.5 (Sunburst,
+  # Flare; released 2026-09-08) is what OpenAI recommends for new integrations.
+  # Sora 2 and the Videos API were shut down on 2026-09-24, so OpenAI has no
+  # video model here.
   # @see https://developers.openai.com/api/docs/deprecations
   # @see https://developers.openai.com/api/docs/guides/image-generation
   #
@@ -154,10 +156,10 @@ models:
     provider: openai
     media_type: image
     display_name: GPT Image 1
-    # Shutdown announced for 2026-10-23, replacement gpt-image-2.
-    # @see https://developers.openai.com/api/docs/deprecations
+    # Shutdown announced for 2026-10-23, replacement gpt-image-2.5-sunburst or -flare.
+    # @see https://developers.openai.com/api/docs/deprecations (2026-10-12)
     description: "DEPRECATED: OpenAI shuts gpt-image-1 down on 2026-10-23
-      (replacement gpt-image-2). OpenAI GPT Image 1. Text-to-image plus
+      (replacement gpt-image-2.5-sunburst or gpt-image-2.5-flare). OpenAI GPT Image 1. Text-to-image plus
       prompt-driven editing and inpainting via the images/edits endpoint."
     pricing: { base_cost_usd: 0.04 }
     capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
@@ -183,71 +185,3 @@ models:
         mask: { required: false, min_count: 0, max_count: 1 }
     extra_allowlist: [background, output_format, output_compression, moderation, user]
     tags: [text-to-image, image-to-image, inpainting]
-
-  - id: openai/sora
-    provider: openai
-    media_type: video
-    display_name: Sora 2
-    description: "DEPRECATED: OpenAI is shutting down the Videos API and every
-      Sora 2 model on 2026-09-24 with no replacement offered. Sora 2
-      text-to-video and image-to-video (maps to the `sora-2` model)."
-    pricing: { base_cost_usd: 0.50 }
-    capabilities: { text_to_video: true, image_to_video: true }
-    prompt: { required: true, max_length: 4000 }
-    params:
-      # Sora accepts only clip lengths of 4, 8, or 12s; other values snap to the nearest.
-      duration_seconds:
-        kind: float
-        min: 4.0
-        max: 12.0
-        default: 4.0
-      # aspect_ratio + resolution select the Sora `size` (e.g. 1280x720 / 720x1280).
-      aspect_ratio:
-        kind: aspect_ratio
-        allowed: ["16:9", "9:16"]
-        default: "16:9"
-      resolution:
-        kind: string
-        enum_values: [720p]
-        default: 720p
-    ref_inputs:
-      max_total: 1
-      default_role: init
-      # Image-to-video uploads the first frame as a multipart `input_reference` part.
-      provider_format: { form: base64 }
-      roles:
-        init: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: []
-    tags: [text-to-video, image-to-video]
-
-  - id: openai/sora-2-pro
-    provider: openai
-    media_type: video
-    display_name: Sora 2 Pro
-    description: "DEPRECATED: shutting down 2026-09-24 with the rest of the
-      Videos API. Higher-fidelity Sora 2 Pro (maps to `sora-2-pro`); adds 1080p sizes."
-    pricing: { base_cost_usd: 1.00 }
-    capabilities: { text_to_video: true, image_to_video: true }
-    prompt: { required: true, max_length: 4000 }
-    params:
-      duration_seconds:
-        kind: float
-        min: 4.0
-        max: 12.0
-        default: 4.0
-      aspect_ratio:
-        kind: aspect_ratio
-        allowed: ["16:9", "9:16"]
-        default: "16:9"
-      resolution:
-        kind: string
-        enum_values: [720p, 1080p]
-        default: 1080p
-    ref_inputs:
-      max_total: 1
-      default_role: init
-      provider_format: { form: base64 }
-      roles:
-        init: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: []
-    tags: [text-to-video, image-to-video, premium]

@@ -1,22 +1,22 @@
 // MiniMax — Mintlify docs: every API page has a `.md` twin that embeds the
-// endpoint's OpenAPI spec, and llms.txt indexes the pages.
+// endpoint's OpenAPI spec as a ```yaml block, and llms.txt indexes the pages.
 // Mapping mirrors litegen-core/src/providers/{image,video}/minimax.rs (strip `minimax/`).
-// The v1 pages are read with a regex over the page; the V2 create page (the
-// H3 family's only endpoint) from its embedded spec's request `model` enum —
-// the list of values that endpoint accepts.
+// The adapters call POST /v1/image_generation (image-01: text-to-image, and
+// image-to-image via subject_reference), POST /v1/video_generation (Hailuo,
+// T2V-01-Director, S2V-01: one page per mode) and POST /v2/video_generation
+// (MiniMax-H3 / -H3-Max, the V2 API; the adapter routes only those ids there).
+// Every page is read the same way: ids from its embedded spec's request
+// `model` enum — the values that endpoint accepts, whatever their spelling —
+// and the snapshot is that spec with prose keys pruned.
 import { markdownExcerpt, openapiModelIds, parseYaml, yamlPrune } from '../extract.mjs';
 
 const DOCS = 'https://platform.minimax.io/docs/api-reference';
-const IDS = /\b(?:MiniMax-Hailuo-[\w.-]+|[TIS]2V-01[\w-]*|image-01[\w-]*)/g;
-const spec = (_md, body) => yamlPrune(markdownExcerpt(body, { lang: 'yaml' }));
-const page = (key, slug) => ({ key, url: `${DOCS}/${slug}.md`, expect: 'text', extract: IDS, snapshot: spec });
-// V2: POST /v2/video_generation's `model` enum (MiniMax-H3, MiniMax-H3-Max).
-const v2Page = (key, slug, path) => ({
+const page = (key, slug, path) => ({
   key,
   url: `${DOCS}/${slug}.md`,
   expect: 'text',
   extract: (_md, body) => openapiModelIds(parseYaml(markdownExcerpt(body, { lang: 'yaml' })), { paths: [path] }),
-  snapshot: spec,
+  snapshot: (_md, body) => yamlPrune(markdownExcerpt(body, { lang: 'yaml' })),
 });
 
 export default {
@@ -32,13 +32,13 @@ export default {
     'minimax/MiniMax-H3-Max': 'MiniMax-H3-Max',
   },
   sources: [
-    page('text-to-image', 'image-generation-t2i'),
-    page('image-to-image', 'image-generation-i2i'),
-    page('text-to-video', 'video-generation-t2v'),
-    page('image-to-video', 'video-generation-i2v'),
-    page('first-last-frame', 'video-generation-fl2v'),
-    page('subject-reference', 'video-generation-s2v'),
-    v2Page('video-v2', 'video-generation-v2-create', '/v2/video_generation'),
+    page('text-to-image', 'image-generation-t2i', '/v1/image_generation'),
+    page('image-to-image', 'image-generation-i2i', '/v1/image_generation'),
+    page('text-to-video', 'video-generation-t2v', '/v1/video_generation'),
+    page('image-to-video', 'video-generation-i2v', '/v1/video_generation'),
+    page('first-last-frame', 'video-generation-fl2v', '/v1/video_generation'),
+    page('subject-reference', 'video-generation-s2v', '/v1/video_generation'),
+    page('video-v2', 'video-generation-v2-create', '/v2/video_generation'),
     {
       key: 'pages',
       index: true,

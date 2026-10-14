@@ -1,0 +1,37 @@
+# notice
+(no retirement notice)
+
+# POST /image-to-video/kling-2.5-turbo request body
+| Field Path | Type | Required | Default | Enum |
+| --- | --- | ---: | --- | --- |
+| `contents` | array | Yes | - | - |
+| `contents[].type` | string | Yes | - | `prompt`, `first_frame`, `last_frame` |
+| `settings` | object | No | - | - |
+| `settings.resolution` | string | No | `720p` | `720p`, `1080p` |
+| `settings.duration` | int | No | `5` | `5`, `10` |
+| `options` | object | No | - | - |
+| `options.callback_url` | string | No | - | - |
+| `options.external_task_id` | string | No | - | - |
+| `options.watermark_info` | object | No | - | - |
+
+# field notes
+- `contents`: The reference format is as follows, with detailed parameter descriptions provided below:
+- `contents[].type`: `prompt`: prompt word input identifier.
+  - `first_frame`: first frame input identifier.
+  - `last_frame`: last frame input identifier.
+- `contents[].type.prompt`: Defined in JSON format, as follows:
+- `contents[].type.first_frame / last_frame`: Required in the first_frame, optional in the last_frame
+- `contents[].type.first_frame / last_frame`: Defined in JSON format, as follows:
+- `contents[].type.first_frame / last_frame`: Image format support: .jpg, .jpeg, .png.
+- `contents[].type.first_frame / last_frame`: The size of the image file cannot exceed 50MB.
+- `contents[].type.first_frame / last_frame`: The width and height of the image must be no less than 300px, and the aspect ratio of the image should fall within the range of 1:2.5 to 2.5:1.
+- `contents[].type.first_frame / last_frame`: Supports first-frame-to-video and first-and-last-frame-to-video generation; last-frame-only video generation is not supported.
+    - First + last frame only supports 1080p resolution.
+- `settings.resolution`: 720p: Output video with a resolution of 720P.
+- `settings.resolution`: 1080p: Output video with a resolution of 1080P.
+- `settings.resolution`: When using the first and last frame function, only 1080P video generation is supported.
+- `options.callback_url`: See [Callback Protocol](https://kling.ai/document-api/api/get-started/callbacks) for the message schema.
+- `options.external_task_id`: Users can provide a Custom task ID, which does not overwrite the system-generated task ID. It can be used to query task status.
+- `options.external_task_id`: Please note that the Custom task ID must be unique within a single user account.
+- `options.watermark_info`: Controlled by the enabled parameter, the specific object format is as follows:
+- `options.watermark_info`: Custom watermark is not supported at this time.

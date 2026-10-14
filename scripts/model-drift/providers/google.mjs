@@ -1,37 +1,55 @@
-// Google (Gemini API) — the docs site's markdown twins (`<page>.md.txt`); the
-// HTML pages are large and the list-models API needs a key.
+// Google (Gemini API) — the docs site's markdown twins (`<page>.md.txt`) plus
+// the API's public discovery document; the HTML pages are large and the
+// list-models API needs a key.
 //   models           the "Generative media models" table of the models overview
-//   veo              the Veo guide: model codes + the request-parameter table
+//                    (every endpoint id in that section: the section is the scope,
+//                    so a new media family — e.g. `gemini-nano-banana-*` — cannot
+//                    slip past a name filter)
+//   veo              the Veo guide: model codes, the request-parameter table, the
+//                    request keys its REST samples send and the per-model limits
 //                    (it documents the `:predictLongRunning` surface we call)
-//   image-generation the generateContent flavour of the image guide (the docs
-//                    default to the Interactions API; our adapter calls
-//                    `:generateContent`): aspect-ratio × size tables + the
-//                    request keys its REST samples send
+//   image-generation the generateContent image guide ("Nano Banana"): the
+//                    aspect-ratio × size tables (### Aspect ratios and image size,
+//                    up to the next ## heading), the reference-image limits table
+//                    and the request keys its REST samples send
+//   discovery        index: the v1beta discovery document — the methods our
+//                    adapters call (generateContent, predictLongRunning, predict)
+//                    and the request schemas they fill (GenerationConfig,
+//                    ImageConfig, ResponseFormatConfig.image, Part/Blob/FileData);
+//                    Veo's instances/parameters are untyped there (`any`), so the
+//                    veo guide stays the evidence for those
 //   imagen           the Imagen model card — the overview abbreviates the
 //                    family to `imagen-4.0-generate`, the card has real ids.
-//                    Imagen 4 is deprecated (earliest shutdown 2026-08-17, not
-//                    yet marked shut down); when Google deletes the card this
-//                    source 404s — drop it then
+//                    Imagen 4 is shut down (overview: "Imagen 4 (Shut down)");
+//                    when Google deletes the card this source 404s — drop it then
 //   lifecycle        index: the deprecations table rows for our models, so a
 //                    newly announced shutdown date shows up as a changed snapshot
 //   pages            index: image/video docs pages listed in llms.txt
 // Mapping mirrors litegen-core/src/providers/image/google.rs `resolve_model`
 // and video/google.rs `resolve_model` (strip `google/`; the id is the
-// `models/{id}:generateContent` / `:predictLongRunning` path segment).
+// `models/{id}:generateContent` / `:predictLongRunning` path segment). The
+// image adapter's Imagen `:predict` branch is unreachable for carried models
+// (`resolve_model` never yields an `imagen-*` id).
 
 const DOCS = 'https://ai.google.dev/gemini-api/docs';
+const DISCOVERY = 'https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta';
 
-// Image/video generation ids only — the same pages list many text/audio LLMs.
-const MEDIA_ID = /^(?:gemini-[\w.-]*image[\w-]*|gemini-omni[\w.-]*|imagen-[\w.-]+|veo-[\w.-]+)$/;
+// Image/video generation ids only — the deprecations page lists many text/audio LLMs.
+const MEDIA_ID = /^(?:gemini-[\w.-]*(?:image|nano-banana)[\w.-]*|gemini-omni[\w.-]*|imagen-[\w.-]+|veo-[\w.-]+)$/;
 
-/** Lines from the `from` heading line up to (not including) the `to` heading line (default: next heading at the same or higher level). */
+/**
+ * Lines after the `from` heading line up to (not including) the `to` line
+ * (default: the next heading at the same or higher level). `from` / `to` match
+ * a trimmed line exactly (string) or by pattern (RegExp).
+ */
 function section(md, from, to) {
   const lines = md.split('\n');
-  const start = lines.findIndex((l) => l.trim() === from);
+  const is = (l, m) => (m instanceof RegExp ? m.test(l.trim()) : l.trim() === m);
+  const start = lines.findIndex((l) => is(l, from));
   if (start < 0) throw new Error(`section "${from}" not found — the page was restructured`);
-  const level = from.match(/^#+/)[0].length;
+  const level = lines[start].trim().match(/^#+/)[0].length;
   const end = lines.findIndex((l, i) =>
-    i > start && (to ? l.trim() === to : /^#+ /.test(l) && l.match(/^#+/)[0].length <= level),
+    i > start && (to ? is(l, to) : /^#+ /.test(l) && l.match(/^#+/)[0].length <= level),
   );
   if (to && end < 0) throw new Error(`section end "${to}" not found — the page was restructured`);
   return lines.slice(start + 1, end < 0 ? undefined : end);
@@ -42,6 +60,20 @@ const backticked = (s) => [...s.matchAll(/`([^`\s]+)`/g)].map((m) => m[1]);
 
 /** Ids in the "Model code" rows (`| Model code | **Gemini API** `a` `b` |`) of a section. */
 const modelCodes = (lines) => lines.filter((l) => /^\|\s*Model code\s*\|/.test(l)).flatMap(backticked);
+
+/**
+ * The image-generation page's "Model selection" bullets — `**Nickname ([Model
+ * name](…)) (`model-id`):**` — as `model-id — Nickname / Model name`. Its
+ * tables are headed by those names only, so this is what ties them to an id.
+ */
+function modelSelection(md) {
+  const text = section(md, '## Model selection').join(' ');
+  const rows = [...text.matchAll(/\*\*([^*(]+?)\s*\(\[([^\]]+)\]\([^)]*\)\)\s*\(`([^`]+)`\):\*\*/g)].map(
+    ([, nickname, name, id]) => `${id} — ${nickname.trim()} / ${name.trim()}`,
+  );
+  if (rows.length === 0) throw new Error('"## Model selection" lists no `model-id` bullets — the page was restructured');
+  return rows.join('\n');
+}
 
 /** Tables in a line range, each preceded by the heading it sits under. */
 function tablesWithHeadings(lines) {
@@ -71,6 +103,60 @@ function restKeys(md) {
   return [...keys].sort().join('\n') + '\n';
 }
 
+// ─── Discovery document ──────────────────────────────────────────────────────
+
+// models.* methods the adapters call. predict is Imagen-only and unreachable
+// for carried models, so its absence would not fail the source.
+const CALLED = ['generateContent', 'predictLongRunning'];
+const LISTED = [...CALLED, 'predict'];
+
+// Request schemas the adapters fill → the properties to keep (null: all).
+// `prose: true` keeps descriptions where they carry the allowed values
+// (ImageConfig's aspectRatio / imageSize are plain strings).
+const SCHEMAS = {
+  GenerateContentRequest: { keep: ['contents', 'generationConfig'] },
+  Content: { keep: ['parts'] },
+  Part: { keep: ['text', 'inlineData', 'fileData'] },
+  Blob: {},
+  FileData: {},
+  GenerationConfig: {},
+  ImageConfig: { prose: true },
+  ResponseFormatConfig: { keep: ['image'] },
+  ImageResponseFormat: {},
+  PredictLongRunningRequest: {},
+  PredictRequest: {},
+};
+
+/** One property's typing: type / $ref / items / enum / format / deprecated (+ description when asked). */
+function typing(p, prose) {
+  const out = {};
+  for (const k of ['type', '$ref', 'format', 'enum', 'enumDeprecated', 'deprecated']) if (p[k] !== undefined) out[k] = p[k];
+  if (p.items) out.items = typing(p.items, false);
+  if (prose && p.description) out.description = p.description.replace(/\s+/g, ' ').trim();
+  return out;
+}
+
+function discoveryExcerpt(doc) {
+  const methods = doc.resources?.models?.methods ?? {};
+  const lines = ['# models.* methods the adapters call'];
+  for (const m of LISTED) {
+    const x = methods[m];
+    lines.push(x ? `${m}: ${x.httpMethod} ${x.path} ← ${x.request?.$ref ?? '(no body)'}` : `${m}: (absent)`);
+  }
+  const op = doc.resources?.models?.resources?.operations?.methods?.get;
+  lines.push(`operations.get: ${op ? `${op.httpMethod} ${op.path}` : '(absent)'}`, '', '# request schemas');
+  const out = {};
+  for (const [name, { keep, prose }] of Object.entries(SCHEMAS)) {
+    const s = doc.schemas?.[name];
+    if (!s) throw new Error(`schema ${name} is not in the discovery document — renamed or removed upstream`);
+    const props = s.properties ?? {};
+    for (const k of keep ?? []) if (!props[k]) throw new Error(`${name}.${k} is not in the discovery document — renamed or removed upstream`);
+    const names = (keep ?? Object.keys(props)).slice().sort();
+    out[name] = Object.fromEntries(names.map((k) => [k, typing(props[k], prose)]));
+  }
+  return `${lines.join('\n')}\n${JSON.stringify(out, null, 2)}\n`;
+}
+
 export default {
   provider: 'google',
   models: {
@@ -91,33 +177,53 @@ export default {
       extract: (md) =>
         section(md, '## Generative media models')
           .filter((l) => l.startsWith('|'))
-          .flatMap((l) => [...l.matchAll(/```([^`]+)```/g)].flatMap((m) => m[1].trim().split(/\s+/)))
-          .filter((id) => MEDIA_ID.test(id)),
+          .flatMap((l) => [...l.matchAll(/```([^`]+)```/g)].flatMap((m) => m[1].trim().split(/\s+/))),
     },
     {
       key: 'veo',
       url: `${DOCS}/veo.md.txt`,
       expect: 'text',
       extract: (md) => modelCodes(section(md, '## Model versions')),
-      // The parameter table, first column cut to the parameter name (its prose varies).
       snapshot: (md) =>
-        section(md, '## Veo API parameters and specifications')
+        // The parameter table, first column cut to the parameter name (its prose varies).
+        `${section(md, '## Veo API parameters and specifications')
           .filter((l) => l.startsWith('|'))
           .map((l) => {
             const [first, ...rest] = cells(l);
             return `| ${[backticked(first)[0] ?? first, ...rest].join(' | ')} |`;
           })
-          .join('\n') + '\n',
+          .join('\n')}\n\n` +
+        // Per-model input/output limits (prompt token cap), without the churning "Latest update" row.
+        `# model versions\n${tablesWithHeadings(
+          section(md, '## Model versions').filter((l) => !/^\|\s*Latest update\s*\|/.test(l)),
+        )}\n` +
+        `# request keys in the REST samples\n${restKeys(md)}`,
     },
     {
       key: 'image-generation',
       url: `${DOCS}/generate-content/image-generation.md.txt`,
       expect: 'text',
-      // A version number after `gemini-` skips image file names like gemini-native-image.png.
-      extract: /\bgemini-[\d.]+-[a-z0-9-]*image[a-z0-9-]*(?!\.(?:png|jpe?g|gif|webp|svg))/g,
+      // A version number after `gemini-` skips image file names like gemini-native-image.png;
+      // `gemini-nano-banana-<n>` is the naming Google adopted with Nano Banana 2.1.
+      extract: /\bgemini-(?:[\d.]+-[a-z0-9-]*image[a-z0-9-]*|nano-banana(?:-[a-z0-9]+(?:\.\d+)*)*)(?!\.(?:png|jpe?g|gif|webp|svg))/g,
       snapshot: (md) =>
-        `# aspect ratio x size tables\n${tablesWithHeadings(section(md, '### Aspect ratios and image size', '## Model selection'))}\n` +
+        `# models the page documents (the tables below are headed by their names)\n${modelSelection(md)}\n` +
+        `# aspect ratio x size tables\n${tablesWithHeadings(section(md, '### Aspect ratios and image size', /^## /))}\n` +
+        `# reference image limits\n${tablesWithHeadings(section(md, /^### Use up to \d+ reference images$/))}\n` +
         `# request keys in the REST samples\n${restKeys(md)}`,
+    },
+    {
+      key: 'discovery',
+      index: true,
+      url: DISCOVERY,
+      expect: 'json',
+      extract: (doc) => {
+        const methods = doc.resources?.models?.methods ?? {};
+        const gone = CALLED.filter((m) => !methods[m]);
+        if (gone.length) throw new Error(`models.${gone.join(', models.')} not in the discovery document — renamed or removed upstream`);
+        return LISTED.filter((m) => methods[m]);
+      },
+      snapshot: (doc) => discoveryExcerpt(doc),
     },
     {
       key: 'imagen',
@@ -150,7 +256,7 @@ export default {
       url: `${DOCS}/llms.txt`,
       expect: 'text',
       extract: (md) =>
-        [...md.matchAll(/\/gemini-api\/docs\/([\w./-]*(?:image|imagen|video|veo|omni)[\w.-]*)\.md\.txt/g)]
+        [...md.matchAll(/\/gemini-api\/docs\/([\w./-]*(?:image|imagen|video|veo|omni|banana)[\w.-]*)\.md\.txt/g)]
           .map((m) => m[1])
           .filter((p) => !/understanding|robotics/.test(p)),
     },

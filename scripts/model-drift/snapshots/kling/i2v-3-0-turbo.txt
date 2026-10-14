@@ -1,0 +1,45 @@
+# notice
+(no retirement notice)
+
+# POST /image-to-video/kling-3.0-turbo request body
+| Field Path | Type | Required | Default | Enum |
+| --- | --- | ---: | --- | --- |
+| `contents` | array | Yes | - | - |
+| `contents[].type` | string | Yes | - | `prompt`, `first_frame` |
+| `contents[].text` | string | No | - | - |
+| `contents[].url` | string | No | - | - |
+| `settings` | object | No | - | - |
+| `settings.resolution` | string | No | `720p` | `720p`, `1080p` |
+| `settings.duration` | int | No | `5` | `3`, `4`, `5`, `6`, `7`, `8`, `9`, `10`, `11`, `12`, `13`, `14`, `15` |
+| `options` | object | No | - | - |
+| `options.callback_url` | string | No | - | - |
+| `options.external_task_id` | string | No | - | - |
+| `options.watermark_info` | object | No | - | - |
+| `options.watermark_info.enabled` | boolean | No | `false` | - |
+
+# field notes
+- `contents`: Place fields related to the same material in the same object
+- `contents`: Reference format:
+- `contents[].type`: prompt: prompt material identifier
+- `contents[].type`: first_frame: first-frame image material identifier
+- `contents[].text`: Defined in JSON format as follows:
+- `contents[].text`: The prompt words can be templated to meet different video generation requirements
+- `contents[].text`: > **The Kling 3.0 Turbo model can achieve various capabilities through Prompt and other content.**
+  > 1. Multi-shot videos can be generated in a fixed format, with the format being "shot n, m, words; shot n, m, words;", separated by half-width semicolons; where:
+  >     a. n: shot sequence number; supports up to 6 storyboards and at least 1 storyboard
+  >     b. m: shot duration; each shot duration must be no less than 1 second, and the sum of all storyboard durations equals the total duration of the currently generated video
+  >     c. words: shot prompt; maximum length 512
+  > 2. For more information, see [Kling VIDEO 3.0 Model User Guide](https://kling.ai/quickstart/klingai-video-3-model-user-guide).
+- `contents[].url`: Defined in JSON format, as follows:
+- `contents[].url`: Image format support: .jpg, .jpeg, .png
+- `contents[].url`: The size of the image file cannot exceed 50MB
+- `contents[].url`: The width and height of the image must be no less than 300px, and the aspect ratio of the image should fall within the range of 1:2.5 to 2.5:1
+- `contents[].url`: Currently, only First Frame is supported. First Frame + Last Frame and Last Frame-only are not supported yet
+- `settings.resolution`: 720p: output video with a resolution of 720P
+- `settings.resolution`: 1080p: output video with a resolution of 1080P
+- `options.callback_url`: If configured, the server will actively notify when the task status changes
+- `options.callback_url`: For specific message schema, see [Callback Protocol](https://kling.ai/document-api/api/get-started/callbacks)
+- `options.external_task_id`: Will not overwrite the system-generated task ID, but can be used for task queries
+- `options.external_task_id`: Must be unique within a single user account
+- `options.watermark_info`: Defined through the enabled parameter:
+- `options.watermark_info`: Custom watermarks are not currently supported

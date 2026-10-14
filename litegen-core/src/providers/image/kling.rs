@@ -364,8 +364,8 @@ mod tests {
             .await;
 
         let provider = make_provider(&server.uri());
-        let schema = ref_schema("kling/kling-v2");
-        let base = make_base("a jade dragon", "kling/kling-v2");
+        let schema = ref_schema("kling/kling-v2-1");
+        let base = make_base("a jade dragon", "kling/kling-v2-1");
         let extras = make_extras();
         let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
 
@@ -379,7 +379,7 @@ mod tests {
         let auth = post.headers.get("authorization").unwrap().to_str().unwrap();
         assert!(auth.starts_with("Bearer ey"), "expected JWT bearer, got {auth}");
         let body: Value = serde_json::from_slice(&post.body).unwrap();
-        assert_eq!(body["model_name"], "kling-v2");
+        assert_eq!(body["model_name"], "kling-v2-1");
         assert_eq!(body["prompt"], "a jade dragon");
     }
 }

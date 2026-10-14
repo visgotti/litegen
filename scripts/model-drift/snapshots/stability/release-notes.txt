@@ -1,0 +1,34 @@
+May 20, 2026 · Stable Audio 3.0
+August 1, 2025 · API Pricing Notice
+July 24, 2025 · API Deprecation and Pricing Notice
+April 17, 2025 · API Deprecation Notice
+April 1, 2025 · Style Transfer
+March 21, 2025 · Stable Audio 2.0
+January 08, 2025 · Stable Point Aware 3D
+November 07, 2024 · Replace Background & Relight
+October 29, 2024 · Stable Diffusion 3.5 Medium & Stable Image Ultra
+October 22, 2024 · Stable Diffusion 3.5 Large & Large Turbo
+October 11, 2024 · API Deprecation Notice
+September 10, 2024 · Stable Image Fast Upscaler
+August 19, 2024 · Stable Image Edit Search and Recolor
+August 1, 2024 · Stable Fast 3D
+July 25, 2024 · Stable Image Control Style
+June 12, 2024 · Stable Diffusion 3 Medium Release
+June 5, 2024 · Stable Image Generate Ultra
+May 20, 2024 · Stable Image Erase Object & Conservative Upscale
+April 30, 2024 · Stable Image Control Sketch & Control Structure
+March 21st, 2024 · Stable Image, Stablevideo.com, and v2beta API
+February 5th, 2024 · Stable Video API Update
+December 20th, 2023 · Stable Video Diffusion API Alpha Release
+November 10th, 2023 · Stable Diffusion v1.6 Release
+July 26th, 2023 · SDXL v1.0 Release
+June 27th, 2023 · SDXL v0.9 Release
+May 11th, 2023 · Stable Animation SDK Release
+Apr. 17th 2023 · Style Presets / Client ID Support
+Apr. 14th 2023 · SDXL Release
+Mar. 21st 2023 · Image Upscaling API and Integrations Release
+Mar. 21st 2023 · REST API v1
+Feb. 2nd 2023 · REST API v1beta Release Candidate
+Dec. 14th 2022 · REST API v1alpha Release Candidate
+Dec. 7th 2022 · Stable Diffusion 2.1 - API Release
+Nov. 25th 2022 · Stable Diffusion 2.0 - API Release

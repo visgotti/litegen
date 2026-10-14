@@ -1,0 +1,45 @@
+## 概述 › 模型列表
+| 模型名称 | model 参数值 | 支持能力 | 输入上限 | 尺寸约束 | 简要说明 |
+| Hy-Image-3.5-preview | hy-image-v3.5-preview | 文生图 / 参考生图 / 多轮编辑（同步） | 100k tokens | 宽高 ∈ [256, 8192]，面积 ≤ 16777216（4K，4096×4096） | Chat/Messages 协议，支持多模态输入、多轮编辑上下文、外部搜索增强、按面积档位自动决定尺寸，最高支持 4K 输出。 |
+| Hy-Image-3.0 | hy-image-v3 | 文生图 / 参考生图（同步） | 8192 字符 | 宽高 ∈ [512, 2048]，面积 ≤ 1024×1024 | 支持 prompt 自动改写、37 组预设尺寸、自定义水印脚注。 |
+
+## Hy-Image-3.0 图片生成 › 1. 接口描述
+POST https://tokenhub.tencentmaas.com/v1/wand/hunyuan-image/v3-generation
+
+## Hy-Image-3.0 图片生成 › 2. 输入参数
+| 参数名 | 必选 | 类型 | 描述 |
+| model | 是 | string | 模型 ID。取值：hy-image-v3 |
+| prompt | 是 | string | 生成图片使用的文本，长度 ≤ 8192 字符。 |
+| images | 否 | array[string] | 图片 images：支持 0张-3张图片输入， 支持 URL 和 Base64格式，图片格式：png/jpeg/jpg，单张大小≤10MB； 1. Base64：格式要求：data:image/<图片格式>;base64,<Base64 编码>。注：图片为 jpg 时图片格式填 jpeg。 2. URL：需要公网可访问（http/https）。 |
+| size | 否 | string | 生成尺寸，格式 ${宽}x${高}。 约束： 1. 宽、高均在 [512, 2048] 像素范围内； 2. 宽高乘积（图像面积）不超过 1024×1024 像素。 不传时模型从 37 个预设组合中选择/预测，详情请参见 附录：Hy-Image-3.0 预设尺寸列表。 |
+| seed | 否 | integer | 生成种子，范围 [1, 4294967295]，仅当生成图片数为 1 时生效；不传或为 0 时默认随机。 |
+| footnote | 否 | string | 业务自定义水印内容，限制 16 个字符长度（不区分中英文），生成在图片右下角。 |
+| revise | 否 | boolean | 是否对 prompt 改写。 |
+
+## Hy-Image-3.0 图片生成 › 4. 输出参数
+| 参数名 | 类型 | 描述 |
+| id | string | 此次请求的 id。 |
+| created | integer | Unix 时间戳。 |
+| data | list | 返回的图片生成内容数组。 |
+| data[n].url | string | 生成的图片地址，为临时地址，有效期 12 小时，请及时下载转存。 |
+| data[n].revised_prompt | string | 改写后的 prompt（开启 revise 时返回）。 |
+| request_id | string | 唯一请求标识，用于排查问题。 |
+| tokenhub_usage | object | 用量消耗。 |
+| tokenhub_usage.total_tokens | integer | 本次任务消耗的 token 数，用于计费/对账。 |
+
+## 附录 › Hy-Image-3.0 预设尺寸列表
+| 2048 x 512 | 1984 x 512 | 1920 x 512 | 1856 x 512 |
+| 1792 x 512 | 1728 x 512 | 1664 x 512 | 1600 x 512 |
+| 1536 x 512 | 1472 x 576 | 1408 x 640 | 1344 x 704 |
+| 1280 x 768 | 1216 x 832 | 1152 x 896 | 1088 x 960 |
+| 1024 x 1024 | 960 x 1088 | 896 x 1152 | 832 x 1216 |
+| 768 x 1280 | 704 x 1344 | 640 x 1408 | 576 x 1472 |
+| 512 x 1536 | 512 x 1600 | 512 x 1664 | 512 x 1728 |
+| 512 x 1792 | 512 x 1856 | 512 x 1920 | 512 x 1984 |
+| 512 x 2048 | 768 x 1024 | 720 x 1280 | 1024 x 768 |
+| 1280 x 720 | - | - | - |
+
+## 附录 › 参考图输入约束
+| 模型 | 支持格式 | 单图大小 | 数量 |
+| Hy-Image-3.0 | png / jpeg / jpg，支持图片 URL 或 Base64 | ≤ 10MB | 0~3 张 |
+| Hy-Image-3.5-preview | png / jpeg / jpg，支持图片 URL 或 Base64 | ≤ 20MB | ≤ 20 张 |

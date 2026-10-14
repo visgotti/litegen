@@ -1,0 +1,5 @@
++ **Legacy period:** at least 6 months
++ **Model EOL date:** N/A
++ **Model lifecycle:** Active
+
+| bedrock-runtime | stability.sd3-5-large-v1:0 | https://bedrock-runtime.{region}.amazonaws.com | Not supported | Not supported |

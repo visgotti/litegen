@@ -1,0 +1,135 @@
+# black-forest-labs/flux-schnell
+served by POST /v1/models/black-forest-labs/flux-schnell/predictions (versionless): true
+disabled for predictions: false
+
+# price
+$3 per thousand output images [image_output_count]
+
+# input schema of the served version
+{
+  "POST /predictions (application/json)": {
+    "properties": {
+      "context": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "nullable": true,
+        "type": "object"
+      },
+      "created_at": {
+        "format": "date-time",
+        "nullable": true,
+        "type": "string"
+      },
+      "id": {
+        "nullable": true,
+        "type": "string"
+      },
+      "input": {
+        "properties": {
+          "aspect_ratio": {
+            "default": "1:1",
+            "enum": [
+              "1:1",
+              "16:9",
+              "21:9",
+              "3:2",
+              "2:3",
+              "4:5",
+              "5:4",
+              "3:4",
+              "4:3",
+              "9:16",
+              "9:21"
+            ],
+            "type": "string"
+          },
+          "disable_safety_checker": {
+            "default": false,
+            "type": "boolean"
+          },
+          "go_fast": {
+            "default": true,
+            "type": "boolean"
+          },
+          "megapixels": {
+            "default": "1",
+            "enum": [
+              "1",
+              "0.25"
+            ],
+            "type": "string"
+          },
+          "num_inference_steps": {
+            "default": 4,
+            "maximum": 4,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "num_outputs": {
+            "default": 1,
+            "maximum": 4,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "output_format": {
+            "default": "webp",
+            "enum": [
+              "webp",
+              "jpg",
+              "png"
+            ],
+            "type": "string"
+          },
+          "output_quality": {
+            "default": 80,
+            "maximum": 100,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "seed": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "output_file_prefix": {
+        "nullable": true,
+        "type": "string"
+      },
+      "webhook": {
+        "format": "uri",
+        "maxLength": 65536,
+        "minLength": 1,
+        "nullable": true,
+        "type": "string"
+      },
+      "webhook_events_filter": {
+        "default": [
+          "start",
+          "output",
+          "logs",
+          "completed"
+        ],
+        "items": {
+          "enum": [
+            "start",
+            "output",
+            "logs",
+            "completed"
+          ],
+          "type": "string"
+        },
+        "nullable": true,
+        "type": "array"
+      }
+    },
+    "type": "object"
+  }
+}

@@ -1,0 +1,12 @@
+endpoint: https://cloud.leonardo.ai/api/rest/v1/generations-image-to-video
+
+duration | number | 4 6 8
+endFrameImage | object | id type imageId imageType
+height | number | 
+imageId | string | 
+imageType | string | UPLOADED GENERATED
+isPublic | boolean | true false
+model | string | VEO3_1 VEO3_1FAST
+prompt | string | 
+resolution | string | RESOLUTION_720 RESOLUTION_1080
+width | number |

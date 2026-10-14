@@ -9,6 +9,8 @@
 //    changes on every docs deploy, so the source `discover`s it from the
 //    `/assets/index-*.js` <script src> of the docs page; it fails loudly if the
 //    page stops linking a bundle like that.
+//  - release-notes: index: the deprecation/launch notices the same bundle
+//    embeds (headings and dates).
 //
 // Vendor ids: the sd3 route takes a `model` field (sd3.5-*), so its ids are
 // that field's values; core and ultra have no model field — the route selects
@@ -89,6 +91,27 @@ function v1Engines(body) {
   return text.match(/\b(?:stable-diffusion|stable-inpainting|esrgan)-[a-z0-9][\w.-]*/g) ?? [];
 }
 
+// The platform release notes, which the docs app also embeds in the bundle
+// (`releaseNotes=`…``), are where Stability announces deprecations (SD3.0 on
+// 2025-04-17; SD 1.6 and Stable Video on 2025-07-24). Each `# heading` and its
+// date line (`_…_` or `<i>…</i>`) only, so a new notice shows up as a changed
+// snapshot.
+function releaseNotes(body) {
+  const m = body.match(/\breleaseNotes\s*=\s*`/);
+  if (!m) throw new Error('the release notes are no longer embedded in the docs bundle (`releaseNotes=`…``)');
+  const lines = jsLiteral(body, m.index + m[0].length, '`').split('\n');
+  const notes = [];
+  lines.forEach((line, i) => {
+    const heading = line.match(/^#\s+(.+?)(?:\s*\{#[\w-]+\})?\s*$/)?.[1];
+    if (!heading) return;
+    const dated = lines.slice(i + 1).find((l) => l.trim())?.match(/^(?:_(.+)_|<i>(.+)<\/i>)\s*$/);
+    const date = dated?.[1] ?? dated?.[2];
+    notes.push(`${date ?? '(undated)'} · ${heading}`);
+  });
+  if (notes.length === 0) throw new Error('the embedded release notes have no `# heading` entries — restructured');
+  return notes;
+}
+
 export default {
   provider: 'stability',
   models: {
@@ -116,8 +139,20 @@ export default {
       extract: (_text, body) => v1Engines(body),
       snapshot: (_text, body, { ours }) => {
         const spec = v1Spec(body);
-        return `# v1 endpoints\n${Object.keys(spec.paths).sort().join('\n')}\n\n` + openapiExcerpt(spec, { paths: V1_ENDPOINTS, ours });
+        return (
+          `# v1 engine_id values the docs name\n${[...new Set(v1Engines(body))].sort().join('\n')}\n\n` +
+          `# v1 endpoints\n${Object.keys(spec.paths).sort().join('\n')}\n\n` +
+          openapiExcerpt(spec, { paths: V1_ENDPOINTS, ours })
+        );
       },
+    },
+    {
+      key: 'release-notes',
+      index: true,
+      discover: DOCS_BUNDLE,
+      expect: 'text',
+      extract: (_text, body) => releaseNotes(body),
+      snapshot: (_text, body) => releaseNotes(body).join('\n') + '\n',
     },
   ],
   acknowledged: [

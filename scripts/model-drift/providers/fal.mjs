@@ -3,23 +3,26 @@
 // Video, matched on the endpoint id, minus training endpoints (LoRA trainers
 // are not generation models). Sources are fal's public Platform API
 // (api.fal.ai/v1/models — no key needed, but unauthenticated calls are
-// rate-limited, so this stays at three fetches):
+// rate-limited, so this stays at four fetches):
 //  - catalog-1/-2: list mode, which returns every *active* endpoint (deprecated
 //    ones drop out) at most 1,000 per page. Two pages cover the catalog today;
 //    catalog-2 fails loudly once a third page exists. List order follows
 //    popularity, so which page an id lands on churns week to week — these two
 //    snapshots are a fixed note, not the id list, to keep "changed" meaningful.
-//  - carried: find mode for exactly our endpoint ids with expand=openapi-3.0 —
-//    their registry status plus each endpoint's input schema (the typings
-//    snapshot). An id the registry no longer knows comes back without metadata
-//    and counts as absent.
+//  - carried-image/-video: find mode for exactly our endpoint ids with
+//    expand=openapi-3.0 — their registry status plus each endpoint's input
+//    schema (the typings snapshot). An id the registry no longer knows comes
+//    back without metadata and counts as absent.
 // Vendor id = the endpoint id in the URL path. Mapping mirrors
-// litegen-core/src/providers/image/fal.rs `resolve_endpoint` and
-// video/fal.rs `resolve_spec` (fal/video is its LTX Video default arm;
-// fal/ltx-2.3 has its own arm).
+// litegen-core/src/providers/image/fal.rs `resolve_endpoint` and video/fal.rs
+// `resolve_spec` (fal/video is its LTX Video default arm; fal/ltx-2.3 has its
+// own arm).
 import { openapiExcerpt } from '../extract.mjs';
 
-const MODELS = {
+// Grouped by the adapter that calls them; each group is its own typings
+// snapshot (carried-<group>), so adding a model to one medium never moves
+// another medium's schemas between snapshot files.
+const IMAGE = {
   'fal/flux-pro': 'fal-ai/flux-pro/v1.1',
   'fal/flux-dev': 'fal-ai/flux/dev',
   'fal/flux-2': 'fal-ai/flux-2',
@@ -29,9 +32,13 @@ const MODELS = {
   // Renamed from fal-ai/recraft-v3 (no longer in the model registry; its page 308-redirects here).
   'fal/recraft-v3': 'fal-ai/recraft/v3/text-to-image',
   'fal/auraflow': 'fal-ai/aura-flow',
+};
+const VIDEO = {
   'fal/video': ['fal-ai/ltx-video', 'fal-ai/ltx-video/image-to-video'],
   'fal/ltx-2.3': ['fal-ai/ltx-2.3/text-to-video', 'fal-ai/ltx-2.3/image-to-video'],
 };
+const GROUPS = { image: IMAGE, video: VIDEO };
+const MODELS = { ...IMAGE, ...VIDEO };
 
 const API = 'https://api.fal.ai/v1/models';
 const FAMILIES = /(?:^|[/-])(?:flux|stable-diffusion|sdxl|sd3|recraft|aura-?flow|ltx)/;
@@ -48,14 +55,17 @@ function catalogIds(page, { last }) {
 const CATALOG_NOTE =
   "# ids from this page are compared as a union with the other catalog page; the page split follows fal's popularity order, so it is not snapshotted\n";
 
-const carriedIds = Object.values(MODELS).flat();
-
-// At most 8 ids per find-mode call (the API caps at 10 and drops the excess).
+// At most 8 ids per find-mode call (the API caps at 10 and drops the excess;
+// an explicit limit above 10 with expand=openapi-3.0 is a 400). A group that
+// outgrows a chunk continues in carried-<group>-2, -3, ….
 const CARRIED_CHUNK = 8;
-const carriedChunks = Array.from(
-  { length: Math.ceil(carriedIds.length / CARRIED_CHUNK) },
-  (_, i) => carriedIds.slice(i * CARRIED_CHUNK, (i + 1) * CARRIED_CHUNK),
-);
+const carriedChunks = Object.entries(GROUPS).flatMap(([group, models]) => {
+  const ids = Object.values(models).flat();
+  return Array.from({ length: Math.ceil(ids.length / CARRIED_CHUNK) }, (_, i) => ({
+    key: `carried-${group}${i === 0 ? '' : `-${i + 1}`}`,
+    ids: ids.slice(i * CARRIED_CHUNK, (i + 1) * CARRIED_CHUNK),
+  }));
+});
 
 // Carried endpoints whose Platform API spec is written for an alias id. For
 // fal-ai/flux-2 the registry entry is active with model_url
@@ -103,8 +113,8 @@ export default {
     // models are added. One source per chunk keeps every carried endpoint's
     // input schema snapshotted; a dropped endpoint then shows up as its section
     // disappearing from the snapshot diff.
-    ...carriedChunks.map((ids, i) => ({
-      key: carriedChunks.length > 1 ? `carried-${i + 1}` : 'carried',
+    ...carriedChunks.map(({ key, ids }) => ({
+      key,
       url: `${API}?${ids.map((id) => `endpoint_id=${encodeURIComponent(id)}`).join('&')}&expand=openapi-3.0`,
       expect: 'json',
       extract: (res) => {
@@ -122,7 +132,11 @@ export default {
       reason: 'skipped 2026-09-11: superseded by fal/ltx-2.3; fal/video is kept for existing callers',
     },
     {
-      pattern: /^blackforestlabs\/flux-3\//,
+      // The video endpoints only: FLUX 3 Image (blackforestlabs/flux-3/text-to-image
+      // and /edit-image, added 2026-10-01) is a different product and was not
+      // part of this decision.
+      pattern:
+        /^blackforestlabs\/flux-3\/(?:(?:text|image|first-last-frame|keyframes)-to-video|(?:edit|extend)-video)(?:\/draft)?$|^blackforestlabs\/flux-3\/draft-enhance$/,
       reason: "skipped 2026-09-11: FLUX 3 video — decide together with BFL's own flux-3-video",
     },
     {

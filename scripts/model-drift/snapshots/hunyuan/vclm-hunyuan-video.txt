@@ -1,3 +1,4 @@
+// action SubmitHunyuanToVideoJob
 type SubmitHunyuanToVideoJobRequestParams struct {
 	// 视频内容的描述，中文正向提示词。最多支持200个 utf-8 字符（首尾空格不计入字符数）。 示例值：一只猫在草原上奔跑，写实风格
 	Prompt *string `json:"Prompt,omitnil,omitempty" name:"Prompt"`
@@ -17,6 +18,14 @@ type SubmitHunyuanToVideoJobRequestParams struct {
 
 	// 默认在生成视频的右下角添加“ AI 生成”字样，如需替换为其他的标识图片，需前往 控制台 申请开启显示标识自主完成。
 	LogoParam *LogoParam `json:"LogoParam,omitnil,omitempty" name:"LogoParam"`
+}
+
+type Image struct {
+	// 图片Base64
+	Base64 *string `json:"Base64,omitnil,omitempty" name:"Base64"`
+
+	// 图片Url
+	Url *string `json:"Url,omitnil,omitempty" name:"Url"`
 }
 
 type DescribeHunyuanToVideoJobResponseParams struct {

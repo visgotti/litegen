@@ -1,0 +1,41 @@
+POST /ent/v2/reference2video · viduq1
+Request Body
+model | String | Required | viduq1
+images | Array[String] | Optional | 1 7 128 1:4 4:1 20
+prompt | String | Required | 5000
+bgm | Bool | Optional | 9 10
+duration | Int | Optional | 5 5
+seed | Int | Optional | 0
+aspect_ratio | String | Optional | 16:9 1:1 9:16 16:9 3:4 4:3
+movement_amplitude | String | Optional | auto
+resolution | String | Optional | 5s 1080p 1080p
+payload | String | Optional | 1048576
+off_peak | Bool | Optional | 48
+watermark | Bool | Optional | 
+wm_position | Int | Optional | 3 1 2 3 4
+wm_url | String | Optional | 
+meta_data | String | Optional | 
+callback_url | String | Optional | 
+Body parameters
+model | string | Required | viduq1
+auto_subjects | boolean | Optional | 
+subjects | string | Required | 2.0 7
+subjects.name | string | Required | 
+subjects.images | string | Optional | 3 128 1:4 4:1 20
+subjects.videos | string | Optional | 5 5 128 1:4 4:1 20
+subjects.voice_id | string | Optional | 
+subjects.server_id | string | Optional | 
+prompt | string | Required | 5000 1 2
+audio | boolean | Optional | 
+duration | integer | Optional | 5 5
+seed | integer | Optional | 0
+aspect_ratio | string | Optional | 16:9 1:1 9:16 16:9 3:4 4:3
+resolution | string | Optional | 5s 1080p 1080p
+movement_amplitude | string | Optional | auto
+payload | string | Optional | 1048576
+off_peak | boolean | Optional | 48 2.0
+watermark | boolean | Optional | 
+wm_position | integer | Optional | 3 1 2 3 4
+wm_url | string | Optional | 
+meta_data | string | Optional | 
+callback_url | string | Optional |

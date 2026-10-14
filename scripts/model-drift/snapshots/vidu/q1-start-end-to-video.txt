@@ -1,0 +1,19 @@
+POST /ent/v2/start-end2video · viduq1-classic (not carried)
+
+POST /ent/v2/start-end2video · viduq1
+Body parameters
+model | string | Required | viduq1
+images | string | Required | 0.8 1.25 1:4 4:1 50 10
+prompt | string | Optional | 5000
+duration | integer | Optional | 5s 5
+seed | integer | Optional | 
+resolution | string | Optional | 5s 1080p 1080p
+movement_amplitude | string | Optional | auto auto small medium large
+bgm | boolean | Optional | 
+payload | string | Optional | 1048576
+off_peak | boolean | Optional | false true false 48
+watermark | boolean | Optional | 
+wm_position | integer | Optional | 1 2 3 4 3
+wm_url | string | Optional | 
+meta_data | string | Optional | 
+callback_url | string | Optional | callback_url processing success failed

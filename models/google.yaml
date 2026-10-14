@@ -18,7 +18,10 @@ models:
     provider: google
     media_type: image
     display_name: Gemini 3.1 Flash Image (Nano Banana 2)
-    description: Google's current general-purpose image model (GA 2026-05-28).
+    # Deprecated 2026-10-06 with no shutdown date; Google's successor is
+    # gemini-nano-banana-2.1. @see https://ai.google.dev/gemini-api/docs/deprecations (2026-10-12)
+    description: "Nano Banana 2 (GA 2026-05-28). Deprecated 2026-10-06, no shutdown date announced;
+      Google's successor is gemini-nano-banana-2.1."
     # Standard tier: $60 per 1M image output tokens; a 1K image (1024x1024, 1120
     # tokens) is $0.067 — the default request (no imageSize). Verified 2026-09-11.
     # @see https://ai.google.dev/gemini-api/docs/pricing
@@ -68,15 +71,20 @@ models:
     provider: google
     media_type: image
     display_name: Gemini 2.5 Flash (image)
-    description: "Gemini 2.5 Flash image generation. Shuts down 2026-10-02;
-      migrate to google/gemini-3.1-flash-image."
+    # Google moved the shutdown from 2026-10-02 to 2027-03-15 and now names
+    # gemini-3.1-flash-lite-image as the replacement.
+    # @see https://ai.google.dev/gemini-api/docs/deprecations (2026-10-12)
+    description: "Gemini 2.5 Flash image generation. Deprecated; shuts down 2027-03-15 —
+      migrate to google/gemini-3.1-flash-lite-image."
     pricing: { base_cost_usd: 0.02 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 4000 }
     params:
       aspect_ratio:
         kind: aspect_ratio
-        allowed: ["1:1","2:3","3:2","3:4","4:3","9:16","16:9","21:9"]
+        # Google's per-model table lists 10 ratios, 4:5 and 5:4 included (2026-10-12):
+        # https://ai.google.dev/gemini-api/docs/generate-content/image-generation#aspect_ratios_and_image_size
+        allowed: ["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"]
     ref_inputs:
       max_total: 1
       default_role: init
@@ -125,7 +133,7 @@ models:
     provider: google
     media_type: video
     display_name: Veo 3.1 (preview)
-    description: Veo 3.1 preview — adds reference images and richer control. Paid-tier, preview model id (subject to change).
+    description: "Veo 3.1 preview — adds reference images and richer control. Paid-tier, preview model id. Google shuts the Veo 3.1 previews down on 2026-10-22; its replacement, gemini-omni-1.1-flash, is not carried."
     pricing: { base_cost_usd: 3.20 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 4000 }
@@ -152,7 +160,7 @@ models:
     provider: google
     media_type: video
     display_name: Veo 3.1 Fast (preview)
-    description: Faster, cheaper Veo 3.1 preview variant (with audio).
+    description: "Faster, cheaper Veo 3.1 preview variant (with audio). Google shuts the Veo 3.1 previews down on 2026-10-22; its replacement, gemini-omni-1.1-flash, is not carried."
     pricing: { base_cost_usd: 0.80 }   # ~$0.10/s x 8s (720p); 1080p ~$0.12/s, 4k ~$0.30/s
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 4000 }
@@ -179,7 +187,7 @@ models:
     provider: google
     media_type: video
     display_name: Veo 3.1 Lite (preview)
-    description: Cheapest Veo 3.1 preview tier (with audio).
+    description: "Cheapest Veo 3.1 preview tier (with audio). Google shuts the Veo 3.1 previews down on 2026-10-22; its replacement, gemini-omni-1.1-flash, is not carried."
     pricing: { base_cost_usd: 0.40 }   # ~$0.05/s x 8s (720p); 1080p ~$0.08/s
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 4000 }

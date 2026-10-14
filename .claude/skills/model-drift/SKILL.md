@@ -29,6 +29,7 @@ item first, then re-run. Drift results from a broken provider mean nothing.
 |---|---|---|
 | `FAILED` source (HTTP error, HTML shell, 0 ids, `(canary)`) | Repair the definition (recipe below) | — |
 | `FAILED (config)` | Map the model in `providers/<p>.mjs` from the adapter's model-resolution code | — |
+| `FAILED (typings)` | Add or re-scope a source whose snapshot holds that model's request schema (`untyped` only when the vendor publishes none) | — |
 | `changed` snapshot, or a schema showing our typings are wrong | Fix it (typings recipe) | — |
 | `new` id | Verify it in the vendor docs: endpoint, price, and whether our adapter serves it unchanged | Add or skip |
 | `missing` | Confirm it in the vendor changelog or deprecations page | Remove or replace |

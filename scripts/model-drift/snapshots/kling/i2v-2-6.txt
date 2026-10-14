@@ -1,0 +1,49 @@
+# notice
+(no retirement notice)
+
+# POST /image-to-video/kling-2.6 request body
+| Field Path | Type | Required | Default | Enum |
+| --- | --- | ---: | --- | --- |
+| `contents` | array | Yes | - | - |
+| `contents[].type` | string | Yes | - | `prompt`, `first_frame`, `last_frame`, `voice` |
+| `settings` | object | No | - | - |
+| `settings.audio` | string | No | `off` | `native`, `off` |
+| `settings.resolution` | string | No | `720p` | `720p`, `1080p` |
+| `settings.duration` | int | No | `5` | `5`, `10` |
+| `options` | object | No | - | - |
+| `options.callback_url` | string | No | - | - |
+| `options.external_task_id` | string | No | - | - |
+| `options.watermark_info` | object | No | - | - |
+
+# field notes
+- `contents`: The reference format is as follows, with detailed parameter descriptions provided below:
+- `contents[].type`: `prompt`: Prompt word input identifier.
+  - `first_frame`: First frame input identifier.
+  - `last_frame`: Last frame input identifier.
+  - `voice`: Voice input identifier.
+- `contents[].type.prompt`: Defined in JSON format, as follows:
+- `contents[].type.prompt`: Specify a voice in the format of @xxx, such as @sweet.
+- `contents[].type.first_frame / last_frame`: Required in the first_frame, optional in the last_frame
+- `contents[].type.first_frame / last_frame`: Defined in JSON format, as follows:
+- `contents[].type.first_frame / last_frame`: Image format support: .jpg, .jpeg, .png.
+- `contents[].type.first_frame / last_frame`: The size of the image file cannot exceed 50MB.
+- `contents[].type.first_frame / last_frame`: The width and height of the image must be no less than 300px, and the aspect ratio of the image should fall within the range of 1:2.5 to 2.5:1.
+- `contents[].type.first_frame / last_frame`: Supports first-frame-to-video and first-and-last-frame-to-video generation; last-frame-only video generation is not supported. Among which:
+    - When generating videos using the first and last frames, only 1080p resolution is supported.
+- `contents[].type.voice`: Defined in JSON format, as follows:
+- `contents[].type.voice`: At most 2 voices can be referenced.
+- `contents[].type.voice`: When specifying a voice, the sound parameter audio cannot be off.
+- `contents[].type.voice`: The voice_id is returned by the Custom Voice API, or you can use a system preset voice. [Click here for details](https://kling.ai/document-api/api/video/2-6/voice-customization).
+- `settings.audio`: native: The generated video includes native audio matching the visuals.
+- `settings.audio`: off: The generated video has no audio.
+- `settings.audio`: When audio=native, only 1080P videos are supported.
+- `settings.audio`: When audio=off, designated voice is not supported.
+- `settings.resolution`: 720p: Output video with a resolution of 720P.
+- `settings.resolution`: 1080p: Output video with a resolution of 1080P.
+- `settings.resolution`: When generating videos with native audio, only 1080p resolution is supported.
+- `settings.resolution`: When generating videos using the first and last frames, only 1080P videos can be generated.
+- `options.callback_url`: See [Callback Protocol](https://kling.ai/document-api/api/get-started/callbacks) for the message schema.
+- `options.external_task_id`: Users can provide a Custom task ID, which does not overwrite the system-generated task ID. It can be used to query task status.
+- `options.external_task_id`: Please note that the Custom task ID must be unique within a single user account.
+- `options.watermark_info`: Controlled by the enabled parameter, the specific object format is as follows:
+- `options.watermark_info`: Custom watermark is not supported at this time.

@@ -1,3 +1,4 @@
+// action SubmitHunyuanImageJob
 type SubmitHunyuanImageJobRequestParams struct {
 	// 文本描述。 
 	// 算法将根据输入的文本智能生成与之相关的图像。 
@@ -54,4 +55,39 @@ type SubmitHunyuanImageJobRequestParams struct {
 	// 标识内容设置。
 	// 默认在生成结果图右下角添加“图片由 AI 生成”字样，您可根据自身需要替换为其他的标识图片。
 	LogoParam *LogoParam `json:"LogoParam,omitnil,omitempty" name:"LogoParam"`
+}
+
+type Image struct {
+	// 图片Url。
+	ImageUrl *string `json:"ImageUrl,omitnil,omitempty" name:"ImageUrl"`
+
+	// 图片Base64。
+	ImageBase64 *string `json:"ImageBase64,omitnil,omitempty" name:"ImageBase64"`
+}
+
+type QueryHunyuanImageJobResponseParams struct {
+	// 当前任务状态码：
+	// 1：等待中、2：运行中、4：处理失败、5：处理完成。
+	JobStatusCode *string `json:"JobStatusCode,omitnil,omitempty" name:"JobStatusCode"`
+
+	// 当前任务状态：排队中、处理中、处理失败或者处理完成。
+	JobStatusMsg *string `json:"JobStatusMsg,omitnil,omitempty" name:"JobStatusMsg"`
+
+	// 任务处理失败错误码。
+	JobErrorCode *string `json:"JobErrorCode,omitnil,omitempty" name:"JobErrorCode"`
+
+	// 任务处理失败错误信息。
+	JobErrorMsg *string `json:"JobErrorMsg,omitnil,omitempty" name:"JobErrorMsg"`
+
+	// 生成图 URL 列表，有效期1小时，请及时保存。
+	ResultImage []*string `json:"ResultImage,omitnil,omitempty" name:"ResultImage"`
+
+	// 结果 detail 数组，Success 代表成功。
+	ResultDetails []*string `json:"ResultDetails,omitnil,omitempty" name:"ResultDetails"`
+
+	// 对应 SubmitHunyuanImageJob 接口中 Revise 参数。开启扩写时，返回扩写后的 prompt 文本。 如果关闭扩写，将直接返回原始输入的 prompt。
+	RevisedPrompt []*string `json:"RevisedPrompt,omitnil,omitempty" name:"RevisedPrompt"`
+
+	// 唯一请求 ID，由服务端生成，每次请求都会返回（若请求因其他原因未能抵达服务端，则该次请求不会获得 RequestId）。定位问题时需要提供该次请求的 RequestId。
+	RequestId *string `json:"RequestId,omitnil,omitempty" name:"RequestId"`
 }

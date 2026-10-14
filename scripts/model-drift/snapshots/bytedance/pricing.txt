@@ -1,0 +1,6 @@
+| dreamina-seedance-2-0-mini-260615 > Pricing varies based on whether the input includes video. | * For 480p and 720p outputs: * Input without video: 3.5 * Input with video: 2.1 | Not supported yet |
+| seedance-1-0-pro-250528 | 2.5 | 1.25 |
+| seedance-1-0-pro-fast-251015 | 1 | 0.5 |
+| seedream-5-0-lite-260128 | Free | 0.035 |
+| seedream-4-5-251128 | Free | 0.04 |
+| seedream-4-0-250828 | Free | 0.03 |

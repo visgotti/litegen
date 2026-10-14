@@ -1,0 +1,15 @@
+POST /ent/v2/reference2video · viduq2 (not carried)
+
+POST /ent/v2/reference2video · viduq2-pro
+Body parameters
+model | string | Required | viduq2-pro
+images | array | Optional | 1 1 7 1 4 2 3 4 128 128 1:4 4:1 5 20
+videos | array | Optional | 1 2 1 2 1 8 2 5 3 4 128 128 1:4 4:1 100 5 20
+prompt | string | Required | 5000
+duration | integer | Optional | viduq2-pro 5 1-10
+seed | integer | Optional | 0
+aspect_ratio | string | Optional | 16:9 1:1 9:16 16:9 3:4 4:3 auto
+resolution | string | Optional | viduq2-pro 1-10 720p 540p 720p 1080p
+payload | string | Optional | 1048576
+off_peak | boolean | Optional | false true false 48 2.0
+callback_url | string | Optional | callback_url status processing success failed

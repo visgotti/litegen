@@ -1,39 +1,46 @@
+Model | Viduq4-preview
+Resolution | 540p, 720p, 1080p，2k，4k
+Frame rate | 24fps
+Duration | 1-16s selectable
+Image-to-video | ✔️
+Reference-to-video | ✔️
+
 Model | viduq3-pro | viduq3-mix | viduq3-drama | viduq3-ad | viduq3-turbo
 Resolution | 540p, 720p, 1080p | 540p, 720p, 1080p | 720p, 1080p | 720p, 1080p | 540p, 720p, 1080p
-Frame Rate | 24fps | 24fps | 24fps | 24fps | 24fps
-Duration | 1–16s | 1–16s | 3–15s | 3–15s | 1–16s
-Image-to-Video | ✔️ | - | - | - | ✔️
-Reference-to-Video | - | ✔️ | ✔️ | ✔️ | ✔️
-First/Last Frame | ✔️ | - | - | - | ✔️
-Text-to-Video | ✔️ | - | - | - | ✔️
+Frame rate | 24fps | 24fps | 24fps | 24fps | 24fps
+Duration | 1-16s selectable | 1-16s selectable | 3-15s selectable | 3-15s selectable | 1-16s selectable
+Image-to-video | ✔️ | - | - | - | ✔️
+Reference-to-video | - | ✔️ | ✔️ | ✔️ | ✔️
+First and last frame | ✔️ | - | - | - | ✔️
+Text-to-video | ✔️ | - | - | - | ✔️
 Effects/Templates | - | - | - | - | -
 
 Model | viduq2-pro | viduq2 | viduq2-turbo
 Resolution | 540p, 720p, 1080p | 540p, 720p, 1080p | 540p, 720p, 1080p
-Frame Rate | 24fps | 24fps | 24fps
-Duration | 1–10s | 1–10s | 1–10s
-Image-to-Video | ✔️ | - | ✔️
-Reference-to-Video | ✔️ | ✔️ | -
-First/Last Frame | ✔️ | - | ✔️
-Text-to-Video | - | ✔️ | -
+Frame rate | 24fps | 24fps | 24fps
+Duration | 1-10s selectable | 1-10s selectable | 1-10s selectable
+Image-to-video | ✔️ | - | ✔️
+Reference-to-video | ✔️ | ✔️ | -
+First and last frame | ✔️ | - | ✔️
+Text-to-video | - | ✔️ | -
 Effects/Templates | - | - | -
 
 Model | viduq1 | viduq1-classic
 Resolution | 1080p | 1080p
-Frame Rate | 24fps | 24fps
+Frame rate | 24fps | 24fps
 Duration | 5s | 5s
-Image-to-Video | ✔️ | ✔️
-Reference-to-Video | ✔️ | -
-First/Last Frame | ✔️ | ✔️
-Text-to-Video | ✔️ | -
+Image-to-video | ✔️ | ✔️
+Reference-to-video | ✔️ | -
+First and last frame | ✔️ | ✔️
+Text-to-video | ✔️ | -
 Effects/Templates | - | -
 
 Model | vidu2.0
 Resolution | 360p, 720p, 1080p
-Frame Rate | 32fps
+Frame rate | 32fps
 Duration | 4s, 8s
-Image-to-Video | ✔️
-Reference-to-Video | ✔️
-First/Last Frame | ✔️
-Text-to-Video | -
+Image-to-video | ✔️
+Reference-to-video | ✔️
+First and last frame | ✔️
+Text-to-video | -
 Effects/Templates | ✔️
