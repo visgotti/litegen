@@ -30,6 +30,7 @@ import httpx
 import pytest
 
 import litegen._generated.api as api_pkg
+from litegen import LiteGenClient
 from litegen._generated.client import AuthenticatedClient, Client
 from litegen._generated.models import (
     AcceptInvitationRequest,
@@ -854,6 +855,253 @@ def test_invitations(master_client, owner, base_url):
 
 
 # =============================================================================
+# management: limits / budgets  (owner.bearer = admin-scope API key)
+# =============================================================================
+from litegen._generated.api import budgets as _budgets  # noqa: E402
+from litegen._generated.api import end_users as _end_users  # noqa: E402
+from litegen._generated.api import gateway as _gateway  # noqa: E402
+from litegen._generated.api import spend as _spend  # noqa: E402
+from litegen._generated.api.budgets import (  # noqa: E402
+    block_key, delete_app_limits, delete_key_limits, delete_member_limits, delete_org_limits,
+    get_app_limits, get_key_limits, get_member_limits, get_org_limits, list_limits, my_limits,
+    put_app_limits, put_key_limits, put_member_limits, put_org_limits, reset_app_limits,
+    reset_key_limits, reset_member_limits, reset_org_limits, unblock_key,
+)
+from litegen._generated.api.end_users import (  # noqa: E402
+    block_end_user, create_end_user, delete_end_user, delete_end_user_limits, get_end_user,
+    get_end_user_limits, list_end_users, put_end_user_limits, reset_end_user_limits,
+    unblock_end_user, update_end_user,
+)
+from litegen._generated.api.gateway import (  # noqa: E402
+    admin_create_model, admin_delete_model, admin_delete_provider, admin_delete_routes,
+    admin_get_model, admin_get_provider, admin_get_routes, admin_get_settings, admin_list_models,
+    admin_list_providers, admin_patch_model, admin_put_provider, admin_put_routes,
+    admin_put_settings, admin_replace_model,
+)
+from litegen._generated.api.spend import spend_logs, spend_report  # noqa: E402
+from litegen._generated.models import (  # noqa: E402
+    CreateEndUserRequest, GatewaySettings, LimitsInput, ModelSchema, PatchModelStateRequest,
+    PutProviderConfigRequest, RoutesDocument, UpdateEndUserRequest,
+)
+
+
+def _new_key(owner, scopes="generate,read") -> tuple[str, str]:
+    r = owner.http.post("/v1/keys", json={"name": f"k-{uuid.uuid4().hex[:6]}", "scopes": scopes})
+    assert r.status_code in (200, 201), r.text
+    return r.json()["id"], r.json()["key"]
+
+
+def _owner_user_id(owner) -> str:
+    members = owner.http.get(f"/v1/orgs/{owner.org_id}/members").json()
+    return next(m["user_id"] for m in members if m["email"] == owner.email)
+
+
+def test_limits_keys_orgs_apps_members(owner):
+    key_id, raw = _new_key(owner)
+    budget = LimitsInput.from_dict({"max_budget_usd": 5.0, "budget_duration": "30d", "rpm_limit": 100})
+
+    r = _ok(put_key_limits.sync_detailed(key_id, client=owner.bearer, body=budget), 200)
+    assert r.parsed.max_budget_usd == 5.0 and r.parsed.budget_duration == "30d"
+    EXERCISED.add("put_key_limits")
+    _ok(get_key_limits.sync_detailed(key_id, client=owner.bearer), 200)
+    EXERCISED.add("get_key_limits")
+    _ok(reset_key_limits.sync_detailed(key_id, client=owner.bearer), 200)
+    EXERCISED.add("reset_key_limits")
+    _ok(delete_key_limits.sync_detailed(key_id, client=owner.bearer), 200)
+    EXERCISED.add("delete_key_limits")
+
+    r = _ok(block_key.sync_detailed(key_id, client=owner.bearer), 200)
+    assert r.parsed.is_active is False
+    assert httpx.post(f"{owner.http.base_url}/v1/images/cost", headers={"authorization": f"Bearer {raw}"},
+                      json={"model": IMG_MODEL, "prompt": "x"}).status_code == 401
+    EXERCISED.add("block_key")
+    r = _ok(unblock_key.sync_detailed(key_id, client=owner.bearer), 200)
+    assert r.parsed.is_active is True
+    EXERCISED.add("unblock_key")
+
+    _ok(put_org_limits.sync_detailed(owner.org_id, client=owner.bearer, body=budget), 200)
+    EXERCISED.add("put_org_limits")
+    _ok(get_org_limits.sync_detailed(owner.org_id, client=owner.bearer), 200)
+    EXERCISED.add("get_org_limits")
+    _ok(reset_org_limits.sync_detailed(owner.org_id, client=owner.bearer), 200)
+    EXERCISED.add("reset_org_limits")
+
+    _ok(put_app_limits.sync_detailed(owner.app_id, client=owner.bearer, body=budget), 200)
+    EXERCISED.add("put_app_limits")
+    _ok(get_app_limits.sync_detailed(owner.app_id, client=owner.bearer), 200)
+    EXERCISED.add("get_app_limits")
+    _ok(reset_app_limits.sync_detailed(owner.app_id, client=owner.bearer), 200)
+    EXERCISED.add("reset_app_limits")
+
+    uid = _owner_user_id(owner)
+    _ok(put_member_limits.sync_detailed(owner.org_id, uid, client=owner.session, body=budget), 200)
+    EXERCISED.add("put_member_limits")
+    _ok(get_member_limits.sync_detailed(owner.org_id, uid, client=owner.session), 200)
+    EXERCISED.add("get_member_limits")
+    _ok(reset_member_limits.sync_detailed(owner.org_id, uid, client=owner.session), 200)
+    EXERCISED.add("reset_member_limits")
+
+    r = _ok(list_limits.sync_detailed(client=owner.bearer), 200)
+    assert {l.entity_type.value for l in r.parsed.data} == {"org", "app", "member"}
+    r = _ok(list_limits.sync_detailed(client=owner.bearer, entity_type="app"), 200)
+    assert len(r.parsed.data) == 1
+    EXERCISED.add("list_limits")
+    r = _ok(my_limits.sync_detailed(client=owner.bearer), 200)
+    assert {l.entity_type.value for l in r.parsed.data} == {"org", "app", "member"}
+    EXERCISED.add("my_limits")
+
+    _ok(delete_member_limits.sync_detailed(owner.org_id, uid, client=owner.session), 200)
+    EXERCISED.add("delete_member_limits")
+    _ok(delete_app_limits.sync_detailed(owner.app_id, client=owner.bearer), 200)
+    EXERCISED.add("delete_app_limits")
+    _ok(delete_org_limits.sync_detailed(owner.org_id, client=owner.bearer), 200)
+    EXERCISED.add("delete_org_limits")
+    _ok(get_org_limits.sync_detailed(owner.org_id, client=owner.bearer), 404)
+
+
+def test_budget_is_enforced_through_the_facade(owner, base_url):
+    _, raw = _new_key(owner)
+    admin = LiteGenClient(api_key=owner.api_key, base_url=base_url)
+    admin.limits.set_app(owner.app_id, {"max_budget_usd": 7.0})
+    gen = LiteGenClient(api_key=raw, base_url=base_url)
+    gen.images.generate(model="mock/expensive-image", prompt="one")
+    from litegen import LiteGenAPIError
+    with pytest.raises(LiteGenAPIError) as e:
+        gen.images.generate(model="mock/expensive-image", prompt="two")
+    assert e.value.status == 402
+    assert admin.limits.get_app(owner.app_id)["spend_usd"] == 5.0
+    assert [lim["entity_type"] for lim in gen.limits.me()] == ["app"]
+    admin.limits.delete_app(owner.app_id)
+
+
+# =============================================================================
+# management: end users + spend
+# =============================================================================
+def test_end_users_and_spend(owner, base_url):
+    eu = f"cust-{uuid.uuid4().hex[:6]}"
+    r = _ok(create_end_user.sync_detailed(client=owner.bearer, body=CreateEndUserRequest.from_dict(
+        {"id": eu, "alias": "Jane", "limits": {"max_budget_usd": 50}})), 201)
+    assert r.parsed.alias == "Jane"
+    EXERCISED.add("create_end_user")
+    _ok(get_end_user.sync_detailed(eu, client=owner.bearer), 200)
+    EXERCISED.add("get_end_user")
+    r = _ok(update_end_user.sync_detailed(eu, client=owner.bearer, body=UpdateEndUserRequest.from_dict({"alias": "J"})), 200)
+    assert r.parsed.alias == "J"
+    EXERCISED.add("update_end_user")
+    r = _ok(list_end_users.sync_detailed(client=owner.bearer), 200)
+    assert any(u.id == eu for u in r.parsed.data)
+    EXERCISED.add("list_end_users")
+    _ok(block_end_user.sync_detailed(eu, client=owner.bearer), 200)
+    EXERCISED.add("block_end_user")
+    blocked = httpx.post(f"{base_url}/v1/images/generations",
+                         headers={"authorization": f"Bearer {owner.api_key}", "x-litegen-end-user": eu},
+                         json={"model": IMG_MODEL, "prompt": "x"}, timeout=30)
+    assert blocked.status_code == 403 and blocked.json()["error"]["type"] == "end_user_blocked"
+    _ok(unblock_end_user.sync_detailed(eu, client=owner.bearer), 200)
+    EXERCISED.add("unblock_end_user")
+
+    _ok(put_end_user_limits.sync_detailed(eu, client=owner.bearer, body=LimitsInput.from_dict({"max_budget_usd": 20})), 200)
+    EXERCISED.add("put_end_user_limits")
+    _ok(get_end_user_limits.sync_detailed(eu, client=owner.bearer), 200)
+    EXERCISED.add("get_end_user_limits")
+    _ok(reset_end_user_limits.sync_detailed(eu, client=owner.bearer), 200)
+    EXERCISED.add("reset_end_user_limits")
+
+    # Attributed spend through the facade's raw request path.
+    client = LiteGenClient(api_key=owner.api_key, base_url=base_url,
+                           default_headers={"x-litegen-end-user": eu, "x-litegen-tags": "it,beta"})
+    client.images.generate(model=IMG_MODEL, prompt="tracked")
+    import time
+    for _ in range(100):
+        r = _ok(spend_logs.sync_detailed(client=owner.bearer, end_user=eu), 200)
+        if r.parsed.total >= 1:
+            break
+        time.sleep(0.05)
+    assert r.parsed.total == 1 and r.parsed.data[0].tags == ["beta", "it"]
+    EXERCISED.add("spend_logs")
+    r = _ok(spend_report.sync_detailed(client=owner.bearer, group_by="tag", end_user=eu), 200)
+    assert {row.group for row in r.parsed.data} == {"beta", "it"}
+    EXERCISED.add("spend_report")
+    facade = LiteGenClient(api_key=owner.api_key, base_url=base_url)
+    assert facade.spend.report(group_by="end_user", end_user=eu)["total_requests"] == 1
+    assert facade.spend.logs(end_user=eu, per_page=5)["total"] == 1
+
+    _ok(delete_end_user_limits.sync_detailed(eu, client=owner.bearer), 200)
+    EXERCISED.add("delete_end_user_limits")
+    _ok(delete_end_user.sync_detailed(eu, client=owner.bearer), 200)
+    EXERCISED.add("delete_end_user")
+
+
+# =============================================================================
+# management: gateway admin  (master_client = platform admin)
+# =============================================================================
+def test_gateway_admin(master_client, owner, base_url):
+    mid = f"mock/it-{uuid.uuid4().hex[:6]}"
+    schema = {
+        "id": mid, "provider": "mock", "media_type": "image", "display_name": "IT Runtime",
+        "description": "made by the integration suite", "pricing": {"base_cost_usd": 0.0},
+        "capabilities": {"text_to_image": True}, "prompt": {"required": True, "max_length": 500},
+    }
+    r = _ok(admin_create_model.sync_detailed(client=master_client, body=ModelSchema.from_dict(schema)), 201)
+    assert r.parsed.source.value == "runtime"
+    EXERCISED.add("admin_create_model")
+    # A non-admin key is refused.
+    _ok(admin_list_models.sync_detailed(client=owner.bearer), 403)
+    r = _ok(admin_list_models.sync_detailed(client=master_client), 200)
+    assert any(m.id == mid for m in r.parsed.data)
+    EXERCISED.add("admin_list_models")
+    _ok(admin_get_model.sync_detailed(mid, client=master_client), 200)
+    EXERCISED.add("admin_get_model")
+    schema["display_name"] = "IT Renamed"
+    r = _ok(admin_replace_model.sync_detailed(mid, client=master_client, body=ModelSchema.from_dict(schema)), 200)
+    EXERCISED.add("admin_replace_model")
+    LiteGenClient(api_key=owner.api_key, base_url=base_url).images.generate(model=mid, prompt="runtime model")
+    r = _ok(admin_patch_model.sync_detailed(mid, client=master_client, body=PatchModelStateRequest(disabled=True)), 200)
+    assert r.parsed.disabled is True
+    EXERCISED.add("admin_patch_model")
+    _ok(admin_delete_model.sync_detailed(mid, client=master_client), 200)
+    EXERCISED.add("admin_delete_model")
+
+    r = _ok(admin_list_providers.sync_detailed(client=master_client), 200)
+    assert any(p.name == "mock" and p.active for p in r.parsed.data)
+    EXERCISED.add("admin_list_providers")
+    secret = "sk-it-provider-secret-4321"
+    r = _ok(admin_put_provider.sync_detailed("openai", client=master_client, body=PutProviderConfigRequest.from_dict(
+        {"api_key": secret, "api_base": "https://example.invalid/v1"})), 200)
+    assert r.parsed.key_hint == "…4321" and secret not in r.content.decode()
+    EXERCISED.add("admin_put_provider")
+    _ok(admin_get_provider.sync_detailed("openai", client=master_client), 200)
+    EXERCISED.add("admin_get_provider")
+    r = _ok(admin_delete_provider.sync_detailed("openai", client=master_client), 200)
+    assert r.parsed.source == "none"
+    EXERCISED.add("admin_delete_provider")
+
+    r = _ok(admin_put_routes.sync_detailed(client=master_client, body=RoutesDocument.from_dict(
+        {"routes": [{"model": "mock/*", "deployments": [{"provider": "mock"}]}]})), 200)
+    assert r.parsed.source == "runtime"
+    EXERCISED.add("admin_put_routes")
+    _ok(admin_get_routes.sync_detailed(client=master_client), 200)
+    EXERCISED.add("admin_get_routes")
+    r = _ok(admin_delete_routes.sync_detailed(client=master_client), 200)
+    assert r.parsed.source == "config"
+    EXERCISED.add("admin_delete_routes")
+
+    r = _ok(admin_put_settings.sync_detailed(client=master_client, body=GatewaySettings.from_dict({"cost_markup_percent": 5.0})), 200)
+    assert r.parsed.effective_cost_markup_percent == 5.0
+    EXERCISED.add("admin_put_settings")
+    _ok(admin_get_settings.sync_detailed(client=master_client), 200)
+    EXERCISED.add("admin_get_settings")
+    _ok(admin_put_settings.sync_detailed(client=master_client, body=GatewaySettings.from_dict({})), 200)
+
+    # The facade covers the same surface.
+    facade = LiteGenClient(api_key=MASTER_KEY, base_url=base_url)
+    assert any(m["id"] == IMG_MODEL for m in facade.admin.models.list())
+    assert facade.admin.routes.get()["source"] == "config"
+    assert facade.admin.settings.get()["settings"]["cost_markup_percent"] is None
+    assert any(p["name"] == "mock" for p in facade.admin.providers.list())
+
+
+# =============================================================================
 # COVERAGE GUARANTEE
 # =============================================================================
 def _discover_endpoint_modules() -> tuple[set[str], int]:
@@ -878,14 +1126,18 @@ def _discover_endpoint_modules() -> tuple[set[str], int]:
     return names, file_count
 
 
-def test_every_generated_endpoint_is_covered():
+def test_every_generated_endpoint_is_covered(base_url):
     """Guarantee every generated endpoint is exercised.
 
     Compares EXERCISED (populated by every other test) against the discovered
     universe of endpoint module names, and independently asserts the raw module
-    file count is 76. Both `transfer_owner` modules are exercised
+    file count is 124. Both `transfer_owner` modules are exercised
     (organizations + users); they share a bare name, so the deduped name set has
-    75 entries while the file count is 76.
+    123 entries while the file count is 124.
+
+    Takes `base_url` only so it skips with the rest of the suite when the binary
+    isn't built: without the binary nothing populates EXERCISED, and this would
+    fail on a coverage gap that doesn't exist.
 
     NOTE: this must run LAST so every other test has populated EXERCISED. pytest
     preserves definition order, so defining it last is sufficient.
@@ -895,6 +1147,6 @@ def test_every_generated_endpoint_is_covered():
     unexpected = EXERCISED - discovered
     assert not missing, f"{len(missing)} endpoint(s) never exercised: {sorted(missing)}"
     assert not unexpected, f"recorded names not found in generated API: {sorted(unexpected)}"
-    # 76 endpoint module files in total (75 unique names + duplicate transfer_owner).
-    assert file_count == 76, f"expected 76 endpoint module files, found {file_count}"
-    assert len(discovered) == 75, f"expected 75 unique names, found {len(discovered)}"
+    # 124 endpoint module files in total (123 unique names + duplicate transfer_owner).
+    assert file_count == 124, f"expected 124 endpoint module files, found {file_count}"
+    assert len(discovered) == 123, f"expected 123 unique names, found {len(discovered)}"

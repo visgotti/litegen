@@ -26,7 +26,11 @@ class VideoGenerationRequest:
         seed (Union[None, Unset, int]):
         strict (Union[Unset, bool]):
         aspect_ratio (Union[None, Unset, str]):
-        duration_seconds (Union[Unset, float]):
+        duration_seconds (Union[None, Unset, float]): Absent means the model's own `duration_seconds` default (resolved
+            by
+            `resolve_duration_seconds`), not a fixed 5s: models whose minimum is
+            higher (fal/ltx-2.3, bedrock nova-reel) rejected every request that
+            omitted it.
         fps (Union[None, Unset, int]):
         resolution (Union[None, Unset, str]):
     """
@@ -41,7 +45,7 @@ class VideoGenerationRequest:
     seed: Union[None, Unset, int] = UNSET
     strict: Union[Unset, bool] = UNSET
     aspect_ratio: Union[None, Unset, str] = UNSET
-    duration_seconds: Union[Unset, float] = UNSET
+    duration_seconds: Union[None, Unset, float] = UNSET
     fps: Union[None, Unset, int] = UNSET
     resolution: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -84,7 +88,11 @@ class VideoGenerationRequest:
         else:
             aspect_ratio = self.aspect_ratio
 
-        duration_seconds = self.duration_seconds
+        duration_seconds: Union[None, Unset, float]
+        if isinstance(self.duration_seconds, Unset):
+            duration_seconds = UNSET
+        else:
+            duration_seconds = self.duration_seconds
 
         fps: Union[None, Unset, int]
         if isinstance(self.fps, Unset):
@@ -182,7 +190,14 @@ class VideoGenerationRequest:
 
         aspect_ratio = _parse_aspect_ratio(d.pop("aspect_ratio", UNSET))
 
-        duration_seconds = d.pop("duration_seconds", UNSET)
+        def _parse_duration_seconds(data: object) -> Union[None, Unset, float]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, float], data)
+
+        duration_seconds = _parse_duration_seconds(d.pop("duration_seconds", UNSET))
 
         def _parse_fps(data: object) -> Union[None, Unset, int]:
             if data is None:

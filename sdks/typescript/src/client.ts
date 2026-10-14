@@ -57,6 +57,29 @@ type AddMemberRequest = Schemas["AddMemberRequest"];
 type UpdateMemberRequest = Schemas["UpdateMemberRequest"];
 type OrgTransferOwnerRequest = Schemas["OrgTransferOwnerRequest"];
 type CreateProviderCredentialRequest = Schemas["CreateProviderCredentialRequest"];
+// Management (budgets/limits, end users, spend, gateway admin)
+type EntityLimits = Schemas["EntityLimits"];
+type LimitsInput = Schemas["LimitsInput"];
+type LimitsListResponse = Schemas["LimitsListResponse"];
+type EntityType = Schemas["EntityType"];
+type KeyActiveResponse = Schemas["KeyActiveResponse"];
+type DeletedResponse = Schemas["DeletedResponse"];
+type EndUserView = Schemas["EndUserView"];
+type EndUserListResponse = Schemas["EndUserListResponse"];
+type CreateEndUserRequest = Schemas["CreateEndUserRequest"];
+type UpdateEndUserRequest = Schemas["UpdateEndUserRequest"];
+type SpendGroupBy = Schemas["SpendGroupBy"];
+type SpendReportResponse = Schemas["SpendReportResponse"];
+type SpendLogsResponse = Schemas["SpendLogsResponse"];
+type AdminModelView = Schemas["AdminModelView"];
+type AdminModelListResponse = Schemas["AdminModelListResponse"];
+type ProviderConfigView = Schemas["ProviderConfigView"];
+type ProviderConfigListResponse = Schemas["ProviderConfigListResponse"];
+type PutProviderConfigRequest = Schemas["PutProviderConfigRequest"];
+type RoutesDocument = Schemas["RoutesDocument"];
+type RouteSpec = Schemas["RouteSpec"];
+type GatewaySettings = Schemas["GatewaySettings"];
+type GatewaySettingsView = Schemas["GatewaySettingsView"];
 
 export interface OrgAllowedModels {
   models: string[];
@@ -314,6 +337,14 @@ export class LiteGenClient {
   readonly generations: GenerationsNamespace;
   readonly orgs: OrgsNamespace;
   readonly apps: AppsNamespace;
+  /** Budgets and limits across keys, orgs, apps and members. */
+  readonly limits: LimitsNamespace;
+  /** End users (your callers' customers), named per request with `x-litegen-end-user`. */
+  readonly endUsers: EndUsersNamespace;
+  /** Spend reports and the attributed request log. */
+  readonly spend: SpendNamespace;
+  /** Gateway admin: runtime models, provider configs, routes and settings. */
+  readonly admin: AdminNamespace;
 
   constructor(opts: LiteGenClientOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? "http://localhost:4000").replace(/\/$/, "");
@@ -342,6 +373,10 @@ export class LiteGenClient {
     this.generations = new GenerationsNamespace(this);
     this.orgs = new OrgsNamespace(this);
     this.apps = new AppsNamespace(this);
+    this.limits = new LimitsNamespace(this);
+    this.endUsers = new EndUsersNamespace(this);
+    this.spend = new SpendNamespace(this);
+    this.admin = new AdminNamespace(this);
 
     this.activeOrgId = opts.activeOrgId;
     this.activeAppId = opts.activeAppId;
@@ -706,8 +741,29 @@ class LogsNamespace {
   }
 }
 
-class KeysNamespace {
+class KeyLimitsNamespace {
   constructor(private readonly client: LiteGenClient) {}
+  get(keyId: string, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("GET", `/v1/keys/${encodeURIComponent(keyId)}/limits`, undefined, signal);
+  }
+  /** Replace the key's budget window, soft budget, model allowlist, rpm and parallel caps. */
+  set(keyId: string, limits: LimitsInput, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("PUT", `/v1/keys/${encodeURIComponent(keyId)}/limits`, limits, signal);
+  }
+  delete(keyId: string, signal?: AbortSignal): Promise<DeletedResponse> {
+    return this.client.request("DELETE", `/v1/keys/${encodeURIComponent(keyId)}/limits`, undefined, signal);
+  }
+  /** Zero the key's spend for the current window. */
+  resetSpend(keyId: string, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("POST", `/v1/keys/${encodeURIComponent(keyId)}/limits/reset`, undefined, signal);
+  }
+}
+
+class KeysNamespace {
+  readonly limits: KeyLimitsNamespace;
+  constructor(private readonly client: LiteGenClient) {
+    this.limits = new KeyLimitsNamespace(client);
+  }
   create(body: CreateKeyBody | string, signal?: AbortSignal): Promise<ApiKeyCreatedResponse> {
     // Accept either a full body object or just a name string for back-compat.
     const reqBody = typeof body === "string" ? { name: body } : body;
@@ -721,6 +777,17 @@ class KeysNamespace {
       signal,
     );
     return resp.data;
+  }
+  /** One key's detail (`GET /v1/keys/{id}`). */
+  get(id: string, signal?: AbortSignal): Promise<ApiKeyDetail> {
+    return this.client.request("GET", `/v1/keys/${encodeURIComponent(id)}`, undefined, signal);
+  }
+  /** Refuse every request made with this key until {@link unblock}ed. */
+  block(id: string, signal?: AbortSignal): Promise<KeyActiveResponse> {
+    return this.client.request("POST", `/v1/keys/${encodeURIComponent(id)}/block`, undefined, signal);
+  }
+  unblock(id: string, signal?: AbortSignal): Promise<KeyActiveResponse> {
+    return this.client.request("POST", `/v1/keys/${encodeURIComponent(id)}/unblock`, undefined, signal);
   }
   patch(id: string, body: PatchKeyBody, signal?: AbortSignal): Promise<ApiKeyDetail> {
     // Server returns ApiKeyDetail (key_prefix; no public_id/app_id) — not ApiKeyInfo.
@@ -1026,17 +1093,54 @@ class OrgAppsNamespace {
   }
 }
 
+class OrgLimitsNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+  get(orgId: string, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("GET", `/v1/orgs/${encodeURIComponent(orgId)}/limits`, undefined, signal);
+  }
+  set(orgId: string, limits: LimitsInput, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("PUT", `/v1/orgs/${encodeURIComponent(orgId)}/limits`, limits, signal);
+  }
+  delete(orgId: string, signal?: AbortSignal): Promise<DeletedResponse> {
+    return this.client.request("DELETE", `/v1/orgs/${encodeURIComponent(orgId)}/limits`, undefined, signal);
+  }
+  resetSpend(orgId: string, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("POST", `/v1/orgs/${encodeURIComponent(orgId)}/limits/reset`, undefined, signal);
+  }
+}
+
+class OrgMemberLimitsNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+  get(orgId: string, userId: string, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("GET", `/v1/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}/limits`, undefined, signal);
+  }
+  /** A member's budget inside the org: covers their session requests and every key they own. */
+  set(orgId: string, userId: string, limits: LimitsInput, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("PUT", `/v1/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}/limits`, limits, signal);
+  }
+  delete(orgId: string, userId: string, signal?: AbortSignal): Promise<DeletedResponse> {
+    return this.client.request("DELETE", `/v1/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}/limits`, undefined, signal);
+  }
+  resetSpend(orgId: string, userId: string, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("POST", `/v1/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}/limits/reset`, undefined, signal);
+  }
+}
+
 class OrgsNamespace {
   readonly members: OrgMembersNamespace;
   readonly apps: OrgAppsNamespace;
   readonly allowedModels: OrgAllowedModelsNamespace;
   readonly providerCredentials: OrgProviderCredentialsNamespace;
+  readonly limits: OrgLimitsNamespace;
+  readonly memberLimits: OrgMemberLimitsNamespace;
 
   constructor(private readonly client: LiteGenClient) {
     this.members = new OrgMembersNamespace(client);
     this.apps = new OrgAppsNamespace(client);
     this.allowedModels = new OrgAllowedModelsNamespace(client);
     this.providerCredentials = new OrgProviderCredentialsNamespace(client);
+    this.limits = new OrgLimitsNamespace(client);
+    this.memberLimits = new OrgMemberLimitsNamespace(client);
   }
 
   list(signal?: AbortSignal): Promise<OrgSummary[]> {
@@ -1123,13 +1227,31 @@ class AppModelAccessNamespace {
   }
 }
 
+class AppLimitsNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+  get(appId: string, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("GET", `/v1/apps/${encodeURIComponent(appId)}/limits`, undefined, signal);
+  }
+  set(appId: string, limits: LimitsInput, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("PUT", `/v1/apps/${encodeURIComponent(appId)}/limits`, limits, signal);
+  }
+  delete(appId: string, signal?: AbortSignal): Promise<DeletedResponse> {
+    return this.client.request("DELETE", `/v1/apps/${encodeURIComponent(appId)}/limits`, undefined, signal);
+  }
+  resetSpend(appId: string, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("POST", `/v1/apps/${encodeURIComponent(appId)}/limits/reset`, undefined, signal);
+  }
+}
+
 class AppsNamespace {
   readonly storage: AppStorageNamespace;
   readonly allowedModels: AppModelAccessNamespace;
+  readonly limits: AppLimitsNamespace;
 
   constructor(private readonly client: LiteGenClient) {
     this.storage = new AppStorageNamespace(client);
     this.allowedModels = new AppModelAccessNamespace(client);
+    this.limits = new AppLimitsNamespace(client);
   }
 
   get(appId: string, signal?: AbortSignal): Promise<Application> {
@@ -1140,5 +1262,238 @@ class AppsNamespace {
   }
   delete(appId: string, signal?: AbortSignal): Promise<void> {
     return this.client.request("DELETE", `/v1/apps/${encodeURIComponent(appId)}`, undefined, signal);
+  }
+}
+
+// ─── Management: limits, end users, spend, gateway admin ─────────────────────
+
+/** Options for {@link LimitsNamespace.list}. */
+export interface ListLimitsOptions {
+  entityType?: EntityType;
+  /** Platform admin only: another org. */
+  orgId?: string;
+}
+
+class LimitsNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+  /** Every limits row in the active org, optionally of one entity type. */
+  async list(opts: ListLimitsOptions = {}, signal?: AbortSignal): Promise<EntityLimits[]> {
+    const params = new URLSearchParams();
+    if (opts.entityType) params.set("entity_type", opts.entityType);
+    if (opts.orgId) params.set("org_id", opts.orgId);
+    const qs = params.toString();
+    const resp = await this.client.request<LimitsListResponse>("GET", `/v1/limits?${qs}`, undefined, signal);
+    return resp.data;
+  }
+  /** The limits that apply to the caller: its key, org, app and member rows. */
+  async me(signal?: AbortSignal): Promise<EntityLimits[]> {
+    const resp = await this.client.request<LimitsListResponse>("GET", "/v1/limits/me", undefined, signal);
+    return resp.data;
+  }
+}
+
+/** Platform admin only: act on another org's end users. */
+export interface EndUserOptions {
+  orgId?: string;
+}
+
+/** Query string for {@link EndUserOptions}; empty when there is nothing to send. */
+function orgQuery(opts: EndUserOptions | undefined): string {
+  return opts?.orgId ? new URLSearchParams({ org_id: opts.orgId }).toString() : "";
+}
+
+class EndUserLimitsNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+  get(endUserId: string, opts?: EndUserOptions, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("GET", `/v1/end-users/${encodeURIComponent(endUserId)}/limits?${orgQuery(opts)}`, undefined, signal);
+  }
+  set(endUserId: string, limits: LimitsInput, opts?: EndUserOptions, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("PUT", `/v1/end-users/${encodeURIComponent(endUserId)}/limits?${orgQuery(opts)}`, limits, signal);
+  }
+  delete(endUserId: string, opts?: EndUserOptions, signal?: AbortSignal): Promise<DeletedResponse> {
+    return this.client.request("DELETE", `/v1/end-users/${encodeURIComponent(endUserId)}/limits?${orgQuery(opts)}`, undefined, signal);
+  }
+  resetSpend(endUserId: string, opts?: EndUserOptions, signal?: AbortSignal): Promise<EntityLimits> {
+    return this.client.request("POST", `/v1/end-users/${encodeURIComponent(endUserId)}/limits/reset?${orgQuery(opts)}`, undefined, signal);
+  }
+}
+
+class EndUsersNamespace {
+  readonly limits: EndUserLimitsNamespace;
+  constructor(private readonly client: LiteGenClient) {
+    this.limits = new EndUserLimitsNamespace(client);
+  }
+  async list(opts?: EndUserOptions, signal?: AbortSignal): Promise<EndUserView[]> {
+    const resp = await this.client.request<EndUserListResponse>("GET", `/v1/end-users?${orgQuery(opts)}`, undefined, signal);
+    return resp.data;
+  }
+  create(req: CreateEndUserRequest, opts?: EndUserOptions, signal?: AbortSignal): Promise<EndUserView> {
+    return this.client.request("POST", `/v1/end-users?${orgQuery(opts)}`, req, signal);
+  }
+  get(endUserId: string, opts?: EndUserOptions, signal?: AbortSignal): Promise<EndUserView> {
+    return this.client.request("GET", `/v1/end-users/${encodeURIComponent(endUserId)}?${orgQuery(opts)}`, undefined, signal);
+  }
+  update(endUserId: string, req: UpdateEndUserRequest, opts?: EndUserOptions, signal?: AbortSignal): Promise<EndUserView> {
+    return this.client.request("PATCH", `/v1/end-users/${encodeURIComponent(endUserId)}?${orgQuery(opts)}`, req, signal);
+  }
+  delete(endUserId: string, opts?: EndUserOptions, signal?: AbortSignal): Promise<DeletedResponse> {
+    return this.client.request("DELETE", `/v1/end-users/${encodeURIComponent(endUserId)}?${orgQuery(opts)}`, undefined, signal);
+  }
+  /** Refuse this end user's requests (403 `end_user_blocked`). Registers unseen ids. */
+  block(endUserId: string, opts?: EndUserOptions, signal?: AbortSignal): Promise<EndUserView> {
+    return this.client.request("POST", `/v1/end-users/${encodeURIComponent(endUserId)}/block?${orgQuery(opts)}`, undefined, signal);
+  }
+  unblock(endUserId: string, opts?: EndUserOptions, signal?: AbortSignal): Promise<EndUserView> {
+    return this.client.request("POST", `/v1/end-users/${encodeURIComponent(endUserId)}/unblock?${orgQuery(opts)}`, undefined, signal);
+  }
+}
+
+/** Filters shared by {@link SpendNamespace.report} and {@link SpendNamespace.logs}. */
+export interface SpendFilterOptions {
+  /** RFC 3339 timestamp or `YYYY-MM-DD` (inclusive). */
+  from?: string;
+  /** RFC 3339 timestamp or `YYYY-MM-DD` (inclusive, the whole day). */
+  to?: string;
+  /** Platform admin only. */
+  orgId?: string;
+  appId?: string;
+  keyId?: string;
+  userId?: string;
+  endUser?: string;
+  model?: string;
+  provider?: string;
+  tag?: string;
+}
+
+export interface SpendReportOptions extends SpendFilterOptions {
+  /** Default `day`. */
+  groupBy?: SpendGroupBy;
+}
+
+export interface SpendLogsOptions extends SpendFilterOptions {
+  page?: number;
+  perPage?: number;
+}
+
+function spendParams(opts: SpendFilterOptions): URLSearchParams {
+  const p = new URLSearchParams();
+  const set = (k: string, v: string | undefined) => {
+    if (v) p.set(k, v);
+  };
+  set("from", opts.from);
+  set("to", opts.to);
+  set("org_id", opts.orgId);
+  set("app_id", opts.appId);
+  set("key_id", opts.keyId);
+  set("user_id", opts.userId);
+  set("end_user", opts.endUser);
+  set("model", opts.model);
+  set("provider", opts.provider);
+  set("tag", opts.tag);
+  return p;
+}
+
+class SpendNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+  /** Spend and request counts grouped by one dimension (day, model, key, end_user, tag, …). */
+  report(opts: SpendReportOptions = {}, signal?: AbortSignal): Promise<SpendReportResponse> {
+    const params = spendParams(opts);
+    if (opts.groupBy) params.set("group_by", opts.groupBy);
+    const qs = params.toString();
+    return this.client.request("GET", `/v1/spend/report?${qs}`, undefined, signal);
+  }
+  /** The attributed request log (key, user, end user, tags), newest first. */
+  logs(opts: SpendLogsOptions = {}, signal?: AbortSignal): Promise<SpendLogsResponse> {
+    const params = spendParams(opts);
+    if (opts.page) params.set("page", String(opts.page));
+    if (opts.perPage) params.set("per_page", String(opts.perPage));
+    const qs = params.toString();
+    return this.client.request("GET", `/v1/spend/logs?${qs}`, undefined, signal);
+  }
+}
+
+class AdminModelsNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+  /** Every model, catalog and runtime, enabled or not. */
+  async list(signal?: AbortSignal): Promise<AdminModelView[]> {
+    const resp = await this.client.request<AdminModelListResponse>("GET", "/v1/admin/models", undefined, signal);
+    return resp.data;
+  }
+  get(id: string, signal?: AbortSignal): Promise<AdminModelView> {
+    return this.client.request("GET", `/v1/admin/models/${encodeURIComponent(id)}`, undefined, signal);
+  }
+  /** Add a model at runtime. The body is a full model schema, validated like `models/*.yaml`. */
+  create(schema: ModelSchema, signal?: AbortSignal): Promise<AdminModelView> {
+    return this.client.request("POST", "/v1/admin/models", schema, signal);
+  }
+  /** Replace a runtime model's schema. Catalog models are read-only. */
+  replace(id: string, schema: ModelSchema, signal?: AbortSignal): Promise<AdminModelView> {
+    return this.client.request("PUT", `/v1/admin/models/${encodeURIComponent(id)}`, schema, signal);
+  }
+  /** Enable or disable any model platform-wide. */
+  setDisabled(id: string, disabled: boolean, signal?: AbortSignal): Promise<AdminModelView> {
+    return this.client.request("PATCH", `/v1/admin/models/${encodeURIComponent(id)}`, { disabled }, signal);
+  }
+  delete(id: string, signal?: AbortSignal): Promise<DeletedResponse> {
+    return this.client.request("DELETE", `/v1/admin/models/${encodeURIComponent(id)}`, undefined, signal);
+  }
+}
+
+class AdminProvidersNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+  /** Every provider adapter and its effective config. Secrets come back masked. */
+  async list(signal?: AbortSignal): Promise<ProviderConfigView[]> {
+    const resp = await this.client.request<ProviderConfigListResponse>("GET", "/v1/admin/providers", undefined, signal);
+    return resp.data;
+  }
+  get(name: string, signal?: AbortSignal): Promise<ProviderConfigView> {
+    return this.client.request("GET", `/v1/admin/providers/${encodeURIComponent(name)}`, undefined, signal);
+  }
+  /** Set keys, api_base, model mapping, headers, options or the enabled flag at runtime. */
+  configure(name: string, config: PutProviderConfigRequest, signal?: AbortSignal): Promise<ProviderConfigView> {
+    return this.client.request("PUT", `/v1/admin/providers/${encodeURIComponent(name)}`, config, signal);
+  }
+  /** Drop the runtime config; the provider falls back to its env/YAML config. */
+  reset(name: string, signal?: AbortSignal): Promise<ProviderConfigView> {
+    return this.client.request("DELETE", `/v1/admin/providers/${encodeURIComponent(name)}`, undefined, signal);
+  }
+}
+
+class AdminRoutesNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+  get(signal?: AbortSignal): Promise<RoutesDocument> {
+    return this.client.request("GET", "/v1/admin/routes", undefined, signal);
+  }
+  /** Replace every model route. The first matching route wins. */
+  replace(routes: RouteSpec[], signal?: AbortSignal): Promise<RoutesDocument> {
+    return this.client.request("PUT", "/v1/admin/routes", { routes }, signal);
+  }
+  /** Go back to the routes in litegen.yaml. */
+  reset(signal?: AbortSignal): Promise<RoutesDocument> {
+    return this.client.request("DELETE", "/v1/admin/routes", undefined, signal);
+  }
+}
+
+class AdminSettingsNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+  get(signal?: AbortSignal): Promise<GatewaySettingsView> {
+    return this.client.request("GET", "/v1/admin/settings", undefined, signal);
+  }
+  /** Replace the gateway settings; an omitted field is cleared. */
+  update(settings: GatewaySettings, signal?: AbortSignal): Promise<GatewaySettingsView> {
+    return this.client.request("PUT", "/v1/admin/settings", settings, signal);
+  }
+}
+
+class AdminNamespace {
+  readonly models: AdminModelsNamespace;
+  readonly providers: AdminProvidersNamespace;
+  readonly routes: AdminRoutesNamespace;
+  readonly settings: AdminSettingsNamespace;
+  constructor(client: LiteGenClient) {
+    this.models = new AdminModelsNamespace(client);
+    this.providers = new AdminProvidersNamespace(client);
+    this.routes = new AdminRoutesNamespace(client);
+    this.settings = new AdminSettingsNamespace(client);
   }
 }
