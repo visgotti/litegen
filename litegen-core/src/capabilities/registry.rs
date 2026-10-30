@@ -85,7 +85,23 @@ impl CapabilityRegistry {
         if self.is_disabled(id) {
             return None;
         }
-        self.models.get(id).cloned().or_else(|| self.runtime_model(id))
+        // Past its vendor's shutdown, a model is no longer served (L14).
+        self.models
+            .get(id)
+            .cloned()
+            .or_else(|| self.runtime_model(id))
+            .filter(|m| m.status() != ModelStatus::Retired)
+    }
+
+    /// A fingerprint of everything served: it changes whenever any served
+    /// model's field does (L14), so a client can cache the listing by it.
+    pub fn catalog_version(&self) -> String {
+        use sha2::Digest;
+        let mut served = self.served();
+        served.sort_by(|a, b| a.id.cmp(&b.id));
+        let bytes = serde_json::to_vec(&served).unwrap_or_default();
+        let digest = sha2::Sha256::digest(&bytes);
+        digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
     }
 
     /// Every served model (catalog + runtime, minus disabled).
@@ -95,7 +111,7 @@ impl CapabilityRegistry {
         self.models
             .values()
             .chain(runtime.values())
-            .filter(|m| !disabled.contains(&m.id))
+            .filter(|m| !disabled.contains(&m.id) && m.status() != ModelStatus::Retired)
             .cloned()
             .collect()
     }
@@ -189,5 +205,53 @@ mod ship_tests {
                 id
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    fn registry(retires_at: &str) -> CapabilityRegistry {
+        CapabilityRegistry::from_yaml_strs(&[("t.yaml", &format!(r#"
+models:
+  - id: x/old
+    provider: x
+    media_type: image
+    display_name: Old
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ text_to_image: true }}
+    prompt: {{ required: true }}
+    deprecated_at: 2020-01-01
+    retires_at: {retires_at}
+    replaced_by: x/new
+  - id: x/new
+    provider: x
+    media_type: image
+    display_name: New
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ text_to_image: true }}
+    prompt: {{ required: true }}
+"#))]).unwrap()
+    }
+
+    /// L14: from the day after its retirement a model is neither listed nor
+    /// resolved for a request; until then it is served, as deprecated.
+    #[test]
+    fn a_model_past_its_retirement_is_no_longer_served() {
+        let gone = registry("2020-06-30");
+        assert!(gone.served().iter().all(|m| m.id != "x/old"));
+        assert!(gone.resolve("x/old").is_none());
+        let going = registry("2999-12-31");
+        let old = going.resolve("x/old").expect("still served");
+        assert_eq!(old.status(), crate::capabilities::ModelStatus::Deprecated);
+        assert_eq!(going.resolve("x/new").unwrap().status(), crate::capabilities::ModelStatus::Active);
+    }
+
+    #[test]
+    fn the_catalog_version_changes_with_any_field() {
+        let a = registry("2999-12-31").catalog_version();
+        assert_eq!(a, registry("2999-12-31").catalog_version());
+        assert_ne!(a, registry("2999-12-30").catalog_version());
     }
 }

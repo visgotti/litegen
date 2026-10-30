@@ -15,15 +15,19 @@ class ModelListResponse:
     """Response for `GET /v1/models`.
 
     Attributes:
+        catalog_version (str): Changes whenever any served model's field does (L14).
         data (List['ModelInfo']):
         object_ (str):
     """
 
+    catalog_version: str
     data: List["ModelInfo"]
     object_: str
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        catalog_version = self.catalog_version
+
         data = []
         for data_item_data in self.data:
             data_item = data_item_data.to_dict()
@@ -35,6 +39,7 @@ class ModelListResponse:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "catalog_version": catalog_version,
                 "data": data,
                 "object": object_,
             }
@@ -47,6 +52,8 @@ class ModelListResponse:
         from ..models.model_info import ModelInfo
 
         d = src_dict.copy()
+        catalog_version = d.pop("catalog_version")
+
         data = []
         _data = d.pop("data")
         for data_item_data in _data:
@@ -57,6 +64,7 @@ class ModelListResponse:
         object_ = d.pop("object")
 
         model_list_response = cls(
+            catalog_version=catalog_version,
             data=data,
             object_=object_,
         )

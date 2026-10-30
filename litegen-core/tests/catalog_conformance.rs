@@ -88,6 +88,9 @@ fn no_retired_model_ids_are_advertised() {
         ("bfl/flux-pro", "no /v1/flux-pro endpoint in api.bfl.ai/openapi.json"),
         // 2026-09-11 model-drift decisions (docs/superpowers/2026-09-11-model-drift-decisions.md):
         ("leonardo/veo3", "Leonardo retired Veo 3 (VEO3) 2026-06-29; replacement leonardo/veo3.1"),
+        // "Kling 2.1 Pro is being retired on Tuesday, September 15, 2026 at
+        // 9:30 AM AEST (UTC+10)." https://docs.leonardo.ai/docs/kling-2-1-pro.md
+        ("leonardo/kling2.1", "Leonardo retired Kling 2.1 Pro (KLING2_1) 2026-09-15; successor Kling 3.0 Pro is v2-API only"),
         ("luma/ray-3", "not in the Dream Machine model enum (ray-2 | ray-flash-2); ray-3.2 is Luma Agents API only"),
         ("luma/ray-hdr-3", "not in the Dream Machine model enum (ray-2 | ray-flash-2); ray-3.2 is Luma Agents API only"),
         ("bytedance/seedream-3-0-t2i-250415", "BytePlus deactivated it 2026-05-13; replacement bytedance/seedream-5-0-lite-260128"),
@@ -138,6 +141,32 @@ const SCHEDULED_SHUTDOWNS: &[(&str, &str, &str)] = &[
     // Google moved this shutdown from 2026-10-02 to 2027-03-15 (deprecations page, 2026-10-12).
     ("google/gemini-2.5-flash-image", "2027-03-15", "Google shuts down gemini-2.5-flash-image; successor google/gemini-3.1-flash-lite-image"),
 ];
+
+/// L14: a scheduled shutdown is the row's own `retires_at`, so litegen stops
+/// serving the model the day after it by itself, and the listing says when.
+#[test]
+fn every_scheduled_shutdown_is_its_rows_retires_at() {
+    let reg = registry();
+    for (id, date, _) in SCHEDULED_SHUTDOWNS {
+        let row = reg.get(id).unwrap_or_else(|| panic!("{id} is scheduled but not in the catalog"));
+        assert_eq!(row.retires_at.as_deref(), Some(*date), "{id}: retires_at");
+    }
+    for m in reg.all().filter(|m| m.retires_at.is_some()) {
+        assert!(SCHEDULED_SHUTDOWNS.iter().any(|(id, ..)| *id == m.id), "{} retires but is not in SCHEDULED_SHUTDOWNS", m.id);
+    }
+}
+
+/// A `replaced_by` names a model the catalog serves.
+#[test]
+fn every_replacement_is_a_catalog_model() {
+    let reg = registry();
+    for m in reg.all() {
+        if let Some(to) = &m.replaced_by {
+            let next = reg.get(to).unwrap_or_else(|| panic!("{} is replaced_by {to}, which the catalog does not carry", m.id));
+            assert!(next.retires_at.is_none(), "{} is replaced by {to}, which itself retires", m.id);
+        }
+    }
+}
 
 /// Strictly after the shutdown date: on the date itself the vendor still serves it.
 fn overdue(today: chrono::NaiveDate, shutdown: &str) -> bool {
@@ -1412,29 +1441,6 @@ fn leonardo_motion2_matches_the_motion_2_0_contract() {
         vec!["480p".to_string(), "720p".to_string()],
         "Motion 2.0 renders at 480p or 720p only"
     );
-}
-
-/// Kling 2.1 Pro: "resolution ... Set to RESOLUTION_1080", "duration ... Set
-/// to 5 or 10"; Leonardo's model schema caps its prompt at 2500 characters.
-/// @see <https://docs.leonardo.ai/v1.0/docs/kling-2-1-pro> (read 2026-09-11)
-/// @see <https://docs.leonardo.ai/reference/creategeneration> — Kling2_1GenerationRequest, prompt maxLength 2500 (read 2026-09-11)
-#[test]
-fn leonardo_kling2_1_matches_the_kling_2_1_pro_contract() {
-    let reg = registry();
-    let schema = reg.get("leonardo/kling2.1").expect("kling2.1 missing");
-    assert_eq!(
-        enum_values(&reg, "leonardo/kling2.1", "resolution"),
-        vec!["1080p".to_string()],
-        "Kling 2.1 Pro is 1080p only"
-    );
-    assert_eq!(schema.prompt.max_length, Some(2500), "Kling 2.1 Pro prompt limit");
-    match schema.params.get("duration_seconds") {
-        Some(ParamSpec::Float(f)) => {
-            assert_eq!(f.min, Some(5.0), "Kling 2.1 Pro: 5 or 10 s");
-            assert_eq!(f.max, Some(10.0), "Kling 2.1 Pro: 5 or 10 s");
-        }
-        other => panic!("kling2.1 duration_seconds is {other:?}"),
-    }
 }
 
 // ─── fal: vendor facts re-read 2026-09-11 (model-drift) ─────────────────────

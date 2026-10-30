@@ -992,8 +992,20 @@ pub struct ModelInfo {
     pub provider: String,
     /// Media type this model produces.
     pub media_type: MediaType,
-    /// Whether the model is currently available.
+    /// Whether the model's provider can serve this caller (L14).
     pub is_available: bool,
+    /// Where the model is in its vendor's lifecycle (L14).
+    pub status: crate::capabilities::ModelStatus,
+    /// When the vendor deprecated it (`YYYY-MM-DD`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecated_at: Option<String>,
+    /// The vendor's shutdown date (`YYYY-MM-DD`): litegen stops serving it the
+    /// day after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retires_at: Option<String>,
+    /// The catalog model to move to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_by: Option<String>,
     /// Model capabilities.
     pub capabilities: ModelCapabilities,
     /// Pricing information.
@@ -1025,6 +1037,10 @@ pub struct ModelCapabilities {
     pub supports_inpainting: bool,
     #[serde(default)]
     pub supported_sizes: Vec<String>,
+    /// The most reference images one request may carry. Kept under its old
+    /// name too: `max_images` is this same number (L14).
+    #[serde(default = "default_max_images")]
+    pub max_reference_images: u32,
     #[serde(default = "default_max_images")]
     pub max_images: u32,
     // Video-specific
@@ -1036,6 +1052,7 @@ pub struct ModelCapabilities {
     pub supports_first_frame: bool,
     #[serde(default)]
     pub supports_last_frame: bool,
+    /// The longest clip the model makes, from its `duration_seconds` param.
     #[serde(default)]
     pub max_duration_seconds: Option<f64>,
     // 3D-specific
@@ -1708,6 +1725,8 @@ pub struct HealthResponse {
 pub struct ModelListResponse {
     pub object: String,
     pub data: Vec<ModelInfo>,
+    /// Changes whenever any served model's field does (L14).
+    pub catalog_version: String,
 }
 
 /// Public view of an API key (no hash).

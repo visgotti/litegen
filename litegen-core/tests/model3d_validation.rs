@@ -32,6 +32,7 @@ fn schema_with(params: HashMap<String, ParamSpec>) -> ModelSchema {
         ref_inputs: None,
         extra_allowlist: vec![],
         tags: vec![],
+        deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
     }
 }
 

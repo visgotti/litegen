@@ -2770,7 +2770,10 @@ export interface components {
         ModelCapabilities: {
             keyframe_timing?: null | components["schemas"]["KeyframeTiming"];
             mask_convention?: null | components["schemas"]["MaskConvention"];
-            /** Format: double */
+            /**
+             * Format: double
+             * @description The longest clip the model makes, from its `duration_seconds` param.
+             */
             max_duration_seconds?: number | null;
             /** Format: int32 */
             max_images?: number;
@@ -2784,6 +2787,12 @@ export interface components {
              * @description Upper bound of the model's `target_polycount` param, when it takes one.
              */
             max_polycount?: number | null;
+            /**
+             * Format: int32
+             * @description The most reference images one request may carry. Kept under its old
+             *     name too: `max_images` is this same number (L14).
+             */
+            max_reference_images?: number;
             /**
              * @description Every mesh container a caller may request, including those litegen
              *     derives locally — the same list, in the same order, as
@@ -2840,11 +2849,13 @@ export interface components {
         ModelInfo: {
             /** @description Model capabilities. */
             capabilities: components["schemas"]["ModelCapabilities"];
+            /** @description When the vendor deprecated it (`YYYY-MM-DD`). */
+            deprecated_at?: string | null;
             /** @description Description. */
             description?: string;
             /** @description Unique model ID (e.g. "openai/dall-e-3"). */
             id: string;
-            /** @description Whether the model is currently available. */
+            /** @description Whether the model's provider can serve this caller (L14). */
             is_available: boolean;
             /** @description Media type this model produces. */
             media_type: components["schemas"]["MediaType"];
@@ -2853,11 +2864,22 @@ export interface components {
             pricing?: null | components["schemas"]["ModelPricing"];
             /** @description Provider name. */
             provider: string;
+            /** @description The catalog model to move to. */
+            replaced_by?: string | null;
+            /**
+             * @description The vendor's shutdown date (`YYYY-MM-DD`): litegen stops serving it the
+             *     day after.
+             */
+            retires_at?: string | null;
+            /** @description Where the model is in its vendor's lifecycle (L14). */
+            status: components["schemas"]["ModelStatus"];
             /** @description Tags for filtering. */
             tags?: string[];
         };
         /** @description Response for `GET /v1/models`. */
         ModelListResponse: {
+            /** @description Changes whenever any served model's field does (L14). */
+            catalog_version: string;
             data: components["schemas"]["ModelInfo"][];
             object: string;
         };
@@ -2885,6 +2907,11 @@ export interface components {
         };
         ModelSchema: {
             capabilities: components["schemas"]["ModelCapabilityFlags"];
+            /**
+             * @description When the vendor deprecated the model (`YYYY-MM-DD`); it still serves it
+             *     (L14).
+             */
+            deprecated_at?: string | null;
             description?: string;
             display_name: string;
             /**
@@ -2906,6 +2933,13 @@ export interface components {
             prompt: components["schemas"]["PromptSpec"];
             provider: string;
             ref_inputs?: null | components["schemas"]["RefInputSpec"];
+            /** @description The catalog model to move to. */
+            replaced_by?: string | null;
+            /**
+             * @description The vendor's announced shutdown date (`YYYY-MM-DD`). From the day
+             *     after it, litegen neither lists nor serves the model.
+             */
+            retires_at?: string | null;
             tags?: string[];
             /**
              * @description What the model does: `generate`, or an operation on an existing asset
@@ -2918,6 +2952,11 @@ export interface components {
          * @enum {string}
          */
         ModelSource: "catalog" | "runtime";
+        /**
+         * @description Where a model is in its vendor's lifecycle (L14).
+         * @enum {string}
+         */
+        ModelStatus: "active" | "deprecated" | "retired";
         /**
          * @description What a catalog model does.
          *

@@ -476,6 +476,36 @@ pub enum KeyframeTiming {
     Even,
 }
 
+/// Where a model is in its vendor's lifecycle (L14).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelStatus {
+    #[default]
+    Active,
+    /// The vendor deprecated it or announced its shutdown; still served.
+    Deprecated,
+    /// Past its shutdown date: neither listed nor served.
+    Retired,
+}
+
+impl ModelSchema {
+    /// The model's lifecycle status today.
+    pub fn status(&self) -> ModelStatus {
+        self.status_on(chrono::Utc::now().date_naive())
+    }
+
+    /// Retired strictly after `retires_at` (the vendor still serves it on the
+    /// day itself); deprecated once deprecated or given a shutdown date.
+    pub fn status_on(&self, today: chrono::NaiveDate) -> ModelStatus {
+        let date = |d: &Option<String>| d.as_deref().and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+        match (date(&self.deprecated_at), date(&self.retires_at)) {
+            (_, Some(retires)) if today > retires => ModelStatus::Retired,
+            (Some(_), _) | (_, Some(_)) => ModelStatus::Deprecated,
+            (None, None) => ModelStatus::Active,
+        }
+    }
+}
+
 /// Which pixels of a mask mean "edit".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -573,6 +603,21 @@ pub struct ModelSchema {
     /// area, in its own words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preserves_unmasked: Option<PreservesUnmasked>,
+    /// When the vendor deprecated the model (`YYYY-MM-DD`); it still serves it
+    /// (L14).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecated_at: Option<String>,
+    /// The vendor's announced shutdown date (`YYYY-MM-DD`). From the day
+    /// after it, litegen neither lists nor serves the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retires_at: Option<String>,
+    /// The catalog model to move to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_by: Option<String>,
+    /// Derived from the dates above when the model is served; never read
+    /// from yaml.
+    #[serde(default, skip_deserializing)]
+    pub status: ModelStatus,
     pub display_name: String,
     #[serde(default)] pub description: String,
     /// The vendor's own API reference page for the endpoint this model calls —

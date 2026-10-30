@@ -14,7 +14,7 @@
 //    looked up) and video `model` values, including ones the reference enum
 //    lags on (VEO3_1 and VEO3_1FAST, which the v1 Veo 3.1 guide sends to
 //    image-to-video).
-//  • veo31-guide, kling21-guide, kling25-guide: the per-model guides for the
+//  • veo31-guide, kling25-guide: the per-model guides for the
 //    image-to-video models we carry — the only place each model's v1 `model`
 //    value, duration set and resolution presets are documented ("Set to `4`,
 //    `6`, or `8`"). Ids from the Body Parameters table's `model` row; the
@@ -138,7 +138,6 @@ export default {
     'leonardo/motion2': 'MOTION2',
     'leonardo/veo3.1': 'VEO3_1',
     'leonardo/veo3.1-fast': 'VEO3_1FAST',
-    'leonardo/kling2.1': 'KLING2_1',
     'leonardo/kling2.5': 'KLING2_5',
   },
   sources: [
@@ -167,7 +166,6 @@ export default {
     // retirement callouts); the current Veo 3.1 guide documents v2, so its
     // v1 copy is read.
     guide('veo31-guide', V1, 'veo-31'),
-    guide('kling21-guide', CURRENT, 'kling-2-1-pro'),
     guide('kling25-guide', CURRENT, 'kling-2-5-turbo'),
     v1Endpoint('generations', 'creategeneration', '/generations', (spec) => {
       const modelId = spec.paths?.['/generations']?.post?.requestBody?.content?.['application/json']?.schema?.properties?.modelId;
@@ -196,6 +194,10 @@ export default {
     },
   ],
   acknowledged: [
+    {
+      id: 'kling2_1',
+      reason: 'Kling 2.1 Pro retired September 15, 2026 ("Kling 2.1 Pro is being retired on Tuesday, September 15, 2026"); leonardo/kling2.1 removed 2026-10-30; the v1 pages still list it',
+    },
     {
       id: 'VEO3',
       reason: 'Veo 3 retired June 29, 2026 (Deprecations & Changes page); leonardo/veo3 removed 2026-09-11, replaced by leonardo/veo3.1; the v1 pages still list it',

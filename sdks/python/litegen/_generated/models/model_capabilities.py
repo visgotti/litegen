@@ -21,10 +21,13 @@ class ModelCapabilities:
         supports_text_to_image (bool):
         keyframe_timing (Union[KeyframeTiming, None, Unset]):
         mask_convention (Union[MaskConvention, None, Unset]):
-        max_duration_seconds (Union[None, Unset, float]):
+        max_duration_seconds (Union[None, Unset, float]): The longest clip the model makes, from its `duration_seconds`
+            param.
         max_images (Union[Unset, int]):
         max_keyframes (Union[None, Unset, int]): The most `keyframe` references one request may carry.
         max_polycount (Union[None, Unset, int]): Upper bound of the model's `target_polycount` param, when it takes one.
+        max_reference_images (Union[Unset, int]): The most reference images one request may carry. Kept under its old
+            name too: `max_images` is this same number (L14).
         output_formats (Union[Unset, List[str]]): Every mesh container a caller may request, including those litegen
             derives locally — the same list, in the same order, as
             `GET /v1/models/{id}` serves under `params.output_formats.enum_values`.
@@ -67,6 +70,7 @@ class ModelCapabilities:
     max_images: Union[Unset, int] = UNSET
     max_keyframes: Union[None, Unset, int] = UNSET
     max_polycount: Union[None, Unset, int] = UNSET
+    max_reference_images: Union[Unset, int] = UNSET
     output_formats: Union[Unset, List[str]] = UNSET
     preserves_unmasked: Union[None, PreservesUnmasked, Unset] = UNSET
     region_input: Union[None, RegionInput, Unset] = UNSET
@@ -128,6 +132,8 @@ class ModelCapabilities:
             max_polycount = UNSET
         else:
             max_polycount = self.max_polycount
+
+        max_reference_images = self.max_reference_images
 
         output_formats: Union[Unset, List[str]] = UNSET
         if not isinstance(self.output_formats, Unset):
@@ -205,6 +211,8 @@ class ModelCapabilities:
             field_dict["max_keyframes"] = max_keyframes
         if max_polycount is not UNSET:
             field_dict["max_polycount"] = max_polycount
+        if max_reference_images is not UNSET:
+            field_dict["max_reference_images"] = max_reference_images
         if output_formats is not UNSET:
             field_dict["output_formats"] = output_formats
         if preserves_unmasked is not UNSET:
@@ -318,6 +326,8 @@ class ModelCapabilities:
 
         max_polycount = _parse_max_polycount(d.pop("max_polycount", UNSET))
 
+        max_reference_images = d.pop("max_reference_images", UNSET)
+
         output_formats = cast(List[str], d.pop("output_formats", UNSET))
 
         def _parse_preserves_unmasked(
@@ -404,6 +414,7 @@ class ModelCapabilities:
             max_images=max_images,
             max_keyframes=max_keyframes,
             max_polycount=max_polycount,
+            max_reference_images=max_reference_images,
             output_formats=output_formats,
             preserves_unmasked=preserves_unmasked,
             region_input=region_input,

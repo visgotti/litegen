@@ -191,6 +191,11 @@ its views by position, so each view needs every view before it in that order.
 curl http://localhost:4000/v1/models
 ```
 
+Each model says whether its provider can serve you (`is_available`), where it is in its vendor's
+lifecycle (`status`: `active`, `deprecated` or `retired`, with `deprecated_at`, `retires_at` and
+`replaced_by`) and its limits (`max_reference_images`, `max_duration_seconds`). A model is no longer
+served from the day after its `retires_at`. `catalog_version` changes whenever any listed field does.
+
 ### Health Check
 ```bash
 curl http://localhost:4000/health

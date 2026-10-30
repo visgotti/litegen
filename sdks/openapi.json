@@ -9198,7 +9198,8 @@
                             "number",
                             "null"
                         ],
-                        "format": "double"
+                        "format": "double",
+                        "description": "The longest clip the model makes, from its `duration_seconds` param."
                     },
                     "max_images": {
                         "type": "integer",
@@ -9221,6 +9222,12 @@
                         ],
                         "format": "int32",
                         "description": "Upper bound of the model's `target_polycount` param, when it takes one.",
+                        "minimum": 0
+                    },
+                    "max_reference_images": {
+                        "type": "integer",
+                        "format": "int32",
+                        "description": "The most reference images one request may carry. Kept under its old\nname too: `max_images` is this same number (L14).",
                         "minimum": 0
                     },
                     "output_formats": {
@@ -9359,12 +9366,20 @@
                     "provider",
                     "media_type",
                     "is_available",
+                    "status",
                     "capabilities"
                 ],
                 "properties": {
                     "capabilities": {
                         "$ref": "#/components/schemas/ModelCapabilities",
                         "description": "Model capabilities."
+                    },
+                    "deprecated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "When the vendor deprecated it (`YYYY-MM-DD`)."
                     },
                     "description": {
                         "type": "string",
@@ -9376,7 +9391,7 @@
                     },
                     "is_available": {
                         "type": "boolean",
-                        "description": "Whether the model is currently available."
+                        "description": "Whether the model's provider can serve this caller (L14)."
                     },
                     "media_type": {
                         "$ref": "#/components/schemas/MediaType",
@@ -9401,6 +9416,24 @@
                         "type": "string",
                         "description": "Provider name."
                     },
+                    "replaced_by": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The catalog model to move to."
+                    },
+                    "retires_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The vendor's shutdown date (`YYYY-MM-DD`): litegen stops serving it the\nday after."
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/ModelStatus",
+                        "description": "Where the model is in its vendor's lifecycle (L14)."
+                    },
                     "tags": {
                         "type": "array",
                         "items": {
@@ -9415,9 +9448,14 @@
                 "description": "Response for `GET /v1/models`.",
                 "required": [
                     "object",
-                    "data"
+                    "data",
+                    "catalog_version"
                 ],
                 "properties": {
+                    "catalog_version": {
+                        "type": "string",
+                        "description": "Changes whenever any served model's field does (L14)."
+                    },
                     "data": {
                         "type": "array",
                         "items": {
@@ -9500,6 +9538,13 @@
                     "capabilities": {
                         "$ref": "#/components/schemas/ModelCapabilityFlags"
                     },
+                    "deprecated_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "When the vendor deprecated the model (`YYYY-MM-DD`); it still serves it\n(L14)."
+                    },
                     "description": {
                         "type": "string"
                     },
@@ -9573,6 +9618,20 @@
                             }
                         ]
                     },
+                    "replaced_by": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The catalog model to move to."
+                    },
+                    "retires_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The vendor's announced shutdown date (`YYYY-MM-DD`). From the day\nafter it, litegen neither lists nor serves the model."
+                    },
                     "tags": {
                         "type": "array",
                         "items": {
@@ -9591,6 +9650,15 @@
                 "enum": [
                     "catalog",
                     "runtime"
+                ]
+            },
+            "ModelStatus": {
+                "type": "string",
+                "description": "Where a model is in its vendor's lifecycle (L14).",
+                "enum": [
+                    "active",
+                    "deprecated",
+                    "retired"
                 ]
             },
             "ModelTask": {

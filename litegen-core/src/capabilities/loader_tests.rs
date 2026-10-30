@@ -784,4 +784,34 @@ models:
             assert!(err.contains(needle), "{rules}: {err}");
         }
     }
+
+    // ─── Lifecycle (L14) ──────────────────────────────────────────────────────
+
+    fn dated(fields: &str) -> Result<CapabilityRegistry, LoadError> {
+        yaml(&format!(r#"
+models:
+  - id: x/d
+    provider: x
+    media_type: image
+    display_name: D
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ text_to_image: true }}
+    prompt: {{ required: true }}
+{fields}
+"#))
+    }
+
+    #[test]
+    fn lifecycle_dates_are_calendar_days_and_a_model_is_not_its_own_replacement() {
+        assert!(dated("    deprecated_at: 2026-10-06\n    retires_at: 2027-03-15\n    replaced_by: x/e").is_ok());
+        for (fields, needle) in [
+            ("    retires_at: 15 March 2027", "retires_at"),
+            ("    deprecated_at: 2026-13-01", "deprecated_at"),
+            ("    replaced_by: x/d", "replaced_by"),
+            ("    deprecated_at: 2027-01-01\n    retires_at: 2026-01-01", "retires_at"),
+        ] {
+            let err = dated(fields).unwrap_err().to_string();
+            assert!(err.contains(needle), "{fields}: {err}");
+        }
+    }
 }

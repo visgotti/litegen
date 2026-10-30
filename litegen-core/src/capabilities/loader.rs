@@ -221,6 +221,23 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
+    // L14: lifecycle dates are calendar days, a model retires no earlier
+    // than it was deprecated, and it is not its own replacement.
+    let day = |field: &str, v: &Option<String>| -> Result<Option<chrono::NaiveDate>, LoadError> {
+        v.as_deref()
+            .map(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| bad(format!("model '{}' {field} '{d}' is not YYYY-MM-DD", m.id))))
+            .transpose()
+    };
+    let (deprecated, retires) = (day("deprecated_at", &m.deprecated_at)?, day("retires_at", &m.retires_at)?);
+    if let (Some(d), Some(r)) = (deprecated, retires) {
+        if r < d {
+            return Err(bad(format!("model '{}' retires_at {r} is before its deprecated_at {d}", m.id)));
+        }
+    }
+    if m.replaced_by.as_deref() == Some(m.id.as_str()) {
+        return Err(bad(format!("model '{}' cannot be its own replaced_by", m.id)));
+    }
+
     // 3D doc §3G, L14: each pricing rule has one effect, over facts a
     // request can have, in a unit its medium has.
     for rule in &m.pricing.variable_pricing {

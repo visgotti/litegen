@@ -102,6 +102,11 @@ back 180, back-right 225, right 270, front-right 315; top and bottom have none.
 A multiview image model takes ``views=`` from this list; a multiview-to-3D model
 takes ``view-<name>`` references."""
 
+ModelStatus = Literal["active", "deprecated", "retired"]
+"""Where a model is in its vendor's lifecycle (``status`` on ``GET /v1/models``):
+``deprecated`` models are still served until the day after their
+``retires_at``; ``replaced_by`` names the catalog model to move to."""
+
 KeyframeTiming = Literal["any", "even"]
 """Where a video model's ``keyframe`` references may sit (``capabilities.keyframe_timing``):
 ``any`` time each, or ``even`` spacing from the start of the clip to its end."""

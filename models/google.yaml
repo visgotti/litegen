@@ -22,6 +22,11 @@ models:
     # gemini-nano-banana-2.1. @see https://ai.google.dev/gemini-api/docs/deprecations (2026-10-12)
     description: "Nano Banana 2 (GA 2026-05-28). Deprecated 2026-10-06, no shutdown date announced;
       Google's successor is gemini-nano-banana-2.1."
+    # "The `gemini-3.1-flash-image` model is deprecated (no shutdown date
+    # announced). Migrate to `gemini-nano-banana-2.1`." (changelog, Oct 6)
+    # @see https://ai.google.dev/gemini-api/docs/changelog (2026-10-30)
+    deprecated_at: 2026-10-06
+    replaced_by: google/gemini-nano-banana-2.1
     # Standard tier: $60 per 1M image output tokens; a 1K image (1024x1024, 1120
     # tokens) is $0.067 — the default request (no imageSize). Verified 2026-09-11.
     # @see https://ai.google.dev/gemini-api/docs/pricing
@@ -32,6 +37,43 @@ models:
       aspect_ratio:
         kind: aspect_ratio
         # "3.1 Flash Image" table: 14 ratios (1:4, 4:1, 1:8, 8:1 are new in 3.1)
+        allowed: ["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9","1:4","4:1","1:8","8:1"]
+    ref_inputs:
+      max_total: 14   # up to 10 object + 4 character references
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: false, min_count: 0, max_count: 14 }
+    extra_allowlist: [imageSize]
+    tags: [text-to-image, image-to-image]
+
+  # Google's successor to gemini-3.1-flash-image (GA 2026-10-06): the same
+  # generateContent body, imageConfig.{aspectRatio, imageSize}; 14 aspect
+  # ratios; imageSize 1K (default), 2K or 4K — "512 (0.5K) … not supported
+  # on Gemini Nano Banana 2.1"; "character consistency for up to 4
+  # characters and object fidelity for up to 10 objects".
+  # @see https://ai.google.dev/gemini-api/docs/generate-content/image-generation (2026-10-30)
+  # @see https://ai.google.dev/gemini-api/docs/models/gemini-nano-banana-2.1 (2026-10-30)
+  - id: google/gemini-nano-banana-2.1
+    provider: google
+    media_type: image
+    display_name: Gemini Nano Banana 2.1
+    description: Google's successor to Nano Banana 2 (gemini-3.1-flash-image), GA 2026-10-06.
+    docs_url: https://ai.google.dev/gemini-api/docs/generate-content/image-generation
+    # "Equivalent to $0.0336 per 1K image, $0.0504 per 2K image, and $0.113
+    # per 4K image": the default request is 1K. Thinking (default medium) is
+    # billed apart and not modelled.
+    # @see https://ai.google.dev/gemini-api/docs/pricing (2026-10-30)
+    pricing:
+      base_cost_usd: 0.0336
+      variable_pricing:
+        - { when: { extra.imageSize: 2K }, usd: 0.0504 }
+        - { when: { extra.imageSize: 4K }, usd: 0.113 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 8000 }
+    params:
+      aspect_ratio:
+        kind: aspect_ratio
         allowed: ["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9","1:4","4:1","1:8","8:1"]
     ref_inputs:
       max_total: 14   # up to 10 object + 4 character references
@@ -76,6 +118,11 @@ models:
     # @see https://ai.google.dev/gemini-api/docs/deprecations (2026-10-12)
     description: "Gemini 2.5 Flash image generation. Deprecated; shuts down 2027-03-15 —
       migrate to google/gemini-3.1-flash-lite-image."
+    # "| `gemini-2.5-flash-image` | October 2, 2025 | March 15, 2027 |
+    # `gemini-3.1-flash-lite-image` |" (the first date is its release).
+    # @see https://ai.google.dev/gemini-api/docs/deprecations (2026-10-30)
+    retires_at: 2027-03-15
+    replaced_by: google/gemini-3.1-flash-lite-image
     pricing: { base_cost_usd: 0.02 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 4000 }

@@ -1742,7 +1742,7 @@ pub async fn list_models(
                 .unwrap_or(false),
         })
         .collect();
-    Json(ModelListResponse { object: "list".to_string(), data: models }).into_response()
+    Json(ModelListResponse { object: "list".to_string(), data: models, catalog_version: state.registry.catalog_version() }).into_response()
 }
 
 /// GET /v1/models/{id} — Full schema for one model, as a caller should read it.
@@ -1785,6 +1785,7 @@ pub(crate) fn served_model_schema(
     schema: &crate::capabilities::ModelSchema,
 ) -> crate::capabilities::ModelSchema {
     let mut served = schema.clone();
+    served.status = schema.status();
     if let Some(native) = schema.output_formats_spec() {
         served.params.remove("output_format");
         served.params.insert(
@@ -1805,6 +1806,10 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
     let takes_mask = s.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("mask"));
     let keyframes = s.ref_inputs.as_ref().and_then(|r| r.roles.get("keyframe"));
     ModelInfo {
+        status: s.status(),
+        deprecated_at: s.deprecated_at.clone(),
+        retires_at: s.retires_at.clone(),
+        replaced_by: s.replaced_by.clone(),
         id: s.id.clone(),
         name: s.display_name.clone(),
         description: s.description.clone(),
@@ -1826,8 +1831,13 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             supports_first_frame: s.ref_inputs.as_ref().is_some_and(|ri| ri.roles.contains_key("first_frame")),
             supports_last_frame: s.ref_inputs.as_ref().is_some_and(|ri| ri.roles.contains_key("last_frame")),
             supported_sizes: extract_sizes(s),
+            max_reference_images: s.ref_inputs.as_ref().map(|ri| ri.max_total).unwrap_or(1),
             max_images: s.ref_inputs.as_ref().map(|ri| ri.max_total).unwrap_or(1),
-            max_duration_seconds: None,
+            max_duration_seconds: match s.params.get("duration_seconds") {
+                Some(crate::capabilities::ParamSpec::Float(f)) => f.max,
+                Some(crate::capabilities::ParamSpec::Int(i)) => i.max.map(|m| m as f64),
+                _ => None,
+            },
             supports_text_to_3d: s.capabilities.text_to_3d,
             supports_image_to_3d: s.capabilities.image_to_3d,
             supports_multiview_to_3d: s.capabilities.multiview_to_3d,

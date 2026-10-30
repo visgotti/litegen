@@ -500,6 +500,21 @@ mod tests {
     }
 
     #[test]
+    fn the_listing_documents_lifecycle_limits_and_its_version() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        assert_eq!(s["ModelStatus"]["enum"], json!(["active", "deprecated", "retired"]));
+        assert!(mentions(property(&s["ModelInfo"], "status"), "#/components/schemas/ModelStatus"));
+        for f in ["deprecated_at", "retires_at", "replaced_by"] {
+            property(&s["ModelInfo"], f);
+            property(&s["ModelSchema"], f);
+        }
+        property(&s["ModelCapabilities"], "max_reference_images");
+        assert!(mentions(property(&s["ModelListResponse"], "catalog_version"), "string"));
+        assert!(s["ModelListResponse"]["required"].as_array().unwrap().iter().any(|r| r == "catalog_version"));
+    }
+
+    #[test]
     fn a_models_reference_spec_says_whether_its_vendor_takes_data_uris() {
         let d = doc();
         let p = property(&d["components"]["schemas"]["RefInputSpec"], "data_uri");

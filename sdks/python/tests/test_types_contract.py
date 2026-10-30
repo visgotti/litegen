@@ -148,6 +148,7 @@ def test_model3d_params_cover_the_request_schema() -> None:
         ("Model3dAnimationPreset", t.Model3dAnimationPreset),
         ("ImageView", t.ImageView),
         ("KeyframeTiming", t.KeyframeTiming),
+        ("ModelStatus", t.ModelStatus),
         ("MaskConvention", t.MaskConvention),
         ("RegionInput", t.RegionInput),
         ("PreservesUnmasked", t.PreservesUnmasked),

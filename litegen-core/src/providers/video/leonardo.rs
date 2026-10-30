@@ -80,6 +80,7 @@ impl LeonardoVideoProvider {
             // model_mapping fails at the vendor instead of billing as MOTION2.
             "veo3" => "VEO3",
             "veo3-fast" => "VEO3FAST",
+            // Retired 2026-09-15 and gone from the catalog, kept for the same reason.
             "kling2.1" | "kling-2.1" => "KLING2_1",
             "kling2.5" | "kling-2.5" => "KLING2_5",
             // An id with no arm is refused, not billed as MOTION2 (L13).
@@ -443,9 +444,10 @@ mod tests {
         assert_eq!(poll.video_url.unwrap(), "https://cdn.leo/v.mp4");
     }
 
-    /// Kling 2.1 Pro accepts only `RESOLUTION_1080`; a request that names no
-    /// resolution used to go out as `RESOLUTION_720`.
-    /// @see <https://docs.leonardo.ai/v1.0/docs/kling-2-1-pro>
+    /// Kling 2.5 Turbo takes `RESOLUTION_1080` ("resolution ... Set to
+    /// RESOLUTION_1080"); a request that names no resolution used to go out
+    /// as `RESOLUTION_720`.
+    /// @see <https://docs.leonardo.ai/v1.0/docs/kling-2-5-turbo>
     #[tokio::test]
     async fn kling_without_a_resolution_sends_1080() {
         let server = MockServer::start().await;
@@ -458,8 +460,8 @@ mod tests {
             .await;
 
         let provider = make_provider(&server.uri());
-        let schema = ref_schema("leonardo/kling2.1");
-        let base = make_base("a paper boat on a river", "leonardo/kling2.1");
+        let schema = ref_schema("leonardo/kling2.5");
+        let base = make_base("a paper boat on a river", "leonardo/kling2.5");
         let mut extras = extras_with_image_id();
         extras.resolution = None;
         extras.duration_seconds = 5.0;
@@ -469,7 +471,7 @@ mod tests {
 
         let received = server.received_requests().await.unwrap();
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
-        assert_eq!(body["model"], "KLING2_1");
+        assert_eq!(body["model"], "KLING2_5");
         assert_eq!(body["resolution"], "RESOLUTION_1080");
         assert_eq!(body["duration"], 5);
     }

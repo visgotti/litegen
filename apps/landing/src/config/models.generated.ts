@@ -2028,6 +2028,63 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://ai.google.dev/gemini-api/docs"
   },
   {
+    "id": "google/gemini-nano-banana-2.1",
+    "provider": "google",
+    "displayName": "Gemini Nano Banana 2.1",
+    "description": "Google's successor to Nano Banana 2 (gemini-3.1-flash-image), GA 2026-10-06.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "4:5",
+      "5:4",
+      "9:16",
+      "16:9",
+      "21:9",
+      "1:4",
+      "4:1",
+      "1:8",
+      "8:1"
+    ],
+    "maxRefImages": 14,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 14
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 8000
+    },
+    "params": [],
+    "pricing": {
+      "baseCostUsd": 0.0336
+    },
+    "tags": [
+      "text-to-image",
+      "image-to-image"
+    ],
+    "referenceUrl": "https://ai.google.dev/gemini-api/docs/generate-content/image-generation"
+  },
+  {
     "id": "hunyuan/hunyuan-image",
     "provider": "hunyuan",
     "displayName": "Hunyuan Image",
@@ -3193,62 +3250,6 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image",
       "image-to-image"
-    ],
-    "referenceUrl": "https://docs.leonardo.ai/"
-  },
-  {
-    "id": "leonardo/kling2.1",
-    "provider": "leonardo",
-    "displayName": "Leonardo Kling 2.1",
-    "description": "Kling 2.1 served through Leonardo's first-party API.",
-    "mediaType": "video",
-    "output": "video",
-    "capabilities": {
-      "textToImage": false,
-      "imageToImage": false,
-      "inpainting": false,
-      "textToVideo": false,
-      "imageToVideo": true,
-      "textTo3d": false,
-      "imageTo3d": false,
-      "multiviewTo3d": false
-    },
-    "sizes": [],
-    "aspectRatios": [],
-    "maxRefImages": 1,
-    "refRoles": [
-      {
-        "name": "first_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 2500
-    },
-    "params": [
-      {
-        "name": "duration_seconds",
-        "kind": "float",
-        "default": 5,
-        "min": 5,
-        "max": 10
-      },
-      {
-        "name": "resolution",
-        "kind": "string",
-        "enum": [
-          "1080p"
-        ]
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 1
-    },
-    "tags": [
-      "image-to-video"
     ],
     "referenceUrl": "https://docs.leonardo.ai/"
   },

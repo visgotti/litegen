@@ -38,6 +38,7 @@ mod tests {
             }),
             extra_allowlist: vec![],
             tags: vec![],
+            deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
         }
     }
 

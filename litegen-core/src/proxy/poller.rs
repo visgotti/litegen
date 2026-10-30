@@ -1022,6 +1022,7 @@ mod poller_tests {
             capabilities: ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
             prompt: PromptSpec { required: true, min_length: None, max_length: None },
             params: Default::default(), ref_inputs: None, extra_allowlist: vec![], tags: vec![],
+            deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
         };
         let base = crate::types::BaseGenerationRequest {
             prompt: prompt.into(), model: model.into(), n: 1, negative_prompt: None, seed: None,
@@ -1140,6 +1141,7 @@ mod poller_tests {
             capabilities: ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
             prompt: PromptSpec { required: true, min_length: None, max_length: None },
             params: Default::default(), ref_inputs: None, extra_allowlist: vec![], tags: vec![],
+            deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
         }
     }
 

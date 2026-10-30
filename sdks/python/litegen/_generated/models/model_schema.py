@@ -31,6 +31,8 @@ class ModelSchema:
         pricing (CapabilityModelPricing):
         prompt (PromptSpec): How a model treats the request's `prompt`. Lengths count characters.
         provider (str):
+        deprecated_at (Union[None, Unset, str]): When the vendor deprecated the model (`YYYY-MM-DD`); it still serves it
+            (L14).
         description (Union[Unset, str]):
         docs_url (Union[None, Unset, str]): The vendor's own API reference page for the endpoint this model calls —
             the page to re-read when a field mapping is questioned. An absolute
@@ -41,6 +43,9 @@ class ModelSchema:
         params (Union[Unset, ModelSchemaParams]):
         preserves_unmasked (Union[None, PreservesUnmasked, Unset]):
         ref_inputs (Union['RefInputSpec', None, Unset]):
+        replaced_by (Union[None, Unset, str]): The catalog model to move to.
+        retires_at (Union[None, Unset, str]): The vendor's announced shutdown date (`YYYY-MM-DD`). From the day
+            after it, litegen neither lists nor serves the model.
         tags (Union[Unset, List[str]]):
         task (Union[Unset, ModelTask]): What a catalog model does.
 
@@ -62,6 +67,7 @@ class ModelSchema:
     pricing: "CapabilityModelPricing"
     prompt: "PromptSpec"
     provider: str
+    deprecated_at: Union[None, Unset, str] = UNSET
     description: Union[Unset, str] = UNSET
     docs_url: Union[None, Unset, str] = UNSET
     extra_allowlist: Union[Unset, List[str]] = UNSET
@@ -69,6 +75,8 @@ class ModelSchema:
     params: Union[Unset, "ModelSchemaParams"] = UNSET
     preserves_unmasked: Union[None, PreservesUnmasked, Unset] = UNSET
     ref_inputs: Union["RefInputSpec", None, Unset] = UNSET
+    replaced_by: Union[None, Unset, str] = UNSET
+    retires_at: Union[None, Unset, str] = UNSET
     tags: Union[Unset, List[str]] = UNSET
     task: Union[Unset, ModelTask] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -90,6 +98,12 @@ class ModelSchema:
         prompt = self.prompt.to_dict()
 
         provider = self.provider
+
+        deprecated_at: Union[None, Unset, str]
+        if isinstance(self.deprecated_at, Unset):
+            deprecated_at = UNSET
+        else:
+            deprecated_at = self.deprecated_at
 
         description = self.description
 
@@ -131,6 +145,18 @@ class ModelSchema:
         else:
             ref_inputs = self.ref_inputs
 
+        replaced_by: Union[None, Unset, str]
+        if isinstance(self.replaced_by, Unset):
+            replaced_by = UNSET
+        else:
+            replaced_by = self.replaced_by
+
+        retires_at: Union[None, Unset, str]
+        if isinstance(self.retires_at, Unset):
+            retires_at = UNSET
+        else:
+            retires_at = self.retires_at
+
         tags: Union[Unset, List[str]] = UNSET
         if not isinstance(self.tags, Unset):
             tags = self.tags
@@ -152,6 +178,8 @@ class ModelSchema:
                 "provider": provider,
             }
         )
+        if deprecated_at is not UNSET:
+            field_dict["deprecated_at"] = deprecated_at
         if description is not UNSET:
             field_dict["description"] = description
         if docs_url is not UNSET:
@@ -166,6 +194,10 @@ class ModelSchema:
             field_dict["preserves_unmasked"] = preserves_unmasked
         if ref_inputs is not UNSET:
             field_dict["ref_inputs"] = ref_inputs
+        if replaced_by is not UNSET:
+            field_dict["replaced_by"] = replaced_by
+        if retires_at is not UNSET:
+            field_dict["retires_at"] = retires_at
         if tags is not UNSET:
             field_dict["tags"] = tags
         if task is not UNSET:
@@ -196,6 +228,15 @@ class ModelSchema:
         prompt = PromptSpec.from_dict(d.pop("prompt"))
 
         provider = d.pop("provider")
+
+        def _parse_deprecated_at(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        deprecated_at = _parse_deprecated_at(d.pop("deprecated_at", UNSET))
 
         description = d.pop("description", UNSET)
 
@@ -276,6 +317,24 @@ class ModelSchema:
 
         ref_inputs = _parse_ref_inputs(d.pop("ref_inputs", UNSET))
 
+        def _parse_replaced_by(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        replaced_by = _parse_replaced_by(d.pop("replaced_by", UNSET))
+
+        def _parse_retires_at(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        retires_at = _parse_retires_at(d.pop("retires_at", UNSET))
+
         tags = cast(List[str], d.pop("tags", UNSET))
 
         _task = d.pop("task", UNSET)
@@ -293,6 +352,7 @@ class ModelSchema:
             pricing=pricing,
             prompt=prompt,
             provider=provider,
+            deprecated_at=deprecated_at,
             description=description,
             docs_url=docs_url,
             extra_allowlist=extra_allowlist,
@@ -300,6 +360,8 @@ class ModelSchema:
             params=params,
             preserves_unmasked=preserves_unmasked,
             ref_inputs=ref_inputs,
+            replaced_by=replaced_by,
+            retires_at=retires_at,
             tags=tags,
             task=task,
         )

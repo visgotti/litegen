@@ -131,6 +131,12 @@ export type Region = components["schemas"]["Region"];
  */
 export type ImageView = components["schemas"]["ImageView"];
 /**
+ * Where a model is in its vendor's lifecycle (`ModelInfo.status`): a
+ * `deprecated` model is still served until the day after its `retires_at`;
+ * `replaced_by` names the catalog model to move to.
+ */
+export type ModelStatus = components["schemas"]["ModelStatus"];
+/**
  * Where a video model's `keyframe` references may sit
  * (`capabilities.keyframe_timing`): `any` time each, or `even` spacing from
  * the start of the clip to its end.

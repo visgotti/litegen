@@ -2016,6 +2016,7 @@ mod model3d_router_tests {
             capabilities: crate::capabilities::ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
             prompt: crate::capabilities::PromptSpec { required: true, min_length: None, max_length: None },
             params: Default::default(), ref_inputs: None, extra_allowlist: vec![], tags: vec![],
+            deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
         };
         let base = crate::types::BaseGenerationRequest {
             prompt: "a fox".into(), model: "mock/slow-3d".into(), n: 1, negative_prompt: None, seed: None,

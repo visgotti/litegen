@@ -164,6 +164,7 @@ export default {
     'google/gemini-3.1-flash-lite-image': 'gemini-3.1-flash-lite-image',
     'google/gemini-2.5-flash-image': 'gemini-2.5-flash-image',
     'google/gemini-3-pro-image': 'gemini-3-pro-image',
+    'google/gemini-nano-banana-2.1': 'gemini-nano-banana-2.1',
   },
   sources: [
     {

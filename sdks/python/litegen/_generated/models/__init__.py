@@ -94,6 +94,7 @@ from .model_route import ModelRoute
 from .model_schema import ModelSchema
 from .model_schema_params import ModelSchemaParams
 from .model_source import ModelSource
+from .model_status import ModelStatus
 from .model_task import ModelTask
 from .model_usage_stat import ModelUsageStat
 from .native_orientation import NativeOrientation
@@ -301,6 +302,7 @@ __all__ = (
     "ModelSchema",
     "ModelSchemaParams",
     "ModelSource",
+    "ModelStatus",
     "ModelTask",
     "ModelUsageStat",
     "NativeOrientation",

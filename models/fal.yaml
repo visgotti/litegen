@@ -189,6 +189,11 @@ models:
     provider: fal
     media_type: image
     display_name: AuraFlow (Fal)
+    # fal's registry marks the endpoint deprecated ("status": "deprecated",
+    # updated 2026-10-27) and its page says "This endpoint is deprecated";
+    # no shutdown date and no successor are given. It is still served.
+    # @see https://api.fal.ai/v1/models?endpoint_id=fal-ai/aura-flow (2026-10-30)
+    deprecated_at: 2026-10-27
     pricing: { base_cost_usd: 0.02 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }

@@ -642,6 +642,7 @@ impl Default for ModelCapabilities {
             supports_image_to_image: false,
             supports_inpainting: false,
             supported_sizes: Vec::new(),
+            max_reference_images: 1,
             max_images: 1,
             supports_text_to_video: false,
             supports_image_to_video: false,
