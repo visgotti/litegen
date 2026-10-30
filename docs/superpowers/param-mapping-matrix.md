@@ -677,10 +677,21 @@ adapter then places each view where its endpoint takes it.
 | `pbr` | `pbr` (default true) | `enable_pbr` (+$0.15) | adapter tests above | 🟡 wiremock |
 | `target_polycount` | `face_limit`, 1000–2000000 | `face_count`, 40000–1500000 (+$0.15; sent only when asked) | adapter tests above; tie test (range) | 🟡 wiremock |
 | `seed` | `model_seed` | — (no seed field) | `tripo_multiview_receives_its_views_as_one_list_in_its_own_order` | 🟡 wiremock |
-| price | $0.30 textured (default); $0.20 untextured, recorded in `variable_pricing` | $0.375; +$0.15 each for views, PBR and a face count, recorded in `variable_pricing` | — (Task 17 applies `variable_pricing`) | 🟡 |
+| price | $0.30 textured (default); $0.20 untextured, applied by `variable_pricing` | $0.375; +$0.15 each for views, PBR and a face count, applied by `variable_pricing` | [Prices that match the bill](#prices-that-match-the-bill-3d-doc-3g-l14): quote = reservation = charge; conformance `every_base_price_is_what_the_rules_charge_for_the_default_request` | 🟡 fal quotes |
 
-Not verified live: no fal key is available here, so neither vendor's "left"
-has been proven with an asymmetric fixture yet.
+**`fal/hyper3d-rodin`** takes views too. Its `condition_mode` `concat` (the
+default, left an `extra`) takes "multiple multi-view images of the same object
+… in any order, regardless of the order of view", so every `ImageView` is a
+role, at most five references in all (its `max_total`), sent as one
+`input_image_urls` list front first and the rest by yaw. No view order is
+declared, since the vendor reads none. Price as for an image request ($0.40;
+HighPack ×3). Proof: adapter
+`rodin_takes_views_as_one_unlabelled_list_front_first`; tie
+`each_catalog_row_declares_exactly_what_its_endpoint_takes`. Status 🟡 wiremock.
+
+Not verified live: no fal key is available here, so no vendor's "left" has
+been proven with an asymmetric fixture yet (Rodin's views are unlabelled, so
+its "left" cannot be wrong).
 
 ### Not yet implemented: first-party vendors
 
@@ -701,7 +712,7 @@ at all — guesses to verify against vendor docs, not spec-sourced field names.
 | `rig` | (separate endpoint — unconfirmed) | `rig` (unconfirmed) | — | — | ⬜ |
 | `seed` | — | `model_seed` | `seed` | — | ⬜ |
 | ref role `init` | `image_url` (b64 ok) | `file_token`\|url | multipart `image` | multipart `images` | ⬜ |
-| ref roles `view-*` | multi-image-to-3d | multiview-to-model (on fal: `fal/tripo-h3.1-multiview`, above) | — | `condition_mode` | ⬜ |
+| ref roles `view-*` | multi-image-to-3d | multiview-to-model (on fal: `fal/tripo-h3.1-multiview`, above) | — | `condition_mode` (on fal: `fal/hyper3d-rodin`, above) | ⬜ |
 
 ### Contract coverage that is not vendor mapping
 

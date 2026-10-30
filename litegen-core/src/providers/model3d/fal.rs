@@ -141,6 +141,9 @@ enum Views {
     Ordered { field: &'static str, order: &'static [&'static str] },
     /// One field per view: `(view, field)`.
     Named(&'static [(&'static str, &'static str)]),
+    /// One unlabelled array the vendor reads as views of one object in any
+    /// order: sent in this order (front first), skipping views not sent.
+    Unordered { field: &'static str, views: &'static [&'static str] },
 }
 
 /// A canonical boolean as an endpoint spells it.
@@ -181,7 +184,7 @@ impl EndpointSpec {
         out.extend(self.polycount.map(|(field, ..)| field));
         match self.views {
             Views::None => {}
-            Views::Ordered { field, .. } => out.push(field),
+            Views::Ordered { field, .. } | Views::Unordered { field, .. } => out.push(field),
             Views::Named(fields) => out.extend(fields.iter().map(|(_, field)| *field)),
         }
         out
@@ -216,14 +219,20 @@ fn resolve_spec(model: &str) -> Option<EndpointSpec> {
         // @see <https://fal.ai/models/fal-ai/hyper3d/rodin/api>
         // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/hyper3d/rodin>
         // @see <https://fal.ai/models/fal-ai/hyper3d/rodin/llms.txt> — "$0.4 per generations"
+        // Multiview too (3D doc §3E): `condition_mode` "concat", the default,
+        // takes "multiple multi-view images of the same object … in any
+        // order, regardless of the order of view".
         "fal/hyper3d-rodin" => Some(EndpointSpec {
             text_to_3d: Some("fal-ai/hyper3d/rodin"),
             image_to_3d: Some("fal-ai/hyper3d/rodin"),
-            multiview_to_3d: None,
+            multiview_to_3d: Some("fal-ai/hyper3d/rodin"),
             prompt: true,
             image_field: "input_image_urls",
             image_is_array: true,
-            views: Views::None,
+            views: Views::Unordered {
+                field: "input_image_urls",
+                views: &["front", "front-left", "left", "back-left", "back", "back-right", "right", "front-right", "top", "bottom"],
+            },
             format_field: Some("geometry_file_format"),
             format_values: &["glb", "usdz", "fbx", "obj", "stl"],
             seed_field: "seed",
@@ -1136,6 +1145,11 @@ impl Model3dProvider for FalModel3dProvider {
                         Some(*view)
                     })
                     .collect(),
+                Views::Unordered { field, views: taken } => {
+                    let sent: Vec<&str> = taken.iter().copied().filter(|v| url(v).is_some()).collect();
+                    body.insert(field.into(), json!(sent.iter().filter_map(|v| url(v)).collect::<Vec<_>>()));
+                    sent
+                }
             };
             if let Some((view, _)) = views.iter().find(|(v, _)| !placed.contains(v)) {
                 return Err(ProviderError::InvalidRequest(format!("'{}' takes no view-{view} image", model.id)));
@@ -1771,6 +1785,25 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err}");
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// Rodin's `concat` mode (its default) takes "multiple multi-view images of
+    /// the same object … in any order, regardless of the order of view": one
+    /// unlabelled list, sent front first and the rest by yaw.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/hyper3d/rodin>
+    #[tokio::test]
+    async fn rodin_takes_views_as_one_unlabelled_list_front_first() {
+        let server = MockServer::start().await;
+        mount_submit(&server, "fal-ai/hyper3d/rodin", "r-1").await;
+        let rodin = "fal/hyper3d-rodin";
+        provider(&server)
+            .generate(&schema(rodin), &base("", rodin), &extras(&["glb"]), &views(&["view-back", "view-top", "view-front", "view-left"]))
+            .await
+            .expect("submit");
+        let body = submitted_body(&server).await;
+        let urls: Vec<String> = ["front", "left", "back", "top"].iter().map(|v| format!("https://example.com/view-{v}.png")).collect();
+        assert_eq!(body["input_image_urls"], json!(urls));
+        assert!(body.get("condition_mode").is_none(), "concat is Rodin's default and stays an extra: {body}");
     }
 
     // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/hunyuan-3d/v3.1/pro/image-to-3d>
@@ -2533,6 +2566,7 @@ mod tests {
                 Views::None => (Default::default(), &[]),
                 Views::Ordered { order, .. } => (order.iter().copied().collect(), order),
                 Views::Named(fields) => (fields.iter().map(|(v, _)| *v).collect(), &[]),
+                Views::Unordered { views, .. } => (views.iter().copied().collect(), &[]),
             };
             assert_eq!(declared, taken, "{id}: a view-* role for exactly the views the endpoint takes");
             assert_eq!(refs.view_order, order, "{id}: view_order is the endpoint's list order");

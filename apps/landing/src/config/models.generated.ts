@@ -1488,7 +1488,7 @@ export const MODELS: ModelEntry[] = [
       "imageToVideo": false,
       "textTo3d": true,
       "imageTo3d": true,
-      "multiviewTo3d": false
+      "multiviewTo3d": true
     },
     "sizes": [],
     "aspectRatios": [],
@@ -1499,6 +1499,66 @@ export const MODELS: ModelEntry[] = [
         "required": false,
         "min": 0,
         "max": 5
+      },
+      {
+        "name": "view-front",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-front-left",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-left",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-back-left",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-back",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-back-right",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-right",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-front-right",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-top",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-bottom",
+        "required": false,
+        "min": 0,
+        "max": 1
       }
     ],
     "promptLimits": {

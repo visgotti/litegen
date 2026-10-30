@@ -207,7 +207,8 @@ for the request at hand (per second of video, per megapixel, per clip, multiplie
 The mode comes from the reference images' roles: none is text-to-3D, `init` is image-to-3D, and
 `view-<name>` roles (`view-front`, `view-left`, `view-back`, `view-right`, …) are multiview-to-3D.
 A multiview request always needs `view-front`; a model whose `ref_inputs.view_order` is set reads
-its views by position, so each view needs every view before it in that order.
+its views by position, so each view needs every view before it in that order. Rodin takes up to five
+views of any names, in any order.
 
 > The built-in mocks need no key: `mock/mesh-3d` and `mock/all-params-3d` emit a real glTF 2.0
 > binary cube, while `mock/fail-3d` emits no mesh at all — it terminates `failed`, by design, to
@@ -356,7 +357,7 @@ modality automatically.
 hasn't wired it yet (see [Roadmap: missing providers](#roadmap--missing-providers)) · — no public API.
 
 **3D (`model3d`):** generation through fal (Rodin, TRELLIS, Hunyuan3D v2 and 3.1 Pro; multiview through
-Tripo H3.1 and Hunyuan3D 3.1 Pro); rigging through Tripo,
+Tripo H3.1, Hunyuan3D 3.1 Pro and Rodin); rigging through Tripo,
 Meshy and fal's Meshy endpoint; animation through Tripo and Meshy (see
 [Generate 3D Model](#generate-3d-model)). Every delivered mesh is normalised and carries a measured
 manifest. Meshy and Tripo generation, Stability 3D and Rodin direct are deferred.

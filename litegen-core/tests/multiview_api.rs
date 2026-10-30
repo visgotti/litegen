@@ -130,6 +130,32 @@ async fn views_reach_tripo_on_fal_in_tripos_order_whatever_order_they_were_sent_
     assert_eq!(body["image_urls"], json!([data_uri("front"), data_uri("left"), data_uri("back")]));
 }
 
+/// Rodin reads its views unlabelled and in any order: they reach it front
+/// first, and it takes at most five references (its `max_total`).
+#[tokio::test]
+async fn views_reach_rodin_on_fal_front_first_and_at_most_five() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/fal-ai/hyper3d/rodin"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "request_id": "r-1" })))
+        .mount(&server)
+        .await;
+    let (app, _db) = app_with_fal(&server).await;
+    let (status, resp) = post_to(&app, "/v1/models3d/generations", json!({
+        "model": "fal/hyper3d-rodin",
+        "reference_images": [view_ref("right"), view_ref("front"), view_ref("top")],
+    })).await;
+    assert_eq!(status, StatusCode::OK, "{resp}");
+    let sent: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.url.path() == "/fal-ai/hyper3d/rodin").collect();
+    let body: Value = serde_json::from_slice(&sent[0].body).unwrap();
+    assert_eq!(body["input_image_urls"], json!([data_uri("front"), data_uri("right"), data_uri("top")]));
+
+    let six: Vec<Value> = ["front", "left", "back", "right", "top", "bottom"].into_iter().map(view_ref).collect();
+    let (status, resp) = post_to(&app, "/v1/models3d/generations", json!({ "model": "fal/hyper3d-rodin", "reference_images": six })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{resp}");
+    assert_eq!(server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/fal-ai/hyper3d/rodin").count(), 1, "six views never reach fal");
+}
+
 #[tokio::test]
 async fn views_a_multiview_model_cannot_take_are_refused_before_billing() {
     use litegen::db::DatabaseStore;

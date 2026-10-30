@@ -452,7 +452,10 @@ models:
       base_cost_usd: 0.4
       variable_pricing:
         - { when: { extra.addons: HighPack }, multiply: 3 }
-    capabilities: { text_to_3d: true, image_to_3d: true }
+    # condition_mode "concat" (the default) takes "multiple multi-view images
+    # of the same object … in any order, regardless of the order of view":
+    # view-* references go there front first, at most five (3D doc §3E, §3H).
+    capabilities: { text_to_3d: true, image_to_3d: true, multiview_to_3d: true }
     # Hyper3dRodinInput.prompt is `maxLength: 1024`: "Required for Text-to-3D
     # mode. Optional for Image-to-3D mode." Not required here because images
     # make it optional; validate_model3d still refuses a request with neither.
@@ -484,6 +487,16 @@ models:
       provider_format: { form: url }
       roles:
         init: { required: false, min_count: 0, max_count: 5 }
+        view-front: { required: false, min_count: 0, max_count: 1 }
+        view-front-left: { required: false, min_count: 0, max_count: 1 }
+        view-left: { required: false, min_count: 0, max_count: 1 }
+        view-back-left: { required: false, min_count: 0, max_count: 1 }
+        view-back: { required: false, min_count: 0, max_count: 1 }
+        view-back-right: { required: false, min_count: 0, max_count: 1 }
+        view-right: { required: false, min_count: 0, max_count: 1 }
+        view-front-right: { required: false, min_count: 0, max_count: 1 }
+        view-top: { required: false, min_count: 0, max_count: 1 }
+        view-bottom: { required: false, min_count: 0, max_count: 1 }
     # quality (high|medium|low|extra-low), tier, use_hyper, TAPose,
     # condition_mode, bbox_condition, addons — no canonical param maps to any of
     # these without distorting it, so they stay explicit passthroughs.
