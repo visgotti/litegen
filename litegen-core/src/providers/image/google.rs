@@ -6,9 +6,10 @@ use std::collections::HashMap;
 
 use crate::capabilities::ModelSchema;
 use crate::proxy::materializer::{MaterializedRequest, MaterializedRefForm};
+use crate::providers::auth::AuthSpec;
 use crate::providers::{
     ApiKeyPool, BaseGenerationRequest, GenerationOutput, HealthCheckResult, ImageExtras,
-    ImageProvider, ProviderError, ProviderInstanceConfig, build_cost_estimate,
+    ImageProvider, ProviderCredentials, ProviderError, ProviderInstanceConfig, build_cost_estimate,
 };
 use crate::types::*;
 
@@ -19,9 +20,15 @@ use crate::types::*;
 /// @see <https://ai.google.dev/api/generate-content> — `models.generateContent` REST reference
 /// @see <https://ai.google.dev/gemini-api/docs/image-generation> — image-generation guide
 ///   (`responseModalities: ["image"]` and the `inlineData` image part shape)
+///
+/// Authenticated with the `x-goog-api-key` header, as every REST sample in the
+/// image guide does (`-H "x-goog-api-key: $GEMINI_API_KEY"`). Never the `?key=`
+/// query parameter: reqwest writes the request URL into its error text, and
+/// that text reaches the caller's error body, the logs and the database.
 pub struct GoogleProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
+    auth: AuthSpec,
     client: Client,
 }
 
@@ -30,6 +37,7 @@ impl GoogleProvider {
         Self {
             config: None,
             key_pool: None,
+            auth: AuthSpec::raw_header("x-goog-api-key"),
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
@@ -52,6 +60,16 @@ impl GoogleProvider {
             .as_ref()
             .and_then(|c| c.api_base.as_deref())
             .unwrap_or("https://generativelanguage.googleapis.com/v1beta")
+    }
+
+    /// The credentials to sign one request with: the configured ones, with the
+    /// key the weighted pool picked.
+    fn creds(&self, api_key: String) -> ProviderCredentials {
+        self.config
+            .as_ref()
+            .map(|c| c.credentials.clone())
+            .unwrap_or_default()
+            .with_api_key(api_key)
     }
 
     /// Build the request URL. Imagen models use the `:predict` surface
@@ -166,7 +184,7 @@ impl ImageProvider for GoogleProvider {
     /// @see <https://ai.google.dev/api/generate-content> — `models.generateContent`.
     ///   Proves the `contents[].parts[]` request structure (text + `inlineData`/`fileData`),
     ///   the `generationConfig` (`responseModalities`, `seed`, nested
-    ///   `imageConfig.aspectRatio`), `?key=` auth, and the
+    ///   `imageConfig.aspectRatio`), `x-goog-api-key` header auth, and the
     ///   `candidates[].content.parts[].inlineData` response this method reads.
     /// @see <https://ai.google.dev/api/imagen> — `models.predict` for Imagen.
     async fn generate(
@@ -316,20 +334,24 @@ impl ImageProvider for GoogleProvider {
             })
         };
 
-        let resp = crate::providers::inject_trace_headers(
-            self.client
-                .post(&url)
-                .query(&[("key", &api_key)])
-                .header("Content-Type", "application/json")
-                .json(&body),
-        )
+        let builder = crate::providers::auth::apply(
+            &self.auth,
+            &self.creds(api_key),
+            self.client.post(&url).header("Content-Type", "application/json").json(&body),
+        )?;
+        let resp = crate::providers::inject_trace_headers(builder)
         .send()
         .await
-        .map_err(|e| ProviderError::RequestFailed {
-            message: format!("Google request failed: {e}"),
-            status_code: e.status().map(|s| s.as_u16()),
-            provider_error: None,
-            retryable: e.is_timeout() || e.is_connect(),
+        .map_err(|e| {
+            let status_code = e.status().map(|s| s.as_u16());
+            let retryable = e.is_timeout() || e.is_connect();
+            ProviderError::RequestFailed {
+                // No URL in the text, whatever it carries: errors reach callers.
+                message: format!("Google request failed: {}", e.without_url()),
+                status_code,
+                provider_error: None,
+                retryable,
+            }
         })?;
 
         let status = resp.status();
@@ -480,7 +502,7 @@ impl ImageProvider for GoogleProvider {
         ))
     }
 
-    /// Validate the API key via `GET {generativelanguage}/v1beta/models?key=…`.
+    /// Validate the API key via `GET {api_base}/models`, key in the header.
     ///
     /// @see <https://ai.google.dev/api/models#method:-models.list> — `models.list`
     async fn health_check(&self) -> HealthCheckResult {
@@ -502,15 +524,23 @@ impl ImageProvider for GoogleProvider {
                 }
             }
         };
-        match self
-            .client
-            .get(format!(
-                "https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-            ))
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
-        {
+        let request = match crate::providers::auth::apply(
+            &self.auth,
+            &self.creds(api_key),
+            self.client
+                .get(format!("{}/models", self.api_base()))
+                .timeout(std::time::Duration::from_secs(10)),
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                return HealthCheckResult {
+                    healthy: false,
+                    message: e.to_string(),
+                    latency_ms: None,
+                }
+            }
+        };
+        match request.send().await {
             Ok(resp) if resp.status().is_success() => HealthCheckResult {
                 healthy: true,
                 message: "Google API key valid".into(),
@@ -523,7 +553,7 @@ impl ImageProvider for GoogleProvider {
             },
             Err(e) => HealthCheckResult {
                 healthy: false,
-                message: format!("Google health check failed: {e}"),
+                message: format!("Google health check failed: {}", e.without_url()),
                 latency_ms: Some(start.elapsed().as_millis() as u64),
             },
         }
@@ -593,6 +623,73 @@ mod tests {
             response_format: "url".to_string(),
             extra: None,
         }
+    }
+
+    /// The key goes in the `x-goog-api-key` header, as every image sample in
+    /// Google's docs sends it. In the URL query it rode along in reqwest's
+    /// error text ("… for url (…?key=…)") into the 502 body, logs and the DB.
+    /// @see <https://ai.google.dev/gemini-api/docs/image-generation> (`-H "x-goog-api-key: $GEMINI_API_KEY"`)
+    #[tokio::test]
+    async fn the_api_key_travels_in_a_header_never_in_the_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex("/models/gemini-2.5-flash-image:generateContent"))
+            .and(wiremock::matchers::header("x-goog-api-key", "test-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{ "content": { "parts": [
+                    { "inlineData": { "mimeType": "image/png", "data": B64.encode(b"png") } }
+                ] } }]
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("google/gemini-2.5-flash-image");
+        let base = make_base("a lighthouse", "google/gemini-2.5-flash-image");
+        provider.generate(&schema, &base, &make_extras(), &empty_materialized()).await.expect("generate");
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert!(received[0].url.query().is_none_or(|q| !q.contains("key")), "{}", received[0].url);
+    }
+
+    #[tokio::test]
+    async fn a_transport_error_never_carries_the_api_key() {
+        // Nothing listens on port 1: a connect error, the case whose text used
+        // to include the full URL.
+        let mut provider = GoogleProvider::new();
+        provider.configure(ProviderInstanceConfig {
+            api_key: "AIza-SECRET-TEST-KEY".to_string(),
+            api_base: Some("http://127.0.0.1:1/v1beta".to_string()),
+            ..Default::default()
+        });
+        let schema = ref_schema("google/gemini-2.5-flash-image");
+        let base = make_base("a lighthouse", "google/gemini-2.5-flash-image");
+        let err = provider
+            .generate(&schema, &base, &make_extras(), &empty_materialized())
+            .await
+            .expect_err("nothing listens there");
+        assert!(!format!("{err} {err:?}").contains("AIza-SECRET-TEST-KEY"), "{err:?}");
+
+        let health = provider.health_check().await;
+        assert!(!health.healthy);
+        assert!(!health.message.contains("AIza-SECRET-TEST-KEY"), "{}", health.message);
+    }
+
+    #[tokio::test]
+    async fn the_health_check_uses_the_configured_base_and_the_header() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/v1beta/models"))
+            .and(wiremock::matchers::header("x-goog-api-key", "test-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "models": [] })))
+            .mount(&server)
+            .await;
+        let provider = make_provider(&format!("{}/v1beta", server.uri()));
+        let health = provider.health_check().await;
+        assert!(health.healthy, "{}", health.message);
+        let received = server.received_requests().await.unwrap();
+        assert!(received[0].url.query().is_none_or(|q| !q.contains("key")), "{}", received[0].url);
     }
 
     #[tokio::test]
