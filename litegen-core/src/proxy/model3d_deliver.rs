@@ -75,6 +75,10 @@ pub struct DeliveryPlan {
     /// Opt-in placement (3D doc §3D), applied after orientation.
     #[serde(default)]
     pub placement: Option<PlacementPlan>,
+    /// The joint-naming scheme asked for (3D doc §3B), when not `vendor`:
+    /// litegen renames a humanoid rig it can read into it.
+    #[serde(default)]
+    pub joint_naming: Option<String>,
 }
 
 /// Where the request asked its mesh to be (3D doc §3D).
@@ -117,6 +121,7 @@ impl DeliveryPlan {
                 .collect(),
             fps: extras.fps,
             parts: schema.task == crate::capabilities::ModelTask::Segment,
+            joint_naming: extras.joint_naming.clone().filter(|n| n != "vendor"),
             placement: {
                 let p = PlacementPlan {
                     ground: extras.ground == Some(true),
@@ -343,6 +348,21 @@ pub fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
     }
     changed |= normalize::unique_node_names(&mut scene);
     changed |= normalize::rename_nodes(&mut scene, &plan.joint_renames);
+    // 3D doc §3B: a scheme the vendor could not name in, from the table
+    // litegen reads the rig with. Already so named (the vendor did it), it is
+    // a no-op; a scheme litegen has no table for was the vendor's to apply.
+    let mut naming_note = None;
+    if let Some(scheme) = plan.joint_naming.as_deref().filter(|s| crate::mesh::humanoid::RENAMES_TO.contains(s)) {
+        let joints: Vec<String> = scene
+            .skins
+            .first()
+            .map(|s| s.joints.iter().map(|&j| scene.nodes[j].name.clone().unwrap_or_default()).collect())
+            .unwrap_or_default();
+        match crate::mesh::humanoid::renames_to(scheme, &joints) {
+            Some(renames) => changed |= normalize::rename_nodes(&mut scene, &renames),
+            None => naming_note = Some(format!("litegen cannot read this rig's joints as a humanoid, so they keep the vendor's names, not {scheme} ones")),
+        }
+    }
     // One clip per requested name, in order (3D doc §3C): a promise like the
     // containers. A pose clip a vendor adds beside them is not one of them.
     if !plan.clips.is_empty() {
@@ -382,6 +402,7 @@ pub fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
     changed |= transcode.changed;
     let mut failures: Vec<(String, String)> =
         transcode.dropped.into_iter().map(|t| ("texture".to_string(), format!("{t} could not be decoded and was left out (KTX2)"))).collect();
+    failures.extend(naming_note.map(|n| ("joint_naming".to_string(), n)));
 
     // ── Deliver ──
     let mut out: Vec<Model3dFile> = Vec::new();

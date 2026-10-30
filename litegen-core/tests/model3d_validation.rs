@@ -608,7 +608,7 @@ fn a_skeleton_or_naming_the_rig_does_not_offer_is_refused() {
     let err = validate_model3d(&schema, r).unwrap_err();
     assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_enum_mismatch", Some("skeleton")));
     let mut r = rig_request(false);
-    r.joint_naming = Some("mixamo".into());
+    r.joint_naming = Some("unreal".into());
     let err = validate_model3d(&schema, r).unwrap_err();
     assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_enum_mismatch", Some("joint_naming")));
 }
@@ -945,4 +945,22 @@ fn an_operation_needs_neither_a_prompt_nor_a_reference_image() {
     // references; an operation's input is its source.
     let out = validate_model3d(&rig_schema(), rig_req(Some(source(SourceKind::Generation, "litegen-3d-x", None)))).unwrap();
     assert_eq!(out.request.source_model.unwrap().value, "litegen-3d-x");
+}
+
+/// 3D doc §3B: every naming scheme but `vendor` names humanoid bones, so it
+/// cannot apply to a quadruped's rig.
+#[test]
+fn a_humanoid_naming_scheme_on_another_skeleton_is_refused() {
+    let schema = real("meshy/rig");
+    let mut r = rig_request(false);
+    r.base.model = "meshy/rig".into();
+    r.skeleton = Some("quadruped".into());
+    r.joint_naming = Some("vrm".into());
+    let err = validate_model3d(&schema, r.clone()).unwrap_err();
+    assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_conflict", Some("joint_naming")));
+    r.joint_naming = Some("vendor".into());
+    assert!(validate_model3d(&schema, r.clone()).is_ok());
+    r.skeleton = None;
+    r.joint_naming = Some("unity".into());
+    assert!(validate_model3d(&schema, r).is_ok(), "the row's default skeleton is humanoid");
 }

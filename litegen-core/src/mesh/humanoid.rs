@@ -112,9 +112,55 @@ pub fn humanoid_map(joints: &[String]) -> Option<(&'static str, Vec<(String, Str
     None
 }
 
+/// The schemes litegen names a humanoid rig's joints in itself (3D doc §3B):
+/// those with a table to name them from.
+pub const RENAMES_TO: [&str; 3] = ["vrm", "unity", "mixamo"];
+
+/// The renames `(joint, new name)` that give a humanoid rig `scheme`'s joint
+/// names — every bone its own table and the scheme's both name — leaving the
+/// rest as they are. `None` when no table matches the rig or `scheme` is not
+/// one of [`RENAMES_TO`].
+pub fn renames_to(scheme: &str, joints: &[String]) -> Option<Vec<(String, String)>> {
+    let target: Table = match scheme {
+        "vrm" => VRM,
+        "unity" => UNITY,
+        "mixamo" => MIXAMO,
+        _ => return None,
+    };
+    let (_, map) = humanoid_map(joints)?;
+    Some(
+        map.into_iter()
+            .filter_map(|(bone, joint)| {
+                let name = target.iter().find(|(b, _)| *b == bone)?.1;
+                let name = if scheme == "mixamo" { format!("mixamorig:{name}") } else { name.to_string() };
+                (name != joint).then_some((joint, name))
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rig_litegen_can_read_is_renamed_bone_for_bone_into_another_scheme() {
+        let meshy = names(&["Hips", "Spine02", "Spine01", "Spine", "neck", "Head", "LeftArm", "RightArm", "LeftUpLeg", "RightUpLeg", "LeftHand"]);
+        let renames = renames_to("unity", &meshy).unwrap();
+        let to = |from: &str| renames.iter().find(|(f, _)| f == from).map(|(_, t)| t.as_str());
+        assert_eq!(
+            (to("Spine02"), to("Spine01"), to("Spine"), to("neck"), to("LeftArm"), to("LeftUpLeg")),
+            (Some("Spine"), Some("Chest"), Some("UpperChest"), Some("Neck"), Some("LeftUpperArm"), Some("LeftUpperLeg"))
+        );
+        assert!(renames.iter().all(|(f, t)| f != t), "no rename to the same name");
+        let mock = names(&["hips", "torso", "head", "arm_l", "arm_r", "leg_l", "leg_r"]);
+        let mixamo = renames_to("mixamo", &mock).unwrap();
+        assert!(mixamo.contains(&("torso".into(), "mixamorig:Spine".into())), "{mixamo:?}");
+        assert!(mixamo.contains(&("arm_l".into(), "mixamorig:LeftArm".into())), "{mixamo:?}");
+        assert_eq!(renames_to("vrm", &names(&["root", "bone1"])), None, "a rig no table matches");
+        assert_eq!(renames_to("unreal", &mock), None, "no table names UE5 Manny's bones");
+        assert_eq!(renames_to("vrm", &names(&["hips", "spine", "head", "leftUpperArm", "rightUpperArm", "leftUpperLeg", "rightUpperLeg"])), Some(vec![]), "already VRM");
+    }
 
     fn names(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()

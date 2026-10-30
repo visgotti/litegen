@@ -106,3 +106,22 @@ async fn a_source_the_vendor_cannot_rig_is_refused_before_anything_is_billed() {
     assert_eq!(db.get_request_logs(1, 10).await.unwrap().0.len(), 0, "nothing ran, nothing billed");
     assert_eq!(db.count_generations(None).await.unwrap(), 0);
 }
+
+/// 3D doc §3B (P2): where the vendor cannot name joints in a scheme, litegen
+/// renames them itself, from the humanoid table it reads the rig with. The
+/// mock names VRM bones itself; Unity and Mixamo names are litegen's.
+#[tokio::test]
+async fn unity_and_mixamo_naming_are_litegens_renames_of_the_vendors_joints() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let src = source(&app).await;
+    let rig = |naming: &str| json!({ "model": "mock/rig-3d", "joint_naming": naming, "source_model": { "type": "generation", "value": src } });
+    let unity = finished(&app, rig("unity")).await;
+    let named = skin(&unity);
+    assert_eq!(named["joints"], json!(["Hips", "Spine", "Head", "LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg"]), "{named}");
+    assert_eq!((named["humanoid"]["spine"].as_str(), named["humanoid"]["leftUpperLeg"].as_str()), (Some("Spine"), Some("LeftUpperLeg")), "{named}");
+    assert!(unity["assets"].as_array().unwrap().iter().any(|a| a["kind"] == "original"), "the vendor's own names kept in its file: {unity}");
+
+    let mixamo = skin(&finished(&app, rig("mixamo")).await);
+    assert_eq!(mixamo["joints"][1], "mixamorig:Spine", "{mixamo}");
+    assert_eq!(mixamo["humanoid"]["leftUpperArm"], "mixamorig:LeftArm", "{mixamo}");
+}

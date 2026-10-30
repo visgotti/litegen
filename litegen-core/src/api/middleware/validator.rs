@@ -703,6 +703,20 @@ pub fn validate_model3d(
     string_param!(req.topology, "topology");
     string_param!(req.skeleton, "skeleton");
     string_param!(req.joint_naming, "joint_naming");
+    // 3D doc §3B: every scheme but `vendor` names humanoid bones.
+    if req.joint_naming.as_deref().is_some_and(|n| n != "vendor") {
+        let skeleton = req.skeleton.clone().or_else(|| match schema.params.get("skeleton") {
+            Some(ParamSpec::String(s)) => s.default.clone(),
+            _ => None,
+        });
+        if let Some(other) = skeleton.filter(|s| s != "humanoid") {
+            return Err(ValidationError::new(
+                "param_conflict",
+                format!("joint_naming {:?} names humanoid bones; a {other} rig keeps its vendor's names", req.joint_naming.as_deref().unwrap_or_default()),
+                Some("joint_naming"),
+            ));
+        }
+    }
     if let Some(v) = req.height_m {
         match schema.params.get("height_m") {
             Some(ParamSpec::Float(s)) => {

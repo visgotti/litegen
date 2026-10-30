@@ -757,6 +757,15 @@ models:
         default: 1.7
         label: Height (m)
         description: The character's height in metres (Meshy's height_meters; any positive value).
+      joint_naming:
+        kind: string
+        enum_values: [vendor, vrm, unity, mixamo]
+        default: vendor
+        label: Joint naming
+        description: >-
+          `vendor` keeps Meshy's own joint names; `vrm`, `unity` and `mixamo`
+          are litegen's renames of them, from the humanoid table it reads
+          Meshy's rigs with (3D doc §3B). Humanoids only.
       output_formats:
         kind: string_array
         enum_values: [glb, fbx]

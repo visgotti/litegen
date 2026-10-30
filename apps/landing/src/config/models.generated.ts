@@ -1713,6 +1713,17 @@ export const MODELS: ModelEntry[] = [
         "default": 1.7
       },
       {
+        "name": "joint_naming",
+        "kind": "string",
+        "enum": [
+          "vendor",
+          "vrm",
+          "unity",
+          "mixamo"
+        ],
+        "default": "vendor"
+      },
+      {
         "name": "output_formats",
         "kind": "string_array",
         "enum": [
@@ -4353,6 +4364,17 @@ export const MODELS: ModelEntry[] = [
         "name": "height_m",
         "kind": "float",
         "default": 1.7
+      },
+      {
+        "name": "joint_naming",
+        "kind": "string",
+        "enum": [
+          "vendor",
+          "vrm",
+          "unity",
+          "mixamo"
+        ],
+        "default": "vendor"
       },
       {
         "name": "output_formats",

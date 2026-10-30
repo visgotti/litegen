@@ -565,12 +565,14 @@ models:
         description: The skeleton to rig for. The mock rigs humanoids only.
       joint_naming:
         kind: string
-        enum_values: [vendor, vrm]
+        enum_values: [vendor, vrm, unity, mixamo]
         default: vendor
         label: Joint naming
         description: >-
           `vendor` keeps the mock's own joint names (hips, torso, head, arm_l,
-          arm_r, leg_l, leg_r); `vrm` names them as VRM 1.0 humanoid bones.
+          arm_r, leg_l, leg_r); `vrm` names them as VRM 1.0 humanoid bones, as
+          the mock's own setting; `unity` and `mixamo` are litegen's renames
+          of the mock's names.
       height_m:
         kind: float
         min: 0.5

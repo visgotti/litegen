@@ -199,7 +199,9 @@ fn fal_meshy_rig_takes_a_textured_glb_within_meshys_limits() {
     assert_eq!(src.formats, ["glb"]);
     assert_eq!((src.max_bytes, src.max_faces, src.requires_texture), (Some(100_000_000), Some(320_000), true));
     assert!(matches!(m.params.get("height_m"), Some(ParamSpec::Float(_))));
-    assert!(!m.params.contains_key("skeleton") && !m.params.contains_key("joint_naming"), "Meshy rigs humanoids with its own names");
+    assert!(!m.params.contains_key("skeleton"), "Meshy on fal rigs humanoids");
+    // Meshy names its own joints; litegen renames them (3D doc §3B, P2).
+    assert_eq!(string_enum(m, "joint_naming"), ["vendor", "vrm", "unity", "mixamo"]);
     assert!((m.pricing.base_cost_usd - 0.20).abs() < 1e-9, "no animation is sent, so none is billed");
 }
 
@@ -246,6 +248,7 @@ fn meshy_rig_and_animate_take_what_meshys_endpoints_accept() {
     let src = source_spec(rig);
     assert_eq!((src.formats.as_slice(), src.max_bytes, src.max_faces, src.requires_texture), (["glb".to_string()].as_slice(), Some(100_000_000), Some(320_000), true));
     assert_eq!(string_enum(rig, "skeleton"), ["humanoid", "quadruped"]);
+    assert_eq!(string_enum(rig, "joint_naming"), ["vendor", "vrm", "unity", "mixamo"], "litegen's renames of Meshy's names");
     assert!(matches!(rig.params.get("height_m"), Some(ParamSpec::Float(_))));
     let anim = reg.get("meshy/animate").expect("meshy/animate");
     let a = animation_spec(anim);

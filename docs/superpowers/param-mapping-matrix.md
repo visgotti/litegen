@@ -490,11 +490,24 @@ caller's limits and quota are checked: a refusal answers 422 with its code
 |---|---|---|---|---|---|---|
 | `source_model` | `source_model` | `input`: the source's own Tripo task id when it is a Tripo job on the same account (`delivery: vendor_task`), else `POST /v3/files` multipart `file` → `file_token` (`upload`); glb, fbx, obj, stl ≤ 150 MB | `model_url` = the glb as a `data:model/gltf-binary;base64,…` URI (`data_uri`); glb ≤ 100 MB, ≤ 320,000 faces, textured (re-checked in the adapter) | any glb ≤ 20,000 triangles | tripo: `the_preflight_uploads_the_source_and_asks_rig_check`, `a_chained_source_goes_to_tripo_by_its_own_task_id`; fal: `meshy_rigging_sends_the_source_as_a_glb_data_uri_and_the_height`, `an_operation_without_its_source_is_refused_before_any_call`; conformance: `tripo_rig_takes_what_tripos_rig_endpoint_accepts`, `fal_meshy_rig_takes_a_textured_glb_within_meshys_limits` | 🟡 wiremock |
 | `skeleton` | `string` (`Model3dSkeleton`) | `rig_type` (`humanoid` → `biped`, `other` → `others`); rig `model` `v3.0-20260909` for biped/others, `v2.5-20260210` for creatures; omitted → what rig-check found | — (humanoid only) | `humanoid` only | `a_humanoid_rig_asks_for_v3_and_the_requested_naming`, `vendor_naming_sends_no_spec_and_a_creature_asks_for_v2_5`, `an_omitted_skeleton_rigs_what_rig_check_found`; validator `a_skeleton_or_naming_the_rig_does_not_offer_is_refused`; loader `rejects_skeleton_and_joint_naming_outside_their_vocabularies` | 🟡 wiremock |
-| `joint_naming` | `string` (`Model3dJointNaming`) | `spec` (`vrm`, `mixamo`, `unity`, `unreal`; `vendor` sends none); refused on a non-humanoid rig before any call | — | `vrm` emits VRM 1.0 bone names | `a_humanoid_rig_asks_for_v3_and_the_requested_naming`, `joint_naming_on_a_creature_is_refused_before_any_call`; HTTP `vrm_joint_naming_delivers_vrm_bone_names` | 🟡 wiremock / ✅ mock |
+| `joint_naming` | `string` (`Model3dJointNaming`) | `spec` (`vrm`, `mixamo`, `unity`, `unreal`; `vendor` sends none); refused on a non-humanoid rig before any call | not sent: `vrm`, `unity`, `mixamo` are litegen's renames of Meshy's names (also on `meshy/rig`) | `vrm` emits VRM 1.0 bone names itself; `unity`, `mixamo` are litegen's renames | `a_humanoid_rig_asks_for_v3_and_the_requested_naming`, `joint_naming_on_a_creature_is_refused_before_any_call`; HTTP `vrm_joint_naming_delivers_vrm_bone_names`, `unity_and_mixamo_naming_are_litegens_renames_of_the_vendors_joints`; unit `a_rig_litegen_can_read_is_renamed_bone_for_bone_into_another_scheme`; validator `a_humanoid_naming_scheme_on_another_skeleton_is_refused` | 🟡 wiremock / ✅ mock |
 | `height_m` | `float` | — | `height_meters` (any positive value) | scales the humanoid (0.5–3 m) | `meshy_rigging_sends_the_source_as_a_glb_data_uri_and_the_height`, `meshy_rigging_without_a_height_leaves_merely_the_source`; HTTP `height_m_sets_the_rigged_characters_height`; validator `a_height_outside_the_rigs_range_is_refused` | 🟡 wiremock / ✅ mock |
 | `output_formats` | `string_array` | `out_format`: `fbx` when fbx is promised, else `glb` | the endpoint returns both; glb is downloaded, Meshy's own fbx too when promised | glb | `an_fbx_promise_asks_tripo_for_its_own_fbx`, `a_finished_rig_downloads_the_promised_containers` | 🟡 wiremock |
 | preflight | — | `POST /v3/animations/rig-check` (free), polled at `GET /v3/tasks/{id}`: `riggable: false`, a failed check, or a `rig_type` other than the requested skeleton → 422 `not_riggable` | none | a flat source (thinnest side < 1 % of longest) → 422 `not_riggable` | `a_source_rig_check_refuses_is_not_riggable`, `a_skeleton_rig_check_did_not_find_is_not_riggable`; HTTP `a_source_the_vendor_cannot_rig_is_refused_before_anything_is_billed` (no row, no log) | 🟡 wiremock / ✅ mock |
 | manifest `skin` | — | measured from the delivered file | measured | `the_mock_rig_reports_its_skeleton_exactly` (§3I's joints and humanoid map) | `a_rig_no_table_knows_reports_the_requested_skeleton_and_no_humanoid_map` | ✅ |
+
+**litegen's renames (3D doc §3B, P2).** Where the vendor cannot name joints
+in the asked scheme, delivery renames a humanoid rig it can read: it reads
+the joints with its humanoid tables (VRM, Unity, Mixamo, Meshy, the mock),
+then renames every bone that the asked scheme's table names — `vrm`, `unity`,
+or `mixamo` (with its `mixamorig:` namespace); other joints keep their names,
+nothing else changes, and the vendor's own file is kept as `original`. A rig
+already named so (the vendor did it) is left alone; a rig no table reads
+keeps the vendor's names, with a delivery note. `unreal` has no table (no
+official UE5 Manny list), so it is offered only where the vendor names it
+(Tripo's `spec`). Every scheme but `vendor` names humanoid bones: with a
+non-humanoid `skeleton` (asked or the row's default) it is 400
+`param_conflict`.
 
 Tripo statuses map `queued` → pending, `running` (and any unknown status) →
 processing, `success` → completed after downloading `output.model_url` with no
