@@ -370,7 +370,7 @@ models:
 
     #[test]
     fn loads_a_3d_operation_task() {
-        let r = yaml(&model3d("    task: rig", "{}", "")).unwrap();
+        let r = yaml(&model3d("    task: rig", "{}", RIG_SOURCE)).unwrap();
         assert_eq!(r.get("x/op").unwrap().task, ModelTask::Rig);
     }
 
@@ -393,13 +393,47 @@ models:
     #[test]
     fn rejects_to_3d_flags_on_a_non_generate_task() {
         // The flags say how a GENERATION is driven; an operation takes a mesh.
-        let err = yaml(&model3d("    task: rig", "{ image_to_3d: true }", "")).unwrap_err().to_string();
+        let err = yaml(&model3d("    task: rig", "{ image_to_3d: true }", RIG_SOURCE)).unwrap_err().to_string();
         assert!(err.contains("image_to_3d") && err.contains("generate"), "{err}");
     }
 
     #[test]
     fn rejects_an_unknown_task() {
-        let err = yaml(&model3d("    task: teleport", "{}", "")).unwrap_err().to_string();
+        let err = yaml(&model3d("    task: teleport", "{}", RIG_SOURCE)).unwrap_err().to_string();
         assert!(err.contains("teleport"), "{err}");
+    }
+
+    // ─── source_model (3D doc §3A) ──────────────────────────────────────────
+
+    const RIG_SOURCE: &str = "    params:\n      source_model: { kind: source_model, formats: [glb, fbx], max_bytes: 104857600, max_faces: 300000, requires_skin: false, requires_texture: true }";
+
+    #[test]
+    fn a_3d_operation_declares_what_source_it_takes() {
+        let r = yaml(&model3d("    task: rig", "{}", RIG_SOURCE)).unwrap();
+        match r.get("x/op").unwrap().params.get("source_model") {
+            Some(ParamSpec::SourceModel(s)) => {
+                assert_eq!(s.formats, vec!["glb".to_string(), "fbx".to_string()]);
+                assert_eq!(s.max_bytes, Some(104_857_600));
+                assert_eq!(s.max_faces, Some(300_000));
+                assert!(!s.requires_skin && s.requires_texture);
+            }
+            other => panic!("source_model is {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_3d_operation_without_a_source_model_is_refused() {
+        let err = yaml(&model3d("    task: animate", "{}", "")).unwrap_err().to_string();
+        assert!(err.contains("source_model") && err.contains("animate"), "{err}");
+    }
+
+    #[test]
+    fn source_model_formats_come_from_the_mesh_vocabulary() {
+        let bad = "    params:\n      source_model: { kind: source_model, formats: [blend] }";
+        let err = yaml(&model3d("    task: rig", "{}", bad)).unwrap_err().to_string();
+        assert!(err.contains("blend"), "{err}");
+        let empty = "    params:\n      source_model: { kind: source_model, formats: [] }";
+        let err = yaml(&model3d("    task: rig", "{}", empty)).unwrap_err().to_string();
+        assert!(err.contains("formats"), "{err}");
     }
 }

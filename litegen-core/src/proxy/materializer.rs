@@ -139,7 +139,12 @@ impl Materializer {
         target: &RefProviderFormat,
         ctx: &MaterializeContext,
     ) -> Result<MaterializedRefForm, MaterializeError> {
+        // A generation reference is read back into bytes by the handler, which
+        // holds the storage and the caller's access, before this runs.
         match (r.kind, target) {
+            (RefImageKind::Generation, _) => Err(MaterializeError::Ref(format!(
+                "reference '{}' names a generation that was not read before materialising", r.value
+            ))),
             (RefImageKind::Url, RefProviderFormat::Url) => Ok(MaterializedRefForm::Url(r.value)),
             (RefImageKind::Base64, RefProviderFormat::Base64) => {
                 Ok(MaterializedRefForm::Base64(strip_data_prefix(&r.value).to_string()))

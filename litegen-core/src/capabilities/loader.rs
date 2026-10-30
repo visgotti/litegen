@@ -77,6 +77,27 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
+    // Every other 3D task works on an existing mesh and must say which ones
+    // it takes (3D doc §2 rule 1, §3A).
+    if m.media_type == MediaType::Model3d && m.task != ModelTask::Generate && !m.params.contains_key("source_model") {
+        return Err(bad(format!(
+            "model '{}' is a 3D '{}' operation but declares no params.source_model; \
+             say which containers, sizes and face counts its vendor takes",
+            m.id, m.task.as_str()
+        )));
+    }
+    if let Some(ParamSpec::SourceModel(src)) = m.params.get("source_model") {
+        if src.formats.is_empty() {
+            return Err(bad(format!("model '{}' source_model declares no formats", m.id)));
+        }
+        let vocab: Vec<&str> = Model3dFormat::ALL.iter().map(|f| f.as_str()).collect();
+        if let Some(f) = src.formats.iter().find(|f| !vocab.contains(&f.as_str())) {
+            return Err(bad(format!(
+                "model '{}' source_model format '{}' is not one of {:?}", m.id, f, vocab
+            )));
+        }
+    }
+
     if m.pricing.base_cost_usd < 0.0 {
         return Err(bad(format!("model '{}' has negative base_cost_usd", m.id)));
     }

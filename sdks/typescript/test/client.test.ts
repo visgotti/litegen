@@ -248,6 +248,7 @@ describe("enum constants", () => {
     expect(GenerationStatus.Failed).toBe("failed");
     expect(RefImageKind.Url).toBe("url");
     expect(RefImageKind.Base64).toBe("base64");
+    expect(RefImageKind.Generation).toBe("generation");
   });
 });
 

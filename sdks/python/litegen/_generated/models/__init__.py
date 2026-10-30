@@ -112,6 +112,7 @@ from .param_spec_bool import ParamSpecBool
 from .param_spec_float import ParamSpecFloat
 from .param_spec_int import ParamSpecInt
 from .param_spec_seed import ParamSpecSeed
+from .param_spec_source_model import ParamSpecSourceModel
 from .param_spec_string import ParamSpecString
 from .param_spec_string_array import ParamSpecStringArray
 from .password_reset import PasswordReset
@@ -163,6 +164,8 @@ from .set_org_allowed_models_request import SetOrgAllowedModelsRequest
 from .signup_request import SignupRequest
 from .size_spec_enum import SizeSpecEnum
 from .size_spec_freeform import SizeSpecFreeform
+from .source_kind import SourceKind
+from .source_ref import SourceRef
 from .spend_group_by import SpendGroupBy
 from .spend_log_entry import SpendLogEntry
 from .spend_logs_response import SpendLogsResponse
@@ -286,6 +289,7 @@ __all__ = (
     "ParamSpecFloat",
     "ParamSpecInt",
     "ParamSpecSeed",
+    "ParamSpecSourceModel",
     "ParamSpecString",
     "ParamSpecStringArray",
     "PasswordReset",
@@ -337,6 +341,8 @@ __all__ = (
     "SignupRequest",
     "SizeSpecEnum",
     "SizeSpecFreeform",
+    "SourceKind",
+    "SourceRef",
     "SpendGroupBy",
     "SpendLogEntry",
     "SpendLogsResponse",

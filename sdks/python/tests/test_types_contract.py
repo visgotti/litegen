@@ -71,6 +71,7 @@ MIRRORED = {
     "ReferenceImage": t.ReferenceImage,
     "PaginatedResponse_Generation": t.GenerationPage,
     "GenerationAsset": t.GenerationAsset,
+    "SourceRef": t.SourceRef,
     "GenerationAssetList": t.GenerationAssetList,
 }
 
@@ -134,6 +135,7 @@ def test_model3d_params_cover_the_request_schema() -> None:
         ("Model3dTopology", t.Model3dTopology),
         ("Model3dSymmetry", t.Model3dSymmetry),
         ("ModelTask", t.ModelTask),
+        ("SourceKind", t.SourceKind),
     ],
 )
 def test_literal_values_match_the_schema_enum(schema_name: str, alias: Any) -> None:

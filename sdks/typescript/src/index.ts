@@ -94,6 +94,8 @@ export const RefImageKind = {
   Base64: "base64",
   Url: "url",
   Blob: "blob",
+  /** A stored litegen image generation's id; the server reads the image back. */
+  Generation: "generation",
 } as const;
 export type RefImageKind = (typeof RefImageKind)[keyof typeof RefImageKind];
 
@@ -135,6 +137,14 @@ export type Model3dSymmetry = components["schemas"]["Model3dSymmetry"];
  * `animate`, submitted to its modality's usual generation endpoint.
  */
 export type ModelTask = components["schemas"]["ModelTask"];
+/**
+ * The mesh an operation (`rig`, `animate`, …) works on: a litegen generation
+ * id to chain a step onto an earlier one, or a URL / base64 file of your own
+ * naming its `format`. Required by every model whose `task` is not `generate`.
+ */
+export type SourceRef = components["schemas"]["SourceRef"];
+/** How a {@link SourceRef}'s `value` is read. */
+export type SourceKind = components["schemas"]["SourceKind"];
 export type ReferenceImage = components["schemas"]["ReferenceImage"];
 export type ModelInfo = components["schemas"]["ModelInfo"];
 export type ModelSchema = components["schemas"]["ModelSchema"];

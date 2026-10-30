@@ -5,6 +5,7 @@ pub mod storage;
 pub mod materializer;
 pub mod model3d_convert;
 pub mod model3d_stages;
+pub mod model3d_source;
 pub mod webhook;
 pub mod poller;
 pub mod circuit_breaker;

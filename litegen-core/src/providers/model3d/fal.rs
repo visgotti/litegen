@@ -1191,6 +1191,7 @@ mod tests {
             topology: None,
             rig: None,
             extra: None,
+            source: None,
         }
     }
 
@@ -1875,6 +1876,7 @@ mod tests {
             symmetry: None,
             topology: None,
             rig: None,
+            source_model: None,
         };
         let est = p.estimate_cost(&hunyuan, &req).await.unwrap();
         assert_eq!(est.base_cost_usd, 0.16, "what submit charges");

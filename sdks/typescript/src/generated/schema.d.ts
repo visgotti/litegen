@@ -2584,6 +2584,7 @@ export interface components {
             pbr?: boolean | null;
             /** @description Auto-rig: deliver the mesh with a skeleton. */
             rig?: boolean | null;
+            source_model?: null | components["schemas"]["SourceRef"];
             symmetry?: null | components["schemas"]["Model3dSymmetry"];
             /**
              * Format: int32
@@ -2673,6 +2674,8 @@ export interface components {
             supports_pbr?: boolean;
             /** @description Takes the `rig` param. */
             supports_rig?: boolean;
+            /** @description Takes `source_model`: an operation on an existing mesh. */
+            supports_source_model?: boolean;
             /** @description Accepts a prompt with no reference images (text-to-3D). */
             supports_text_to_3d?: boolean;
             supports_text_to_image: boolean;
@@ -2991,6 +2994,9 @@ export interface components {
         }) | (components["schemas"]["ParamSpecSeed"] & {
             /** @enum {string} */
             kind: "seed";
+        }) | (components["schemas"]["ParamSpecSourceModel"] & {
+            /** @enum {string} */
+            kind: "source_model";
         });
         ParamSpecAspectRatio: {
             allowed: string[];
@@ -3030,6 +3036,36 @@ export interface components {
             max: number;
             /** Format: int64 */
             min: number;
+        };
+        /**
+         * @description What an operation on an existing mesh takes as its `source_model` (3D doc
+         *     §3A). litegen reads the source with its own mesh reader and refuses one the
+         *     vendor would refuse — before the billed submit — then converts it to a
+         *     container in `formats` if it is not already one.
+         */
+        ParamSpecSourceModel: {
+            description?: string | null;
+            /**
+             * @description Containers the vendor accepts, from the `Model3dFormat` vocabulary. A
+             *     source in any other container litegen can read is converted to the
+             *     first of these it can write.
+             */
+            formats?: string[];
+            label?: string | null;
+            /**
+             * Format: int64
+             * @description Largest file the vendor accepts, in bytes, as sent.
+             */
+            max_bytes?: number | null;
+            /**
+             * Format: int64
+             * @description Most triangles the vendor accepts.
+             */
+            max_faces?: number | null;
+            /** @description The source must already be rigged (have a skin). */
+            requires_skin?: boolean;
+            /** @description The source must be textured. */
+            requires_texture?: boolean;
         };
         ParamSpecString: {
             default?: string | null;
@@ -3309,7 +3345,7 @@ export interface components {
             status: string;
         };
         /** @enum {string} */
-        RefImageKind: "base64" | "url" | "blob";
+        RefImageKind: "base64" | "url" | "blob" | "generation";
         RefInputSpec: {
             default_role?: string | null;
             /** Format: int32 */
@@ -3506,6 +3542,24 @@ export interface components {
             min_width: number;
             /** Format: int32 */
             multiple_of?: number | null;
+        };
+        /**
+         * @description How a `SourceRef`'s `value` is to be read.
+         * @enum {string}
+         */
+        SourceKind: "generation" | "url" | "base64";
+        /**
+         * @description Where an operation's input comes from: a stored litegen generation, or a
+         *     file of your own.
+         */
+        SourceRef: {
+            format?: null | components["schemas"]["Model3dFormat"];
+            type: components["schemas"]["SourceKind"];
+            /**
+             * @description The generation id, the URL, or the base64 bytes (a `data:` URI prefix
+             *     is allowed).
+             */
+            value: string;
         };
         /**
          * @description Dimension a spend report is grouped by.

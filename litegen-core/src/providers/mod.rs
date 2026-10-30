@@ -406,6 +406,66 @@ pub struct Model3dExtras {
     /// model's `extra_allowlist` in strict mode. An adapter must never let one
     /// overwrite a field it derived from a canonical param above.
     pub extra: Option<serde_json::Value>,
+    /// An operation's input mesh, already read, checked against the model's
+    /// `source_model` spec and converted to a container it takes. `None` for
+    /// generation models. Never serialised: it holds the mesh's bytes.
+    #[serde(skip)]
+    pub source: Option<SourceInput>,
+}
+
+/// How an operation's source reached the vendor — recorded on its row
+/// (`metadata.source.delivery`), so a chain can be audited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceDelivery {
+    /// The vendor's own task id for the source (the source came from this
+    /// vendor, on this account): nothing re-uploaded.
+    VendorTask,
+    /// Uploaded to the vendor's own storage.
+    Upload,
+    /// A short-lived URL litegen signed for the vendor to fetch.
+    SignedUrl,
+    /// Inline, as a `data:` URI.
+    DataUri,
+}
+
+impl SourceDelivery {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SourceDelivery::VendorTask => "vendor_task",
+            SourceDelivery::Upload => "upload",
+            SourceDelivery::SignedUrl => "signed_url",
+            SourceDelivery::DataUri => "data_uri",
+        }
+    }
+}
+
+/// An operation's source mesh, as its adapter receives it.
+#[derive(Debug, Clone)]
+pub struct SourceInput {
+    /// In `format`, a container the model takes.
+    pub bytes: Vec<u8>,
+    pub format: String,
+    /// SHA-256 of the source as the caller sent it.
+    pub sha256: String,
+    pub facts: crate::proxy::model3d_source::SourceFacts,
+    /// The source's own task id at this vendor, when it came from this same
+    /// provider on this same vendor account: Tripo and Meshy chain by it, and
+    /// some of their operations accept nothing else.
+    pub vendor_task_id: Option<String>,
+    /// Where the adapter says how it sent the source.
+    pub delivered: Arc<std::sync::Mutex<Option<SourceDelivery>>>,
+}
+
+impl SourceInput {
+    /// The adapter sent the source this way.
+    pub fn record(&self, how: SourceDelivery) {
+        *self.delivered.lock().unwrap_or_else(|p| p.into_inner()) = Some(how);
+    }
+
+    /// How the adapter said it sent the source.
+    pub fn delivery(&self) -> Option<SourceDelivery> {
+        *self.delivered.lock().unwrap_or_else(|p| p.into_inner())
+    }
 }
 
 /// One file a provider produced, already downloaded. litegen re-hosts every one

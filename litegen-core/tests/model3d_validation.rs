@@ -49,6 +49,7 @@ fn req(strict: bool) -> Model3dGenerationRequest {
         output_formats: None, output_format: None,
         texture: None, pbr: None, target_polycount: None,
         symmetry: None, topology: None, rig: None,
+        source_model: None,
     }
 }
 
@@ -648,4 +649,75 @@ fn a_vendor_field_outside_the_allowlist_is_refused_in_strict_mode() {
     let err = validate_model3d(&schema, r).unwrap_err();
     assert_eq!(err.code, "extra_key_unsupported");
     assert_eq!(err.param.as_deref(), Some("extra.geometry_file_format"));
+}
+
+// ─── source_model (3D doc §3A) ───────────────────────────────────────────────
+
+fn rig_schema() -> ModelSchema {
+    let mut s = schema_with(HashMap::from([(
+        "source_model".to_string(),
+        ParamSpec::SourceModel(ParamSpecSourceModel { formats: vec!["glb".into()], ..Default::default() }),
+    )]));
+    s.id = "mock/rig-3d".into();
+    s.task = ModelTask::Rig;
+    s.capabilities = ModelCapabilityFlags::default();
+    s.prompt = PromptSpec { required: false, min_length: None, max_length: Some(0) };
+    s
+}
+
+fn source(kind: SourceKind, value: &str, format: Option<&str>) -> SourceRef {
+    SourceRef { kind, value: value.into(), format: format.map(str::to_string) }
+}
+
+fn rig_req(src: Option<SourceRef>) -> Model3dGenerationRequest {
+    let mut r = req(true);
+    r.base.model = "mock/rig-3d".into();
+    r.base.prompt = String::new();
+    r.source_model = src;
+    r
+}
+
+#[test]
+fn source_model_is_refused_in_strict_and_dropped_in_lax_where_undeclared() {
+    let schema = schema_with(HashMap::new());
+    let mut strict = req(true);
+    strict.source_model = Some(source(SourceKind::Generation, "litegen-3d-x", None));
+    let err = validate_model3d(&schema, strict).unwrap_err();
+    assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_unsupported", Some("source_model")));
+
+    let mut lax = req(false);
+    lax.source_model = Some(source(SourceKind::Generation, "litegen-3d-x", None));
+    let out = validate_model3d(&schema, lax).unwrap();
+    assert!(out.request.source_model.is_none());
+    assert!(out.dropped.contains(&"source_model".to_string()));
+}
+
+#[test]
+fn an_operation_without_its_source_is_refused() {
+    let err = validate_model3d(&rig_schema(), rig_req(None)).unwrap_err();
+    assert_eq!((err.code.as_str(), err.param.as_deref()), ("source_model_required", Some("source_model")));
+}
+
+#[test]
+fn a_url_or_base64_source_needs_its_format() {
+    for kind in [SourceKind::Url, SourceKind::Base64] {
+        let err = validate_model3d(&rig_schema(), rig_req(Some(source(kind, "x", None)))).unwrap_err();
+        assert_eq!(err.code, "source_format_required", "{kind:?}");
+    }
+    // A generation is read from its own record; its format is known.
+    assert!(validate_model3d(&rig_schema(), rig_req(Some(source(SourceKind::Generation, "litegen-3d-x", None)))).is_ok());
+}
+
+#[test]
+fn a_source_format_outside_the_vocabulary_is_refused() {
+    let err = validate_model3d(&rig_schema(), rig_req(Some(source(SourceKind::Url, "https://x/a.blend", Some("blend"))))).unwrap_err();
+    assert_eq!(err.code, "source_format_unsupported");
+}
+
+#[test]
+fn an_operation_needs_neither_a_prompt_nor_a_reference_image() {
+    // The text-to-3D checks belong to generation, which infers its mode from
+    // references; an operation's input is its source.
+    let out = validate_model3d(&rig_schema(), rig_req(Some(source(SourceKind::Generation, "litegen-3d-x", None)))).unwrap();
+    assert_eq!(out.request.source_model.unwrap().value, "litegen-3d-x");
 }

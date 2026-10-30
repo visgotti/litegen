@@ -31,6 +31,7 @@ class ModelCapabilities:
         supports_multiview_to_3d (Union[Unset, bool]): Accepts several `view-*` reference images (multiview-to-3D).
         supports_pbr (Union[Unset, bool]): Takes the `pbr` param.
         supports_rig (Union[Unset, bool]): Takes the `rig` param.
+        supports_source_model (Union[Unset, bool]): Takes `source_model`: an operation on an existing mesh.
         supports_text_to_3d (Union[Unset, bool]): Accepts a prompt with no reference images (text-to-3D).
         supports_text_to_video (Union[Unset, bool]):
         supports_texture (Union[Unset, bool]): Takes the `texture` param.
@@ -62,6 +63,7 @@ class ModelCapabilities:
     supports_multiview_to_3d: Union[Unset, bool] = UNSET
     supports_pbr: Union[Unset, bool] = UNSET
     supports_rig: Union[Unset, bool] = UNSET
+    supports_source_model: Union[Unset, bool] = UNSET
     supports_text_to_3d: Union[Unset, bool] = UNSET
     supports_text_to_video: Union[Unset, bool] = UNSET
     supports_texture: Union[Unset, bool] = UNSET
@@ -111,6 +113,8 @@ class ModelCapabilities:
 
         supports_rig = self.supports_rig
 
+        supports_source_model = self.supports_source_model
+
         supports_text_to_3d = self.supports_text_to_3d
 
         supports_text_to_video = self.supports_text_to_video
@@ -155,6 +159,8 @@ class ModelCapabilities:
             field_dict["supports_pbr"] = supports_pbr
         if supports_rig is not UNSET:
             field_dict["supports_rig"] = supports_rig
+        if supports_source_model is not UNSET:
+            field_dict["supports_source_model"] = supports_source_model
         if supports_text_to_3d is not UNSET:
             field_dict["supports_text_to_3d"] = supports_text_to_3d
         if supports_text_to_video is not UNSET:
@@ -215,6 +221,8 @@ class ModelCapabilities:
 
         supports_rig = d.pop("supports_rig", UNSET)
 
+        supports_source_model = d.pop("supports_source_model", UNSET)
+
         supports_text_to_3d = d.pop("supports_text_to_3d", UNSET)
 
         supports_text_to_video = d.pop("supports_text_to_video", UNSET)
@@ -244,6 +252,7 @@ class ModelCapabilities:
             supports_multiview_to_3d=supports_multiview_to_3d,
             supports_pbr=supports_pbr,
             supports_rig=supports_rig,
+            supports_source_model=supports_source_model,
             supports_text_to_3d=supports_text_to_3d,
             supports_text_to_video=supports_text_to_video,
             supports_texture=supports_texture,

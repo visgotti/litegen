@@ -629,6 +629,7 @@ impl Default for ModelCapabilities {
             supports_pbr: false,
             supports_rig: false,
             supports_texture: false,
+            supports_source_model: false,
             output_formats: Vec::new(),
             max_polycount: None,
         }

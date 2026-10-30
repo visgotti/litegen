@@ -9,6 +9,7 @@ import type {
   ModelInfo,
   ModelSchema,
   ModelTask,
+  SourceRef,
 } from "../src";
 import { Model3dAssetKind } from "../src";
 
@@ -35,6 +36,15 @@ describe("3D vocabulary types", () => {
     >();
     expectTypeOf<ModelSchema["task"]>().toEqualTypeOf<ModelTask | undefined>();
     expectTypeOf<ModelInfo["capabilities"]["task"]>().toEqualTypeOf<ModelTask | undefined>();
+  });
+
+  it("types an operation's source_model", () => {
+    const chained: Model3dGenerationRequest = { model: "mock/rig-3d", source_model: { type: "generation", value: "litegen-3d-1" } };
+    const own: SourceRef = { type: "base64", value: "Z2xURg==", format: "glb" };
+    // @ts-expect-error — `blend` is not a container litegen reads.
+    const bad: SourceRef = { type: "url", value: "https://x/a.blend", format: "blend" };
+    expectTypeOf<SourceRef["type"]>().toEqualTypeOf<"generation" | "url" | "base64">();
+    expect([chained, own, bad]).toHaveLength(3);
   });
 
   it("types output_formats with the format vocabulary", () => {

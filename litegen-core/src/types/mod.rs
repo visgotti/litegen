@@ -83,6 +83,9 @@ pub enum RefImageKind {
     Base64,
     Url,
     Blob,
+    /// A stored litegen image generation's id: litegen reads the image back,
+    /// after the same access check `GET /v1/generations/{id}` makes.
+    Generation,
 }
 
 fn default_n() -> u32 { 1 }
@@ -350,6 +353,40 @@ pub struct Model3dGenerationRequest {
     pub topology: Option<String>,
     /// Auto-rig: deliver the mesh with a skeleton.
     #[serde(default)] pub rig: Option<bool>,
+    /// The mesh an operation (`rig`, `animate`, `texture`, `remesh`,
+    /// `segment`) works on, required by every model whose task is not
+    /// `generate`. A litegen generation id chains a step onto the last; a URL
+    /// or base64 bytes bring a mesh of your own and name its `format`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_model: Option<SourceRef>,
+}
+
+/// Where an operation's input comes from: a stored litegen generation, or a
+/// file of your own.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SourceRef {
+    #[serde(rename = "type")]
+    pub kind: SourceKind,
+    /// The generation id, the URL, or the base64 bytes (a `data:` URI prefix
+    /// is allowed).
+    pub value: String,
+    /// The container, from the `Model3dFormat` vocabulary. Required for `url`
+    /// and `base64`; a generation's is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Model3dFormat>)]
+    pub format: Option<String>,
+}
+
+/// How a `SourceRef`'s `value` is to be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    /// A litegen generation id the caller can read (`GET /v1/generations/{id}`).
+    Generation,
+    /// A public http(s) URL litegen downloads.
+    Url,
+    /// The file's bytes, base64-encoded.
+    Base64,
 }
 
 /// What a `Model3dAsset` is.
@@ -648,6 +685,9 @@ pub struct ModelCapabilities {
     /// Takes the `texture` param.
     #[serde(default)]
     pub supports_texture: bool,
+    /// Takes `source_model`: an operation on an existing mesh.
+    #[serde(default)]
+    pub supports_source_model: bool,
     /// Every mesh container a caller may request, including those litegen
     /// derives locally — the same list, in the same order, as
     /// `GET /v1/models/{id}` serves under `params.output_formats.enum_values`.

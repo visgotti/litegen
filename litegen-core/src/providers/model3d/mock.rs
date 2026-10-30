@@ -37,6 +37,9 @@ const FINISHED_JOB_TTL: std::time::Duration = std::time::Duration::from_secs(15 
 /// delivered-vs-requested guard catches it at all three observers.
 const PARTIAL_MODEL: &str = "mock/partial-3d";
 
+/// The rigging operation: any source becomes the skinned box humanoid.
+const RIG_MODEL: &str = "mock/rig-3d";
+
 struct Job {
     model: String,
     /// One entry per container the caller was promised, in request order.
@@ -141,6 +144,32 @@ impl Model3dProvider for MockModel3dProvider {
         } else {
             extras.output_formats.clone()
         };
+        if model.id == RIG_MODEL {
+            // Any source litegen let through becomes the same rig. Chained by
+            // the mock's own task id when the source is one of its jobs, as a
+            // vendor that keeps its own outputs chains them; inline otherwise.
+            let source = extras.source.as_ref().ok_or_else(|| {
+                ProviderError::InvalidRequest("mock/rig-3d needs a source_model".into())
+            })?;
+            source.record(match &source.vendor_task_id {
+                Some(id) if jobs().read().await.contains_key(id) => crate::providers::SourceDelivery::VendorTask,
+                _ => crate::providers::SourceDelivery::DataUri,
+            });
+            let job = Arc::new(Job {
+                model: model.id.clone(),
+                meshes: vec![("glb".into(), crate::providers::model3d::humanoid::rigged_humanoid_glb(&crate::providers::model3d::humanoid::MOCK_JOINTS))],
+                preview: generate_visual_image_png("rigged humanoid"),
+                polls: AtomicU32::new(0),
+                finished_at: std::sync::OnceLock::new(),
+            });
+            jobs().write().await.insert(job_id.clone(), job);
+            return Ok(Model3dGenerationHandle {
+                provider_job_id: job_id,
+                provider: "mock".to_string(),
+                model: model.id.clone(),
+                stage_context: None,
+            });
+        }
         let meshes: Vec<(String, Vec<u8>)> = requested
             .iter()
             .filter(|f| model.id != PARTIAL_MODEL || f.as_str() == "glb")
@@ -335,6 +364,7 @@ mod tests {
             output_formats: vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()],
             texture: Some(true), pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
+            source: None,
         }
     }
 

@@ -248,6 +248,33 @@ pub struct ParamSpecSeed {
     #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
 
+/// What an operation on an existing mesh takes as its `source_model` (3D doc
+/// §3A). litegen reads the source with its own mesh reader and refuses one the
+/// vendor would refuse — before the billed submit — then converts it to a
+/// container in `formats` if it is not already one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct ParamSpecSourceModel {
+    /// Containers the vendor accepts, from the `Model3dFormat` vocabulary. A
+    /// source in any other container litegen can read is converted to the
+    /// first of these it can write.
+    #[serde(default)]
+    pub formats: Vec<String>,
+    /// Largest file the vendor accepts, in bytes, as sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
+    /// Most triangles the vendor accepts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_faces: Option<u64>,
+    /// The source must already be rigged (have a skin).
+    #[serde(default)]
+    pub requires_skin: bool,
+    /// The source must be textured.
+    #[serde(default)]
+    pub requires_texture: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ParamSpec {
@@ -259,6 +286,7 @@ pub enum ParamSpec {
     Size(SizeSpec),
     AspectRatio(ParamSpecAspectRatio),
     Seed(ParamSpecSeed),
+    SourceModel(ParamSpecSourceModel),
 }
 
 // ─── SizeSpec ───────────────────────────────────────────────────────────────
@@ -449,6 +477,8 @@ pub const KNOWN_PARAMS: &[&str] = &[
     "symmetry",
     "topology",
     "rig",
+    // 3D operations (3D doc §3A): the mesh an operation works on.
+    "source_model",
 ];
 
 /// The `ParamSpec` kind(s) a canonical param may be declared with: exactly the
@@ -472,6 +502,7 @@ pub fn canonical_param_kinds(name: &str) -> &'static [&'static str] {
         "output_format" | "symmetry" | "topology" => &["string"],
         "texture" | "pbr" | "rig" => &["bool"],
         "target_polycount" => &["int"],
+        "source_model" => &["source_model"],
         _ => &[],
     }
 }
@@ -488,6 +519,7 @@ impl ParamSpec {
             ParamSpec::Size(_) => "size",
             ParamSpec::AspectRatio(_) => "aspect_ratio",
             ParamSpec::Seed(_) => "seed",
+            ParamSpec::SourceModel(_) => "source_model",
         }
     }
 }

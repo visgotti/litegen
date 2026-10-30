@@ -1055,6 +1055,7 @@ mod poller_tests {
             output_formats: vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()],
             texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
+            source: None,
         };
         p.generate(&schema, &base, &extras, &Default::default()).await.unwrap().provider_job_id
     }
@@ -1183,6 +1184,7 @@ mod poller_tests {
             output_formats: vec!["glb".into()],
             texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
+            source: None,
         };
         let resp = router.generate_model3d(&staged_schema(), &base, &extras, &Default::default(), None).await.unwrap();
         db.insert_generation(&resp.id, None, "mock/staged-3d", "mock", "model3d", Some("staged-job"), 0.0, None, None).await.unwrap();

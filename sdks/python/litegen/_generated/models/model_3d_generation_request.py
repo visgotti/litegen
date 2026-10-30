@@ -13,6 +13,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.reference_image import ReferenceImage
+    from ..models.source_ref import SourceRef
 
 
 T = TypeVar("T", bound="Model3DGenerationRequest")
@@ -60,6 +61,7 @@ class Model3DGenerationRequest:
                 than the model's `max_items` is refused with `param_too_many`.
             pbr (Union[None, Unset, bool]): PBR materials. `false` asks for flat shading, not "no material".
             rig (Union[None, Unset, bool]): Auto-rig: deliver the mesh with a skeleton.
+            source_model (Union['SourceRef', None, Unset]):
             symmetry (Union[Model3DSymmetry, None, Unset]):
             target_polycount (Union[None, Unset, int]): Approximate triangle budget for the mesh, within the model's
                 declared
@@ -81,6 +83,7 @@ class Model3DGenerationRequest:
     output_formats: Union[List[Model3DFormat], None, Unset] = UNSET
     pbr: Union[None, Unset, bool] = UNSET
     rig: Union[None, Unset, bool] = UNSET
+    source_model: Union["SourceRef", None, Unset] = UNSET
     symmetry: Union[Model3DSymmetry, None, Unset] = UNSET
     target_polycount: Union[None, Unset, int] = UNSET
     texture: Union[None, Unset, bool] = UNSET
@@ -88,6 +91,8 @@ class Model3DGenerationRequest:
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        from ..models.source_ref import SourceRef
+
         model = self.model
 
         extra = self.extra
@@ -146,6 +151,14 @@ class Model3DGenerationRequest:
             rig = UNSET
         else:
             rig = self.rig
+
+        source_model: Union[Dict[str, Any], None, Unset]
+        if isinstance(self.source_model, Unset):
+            source_model = UNSET
+        elif isinstance(self.source_model, SourceRef):
+            source_model = self.source_model.to_dict()
+        else:
+            source_model = self.source_model
 
         symmetry: Union[None, Unset, str]
         if isinstance(self.symmetry, Unset):
@@ -206,6 +219,8 @@ class Model3DGenerationRequest:
             field_dict["pbr"] = pbr
         if rig is not UNSET:
             field_dict["rig"] = rig
+        if source_model is not UNSET:
+            field_dict["source_model"] = source_model
         if symmetry is not UNSET:
             field_dict["symmetry"] = symmetry
         if target_polycount is not UNSET:
@@ -220,6 +235,7 @@ class Model3DGenerationRequest:
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         from ..models.reference_image import ReferenceImage
+        from ..models.source_ref import SourceRef
 
         d = src_dict.copy()
         model = d.pop("model")
@@ -310,6 +326,23 @@ class Model3DGenerationRequest:
 
         rig = _parse_rig(d.pop("rig", UNSET))
 
+        def _parse_source_model(data: object) -> Union["SourceRef", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                source_model_type_1 = SourceRef.from_dict(data)
+
+                return source_model_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union["SourceRef", None, Unset], data)
+
+        source_model = _parse_source_model(d.pop("source_model", UNSET))
+
         def _parse_symmetry(data: object) -> Union[Model3DSymmetry, None, Unset]:
             if data is None:
                 return data
@@ -376,6 +409,7 @@ class Model3DGenerationRequest:
             output_formats=output_formats,
             pbr=pbr,
             rig=rig,
+            source_model=source_model,
             symmetry=symmetry,
             target_polycount=target_polycount,
             texture=texture,

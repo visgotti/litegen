@@ -8749,6 +8749,17 @@
                                 ],
                                 "description": "Auto-rig: deliver the mesh with a skeleton."
                             },
+                            "source_model": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/SourceRef",
+                                        "description": "The mesh an operation (`rig`, `animate`, `texture`, `remesh`,\n`segment`) works on, required by every model whose task is not\n`generate`. A litegen generation id chains a step onto the last; a URL\nor base64 bytes bring a mesh of your own and name its `format`."
+                                    }
+                                ]
+                            },
                             "symmetry": {
                                 "oneOf": [
                                     {
@@ -8943,6 +8954,10 @@
                     "supports_rig": {
                         "type": "boolean",
                         "description": "Takes the `rig` param."
+                    },
+                    "supports_source_model": {
+                        "type": "boolean",
+                        "description": "Takes `source_model`: an operation on an existing mesh."
                     },
                     "supports_text_to_3d": {
                         "type": "boolean",
@@ -9977,6 +9992,27 @@
                                 }
                             }
                         ]
+                    },
+                    {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/ParamSpecSourceModel"
+                            },
+                            {
+                                "type": "object",
+                                "required": [
+                                    "kind"
+                                ],
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                            "source_model"
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
                     }
                 ]
             },
@@ -10137,6 +10173,57 @@
                     "min": {
                         "type": "integer",
                         "format": "int64"
+                    }
+                }
+            },
+            "ParamSpecSourceModel": {
+                "type": "object",
+                "description": "What an operation on an existing mesh takes as its `source_model` (3D doc\n\u00a73A). litegen reads the source with its own mesh reader and refuses one the\nvendor would refuse \u2014 before the billed submit \u2014 then converts it to a\ncontainer in `formats` if it is not already one.",
+                "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "formats": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Containers the vendor accepts, from the `Model3dFormat` vocabulary. A\nsource in any other container litegen can read is converted to the\nfirst of these it can write."
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "max_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Largest file the vendor accepts, in bytes, as sent.",
+                        "minimum": 0
+                    },
+                    "max_faces": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Most triangles the vendor accepts.",
+                        "minimum": 0
+                    },
+                    "requires_skin": {
+                        "type": "boolean",
+                        "description": "The source must already be rigged (have a skin)."
+                    },
+                    "requires_texture": {
+                        "type": "boolean",
+                        "description": "The source must be textured."
                     }
                 }
             },
@@ -10921,7 +11008,8 @@
                 "enum": [
                     "base64",
                     "url",
-                    "blob"
+                    "blob",
+                    "generation"
                 ]
             },
             "RefInputSpec": {
@@ -11634,6 +11722,43 @@
                         ],
                         "format": "int32",
                         "minimum": 0
+                    }
+                }
+            },
+            "SourceKind": {
+                "type": "string",
+                "description": "How a `SourceRef`'s `value` is to be read.",
+                "enum": [
+                    "generation",
+                    "url",
+                    "base64"
+                ]
+            },
+            "SourceRef": {
+                "type": "object",
+                "description": "Where an operation's input comes from: a stored litegen generation, or a\nfile of your own.",
+                "required": [
+                    "type",
+                    "value"
+                ],
+                "properties": {
+                    "format": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/Model3dFormat",
+                                "description": "The container, from the `Model3dFormat` vocabulary. Required for `url`\nand `base64`; a generation's is known."
+                            }
+                        ]
+                    },
+                    "type": {
+                        "$ref": "#/components/schemas/SourceKind"
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "The generation id, the URL, or the base64 bytes (a `data:` URI prefix\nis allowed)."
                     }
                 }
             },

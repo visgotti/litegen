@@ -142,9 +142,13 @@ pub async fn generate_image(
 
     let start = std::time::Instant::now();
 
+    let refs = match resolve_generation_refs(&state, key_ctx.as_ref(), &validated.request.base.reference_images).await {
+        Ok(r) => r,
+        Err(e) => return reference_error_response(&e, &validated.schema.id),
+    };
     let materialized = match state.materializer.materialize(
         &validated.schema,
-        validated.request.base.reference_images.clone(),
+        refs,
         &validated.ctx,
     ).await {
         Ok(m) => m,
@@ -399,9 +403,13 @@ pub async fn generate_video(
 
     let start = std::time::Instant::now();
 
+    let refs = match resolve_generation_refs(&state, key_ctx.as_ref(), &validated.request.base.reference_images).await {
+        Ok(r) => r,
+        Err(e) => return reference_error_response(&e, &validated.schema.id),
+    };
     let materialized = match state.materializer.materialize(
         &validated.schema,
-        validated.request.base.reference_images.clone(),
+        refs,
         &validated.ctx,
     ).await {
         Ok(m) => m,
@@ -624,7 +632,11 @@ pub async fn get_video_status(
         None => (None, None),
     };
     match state.router.get_video_status(&id, app_store, app_prefix.as_deref()).await {
-        Ok((resp, assets)) => {
+        Ok((mut resp, assets)) => {
+            // `created` is when the job was submitted, on every read: the row's.
+            if let Some(row) = row.as_ref() {
+                resp.created = row.created_at.timestamp();
+            }
             // A terminal answer is persisted here as well as by the poller, so
             // it reads the same however often it is read: the router has let
             // go of the job, and the row is what answers from now on (L3).
@@ -969,16 +981,20 @@ pub async fn generate_3d(
 ) -> impl IntoResponse {
     let start = std::time::Instant::now();
 
+    let refs = match resolve_generation_refs(&state, key_ctx.as_ref(), &validated.request.base.reference_images).await {
+        Ok(r) => r,
+        Err(e) => return reference_error_response(&e, &validated.schema.id),
+    };
     let materialized = match state.materializer.materialize(
         &validated.schema,
-        validated.request.base.reference_images.clone(),
+        refs,
         &validated.ctx,
     ).await {
         Ok(m) => m,
         Err(e) => return validation_rejection_response(&e.to_string(), 400, &validated.schema.id),
     };
 
-    let extras = Model3dExtras {
+    let mut extras = Model3dExtras {
         output_formats: validated.schema.resolve_output_formats(
             validated.request.output_formats.as_deref(),
         ),
@@ -989,6 +1005,7 @@ pub async fn generate_3d(
         topology: validated.request.topology.clone(),
         rig: validated.request.rig,
         extra: validated.request.base.extra.clone(),
+        source: None,
     };
 
     let app_creds = match resolve_org_provider_credential(&state, &key_ctx, &validated.schema.provider).await {
@@ -997,6 +1014,30 @@ pub async fn generate_3d(
     };
     if app_creds.is_none() && !state.router.has_model3d_provider(&validated.schema.provider).await {
         return provider_not_configured_response(&validated.schema.provider);
+    }
+    // Which vendor account this job runs on: a vendor's task ids are only good
+    // on the account that made them, so chaining by task id needs it to match.
+    let vendor_account = match (&app_creds, key_ctx.as_ref().and_then(|c| c.org_id.as_deref())) {
+        (Some(_), Some(org)) => format!("org:{org}"),
+        _ => "platform".to_string(),
+    };
+
+    // An operation's source (3D doc §3A): read, checked and converted before
+    // anything is reserved or billed (§2 rule 6).
+    let mut lineage: Option<serde_json::Value> = None;
+    if let (Some(src), Some(crate::capabilities::ParamSpec::SourceModel(spec))) =
+        (&validated.request.source_model, validated.schema.params.get("source_model"))
+    {
+        match resolve_source_model(&state, key_ctx.as_ref(), spec, src, &validated.schema.provider, &vendor_account).await {
+            Ok((input, record)) => {
+                extras.source = Some(input);
+                lineage = Some(record);
+            }
+            Err(e) => {
+                let status = StatusCode::from_u16(e.status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY);
+                return (status, Json(crate::api::middleware::validator::err_body(e.code(), &e.message(), Some("source_model"), &validated.schema.id))).into_response();
+            }
+        }
     }
 
     let charge_key = key_ctx.as_ref().and_then(|c| c.key_id);
@@ -1050,6 +1091,9 @@ pub async fn generate_3d(
             let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
             let requested_formats = extras.output_formats.clone();
             let request = request_record(&validated.request.base, serde_json::to_value(&extras).ok(), &validated.ctx);
+            let source_record = lineage.clone();
+            let source_delivery = extras.source.as_ref().and_then(|s| s.delivery()).map(|d| d.as_str());
+            let vendor_account = vendor_account.clone();
 
             // Everything below runs in a task the handler awaits, not on the
             // request future itself: the vendor has accepted (and will bill)
@@ -1097,7 +1141,17 @@ pub async fn generate_3d(
                     // the same: the background poller can reach the row between the
                     // insert and this write, and an unguarded write landing after a
                     // terminal one would replace its assets.
-                    let mut meta = serde_json::json!({ "requested_formats": requested_formats, "request": request });
+                    let mut meta = serde_json::json!({
+                        "requested_formats": requested_formats,
+                        "request": request,
+                        "vendor_account": vendor_account,
+                    });
+                    // Lineage (3D doc §3D): the source's generation and hash,
+                    // and how it reached the vendor.
+                    if let Some(mut record) = source_record {
+                        record["delivery"] = serde_json::json!(source_delivery);
+                        meta["source"] = record;
+                    }
                     // The adapter's own continuation state — fal's status_url and
                     // response_url, Meshy's preview task id. The poller rebuilds the
                     // handle from this row and cannot reach the router's in-memory
@@ -1238,6 +1292,10 @@ pub async fn get_3d_status(
 
     match state.router.get_model3d_status(&id, app_store, app_prefix.as_deref(), &state.db).await {
         Ok(mut resp) => {
+            // `created` is when the job was submitted, on every read: the row's.
+            if let Some(gen) = row.as_ref() {
+                resp.created = gen.created_at.timestamp();
+            }
             // Persist the terminal result so `GET /v1/generations/{id}`, the
             // gallery, and any webhook see the same assets the poller would have
             // written — whichever path observed completion first.
@@ -1672,6 +1730,7 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             supports_pbr: declares_bool(s, "pbr"),
             supports_rig: declares_bool(s, "rig"),
             supports_texture: declares_bool(s, "texture"),
+            supports_source_model: matches!(s.params.get("source_model"), Some(crate::capabilities::ParamSpec::SourceModel(_))),
             output_formats: extract_output_formats(s),
             max_polycount: extract_max_polycount(s),
         },
@@ -3402,6 +3461,7 @@ fn build_refs_meta(refs: &[crate::types::ReferenceImage]) -> Option<serde_json::
             crate::types::RefImageKind::Url => format!("url {}", r.value.chars().take(80).collect::<String>()),
             crate::types::RefImageKind::Base64 => format!("blob {}KB", r.value.len() / 1024),
             crate::types::RefImageKind::Blob => format!("field {}", r.value.chars().take(40).collect::<String>()),
+            crate::types::RefImageKind::Generation => format!("generation {}", r.value.chars().take(80).collect::<String>()),
         };
         serde_json::json!({
             "role": r.role,
@@ -3429,6 +3489,7 @@ pub(crate) fn request_record(
         });
         let mut entry = match r.kind {
             crate::types::RefImageKind::Url => serde_json::json!({ "url": r.value }),
+            crate::types::RefImageKind::Generation => serde_json::json!({ "generation_id": r.value }),
             crate::types::RefImageKind::Base64 => {
                 let raw = r.value.split_once(";base64,").map(|(_, b)| b).unwrap_or(&r.value);
                 match base64::engine::general_purpose::STANDARD.decode(raw.trim()) {
@@ -3859,6 +3920,131 @@ async fn keep_image_result(
     ).await {
         tracing::warn!(generation_id = %response.id, error = %e, "could not complete the image result's row");
     }
+}
+
+/// Read every `reference_images` entry that names a stored image generation
+/// back into bytes (3D doc §2 rule 2), after the same access check
+/// `GET /v1/generations/{id}` makes. The entry becomes an inline `base64`
+/// reference, so every vendor form (`url`, `base64`, `multipart`) takes it.
+async fn resolve_generation_refs(
+    state: &Arc<AppState>,
+    key_ctx: Option<&crate::api::middleware::KeyContext>,
+    refs: &[crate::types::ReferenceImage],
+) -> Result<Vec<crate::types::ReferenceImage>, crate::proxy::model3d_source::SourceError> {
+    use crate::proxy::model3d_source::SourceError;
+    use base64::Engine;
+    let mut out = Vec::with_capacity(refs.len());
+    for r in refs {
+        if r.kind != crate::types::RefImageKind::Generation {
+            out.push(r.clone());
+            continue;
+        }
+        let gen = readable_generation(state, key_ctx, &r.value)
+            .await
+            .map_err(|_| SourceError::NotFound(format!("generation {} is not one you can read", r.value)))?;
+        if gen.media_type != "image" {
+            return Err(SourceError::NotFound(format!("generation {} is not an image", gen.id)));
+        }
+        if !gen.status.is_terminal() {
+            return Err(SourceError::NotReady(format!("generation {} has not finished yet", gen.id)));
+        }
+        let asset = generation_assets(&gen)
+            .into_iter()
+            .find(|a| a.kind == "image")
+            .ok_or_else(|| SourceError::NotFound(format!("generation {} has no stored image", gen.id)))?;
+        let mut stores = vec![state.router.model3d_store.clone()];
+        if let Some(app) = gen.app_id.as_deref() {
+            if let Some((store, _)) = resolve_app_model3d_store(&state.db, state.secrets_key, app).await {
+                stores.insert(0, store);
+            }
+        }
+        let mut bytes = None;
+        for store in &stores {
+            if let Some(key) = store.key_of(&asset.url) {
+                bytes = store.get(&key).await.ok().flatten();
+                break;
+            }
+        }
+        let (bytes, content_type) = bytes
+            .ok_or_else(|| SourceError::NotFound(format!("generation {}'s image is no longer stored", gen.id)))?;
+        out.push(crate::types::ReferenceImage {
+            kind: crate::types::RefImageKind::Base64,
+            value: format!("data:{content_type};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes)),
+            role: r.role.clone(),
+        });
+    }
+    Ok(out)
+}
+
+/// The refusal for a reference image that names a generation litegen could not use.
+fn reference_error_response(e: &crate::proxy::model3d_source::SourceError, model: &str) -> axum::response::Response {
+    let status = StatusCode::from_u16(e.status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY);
+    (status, Json(crate::api::middleware::validator::err_body(e.code(), &e.message(), Some("reference_images"), model))).into_response()
+}
+
+/// Read an operation's `source_model` and get it ready for the vendor (3D doc
+/// §3A): a generation is read back from storage after the same access check
+/// `GET /v1/generations/{id}` makes, a URL is fetched, base64 is decoded; then
+/// litegen's own reader refuses what the vendor would refuse and converts the
+/// rest to a container the model takes. Returns the adapter's input and the
+/// lineage its row records.
+async fn resolve_source_model(
+    state: &Arc<AppState>,
+    key_ctx: Option<&crate::api::middleware::KeyContext>,
+    spec: &crate::capabilities::ParamSpecSourceModel,
+    src: &crate::types::SourceRef,
+    provider: &str,
+    vendor_account: &str,
+) -> Result<(crate::providers::SourceInput, serde_json::Value), crate::proxy::model3d_source::SourceError> {
+    use crate::proxy::model3d_source::{decode_base64_source, fetch_url_source, prepare, read_generation_source, SourceError};
+    let (bytes, format, origin) = match src.kind {
+        crate::types::SourceKind::Generation => {
+            let gen = readable_generation(state, key_ctx, &src.value)
+                .await
+                .map_err(|_| SourceError::NotFound(format!("generation {} is not one you can read", src.value)))?;
+            let mut stores = vec![state.router.model3d_store.clone()];
+            if let Some(app) = gen.app_id.as_deref() {
+                if let Some((store, _)) = resolve_app_model3d_store(&state.db, state.secrets_key, app).await {
+                    stores.insert(0, store);
+                }
+            }
+            let (bytes, format) = read_generation_source(&stores, &gen, spec).await?;
+            (bytes, format, Some(gen))
+        }
+        crate::types::SourceKind::Url => {
+            (fetch_url_source(&src.value, spec).await?, src.format.clone().unwrap_or_default(), None)
+        }
+        crate::types::SourceKind::Base64 => {
+            (decode_base64_source(&src.value)?, src.format.clone().unwrap_or_default(), None)
+        }
+    };
+    let format = format.to_ascii_lowercase();
+    let spec_owned = spec.clone();
+    let prepared = tokio::task::spawn_blocking(move || prepare(bytes, &format, &spec_owned))
+        .await
+        .map_err(|e| SourceError::FormatUnsupported(format!("reading the source failed: {e}")))??;
+    // The vendor's own task id, when it made the source on this same account.
+    let vendor_task_id = origin
+        .as_ref()
+        .filter(|g| g.provider == provider)
+        .filter(|g| g.metadata.as_ref().and_then(|m| m.get("vendor_account")).and_then(|v| v.as_str()) == Some(vendor_account))
+        .and_then(|g| g.provider_job_id.clone());
+    let record = serde_json::json!({
+        "generation_id": origin.as_ref().map(|g| g.id.clone()),
+        "sha256": prepared.sha256,
+        "format": prepared.format,
+        "received_format": prepared.received_format,
+        "facts": prepared.facts,
+    });
+    let input = crate::providers::SourceInput {
+        bytes: prepared.bytes,
+        format: prepared.format,
+        sha256: prepared.sha256,
+        facts: prepared.facts,
+        vendor_task_id,
+        delivered: Default::default(),
+    };
+    Ok((input, record))
 }
 
 /// The error answer for a generation the router could not run, marked as

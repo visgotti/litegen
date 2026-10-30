@@ -48,4 +48,5 @@
 pub mod cube;
 pub mod fal;
 pub mod glb;
+pub mod humanoid;
 pub mod mock;

@@ -45,6 +45,9 @@ async fn a_finished_video_is_kept_by_litegen_and_reads_the_same_twice() {
     let (app, _db) = harness::app_with_mock_3d().await;
     let submitted = post_json(&app, "/v1/videos/generations", json!({ "model": "mock/video-gen", "prompt": "a wave" })).await;
     let id = submitted["id"].as_str().unwrap();
+    // Poll in a later second than the submit, so a poll stamped with the
+    // poll time cannot pass for the submit time.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let first = finished_video(&app, id).await;
     assert_eq!(first["status"], "completed", "{first}");
     let url = first["video_url"].as_str().unwrap();
@@ -52,6 +55,10 @@ async fn a_finished_video_is_kept_by_litegen_and_reads_the_same_twice() {
 
     let (_, second) = get_json(&app, &format!("/v1/videos/{id}")).await;
     assert_eq!(first, second, "a finished video reads the same every time");
+    // `created` is when the job was submitted, on every read: the row's.
+    let (_, row_now) = get_json(&app, &format!("/v1/generations/{id}")).await;
+    let created_at = chrono::DateTime::parse_from_rfc3339(row_now["created_at"].as_str().unwrap()).unwrap().timestamp();
+    assert_eq!(first["created"], created_at, "{first}");
     let (_, row) = get_json(&app, &format!("/v1/generations/{id}")).await;
     assert_eq!(row["result_url"], first["video_url"], "{row}");
 }

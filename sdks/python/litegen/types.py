@@ -48,8 +48,13 @@ GenerationStatus = Literal["pending", "processing", "completed", "failed", "canc
 """Lifecycle of an async job. ``completed``, ``failed`` and ``cancelled`` are
 terminal: the job never changes again, and polling stops at the first of them."""
 
-RefImageKind = Literal["base64", "url", "blob"]
-"""How :class:`ReferenceImage` ``value`` is encoded."""
+RefImageKind = Literal["base64", "url", "blob", "generation"]
+"""How :class:`ReferenceImage` ``value`` is encoded. ``generation`` is a stored
+litegen image generation's id, read back by the server."""
+
+SourceKind = Literal["generation", "url", "base64"]
+"""How :class:`SourceRef` ``value`` is to be read: a litegen generation id, a
+public URL, or base64 bytes."""
 
 CostSource = Literal["dynamic", "estimated"]
 """``dynamic``: the vendor reported the cost. ``estimated``: from LiteGen's pricing table."""
@@ -85,6 +90,21 @@ class ReferenceImage(TypedDict):
     value: str
     """The image itself, encoded as ``type`` says: base64 data, a URL, or a blob reference."""
     role: NotRequired[str | None]
+
+
+class SourceRef(TypedDict):
+    """The mesh an operation (``rig``, ``animate``, …) works on.
+
+    ``{"type": "generation", "value": "litegen-3d-…"}`` chains a step onto an
+    earlier one; ``url`` and ``base64`` bring your own mesh and must name its
+    ``format``. The server reads the source, refuses one the model's vendor
+    would refuse before anything is billed (``source_too_many_faces``,
+    ``source_not_rigged``, …), and converts it to a container the vendor takes.
+    """
+
+    type: SourceKind
+    value: str
+    format: NotRequired[Model3dFormat | None]
 
 
 class Model3dGenerateParams(TypedDict, total=False):
@@ -142,6 +162,9 @@ class Model3dGenerateParams(TypedDict, total=False):
     topology: Model3dTopology | None
     target_polycount: int | None
     """Approximate polygon budget for the mesh."""
+    source_model: SourceRef | None
+    """The mesh an operation works on; required by every model whose task is
+    not ``generate``. See :class:`SourceRef`."""
 
 
 # ─── Responses ───────────────────────────────────────────────────────────────

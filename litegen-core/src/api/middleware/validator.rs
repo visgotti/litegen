@@ -593,6 +593,57 @@ pub fn validate_model3d(
         }
     }
 
+    // `source_model` (3D doc §3A): the mesh an operation works on. Its shape
+    // is checked here; reading it, and refusing what the vendor would refuse,
+    // needs storage and the network and happens before the billed submit.
+    match (req.source_model.as_ref(), schema.params.get("source_model")) {
+        (Some(src), Some(ParamSpec::SourceModel(_))) => {
+            match (src.kind, src.format.as_deref()) {
+                (SourceKind::Url | SourceKind::Base64, None) => {
+                    return Err(ValidationError::new(
+                        "source_format_required",
+                        "a url or base64 source_model must name its format",
+                        Some("source_model"),
+                    ));
+                }
+                (_, Some(f)) if Model3dFormat::parse(f).is_none() => {
+                    return Err(ValidationError::new(
+                        "source_format_unsupported",
+                        format!(
+                            "source_model format '{}' is not a mesh container litegen reads; one of {:?}",
+                            f,
+                            Model3dFormat::ALL.iter().map(|f| f.as_str()).collect::<Vec<_>>()
+                        ),
+                        Some("source_model"),
+                    ));
+                }
+                _ => {}
+            }
+            if src.value.trim().is_empty() {
+                return Err(ValidationError::new("source_model_required", "source_model.value is empty", Some("source_model")));
+            }
+        }
+        (Some(_), _) => {
+            if strict {
+                return Err(ValidationError::new(
+                    "param_unsupported",
+                    format!("source_model not supported by '{}'", schema.id),
+                    Some("source_model"),
+                ));
+            }
+            dropped.push("source_model".into());
+            req.source_model = None;
+        }
+        (None, Some(ParamSpec::SourceModel(_))) => {
+            return Err(ValidationError::new(
+                "source_model_required",
+                format!("'{}' is a {} operation and needs source_model: the mesh to work on", schema.id, schema.task.as_str()),
+                Some("source_model"),
+            ));
+        }
+        (None, _) => {}
+    }
+
     check_refs(schema, &mut req.base.reference_images, strict, &mut dropped)?;
 
     // The mode is inferred from the images that survived `check_refs`: none
@@ -601,7 +652,7 @@ pub fn validate_model3d(
     // arm can do without one (Rodin) would otherwise submit an empty request
     // for the vendor to reject, after the quota is reserved. A model whose
     // `init` role is required never gets here without an image.
-    if req.base.reference_images.is_empty() {
+    if req.base.reference_images.is_empty() && schema.task == ModelTask::Generate {
         if !schema.capabilities.text_to_3d {
             return Err(ValidationError::new(
                 "ref_role_required",

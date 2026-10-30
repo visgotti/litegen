@@ -1863,6 +1863,7 @@ mod model3d_router_tests {
             output_formats: vec!["glb".into()],
             texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
+            source: None,
         };
         let refs = crate::proxy::materializer::MaterializedRequest {
             refs: vec![crate::proxy::materializer::MaterializedRef {
@@ -1993,6 +1994,7 @@ mod model3d_router_tests {
             output_formats: vec!["glb".into()],
             texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
+            source: None,
         };
         let refs = crate::proxy::materializer::MaterializedRequest {
             refs: vec![],

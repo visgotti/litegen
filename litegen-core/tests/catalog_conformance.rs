@@ -386,7 +386,9 @@ fn every_3d_model_declares_at_least_one_generation_mode() {
     let reg = registry();
     let models = model3d_models(&reg);
     assert!(!models.is_empty(), "the catalog advertises no model3d models");
-    for m in models {
+    // An operation (`rig`, `animate`, …) declares its task and its
+    // source_model instead: it has no generation mode by design.
+    for m in models.into_iter().filter(|m| m.task == litegen::capabilities::ModelTask::Generate) {
         let c = &m.capabilities;
         assert!(
             c.text_to_3d || c.image_to_3d || c.multiview_to_3d,
@@ -3040,6 +3042,19 @@ fn every_model_declares_a_task_its_modality_has() {
         if c.text_to_3d || c.image_to_3d || c.multiview_to_3d {
             assert_eq!(m.media_type, MediaType::Model3d, "{} sets a *_to_3d flag", m.id);
             assert_eq!(m.task, ModelTask::Generate, "{} sets a *_to_3d flag on a {:?} model", m.id, m.task);
+        }
+    }
+}
+
+/// 3D doc §3A: every 3D operation says which sources its vendor takes.
+#[test]
+fn every_3d_operation_declares_the_source_its_vendor_takes() {
+    use litegen::capabilities::ModelTask;
+    let reg = registry();
+    for m in model3d_models(&reg).into_iter().filter(|m| m.task != ModelTask::Generate) {
+        match m.params.get("source_model") {
+            Some(ParamSpec::SourceModel(s)) => assert!(!s.formats.is_empty(), "{} takes no source format", m.id),
+            other => panic!("{} is a {:?} operation without a source_model spec: {other:?}", m.id, m.task),
         }
     }
 }

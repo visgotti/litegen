@@ -206,6 +206,20 @@ The vendor's answers are proven the same way: `queue_states_map_to_pending_and_p
 `the_key_only_goes_to_the_configured_queue_origin` and
 `cancel_maps_fals_three_answers`.
 
+### 3D operations (3D doc §2 rule 1, §3A)
+
+An operation is a model whose `task` is not `generate`; it works on the mesh
+named by `source_model`. The catalog declares what its vendor takes
+(`params.source_model`: `formats`, `max_bytes`, `max_faces`, `requires_skin`,
+`requires_texture`), and litegen holds the source to it before the billed
+submit.
+
+| litegen param | ParamSpec | rule | `mock/rig-3d` | proof | status |
+|---|---|---|---|---|---|
+| `source_model` | `source_model` | `{type: generation \| url \| base64, value, format?}`; `format` required for url/base64 (`source_format_required`), from the `Model3dFormat` vocabulary (`source_format_unsupported`). Required by every operation (`source_model_required`); refused (strict) / dropped (lax) elsewhere. A generation is read back after the `GET /v1/generations/{id}` access check: another org's or a mesh-less one is 404 `source_not_found`, an unfinished one 409 `source_not_ready`. Read with litegen's own reader; 422 `source_too_many_faces`, `source_too_large`, `source_not_rigged`, `source_not_textured`, `source_format_unsupported` before anything is reserved. Converted to the first accepted container when the source is in another. | glb only, ≤ 50 MiB, ≤ 20,000 triangles; chains a mock generation by the mock's own task id (`delivery: vendor_task`), else inline (`data_uri`) | loader: `a_3d_operation_declares_what_source_it_takes`, `a_3d_operation_without_a_source_model_is_refused`, `source_model_formats_come_from_the_mesh_vocabulary`. validator: `source_model_is_refused_in_strict_and_dropped_in_lax_where_undeclared`, `an_operation_without_its_source_is_refused`, `a_url_or_base64_source_needs_its_format`, `a_source_format_outside_the_vocabulary_is_refused`, `an_operation_needs_neither_a_prompt_nor_a_reference_image`. reader: `proxy::model3d_source::tests::*` (byte-for-byte pass-through, fbx → glb conversion with the received bytes' hash, every refusal, skinned and textured fixtures). HTTP: `tests/source_model_api.rs` (lineage `metadata.source = {generation_id, sha256, format, received_format, facts, delivery}`; another org's source 404; unfinished 409; a 20,001-triangle OBJ refused with no log or row; fbx base64 converted for a glb-only model). conformance: `every_3d_operation_declares_the_source_its_vendor_takes`. | ✅ (mock) |
+| `reference_images[].type: "generation"` | `RefImageKind` | A stored image generation's id; read back after the same access check and sent as inline bytes, so every vendor form takes it. Another org's, a non-image, or a vanished one is 404 `source_not_found` (`param: reference_images`); unfinished 409. | — | `a_stored_image_is_a_reference_by_its_generation_id` (an image edit and image-to-3D from a stored image), `an_image_reference_another_org_owns_is_not_found`, `a_mesh_is_not_an_image_reference` | ✅ |
+| row `vendor_account` | — | Every 3D row records the vendor account it ran on (`org:<id>` for an org credential, else `platform`); a source chains by the vendor's task id only on the same provider and account. | — | `a_rig_chained_by_generation_id_records_its_lineage` | ✅ |
+
 ### Proof: real billed runs against fal, 2026-09-12
 
 Four generations across all three fal 3D models, plus six rejections that had to

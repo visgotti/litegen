@@ -388,6 +388,39 @@ models:
     extra_allowlist: []
     tags: [mock, test]
 
+  - id: mock/rig-3d
+    provider: mock
+    media_type: model3d
+    task: rig
+    display_name: Mock Rig 3D
+    description: >-
+      Rigs any mesh it can read as the same skinned box humanoid: joints hips,
+      torso, head, arm_l, arm_r, leg_l and leg_r, +Y up, facing +Z, metres,
+      T-pose. Takes its source by generation id (a mock generation is chained
+      by the mock's own task id, as Tripo and Meshy chain theirs), URL or
+      base64, as glb only — anything else litegen reads is converted — and
+      refuses a source over 20,000 triangles before anything runs.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: {}
+    prompt: { required: false, max_length: 0 }
+    params:
+      source_model:
+        kind: source_model
+        formats: [glb]
+        max_bytes: 52428800
+        max_faces: 20000
+        label: Source mesh
+        description: The mesh to rig.
+      output_formats:
+        kind: string_array
+        enum_values: [glb]
+        max_items: 1
+        default: [glb]
+        label: Output formats
+        description: Mesh containers. The mock emits glb; litegen derives the rest.
+    extra_allowlist: []
+    tags: [mock, test, rig]
+
   - id: mock/fail-3d
     provider: mock
     media_type: model3d
