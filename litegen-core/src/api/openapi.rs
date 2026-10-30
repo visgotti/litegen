@@ -464,6 +464,21 @@ mod tests {
     }
 
     #[test]
+    fn timed_keyframes_document_their_time_and_each_models_timing() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        assert!(mentions(property(&s["ReferenceImage"], "time_s"), "number"), "{}", property(&s["ReferenceImage"], "time_s"));
+        assert_eq!(s["KeyframeTiming"]["enum"], json!(["any", "even"]));
+        let caps = &s["ModelCapabilities"];
+        assert!(mentions(property(caps, "supports_keyframes"), "boolean"));
+        assert!(mentions(property(caps, "max_keyframes"), "integer"));
+        assert!(mentions(property(caps, "keyframe_timing"), "#/components/schemas/KeyframeTiming"), "{}", property(caps, "keyframe_timing"));
+        for f in ["timing", "time_step_s"] {
+            property(&s["RefRoleSpec"], f);
+        }
+    }
+
+    #[test]
     fn a_models_reference_spec_says_whether_its_vendor_takes_data_uris() {
         let d = doc();
         let p = property(&d["components"]["schemas"]["RefInputSpec"], "data_uri");

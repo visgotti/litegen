@@ -1892,6 +1892,7 @@ mod model3d_router_tests {
             refs: vec![crate::proxy::materializer::MaterializedRef {
                 role: "init".into(),
                 form: crate::proxy::materializer::MaterializedRefForm::Url("https://example.com/robot.png".into()),
+                time_s: None,
             }],
             cleanup: crate::proxy::materializer::Cleanup::empty(),
         };

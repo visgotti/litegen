@@ -102,6 +102,10 @@ back 180, back-right 225, right 270, front-right 315; top and bottom have none.
 A multiview image model takes ``views=`` from this list; a multiview-to-3D model
 takes ``view-<name>`` references."""
 
+KeyframeTiming = Literal["any", "even"]
+"""Where a video model's ``keyframe`` references may sit (``capabilities.keyframe_timing``):
+``any`` time each, or ``even`` spacing from the start of the clip to its end."""
+
 MaskConvention = Literal["white_edits", "black_edits", "transparent_edits"]
 """Which pixels of a mask edit. Callers always send ``white_edits`` (white,
 128 or more, edits); a model's catalog row names its vendor's own, and
@@ -144,6 +148,9 @@ class ReferenceImage(TypedDict):
     value: str
     """The image itself, encoded as ``type`` says: base64 data, a URL, or a blob reference."""
     role: NotRequired[str | None]
+    time_s: NotRequired[float | None]
+    """Seconds from the start of the clip, on a video ``keyframe`` reference:
+    the video shows this image at that time."""
 
 
 class SourceRef(TypedDict):

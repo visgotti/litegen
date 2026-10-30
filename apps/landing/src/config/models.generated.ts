@@ -4940,6 +4940,59 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://docs.platform.pixverse.ai/"
   },
   {
+    "id": "pixverse/v5-multi-transition",
+    "provider": "pixverse",
+    "displayName": "PixVerse v5 Multi-Transition",
+    "description": "Keyframe-to-video on PixVerse v5. Two to sixteen `keyframe` images, the first at 0 s and each at a whole second, become one clip that passes through each in turn and ends on the last; the prompt describes every segment.",
+    "mediaType": "video",
+    "output": "video",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": true,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 16,
+    "refRoles": [
+      {
+        "name": "keyframe",
+        "required": true,
+        "min": 2,
+        "max": 16
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2048
+    },
+    "params": [
+      {
+        "name": "resolution",
+        "kind": "string",
+        "enum": [
+          "360p",
+          "540p",
+          "720p",
+          "1080p"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.2
+    },
+    "tags": [
+      "image-to-video",
+      "keyframes"
+    ],
+    "referenceUrl": "https://docs.platform.pixverse.ai/multi-transition-video-43051215e0.md"
+  },
+  {
     "id": "pixverse/v6",
     "provider": "pixverse",
     "displayName": "PixVerse V6",

@@ -65,6 +65,58 @@ models:
     extra_allowlist: [motion_mode, negative_prompt]
     tags: [text-to-video, image-to-video]
 
+  # Timed keyframes (PixelGenie 3D doc §5) on PixVerse's Multi-Transition.
+  # @see https://docs.platform.pixverse.ai/multi-transition-video-43051215e0.md (2026-10-30)
+  #   POST /openapi/v2/video/multi_transition/generate: model (v3.5 | v4 |
+  #   v4.5 | v5), quality (360p | 540p | 720p | 1080p), multi_transition
+  #   (minItems 2) of { img_id, duration (integer ≥ 0), prompt (≤ 2048) },
+  #   motion_mode (normal | fast). "Supply frames in order; each duration
+  #   describes the segment leading to the next frame. For the final item,
+  #   omit duration or set it to 0." No maxItems is given; 16 keyframes span
+  #   the longest priced clip (15 s) at whole seconds.
+  # @see https://docs.platform.pixverse.ai/model-capability-map-2394982m0.md (2026-10-30)
+  #   Multi-Transition Video: V5 "Supported"; V6 Max, C1, V6 and V5.6 not.
+  - id: pixverse/v5-multi-transition
+    provider: pixverse
+    media_type: video
+    display_name: PixVerse v5 Multi-Transition
+    description: >-
+      Keyframe-to-video on PixVerse v5. Two to sixteen `keyframe` images, the
+      first at 0 s and each at a whole second, become one clip that passes
+      through each in turn and ends on the last; the prompt describes every
+      segment.
+    docs_url: https://docs.platform.pixverse.ai/multi-transition-video-43051215e0.md
+    # @see https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md (2026-10-30)
+    #   "Multi-Transition — Fixed duration tiers for motion_mode=normal"; "USD
+    #   amounts use total Credits ÷ 225". 5 seconds at 360p / 540p: "45
+    #   Credits", US$0.200. The clip's length is the caller's, so the tiers
+    #   (540p credits: 1 s 23, 2 s 27, 3 s 32, 4 s 36, 5 s 45, 6 s 59, 7 s
+    #   72, 8 s 90, 9 s 95, 10 s 99, 15 s 135; 720p ×4/3; 1080p ×8/3) are
+    #   recorded for variable pricing.
+    pricing:
+      base_cost_usd: 0.20
+      variable_pricing:
+        credit_usd: 0.0044444
+        credits_by_seconds_540p: { "1": 23, "2": 27, "3": 32, "4": 36, "5": 45, "6": 59, "7": 72, "8": 90, "9": 95, "10": 99, "15": 135 }
+    capabilities: { image_to_video: true }
+    prompt: { required: true, max_length: 2048 }
+    params:
+      resolution:
+        kind: string
+        enum_values: [360p, 540p, 720p, 1080p]
+    ref_inputs:
+      max_total: 16
+      default_role: keyframe
+      provider_format:
+        form: multipart
+        field_map:
+          keyframe: image
+      roles:
+        keyframe: { required: true, min_count: 2, max_count: 16, timing: any, time_step_s: 1.0 }
+    # motion_mode fast doubles the price: it waits for variable pricing.
+    extra_allowlist: []
+    tags: [image-to-video, keyframes]
+
   - id: pixverse/v3.5
     provider: pixverse
     media_type: video

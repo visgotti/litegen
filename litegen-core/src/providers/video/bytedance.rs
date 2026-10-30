@@ -352,8 +352,8 @@ mod tests {
         base.seed = Some(42);
         let materialized = MaterializedRequest {
             refs: vec![
-                MaterializedRef { role: "first_frame".into(), form: MaterializedRefForm::Url("https://cdn/first.png".into()) },
-                MaterializedRef { role: "last_frame".into(), form: MaterializedRefForm::Url("https://cdn/last.png".into()) },
+                MaterializedRef { role: "first_frame".into(), form: MaterializedRefForm::Url("https://cdn/first.png".into()), time_s: None },
+                MaterializedRef { role: "last_frame".into(), form: MaterializedRefForm::Url("https://cdn/last.png".into()), time_s: None },
             ],
             cleanup: Cleanup::empty(),
         };

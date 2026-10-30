@@ -1752,6 +1752,7 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
         _ => None,
     };
     let takes_mask = s.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("mask"));
+    let keyframes = s.ref_inputs.as_ref().and_then(|r| r.roles.get("keyframe"));
     ModelInfo {
         id: s.id.clone(),
         name: s.display_name.clone(),
@@ -1791,6 +1792,9 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             region_input: region.map(|r| r.input),
             preserves_unmasked: s.preserves_unmasked,
             mask_convention: takes_mask.then_some(crate::capabilities::MaskConvention::WhiteEdits),
+            supports_keyframes: keyframes.is_some(),
+            max_keyframes: keyframes.map(|k| k.max_count),
+            keyframe_timing: keyframes.and_then(|k| k.timing),
         },
         pricing: Some(ModelPricing {
             base_cost_usd: s.pricing.base_cost_usd,
@@ -4055,6 +4059,7 @@ async fn resolve_generation_refs(
             kind: crate::types::RefImageKind::Base64,
             value: format!("data:{content_type};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes)),
             role: r.role.clone(),
+            time_s: r.time_s,
         });
     }
     Ok(out)
@@ -4236,7 +4241,7 @@ async fn apply_image_edit(
         };
         match materialized.refs.iter_mut().find(|r| r.role == "mask") {
             Some(r) => r.form = form,
-            None => materialized.refs.push(MaterializedRef { role: "mask".into(), form }),
+            None => materialized.refs.push(MaterializedRef { role: "mask".into(), form, time_s: None }),
         }
     }
     Ok(Some(crate::providers::ImageEdit { window: prepared.window, vendor_grow_px: prepared.vendor_grow_px }))

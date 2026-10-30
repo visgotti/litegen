@@ -62,6 +62,7 @@ from .invitation_view import InvitationView
 from .invite_request import InviteRequest
 from .invite_response import InviteResponse
 from .key_active_response import KeyActiveResponse
+from .keyframe_timing import KeyframeTiming
 from .latency_percentiles import LatencyPercentiles
 from .limits_input import LimitsInput
 from .limits_list_response import LimitsListResponse
@@ -268,6 +269,7 @@ __all__ = (
     "InviteRequest",
     "InviteResponse",
     "KeyActiveResponse",
+    "KeyframeTiming",
     "LatencyPercentiles",
     "LimitsInput",
     "LimitsListResponse",

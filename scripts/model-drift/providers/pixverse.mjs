@@ -41,11 +41,15 @@ const uploadSpec = memo((body) => {
   return { paths: { [UPLOAD]: { post: { requestBody: parseYaml(block[2]) } } } };
 });
 
-/** The request body schema's properties of one endpoint. */
+/** The request body schema's properties of one endpoint — merged across the
+ * `anyOf`/`oneOf` branches its pages have used since 2026-10 (one branch per
+ * request shape, beside an empty top-level `properties`). */
 function requestProperties(doc, path) {
   const content = doc.paths?.[path]?.post?.requestBody?.content ?? {};
-  const properties = Object.values(content)[0]?.schema?.properties;
-  if (!properties) throw new Error(`POST ${path}: no request body properties — endpoint renamed or restructured`);
+  const schema = Object.values(content)[0]?.schema ?? {};
+  const branches = [schema, ...(schema.anyOf ?? []), ...(schema.oneOf ?? [])];
+  const properties = Object.assign({}, ...branches.map((b) => b?.properties ?? {}));
+  if (!Object.keys(properties).length) throw new Error(`POST ${path}: no request body properties — endpoint renamed or restructured`);
   return properties;
 }
 
@@ -83,11 +87,15 @@ export default {
     'pixverse/v3.5': 'v3.5',
     'pixverse/v6': 'v6',
     'pixverse/c1': 'c1',
+    // Timed keyframes on POST /openapi/v2/video/multi_transition/generate.
+    'pixverse/v5-multi-transition': 'v5',
   },
   sources: [
-    endpoint('text-to-video', 'text-to-video-generation-13016634e0', '/openapi/v2/video/text/generate'),
-    endpoint('image-to-video', 'image-to-video-generation-13016633e0', '/openapi/v2/video/img/generate'),
-    endpoint('transition', 'transitionfirst-last-frame-generation-15123014e0', '/openapi/v2/video/transition/generate'),
+    // Page slugs as the docs index lists them (renamed 2026-10).
+    endpoint('text-to-video', 'text-to-video-13016634e0', '/openapi/v2/video/text/generate'),
+    endpoint('image-to-video', 'image-to-video-and-video-templates-13016633e0', '/openapi/v2/video/img/generate'),
+    endpoint('transition', 'first-and-last-frame-video-43051213e0', '/openapi/v2/video/transition/generate'),
+    endpoint('multi-transition', 'multi-transition-video-43051215e0', '/openapi/v2/video/multi_transition/generate'),
     {
       // Reference-image upload (no model): the endpoint, so a rename fails here.
       key: 'upload-image',
@@ -98,12 +106,12 @@ export default {
       snapshot: (_md, body) => typings(uploadSpec(body), UPLOAD, []),
     },
     {
-      // Model pages and video-generation endpoints: a new model or endpoint page shows up here.
+      // Generation endpoint pages: a new endpoint page shows up here.
       key: 'pages',
       index: true,
       url: `${DOCS}/llms.txt`,
       expect: 'text',
-      extract: /^- (?:Models|API Reference > Video Generation) \[[^\]]*\]\(https:\/\/docs\.platform\.pixverse\.ai\/([\w-]+)\.md\)/gm,
+      extract: /^- API +> Core Capabilities \[[^\]]*\]\(https:\/\/docs\.platform\.pixverse\.ai\/([\w-]+)\.md\)/gm,
     },
   ],
   acknowledged: [

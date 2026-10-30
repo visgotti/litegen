@@ -32,8 +32,8 @@ mod tests {
                 data_uri: true,
                 view_order: Vec::new(),
                 roles: HashMap::from([
-                    ("init".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
-                    ("mask".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
+                    ("init".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false, timing: None, time_step_s: None }),
+                    ("mask".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false, timing: None, time_step_s: None }),
                 ]),
             }),
             extra_allowlist: vec![],
@@ -42,7 +42,7 @@ mod tests {
     }
 
     fn ref_(kind: RefImageKind, value: &str, role: &str) -> ReferenceImage {
-        ReferenceImage { kind, value: value.into(), role: Some(role.into()) }
+        ReferenceImage { kind, value: value.into(), role: Some(role.into()), time_s: None }
     }
 
     #[tokio::test]

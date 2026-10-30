@@ -9,7 +9,7 @@ use crate::providers::{
 };
 use crate::types::*;
 use crate::proxy::materializer::MaterializedRefForm;
-use super::visual_mock::{generate_keyframe_blend_gif, generate_visual_video_gif, global_store};
+use super::visual_mock::{generate_keyframe_blend_gif, generate_timed_keyframes_gif, generate_visual_video_gif, global_store};
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 
 /// Pull the raw decoded bytes for a ref with the given role, regardless of
@@ -78,7 +78,7 @@ impl VideoProvider for MockVideoProvider {
         &self,
         model: &ModelSchema,
         base: &BaseGenerationRequest,
-        _extras: &VideoExtras,
+        extras: &VideoExtras,
         materialized: &MaterializedRequest,
     ) -> Result<VideoGenerationHandle, ProviderError> {
         if should_render_visual_video(&model.id) {
@@ -87,7 +87,26 @@ impl VideoProvider for MockVideoProvider {
             // Keyframe model with both first_frame + last_frame refs supplied:
             // cross-fade between the two real images so the dev sees that the
             // ref-image flow actually delivered bytes to the provider.
-            let gif_bytes = if model.id == "mock/keyframe-video" {
+            let timed = materialized.refs.iter().any(|r| r.role == "keyframe");
+            let gif_bytes = if model.id == "mock/keyframe-video" && timed {
+                // Timed keyframes: first_frame is t = 0 and last_frame the end.
+                let duration = extras.duration_seconds;
+                let at = |r: &crate::proxy::materializer::MaterializedRef| match r.role.as_str() {
+                    "first_frame" => Some(0.0),
+                    "last_frame" => Some(duration),
+                    "keyframe" => r.time_s,
+                    _ => None,
+                };
+                let keyframes: Vec<(f64, Vec<u8>)> = materialized
+                    .refs
+                    .iter()
+                    .filter_map(|r| match &r.form {
+                        MaterializedRefForm::Base64(b64) => Some((at(r)?, B64.decode(b64).ok()?)),
+                        _ => None,
+                    })
+                    .collect();
+                generate_timed_keyframes_gif(&keyframes, duration, extras.fps.unwrap_or(10), &base.prompt)
+            } else if model.id == "mock/keyframe-video" {
                 let first = ref_bytes_for_role(materialized, "first_frame");
                 let last = ref_bytes_for_role(materialized, "last_frame");
                 match (first, last) {
@@ -288,10 +307,12 @@ mod tests {
                 MaterializedRef {
                     role: "first_frame".to_string(),
                     form: MaterializedRefForm::Base64(solid_png_b64(255, 0, 0)),
+                    time_s: None,
                 },
                 MaterializedRef {
                     role: "last_frame".to_string(),
                     form: MaterializedRefForm::Base64(solid_png_b64(0, 0, 255)),
+                    time_s: None,
                 },
             ],
             cleanup: crate::proxy::materializer::Cleanup::empty(),

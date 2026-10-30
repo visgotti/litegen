@@ -661,6 +661,7 @@ impl Default for ModelCapabilities {
             region_input: None,
             preserves_unmasked: None,
             mask_convention: None,
+            supports_keyframes: false, max_keyframes: None, keyframe_timing: None,
         }
     }
 }
@@ -898,6 +899,7 @@ mod tests {
                     bytes: bytes::Bytes::from_static(b"src"),
                     content_type: "image/png".to_string(),
                 },
+                time_s: None,
             }],
             cleanup: crate::proxy::materializer::Cleanup::empty(),
         };
@@ -971,6 +973,7 @@ mod tests {
                     bytes: bytes::Bytes::from_static(b"src"),
                     content_type: "image/png".to_string(),
                 },
+                time_s: None,
             }],
             cleanup: crate::proxy::materializer::Cleanup::empty(),
         };

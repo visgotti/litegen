@@ -16,11 +16,14 @@ class ReferenceImage:
         type (RefImageKind):
         value (str):
         role (Union[None, Unset, str]):
+        time_s (Union[None, Unset, float]): Seconds from the start of the clip, on a `keyframe` reference (3D doc
+            §5): the video shows this image at that time.
     """
 
     type: RefImageKind
     value: str
     role: Union[None, Unset, str] = UNSET
+    time_s: Union[None, Unset, float] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -34,6 +37,12 @@ class ReferenceImage:
         else:
             role = self.role
 
+        time_s: Union[None, Unset, float]
+        if isinstance(self.time_s, Unset):
+            time_s = UNSET
+        else:
+            time_s = self.time_s
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -44,6 +53,8 @@ class ReferenceImage:
         )
         if role is not UNSET:
             field_dict["role"] = role
+        if time_s is not UNSET:
+            field_dict["time_s"] = time_s
 
         return field_dict
 
@@ -63,10 +74,20 @@ class ReferenceImage:
 
         role = _parse_role(d.pop("role", UNSET))
 
+        def _parse_time_s(data: object) -> Union[None, Unset, float]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, float], data)
+
+        time_s = _parse_time_s(d.pop("time_s", UNSET))
+
         reference_image = cls(
             type=type,
             value=value,
             role=role,
+            time_s=time_s,
         )
 
         reference_image.additional_properties = d

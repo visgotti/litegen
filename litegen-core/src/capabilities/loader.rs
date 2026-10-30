@@ -201,6 +201,26 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
+    // 3D doc §5: timed keyframes are a video role, and say how their times
+    // are placed.
+    if let Some(refs) = &m.ref_inputs {
+        for (name, role) in &refs.roles {
+            let keyframe = name == "keyframe";
+            if keyframe && m.media_type != MediaType::Video {
+                return Err(bad(format!("model '{}' declares a keyframe role, which only video models take", m.id)));
+            }
+            if keyframe && role.timing.is_none() {
+                return Err(bad(format!("model '{}' keyframe role must declare its timing (any | even)", m.id)));
+            }
+            if !keyframe && (role.timing.is_some() || role.time_step_s.is_some()) {
+                return Err(bad(format!("model '{}' role '{name}': timing and time_step_s belong to the keyframe role", m.id)));
+            }
+            if role.time_step_s.is_some_and(|s| !(s > 0.0 && s.is_finite())) {
+                return Err(bad(format!("model '{}' keyframe time_step_s must be a positive number of seconds", m.id)));
+            }
+        }
+    }
+
     // 3D doc §3C: the clips an animate model makes.
     if let Some(spec) = m.params.get("animations") {
         let ParamSpec::AnimationList(a) = spec else {

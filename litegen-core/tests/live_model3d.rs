@@ -77,6 +77,7 @@ async fn live_fal_trellis_delivers_four_containers_from_one_glb() {
         refs: vec![MaterializedRef {
             role: "init".into(),
             form: MaterializedRefForm::Url(TRELLIS_EXAMPLE_IMAGE.into()),
+            time_s: None,
         }],
         cleanup: Cleanup::empty(),
     };

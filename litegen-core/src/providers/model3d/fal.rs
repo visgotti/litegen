@@ -1566,7 +1566,7 @@ mod tests {
         MaterializedRequest {
             refs: urls
                 .iter()
-                .map(|u| MaterializedRef { role: "init".into(), form: MaterializedRefForm::Url(u.to_string()) })
+                .map(|u| MaterializedRef { role: "init".into(), form: MaterializedRefForm::Url(u.to_string()), time_s: None })
                 .collect(),
             cleanup: Cleanup::empty(),
         }
@@ -1737,7 +1737,7 @@ mod tests {
         MaterializedRequest {
             refs: roles
                 .iter()
-                .map(|r| MaterializedRef { role: r.to_string(), form: MaterializedRefForm::Url(format!("https://example.com/{r}.png")) })
+                .map(|r| MaterializedRef { role: r.to_string(), form: MaterializedRefForm::Url(format!("https://example.com/{r}.png")), time_s: None })
                 .collect(),
             cleanup: Cleanup::empty(),
         }
@@ -1850,7 +1850,7 @@ mod tests {
         mount_submit(&server, "fal-ai/trellis", "t-2").await;
         let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, PNG);
         let refs = MaterializedRequest {
-            refs: vec![MaterializedRef { role: "init".into(), form: MaterializedRefForm::Base64(b64.clone()) }],
+            refs: vec![MaterializedRef { role: "init".into(), form: MaterializedRefForm::Base64(b64.clone()), time_s: None }],
             cleanup: Cleanup::empty(),
         };
         provider(&server)
@@ -1897,6 +1897,7 @@ mod tests {
                     bytes: bytes::Bytes::from_static(&PNG),
                     content_type: "image/png".into(),
                 },
+                time_s: None,
             }],
             cleanup: Cleanup::empty(),
         };

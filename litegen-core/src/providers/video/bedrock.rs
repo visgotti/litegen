@@ -390,6 +390,7 @@ mod tests {
             refs: vec![crate::proxy::materializer::MaterializedRef {
                 role: "first_frame".into(),
                 form: MaterializedRefForm::Base64("/9j/4AAQSkZJRgABAQAAAQABAAD".into()),
+                time_s: None,
             }],
             cleanup: Cleanup::empty(),
         };

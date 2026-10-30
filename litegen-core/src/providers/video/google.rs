@@ -389,6 +389,7 @@ mod tests {
             refs: vec![MaterializedRef {
                 role: "first_frame".to_string(),
                 form: MaterializedRefForm::Base64(b64.to_string()),
+                time_s: None,
             }],
             cleanup: Cleanup::empty(),
         }
@@ -482,6 +483,7 @@ mod tests {
             refs: vec![MaterializedRef {
                 role: "last_frame".to_string(),
                 form: MaterializedRefForm::Base64("bGFzdA==".to_string()),
+                time_s: None,
             }],
             cleanup: Cleanup::empty(),
         };

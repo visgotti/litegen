@@ -370,7 +370,7 @@ mod tests {
     }
 
     fn url_ref(role: &str, url: &str) -> MaterializedRef {
-        MaterializedRef { role: role.to_string(), form: MaterializedRefForm::Url(url.to_string()) }
+        MaterializedRef { role: role.to_string(), form: MaterializedRefForm::Url(url.to_string()), time_s: None }
     }
 
     async fn mount_submit(server: &MockServer, endpoint: &str) {

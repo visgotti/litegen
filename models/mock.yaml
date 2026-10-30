@@ -267,7 +267,14 @@ models:
     provider: mock
     media_type: video
     display_name: Mock Keyframe Video
-    description: Dual-keyframe image-to-video (Luma-style). Pass `first_frame` and `last_frame` reference images and the provider returns an animated GIF that cross-fades between them over 10 frames, proving the keyframe materialization flow end-to-end. With no refs supplied, falls back to a prompt-derived random animation.
+    description: >-
+      Keyframe image-to-video. Timed `keyframe` references (each with
+      `time_s`) come back as an animated GIF at `fps` (default 10) over
+      `duration_seconds`, whose frame at each keyframe's time is that
+      keyframe's image, unchanged, with blends between; `first_frame` and
+      `last_frame` stand for t = 0 and the end. With only `first_frame` and
+      `last_frame` it cross-fades between them over 10 frames; with no refs,
+      a prompt-derived animation.
     pricing: { base_cost_usd: 0.0 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 1000 }
@@ -280,13 +287,14 @@ models:
       seed: { kind: seed, min: 0, max: 4294967294 }
     extra_allowlist: []
     ref_inputs:
-      max_total: 3
+      max_total: 10
       default_role: first_frame
       provider_format: { form: base64 }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame: { required: false, min_count: 0, max_count: 1 }
+        keyframe: { required: false, min_count: 0, max_count: 8, timing: any }
     tags: [mock, test, keyframes]
 
   - id: mock/passthrough-video

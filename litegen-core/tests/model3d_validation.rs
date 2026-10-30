@@ -380,15 +380,15 @@ fn multiview_roles_are_accepted_when_the_model_declares_them() {
         data_uri: true,
         view_order: Vec::new(),
         roles: HashMap::from([
-            ("init".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
-            ("view-front".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
-            ("view-back".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
+            ("init".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false, timing: None, time_step_s: None }),
+            ("view-front".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false, timing: None, time_step_s: None }),
+            ("view-back".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false, timing: None, time_step_s: None }),
         ]),
     });
     let mut r = req(true);
     r.base.reference_images = vec![
-        ReferenceImage { kind: RefImageKind::Url, value: "https://x/f.png".into(), role: Some("view-front".into()) },
-        ReferenceImage { kind: RefImageKind::Url, value: "https://x/b.png".into(), role: Some("view-back".into()) },
+        ReferenceImage { kind: RefImageKind::Url, value: "https://x/f.png".into(), role: Some("view-front".into()), time_s: None },
+        ReferenceImage { kind: RefImageKind::Url, value: "https://x/b.png".into(), role: Some("view-back".into()), time_s: None },
     ];
     let out = validate_model3d(&schema, r).unwrap();
     assert_eq!(out.request.base.reference_images.len(), 2);
@@ -398,7 +398,7 @@ fn multiview_roles_are_accepted_when_the_model_declares_them() {
 /// A model taking an init image or any of four views; `view_order` non-empty
 /// means its vendor takes the views as one ordered list.
 fn multiview_schema(view_order: &[&str]) -> ModelSchema {
-    let role = || RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false };
+    let role = || RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false, timing: None, time_step_s: None };
     let mut schema = schema_with(HashMap::new());
     schema.ref_inputs = Some(RefInputSpec {
         max_total: 5,
@@ -414,7 +414,7 @@ fn multiview_schema(view_order: &[&str]) -> ModelSchema {
 fn refs(roles: &[&str]) -> Vec<ReferenceImage> {
     roles
         .iter()
-        .map(|r| ReferenceImage { kind: RefImageKind::Url, value: format!("https://x/{r}.png"), role: Some(r.to_string()) })
+        .map(|r| ReferenceImage { kind: RefImageKind::Url, value: format!("https://x/{r}.png"), role: Some(r.to_string()), time_s: None })
         .collect()
 }
 
@@ -480,7 +480,7 @@ fn real(id: &str) -> ModelSchema {
 }
 
 fn image_ref() -> ReferenceImage {
-    ReferenceImage { kind: RefImageKind::Url, value: "https://example.com/robot.png".into(), role: Some("init".into()) }
+    ReferenceImage { kind: RefImageKind::Url, value: "https://example.com/robot.png".into(), role: Some("init".into()), time_s: None }
 }
 
 /// A request a given real model accepts as-is: an image for the image-only

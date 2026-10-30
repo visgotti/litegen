@@ -68,7 +68,163 @@ impl PixverseProvider {
     }
 
     fn resolve_model(model_id: &str) -> &str {
-        model_id.strip_prefix("pixverse/").unwrap_or(model_id)
+        match model_id {
+            "pixverse/v5-multi-transition" => "v5",
+            _ => model_id.strip_prefix("pixverse/").unwrap_or(model_id),
+        }
+    }
+
+    /// Timed keyframes (3D doc §5) as Multi-Transition items: uploaded in time
+    /// order, each `duration` the whole seconds to the next keyframe and the
+    /// last 0, every segment carrying the prompt. The clip starts at the
+    /// first keyframe, so one must sit at 0 s; that is checked before any call.
+    ///
+    /// @see <https://docs.platform.pixverse.ai/multi-transition-video-43051215e0.md>
+    ///   "Supply frames in order; each duration describes the segment leading to the next frame. For the final item, omit duration or set it to 0."
+    async fn multi_transition(
+        &self,
+        creds: &ProviderCredentials,
+        native: &str,
+        base: &BaseGenerationRequest,
+        extras: &VideoExtras,
+        materialized: &MaterializedRequest,
+    ) -> Result<Value, ProviderError> {
+        let mut keyframes: Vec<_> = materialized.refs.iter().filter(|r| r.role == "keyframe").collect();
+        keyframes.sort_by(|a, b| a.time_s.unwrap_or_default().total_cmp(&b.time_s.unwrap_or_default()));
+        let times: Vec<f64> = keyframes
+            .iter()
+            .map(|r| r.time_s.ok_or_else(|| ProviderError::InvalidRequest("every keyframe needs time_s".into())))
+            .collect::<Result<_, _>>()?;
+        if times.first().is_some_and(|t| t.abs() > 1e-3) {
+            return Err(ProviderError::InvalidRequest(format!(
+                "PixVerse's multi-transition starts at its first keyframe: put one at 0 s, not {} s",
+                times[0]
+            )));
+        }
+        let mut items = Vec::with_capacity(keyframes.len());
+        for (i, r) in keyframes.iter().enumerate() {
+            let MaterializedRefForm::MultipartField { bytes, content_type, .. } = &r.form else {
+                return Err(ProviderError::InvalidRequest("PixVerse keyframes are uploaded: the catalog must declare multipart".into()));
+            };
+            let img_id = self.upload_image(creds, bytes, content_type).await?;
+            let duration = times.get(i + 1).map_or(0, |next| (next - times[i]).round() as i64);
+            let prompt = if i + 1 < keyframes.len() { base.prompt.as_str() } else { "" };
+            items.push(json!({ "img_id": img_id, "duration": duration, "prompt": prompt }));
+        }
+        let quality = extras.resolution.as_deref().unwrap_or(DEFAULT_QUALITY);
+        Ok(json!({ "model": native, "quality": quality, "multi_transition": items }))
+    }
+
+    /// Text-, image- and first/last-frame-to-video: one request each.
+    async fn single_shot(
+        &self,
+        creds: &ProviderCredentials,
+        native: &str,
+        base: &BaseGenerationRequest,
+        extras: &VideoExtras,
+        materialized: &MaterializedRequest,
+    ) -> Result<(&'static str, Value), ProviderError> {
+        // Upload any reference images first (-> img_id), tracking first/last.
+        let mut first_img: Option<i64> = None;
+        let mut last_img: Option<i64> = None;
+        for r in &materialized.refs {
+            if let MaterializedRefForm::MultipartField { bytes, content_type, .. } = &r.form {
+                let img_id = self.upload_image(creds, bytes, content_type).await?;
+                if r.role == "last_frame" {
+                    last_img = Some(img_id);
+                } else {
+                    first_img = Some(img_id);
+                }
+            }
+        }
+
+        // Choose endpoint by what was uploaded.
+        let (path, mut body) = if first_img.is_some() && last_img.is_some() {
+            (
+                "/openapi/v2/video/transition/generate",
+                json!({ "first_frame_img": first_img, "last_frame_img": last_img }),
+            )
+        } else if let Some(id) = first_img {
+            ("/openapi/v2/video/img/generate", json!({ "img_id": id }))
+        } else {
+            (TEXT_TO_VIDEO_PATH, json!({}))
+        };
+        body["model"] = Value::String(native.to_string());
+        body["prompt"] = Value::String(base.prompt.clone());
+        let quality = extras.resolution.as_deref().unwrap_or(DEFAULT_QUALITY);
+        body["quality"] = Value::String(quality.to_string());
+        if extras.duration_seconds > 0.0 {
+            body["duration"] = Value::Number((extras.duration_seconds as i64).into());
+        }
+        if let Some(ar) = extras.aspect_ratio.as_deref() {
+            body["aspect_ratio"] = Value::String(ar.to_string());
+        } else if path == TEXT_TO_VIDEO_PATH {
+            body["aspect_ratio"] = Value::String(DEFAULT_ASPECT_RATIO.to_string());
+        }
+        if let Some(seed) = base.seed {
+            body["seed"] = Value::Number(seed.into());
+        }
+        if let Some(np) = base.negative_prompt.as_deref() {
+            body["negative_prompt"] = Value::String(np.to_string());
+        }
+        if let Some(Value::Object(map)) = &extras.extra {
+            if let Some(obj) = body.as_object_mut() {
+                for (k, v) in map {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        Ok((path, body))
+    }
+
+    /// Submit a generate call and read the job id out of PixVerse's envelope.
+    async fn submit(
+        &self,
+        model: &ModelSchema,
+        creds: &ProviderCredentials,
+        path: &str,
+        body: &Value,
+    ) -> Result<VideoGenerationHandle, ProviderError> {
+        let url = format!("{}{path}", self.api_base());
+        let builder = self.auth_builder(creds, self.client.post(&url).header("Content-Type", "application/json").json(body))?;
+        let resp = crate::providers::inject_trace_headers(builder)
+            .send()
+            .await
+            .map_err(|e| ProviderError::RequestFailed {
+                message: format!("Pixverse request failed: {e}"),
+                status_code: e.status().map(|s| s.as_u16()),
+                provider_error: None,
+                retryable: e.is_timeout() || e.is_connect(),
+            })?;
+
+        let status = resp.status();
+        let data: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
+            message: format!("Failed to parse Pixverse response: {e}"),
+            status_code: Some(status.as_u16()),
+            provider_error: None,
+            retryable: false,
+        })?;
+        if data["ErrCode"].as_i64().unwrap_or(-1) != 0 {
+            return Err(ProviderError::RequestFailed {
+                message: format!("Pixverse API error: {}", data["ErrMsg"].as_str().unwrap_or("unknown")),
+                status_code: Some(status.as_u16()),
+                provider_error: Some(data),
+                retryable: false,
+            });
+        }
+
+        let video_id = data["Resp"]["video_id"].as_i64().ok_or_else(|| ProviderError::RequestFailed {
+            message: "Pixverse response missing Resp.video_id".to_string(),
+            status_code: None,
+            provider_error: Some(data.clone()),
+            retryable: false,
+        })?;
+
+        Ok(VideoGenerationHandle {
+            provider_job_id: video_id.to_string(),
+            provider: "pixverse".to_string(),
+            model: model.id.clone(),
+        })
     }
 
     /// Apply API-KEY auth + a fresh per-request Ai-trace-id.
@@ -168,97 +324,12 @@ impl VideoProvider for PixverseProvider {
         let creds = self.creds()?;
         let native = Self::resolve_model(&model.id);
 
-        // Upload any reference images first (-> img_id), tracking first/last.
-        let mut first_img: Option<i64> = None;
-        let mut last_img: Option<i64> = None;
-        for r in &materialized.refs {
-            if let MaterializedRefForm::MultipartField { bytes, content_type, .. } = &r.form {
-                let img_id = self.upload_image(&creds, bytes, content_type).await?;
-                if r.role == "last_frame" {
-                    last_img = Some(img_id);
-                } else {
-                    first_img = Some(img_id);
-                }
-            }
-        }
-
-        // Choose endpoint by what was uploaded.
-        let (path, mut body) = if first_img.is_some() && last_img.is_some() {
-            (
-                "/openapi/v2/video/transition/generate",
-                json!({ "first_frame_img": first_img, "last_frame_img": last_img }),
-            )
-        } else if let Some(id) = first_img {
-            ("/openapi/v2/video/img/generate", json!({ "img_id": id }))
+        let (path, body) = if materialized.refs.iter().any(|r| r.role == "keyframe") {
+            ("/openapi/v2/video/multi_transition/generate", self.multi_transition(&creds, native, base, extras, materialized).await?)
         } else {
-            (TEXT_TO_VIDEO_PATH, json!({}))
+            self.single_shot(&creds, native, base, extras, materialized).await?
         };
-        body["model"] = Value::String(native.to_string());
-        body["prompt"] = Value::String(base.prompt.clone());
-        let quality = extras.resolution.as_deref().unwrap_or(DEFAULT_QUALITY);
-        body["quality"] = Value::String(quality.to_string());
-        if extras.duration_seconds > 0.0 {
-            body["duration"] = Value::Number((extras.duration_seconds as i64).into());
-        }
-        if let Some(ar) = extras.aspect_ratio.as_deref() {
-            body["aspect_ratio"] = Value::String(ar.to_string());
-        } else if path == TEXT_TO_VIDEO_PATH {
-            body["aspect_ratio"] = Value::String(DEFAULT_ASPECT_RATIO.to_string());
-        }
-        if let Some(seed) = base.seed {
-            body["seed"] = Value::Number(seed.into());
-        }
-        if let Some(np) = base.negative_prompt.as_deref() {
-            body["negative_prompt"] = Value::String(np.to_string());
-        }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map {
-                    obj.insert(k.clone(), v.clone());
-                }
-            }
-        }
-
-        let url = format!("{}{path}", self.api_base());
-        let builder = self.auth_builder(&creds, self.client.post(&url).header("Content-Type", "application/json").json(&body))?;
-        let resp = crate::providers::inject_trace_headers(builder)
-            .send()
-            .await
-            .map_err(|e| ProviderError::RequestFailed {
-                message: format!("Pixverse request failed: {e}"),
-                status_code: e.status().map(|s| s.as_u16()),
-                provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
-            })?;
-
-        let status = resp.status();
-        let data: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse Pixverse response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
-        if data["ErrCode"].as_i64().unwrap_or(-1) != 0 {
-            return Err(ProviderError::RequestFailed {
-                message: format!("Pixverse API error: {}", data["ErrMsg"].as_str().unwrap_or("unknown")),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(data),
-                retryable: false,
-            });
-        }
-
-        let video_id = data["Resp"]["video_id"].as_i64().ok_or_else(|| ProviderError::RequestFailed {
-            message: "Pixverse response missing Resp.video_id".to_string(),
-            status_code: None,
-            provider_error: Some(data.clone()),
-            retryable: false,
-        })?;
-
-        Ok(VideoGenerationHandle {
-            provider_job_id: video_id.to_string(),
-            provider: "pixverse".to_string(),
-            model: model.id.clone(),
-        })
+        self.submit(model, &creds, path, &body).await
     }
 
     async fn poll_status(
@@ -414,6 +485,75 @@ mod tests {
             .await;
     }
 
+    fn keyframes(times: &[f64]) -> MaterializedRequest {
+        MaterializedRequest {
+            refs: times
+                .iter()
+                .map(|t| MaterializedRef {
+                    role: "keyframe".to_string(),
+                    form: MaterializedRefForm::MultipartField {
+                        field_name: "image".to_string(),
+                        bytes: bytes::Bytes::from(format!("keyframe-at-{t}s").into_bytes()),
+                        content_type: "image/png".to_string(),
+                    },
+                    time_s: Some(*t),
+                })
+                .collect(),
+            cleanup: Cleanup::empty(),
+        }
+    }
+
+    /// Timed keyframes reach Multi-Transition in time order, each `duration`
+    /// the whole seconds to the next keyframe and the last 0, every segment
+    /// carrying the prompt.
+    /// @see <https://docs.platform.pixverse.ai/multi-transition-video-43051215e0.md>
+    ///   "Supply frames in order; each duration describes the segment leading to the next frame. For the final item, omit duration or set it to 0."
+    #[tokio::test]
+    async fn timed_keyframes_reach_multi_transition_as_segment_durations() {
+        let server = MockServer::start().await;
+        for (priority, id) in [(1u8, 11), (2, 12), (3, 13)] {
+            Mock::given(method("POST"))
+                .and(path("/openapi/v2/image/upload"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "ErrCode": 0, "ErrMsg": "success", "Resp": { "img_id": id } })))
+                .up_to_n_times(1)
+                .with_priority(priority)
+                .mount(&server)
+                .await;
+        }
+        mount_ok(&server, "/openapi/v2/video/multi_transition/generate", json!({ "video_id": 9 })).await;
+        let id = "pixverse/v5-multi-transition";
+        make_provider(&server.uri())
+            .generate(&ref_schema(id), &make_base("the knight swings", id), &extras_without_quality_or_ratio(), &keyframes(&[0.0, 2.0, 5.0]))
+            .await
+            .expect("generate");
+        let received = server.received_requests().await.unwrap();
+        let uploads: Vec<bool> = received.iter().filter(|r| r.url.path() == "/openapi/v2/image/upload").map(|r| r.body.windows(14).any(|w| w == b"keyframe-at-0s")).collect();
+        assert_eq!(uploads, [true, false, false], "uploaded in time order");
+        let submit = received.iter().find(|r| r.url.path() == "/openapi/v2/video/multi_transition/generate").expect("a submit");
+        let body: Value = serde_json::from_slice(&submit.body).unwrap();
+        assert_eq!(body, json!({
+            "model": "v5",
+            "quality": "540p",
+            "multi_transition": [
+                { "img_id": 11, "duration": 2, "prompt": "the knight swings" },
+                { "img_id": 12, "duration": 3, "prompt": "the knight swings" },
+                { "img_id": 13, "duration": 0, "prompt": "" },
+            ],
+        }));
+    }
+
+    #[tokio::test]
+    async fn a_multi_transition_starts_at_its_first_keyframe() {
+        let server = MockServer::start().await;
+        let id = "pixverse/v5-multi-transition";
+        let err = make_provider(&server.uri())
+            .generate(&ref_schema(id), &make_base("x", id), &extras_without_quality_or_ratio(), &keyframes(&[1.0, 3.0]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err}");
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing reached PixVerse");
+    }
+
     /// text/generate requires `aspect_ratio` and `quality`, with no server-side
     /// default, so a request that leaves resolution/aspect_ratio unset must still
     /// carry both.
@@ -458,6 +598,7 @@ mod tests {
                     bytes: bytes::Bytes::from_static(b"PNG"),
                     content_type: "image/png".to_string(),
                 },
+                time_s: None,
             }],
             cleanup: Cleanup::empty(),
         };

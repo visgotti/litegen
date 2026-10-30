@@ -457,6 +457,7 @@ mod tests {
             refs: vec![crate::proxy::materializer::MaterializedRef {
                 role: "init".to_string(),
                 form: MaterializedRefForm::Url("https://example.test/first.png".to_string()),
+                time_s: None,
             }],
             cleanup: crate::proxy::materializer::Cleanup::empty(),
         };

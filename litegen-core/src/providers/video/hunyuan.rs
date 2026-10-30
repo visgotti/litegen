@@ -433,6 +433,7 @@ mod tests {
             refs: vec![MaterializedRef {
                 role: "first_frame".to_string(),
                 form: MaterializedRefForm::Base64("aW1n".to_string()),
+                time_s: None,
             }],
             cleanup: Cleanup::empty(),
         };
@@ -572,7 +573,7 @@ mod tests {
 
     fn one_image(form: MaterializedRefForm) -> MaterializedRequest {
         MaterializedRequest {
-            refs: vec![MaterializedRef { role: "first_frame".to_string(), form }],
+            refs: vec![MaterializedRef { role: "first_frame".to_string(), form, time_s: None }],
             cleanup: Cleanup::empty(),
         }
     }

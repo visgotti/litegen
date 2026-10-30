@@ -733,6 +733,7 @@ mod tests {
                 form: crate::proxy::materializer::MaterializedRefForm::Url(
                     "https://example.com/frame.png".to_string(),
                 ),
+                time_s: None,
             }],
             cleanup: crate::proxy::materializer::Cleanup::empty(),
         };
@@ -806,6 +807,7 @@ mod tests {
                 form: crate::proxy::materializer::MaterializedRefForm::Url(
                     "https://example.com/frame.png".to_string(),
                 ),
+                time_s: None,
             }],
             cleanup: crate::proxy::materializer::Cleanup::empty(),
         };
@@ -844,6 +846,7 @@ mod tests {
                 form: crate::proxy::materializer::MaterializedRefForm::Url(
                     "https://example.com/frame.png".to_string(),
                 ),
+                time_s: None,
             }],
             cleanup: crate::proxy::materializer::Cleanup::empty(),
         }

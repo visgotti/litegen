@@ -3165,6 +3165,27 @@ fn every_multiview_to_3d_model_takes_a_front_view_and_names_any_positional_order
     assert!(!refs.roles.contains_key("init"), "multiview only");
 }
 
+// ─── Timed keyframes (PixelGenie 3D doc §5) ────────────────────────────────
+
+/// @see <https://docs.platform.pixverse.ai/multi-transition-video-43051215e0.md>
+/// (2026-10-30): multi_transition "minItems: 2" of { img_id, duration
+/// (integer, minimum 0), prompt }; model v3.5 | v4 | v4.5 | v5, and the
+/// capability map supports it on V5 alone. Price: 5 s at 360p/540p "45
+/// Credits", US$0.200 ("total Credits ÷ 225").
+#[test]
+fn pixverse_multi_transition_takes_two_or_more_whole_second_keyframes() {
+    use litegen::capabilities::KeyframeTiming;
+    let reg = registry();
+    let m = reg.get("pixverse/v5-multi-transition").expect("the row");
+    let refs = m.ref_inputs.as_ref().unwrap();
+    let k = &refs.roles["keyframe"];
+    assert_eq!((k.required, k.min_count, k.max_count), (true, 2, 16));
+    assert_eq!((k.timing, k.time_step_s), (Some(KeyframeTiming::Any), Some(1.0)), "integer durations");
+    assert_eq!(refs.roles.len(), 1, "keyframes only");
+    assert!(!m.params.contains_key("duration_seconds"), "the keyframes make the clip");
+    assert!((m.pricing.base_cost_usd - 0.20).abs() < 1e-9);
+}
+
 // ─── References for URL-only vendors (PixelGenie L4) ────────────────────────
 
 /// @see <https://docs.lumalabs.ai/docs/image-generation.md> (2026-10-30): "You

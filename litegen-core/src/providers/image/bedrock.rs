@@ -382,6 +382,7 @@ mod tests {
             refs: vec![crate::proxy::materializer::MaterializedRef {
                 role: "init".into(),
                 form: MaterializedRefForm::Base64(B64.encode(b"CONDITION")),
+                time_s: None,
             }],
             cleanup: Cleanup::empty(),
         };

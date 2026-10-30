@@ -607,6 +607,7 @@ mod tests {
             refs: vec![crate::proxy::materializer::MaterializedRef {
                 role: "subject".to_string(),
                 form: MaterializedRefForm::Url("https://example.test/face.png".to_string()),
+                time_s: None,
             }],
             cleanup: Cleanup::empty(),
         };
@@ -642,6 +643,7 @@ mod tests {
         crate::proxy::materializer::MaterializedRef {
             role: role.to_string(),
             form: MaterializedRefForm::Url(url.to_string()),
+            time_s: None,
         }
     }
 
@@ -705,6 +707,7 @@ mod tests {
                 crate::proxy::materializer::MaterializedRef {
                     role: "last_frame".to_string(),
                     form: MaterializedRefForm::Base64("QUJD".to_string()),
+                    time_s: None,
                 },
             ],
             cleanup: Cleanup::empty(),

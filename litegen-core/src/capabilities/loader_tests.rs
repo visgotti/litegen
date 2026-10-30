@@ -706,4 +706,40 @@ models:
         let err = multiview_image(views, "        style: { required: true, min_count: 1, max_count: 1 }").unwrap_err().to_string();
         assert!(err.contains("multiview"), "no init role: {err}");
     }
+
+    // ─── Keyframes (3D doc §5) ───────────────────────────────────────────────
+
+    fn keyframe_video(media_type: &str, roles: &str) -> Result<CapabilityRegistry, LoadError> {
+        yaml(&format!(r#"
+models:
+  - id: x/kf
+    provider: x
+    media_type: {media_type}
+    display_name: KF
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ image_to_video: true }}
+    prompt: {{ required: true }}
+    ref_inputs:
+      max_total: 8
+      provider_format: {{ form: url }}
+      roles:
+{roles}
+"#))
+    }
+
+    #[test]
+    fn a_keyframe_role_says_how_its_times_are_placed() {
+        let r = keyframe_video("video", "        keyframe: { required: false, min_count: 2, max_count: 8, timing: any, time_step_s: 1.0 }").unwrap();
+        let k = &r.get("x/kf").unwrap().ref_inputs.as_ref().unwrap().roles["keyframe"];
+        assert_eq!((k.timing, k.time_step_s), (Some(KeyframeTiming::Any), Some(1.0)));
+        for (media, roles, needle) in [
+            ("video", "        keyframe: { required: false, min_count: 0, max_count: 8 }", "timing"),
+            ("video", "        first_frame: { required: false, min_count: 0, max_count: 1, timing: any }", "timing"),
+            ("video", "        keyframe: { required: false, min_count: 0, max_count: 8, timing: even, time_step_s: 0 }", "time_step_s"),
+            ("image", "        keyframe: { required: false, min_count: 0, max_count: 8, timing: any }", "keyframe"),
+        ] {
+            let err = keyframe_video(media, roles).unwrap_err().to_string();
+            assert!(err.contains(needle), "{roles}: {err}");
+        }
+    }
 }

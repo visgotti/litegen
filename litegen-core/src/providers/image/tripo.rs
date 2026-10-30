@@ -241,7 +241,7 @@ mod tests {
     fn init() -> MaterializedRequest {
         use base64::Engine;
         MaterializedRequest {
-            refs: vec![MaterializedRef { role: "init".into(), form: MaterializedRefForm::Base64(base64::engine::general_purpose::STANDARD.encode(crate::providers::image::visual_mock::generate_visual_image_png("a knight"))) }],
+            refs: vec![MaterializedRef { role: "init".into(), form: MaterializedRefForm::Base64(base64::engine::general_purpose::STANDARD.encode(crate::providers::image::visual_mock::generate_visual_image_png("a knight"))), time_s: None }],
             cleanup: Cleanup::empty(),
         }
     }
@@ -308,7 +308,7 @@ mod tests {
         let server = MockServer::start().await;
         use base64::Engine;
         let gif = MaterializedRequest {
-            refs: vec![MaterializedRef { role: "init".into(), form: MaterializedRefForm::Base64(base64::engine::general_purpose::STANDARD.encode(b"GIF89a....")) }],
+            refs: vec![MaterializedRef { role: "init".into(), form: MaterializedRefForm::Base64(base64::engine::general_purpose::STANDARD.encode(b"GIF89a....")), time_s: None }],
             cleanup: Cleanup::empty(),
         };
         let err = provider(&server).generate(&ref_schema("tripo/multiview"), &base(), &extras(&["front"]), &gif).await.unwrap_err();

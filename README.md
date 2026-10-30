@@ -143,6 +143,11 @@ curl -X POST http://localhost:4000/v1/videos/generations \
   }'
 ```
 
+A model whose listing says `supports_keyframes` (`pixverse/v5-multi-transition`) takes `keyframe`
+reference images, each with `time_s` — seconds from the start of the clip — and passes through each
+at its time; `first_frame` and `last_frame` still name 0 s and the end. `keyframe_timing` says
+whether times are free (`any`) or evenly spaced (`even`), and bad times are refused before billing.
+
 ### Generate 3D Model
 
 3D generation is **always async**: the `POST` returns a job (`status: "pending"`, `progress: 0`) and the

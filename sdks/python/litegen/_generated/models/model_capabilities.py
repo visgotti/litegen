@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Type, TypeVar, Union, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.keyframe_timing import KeyframeTiming
 from ..models.mask_convention import MaskConvention
 from ..models.model_task import ModelTask
 from ..models.preserves_unmasked import PreservesUnmasked
@@ -18,9 +19,11 @@ class ModelCapabilities:
     Attributes:
         supports_image_to_image (bool):
         supports_text_to_image (bool):
+        keyframe_timing (Union[KeyframeTiming, None, Unset]):
         mask_convention (Union[MaskConvention, None, Unset]):
         max_duration_seconds (Union[None, Unset, float]):
         max_images (Union[Unset, int]):
+        max_keyframes (Union[None, Unset, int]): The most `keyframe` references one request may carry.
         max_polycount (Union[None, Unset, int]): Upper bound of the model's `target_polycount` param, when it takes one.
         output_formats (Union[Unset, List[str]]): Every mesh container a caller may request, including those litegen
             derives locally — the same list, in the same order, as
@@ -33,6 +36,7 @@ class ModelCapabilities:
         supports_image_to_3d (Union[Unset, bool]): Accepts one `init` reference image (image-to-3D).
         supports_image_to_video (Union[Unset, bool]):
         supports_inpainting (Union[Unset, bool]):
+        supports_keyframes (Union[Unset, bool]): Takes `keyframe` references, each pinned at its `time_s` (3D doc §5).
         supports_last_frame (Union[Unset, bool]):
         supports_multiview_to_3d (Union[Unset, bool]): Accepts several `view-*` reference images (multiview-to-3D).
         supports_pbr (Union[Unset, bool]): Takes the `pbr` param.
@@ -57,9 +61,11 @@ class ModelCapabilities:
 
     supports_image_to_image: bool
     supports_text_to_image: bool
+    keyframe_timing: Union[KeyframeTiming, None, Unset] = UNSET
     mask_convention: Union[MaskConvention, None, Unset] = UNSET
     max_duration_seconds: Union[None, Unset, float] = UNSET
     max_images: Union[Unset, int] = UNSET
+    max_keyframes: Union[None, Unset, int] = UNSET
     max_polycount: Union[None, Unset, int] = UNSET
     output_formats: Union[Unset, List[str]] = UNSET
     preserves_unmasked: Union[None, PreservesUnmasked, Unset] = UNSET
@@ -69,6 +75,7 @@ class ModelCapabilities:
     supports_image_to_3d: Union[Unset, bool] = UNSET
     supports_image_to_video: Union[Unset, bool] = UNSET
     supports_inpainting: Union[Unset, bool] = UNSET
+    supports_keyframes: Union[Unset, bool] = UNSET
     supports_last_frame: Union[Unset, bool] = UNSET
     supports_multiview_to_3d: Union[Unset, bool] = UNSET
     supports_pbr: Union[Unset, bool] = UNSET
@@ -86,6 +93,14 @@ class ModelCapabilities:
 
         supports_text_to_image = self.supports_text_to_image
 
+        keyframe_timing: Union[None, Unset, str]
+        if isinstance(self.keyframe_timing, Unset):
+            keyframe_timing = UNSET
+        elif isinstance(self.keyframe_timing, KeyframeTiming):
+            keyframe_timing = self.keyframe_timing.value
+        else:
+            keyframe_timing = self.keyframe_timing
+
         mask_convention: Union[None, Unset, str]
         if isinstance(self.mask_convention, Unset):
             mask_convention = UNSET
@@ -101,6 +116,12 @@ class ModelCapabilities:
             max_duration_seconds = self.max_duration_seconds
 
         max_images = self.max_images
+
+        max_keyframes: Union[None, Unset, int]
+        if isinstance(self.max_keyframes, Unset):
+            max_keyframes = UNSET
+        else:
+            max_keyframes = self.max_keyframes
 
         max_polycount: Union[None, Unset, int]
         if isinstance(self.max_polycount, Unset):
@@ -140,6 +161,8 @@ class ModelCapabilities:
 
         supports_inpainting = self.supports_inpainting
 
+        supports_keyframes = self.supports_keyframes
+
         supports_last_frame = self.supports_last_frame
 
         supports_multiview_to_3d = self.supports_multiview_to_3d
@@ -170,12 +193,16 @@ class ModelCapabilities:
                 "supports_text_to_image": supports_text_to_image,
             }
         )
+        if keyframe_timing is not UNSET:
+            field_dict["keyframe_timing"] = keyframe_timing
         if mask_convention is not UNSET:
             field_dict["mask_convention"] = mask_convention
         if max_duration_seconds is not UNSET:
             field_dict["max_duration_seconds"] = max_duration_seconds
         if max_images is not UNSET:
             field_dict["max_images"] = max_images
+        if max_keyframes is not UNSET:
+            field_dict["max_keyframes"] = max_keyframes
         if max_polycount is not UNSET:
             field_dict["max_polycount"] = max_polycount
         if output_formats is not UNSET:
@@ -194,6 +221,8 @@ class ModelCapabilities:
             field_dict["supports_image_to_video"] = supports_image_to_video
         if supports_inpainting is not UNSET:
             field_dict["supports_inpainting"] = supports_inpainting
+        if supports_keyframes is not UNSET:
+            field_dict["supports_keyframes"] = supports_keyframes
         if supports_last_frame is not UNSET:
             field_dict["supports_last_frame"] = supports_last_frame
         if supports_multiview_to_3d is not UNSET:
@@ -224,6 +253,23 @@ class ModelCapabilities:
 
         supports_text_to_image = d.pop("supports_text_to_image")
 
+        def _parse_keyframe_timing(data: object) -> Union[KeyframeTiming, None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                keyframe_timing_type_1 = KeyframeTiming(data)
+
+                return keyframe_timing_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[KeyframeTiming, None, Unset], data)
+
+        keyframe_timing = _parse_keyframe_timing(d.pop("keyframe_timing", UNSET))
+
         def _parse_mask_convention(data: object) -> Union[MaskConvention, None, Unset]:
             if data is None:
                 return data
@@ -253,6 +299,15 @@ class ModelCapabilities:
         )
 
         max_images = d.pop("max_images", UNSET)
+
+        def _parse_max_keyframes(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        max_keyframes = _parse_max_keyframes(d.pop("max_keyframes", UNSET))
 
         def _parse_max_polycount(data: object) -> Union[None, Unset, int]:
             if data is None:
@@ -313,6 +368,8 @@ class ModelCapabilities:
 
         supports_inpainting = d.pop("supports_inpainting", UNSET)
 
+        supports_keyframes = d.pop("supports_keyframes", UNSET)
+
         supports_last_frame = d.pop("supports_last_frame", UNSET)
 
         supports_multiview_to_3d = d.pop("supports_multiview_to_3d", UNSET)
@@ -341,9 +398,11 @@ class ModelCapabilities:
         model_capabilities = cls(
             supports_image_to_image=supports_image_to_image,
             supports_text_to_image=supports_text_to_image,
+            keyframe_timing=keyframe_timing,
             mask_convention=mask_convention,
             max_duration_seconds=max_duration_seconds,
             max_images=max_images,
+            max_keyframes=max_keyframes,
             max_polycount=max_polycount,
             output_formats=output_formats,
             preserves_unmasked=preserves_unmasked,
@@ -353,6 +412,7 @@ class ModelCapabilities:
             supports_image_to_3d=supports_image_to_3d,
             supports_image_to_video=supports_image_to_video,
             supports_inpainting=supports_inpainting,
+            supports_keyframes=supports_keyframes,
             supports_last_frame=supports_last_frame,
             supports_multiview_to_3d=supports_multiview_to_3d,
             supports_pbr=supports_pbr,

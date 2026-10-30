@@ -8576,6 +8576,14 @@
                     }
                 }
             },
+            "KeyframeTiming": {
+                "type": "string",
+                "description": "Where a model's keyframes may sit in the clip.",
+                "enum": [
+                    "any",
+                    "even"
+                ]
+            },
             "LatencyPercentiles": {
                 "type": "object",
                 "description": "Latency percentiles for the last N minutes.",
@@ -9156,6 +9164,17 @@
                     "supports_image_to_image"
                 ],
                 "properties": {
+                    "keyframe_timing": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/KeyframeTiming",
+                                "description": "`any`: each keyframe at its own time; `even`: evenly spaced over the\nclip, start and end included."
+                            }
+                        ]
+                    },
                     "mask_convention": {
                         "oneOf": [
                             {
@@ -9177,6 +9196,15 @@
                     "max_images": {
                         "type": "integer",
                         "format": "int32",
+                        "minimum": 0
+                    },
+                    "max_keyframes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "The most `keyframe` references one request may carry.",
                         "minimum": 0
                     },
                     "max_polycount": {
@@ -9238,6 +9266,10 @@
                     },
                     "supports_inpainting": {
                         "type": "boolean"
+                    },
+                    "supports_keyframes": {
+                        "type": "boolean",
+                        "description": "Takes `keyframe` references, each pinned at its `time_s` (3D doc \u00a75)."
                     },
                     "supports_last_frame": {
                         "type": "boolean"
@@ -11646,6 +11678,25 @@
                     },
                     "required": {
                         "type": "boolean"
+                    },
+                    "time_step_s": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "The `keyframe` role's time grid, when the vendor takes only multiples\nof it (PixVerse: whole seconds). A time off it is refused."
+                    },
+                    "timing": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/KeyframeTiming",
+                                "description": "The `keyframe` role's timing (3D doc \u00a75): `any` time each, or `even`\nspacing over the clip. Required on that role, refused on others."
+                            }
+                        ]
                     }
                 }
             },
@@ -11661,6 +11712,14 @@
                             "string",
                             "null"
                         ]
+                    },
+                    "time_s": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "Seconds from the start of the clip, on a `keyframe` reference (3D doc\n\u00a75): the video shows this image at that time."
                     },
                     "type": {
                         "$ref": "#/components/schemas/RefImageKind"

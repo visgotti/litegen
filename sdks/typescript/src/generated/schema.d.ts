@@ -2479,6 +2479,11 @@ export interface components {
             id: string;
             is_active: boolean;
         };
+        /**
+         * @description Where a model's keyframes may sit in the clip.
+         * @enum {string}
+         */
+        KeyframeTiming: "any" | "even";
         /** @description Latency percentiles for the last N minutes. */
         LatencyPercentiles: {
             /** Format: double */
@@ -2755,11 +2760,17 @@ export interface components {
          */
         Model3dTopology: "triangle" | "quad";
         ModelCapabilities: {
+            keyframe_timing?: null | components["schemas"]["KeyframeTiming"];
             mask_convention?: null | components["schemas"]["MaskConvention"];
             /** Format: double */
             max_duration_seconds?: number | null;
             /** Format: int32 */
             max_images?: number;
+            /**
+             * Format: int32
+             * @description The most `keyframe` references one request may carry.
+             */
+            max_keyframes?: number | null;
             /**
              * Format: int32
              * @description Upper bound of the model's `target_polycount` param, when it takes one.
@@ -2781,6 +2792,8 @@ export interface components {
             supports_image_to_image: boolean;
             supports_image_to_video?: boolean;
             supports_inpainting?: boolean;
+            /** @description Takes `keyframe` references, each pinned at its `time_s` (3D doc §5). */
+            supports_keyframes?: boolean;
             supports_last_frame?: boolean;
             /** @description Accepts several `view-*` reference images (multiview-to-3D). */
             supports_multiview_to_3d?: boolean;
@@ -3581,9 +3594,22 @@ export interface components {
              */
             native_grow?: boolean;
             required?: boolean;
+            /**
+             * Format: double
+             * @description The `keyframe` role's time grid, when the vendor takes only multiples
+             *     of it (PixVerse: whole seconds). A time off it is refused.
+             */
+            time_step_s?: number | null;
+            timing?: null | components["schemas"]["KeyframeTiming"];
         };
         ReferenceImage: {
             role?: string | null;
+            /**
+             * Format: double
+             * @description Seconds from the start of the clip, on a `keyframe` reference (3D doc
+             *     §5): the video shows this image at that time.
+             */
+            time_s?: number | null;
             type: components["schemas"]["RefImageKind"];
             value: string;
         };

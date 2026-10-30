@@ -1039,6 +1039,7 @@ mod tests {
                     bytes: bytes::Bytes::from_static(b"source-png"),
                     content_type: "image/png".to_string(),
                 },
+                time_s: None,
             }],
             cleanup: crate::proxy::materializer::Cleanup::empty(),
         };

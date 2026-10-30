@@ -172,6 +172,59 @@ pub fn generate_keyframe_blend_gif(first: &[u8], last: &[u8], prompt: &str) -> V
     bytes
 }
 
+/// An animated GIF at `fps` over `duration_s` (both ends included) that shows
+/// each keyframe's image, unchanged, in the frame at its time, and blends
+/// between neighbours; before the first and after the last it holds them
+/// (3D doc §5). Frames take the first keyframe's size. A keyframe of 256
+/// colours or fewer comes back pixel-identical: GIF keeps such a frame's own
+/// palette. Undecodable input falls back to a prompt-derived GIF.
+pub fn generate_timed_keyframes_gif(keyframes: &[(f64, Vec<u8>)], duration_s: f64, fps: u32, prompt: &str) -> Vec<u8> {
+    use image::imageops::FilterType;
+
+    let fps = fps.max(1);
+    let decoded: Option<Vec<(usize, ImageBuffer<Rgba<u8>, Vec<u8>>)>> = keyframes
+        .iter()
+        .map(|(t, bytes)| image::load_from_memory(bytes).ok().map(|img| ((t * fps as f64).round() as usize, img.to_rgba8())))
+        .collect();
+    let Some(mut pinned) = decoded.filter(|d| !d.is_empty()) else {
+        return generate_visual_video_gif(prompt);
+    };
+    let (w, h) = pinned[0].1.dimensions();
+    for (_, img) in pinned.iter_mut() {
+        if img.dimensions() != (w, h) {
+            *img = image::imageops::resize(img, w, h, FilterType::Triangle);
+        }
+    }
+    pinned.sort_by_key(|(at, _)| *at);
+    let frames = (duration_s * fps as f64).round() as usize + 1;
+    let mut bytes: Vec<u8> = Vec::new();
+    {
+        let mut encoder = GifEncoder::new(&mut bytes);
+        encoder.set_repeat(Repeat::Infinite).expect("set repeat");
+        for i in 0..frames {
+            let next = pinned.iter().position(|(at, _)| *at >= i);
+            let frame = match next {
+                Some(n) if pinned[n].0 == i => pinned[n].1.clone(),
+                Some(0) => pinned[0].1.clone(),
+                None => pinned[pinned.len() - 1].1.clone(),
+                Some(n) => {
+                    let ((a_at, a), (b_at, b)) = (&pinned[n - 1], &pinned[n]);
+                    let alpha = (i - a_at) as f32 / (b_at - a_at) as f32;
+                    ImageBuffer::from_fn(w, h, |x, y| {
+                        let (pa, pb) = (a.get_pixel(x, y).0, b.get_pixel(x, y).0);
+                        let mix = |ca: u8, cb: u8| ((1.0 - alpha) * ca as f32 + alpha * cb as f32).round() as u8;
+                        Rgba([mix(pa[0], pb[0]), mix(pa[1], pb[1]), mix(pa[2], pb[2]), 255])
+                    })
+                }
+            };
+            encoder
+                .encode_frame(Frame::from_parts(frame, 0, 0, Delay::from_numer_denom_ms(1000, fps)))
+                .expect("encode frame");
+        }
+    }
+    bytes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

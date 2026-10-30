@@ -230,6 +230,31 @@ even where provider evidence is strong.
 | `negative_prompt` | String | max_length | 3 | validator: none. provider: setters exist in `kling.rs`, `pixverse.rs` — **zero assertions**. conformance: n/a. | 🟡 |
 | `fps` | Int | range | 3 | validator: none. provider: `bedrock.rs` sets `video_config["fps"]` — **zero assertions anywhere in the suite**. conformance: n/a. | 🟡 |
 
+### Timed keyframes (3D doc §5)
+
+A `keyframe` reference carries `time_s`, seconds from the start of the clip;
+`first_frame` and `last_frame` stay, as names for 0 s and the clip's end. The
+row's `keyframe` role says how times are placed (`timing: any | even`, and a
+`time_step_s` grid where the vendor takes only multiples of it); the listing
+serves `supports_keyframes`, `max_keyframes` and `keyframe_timing`. Before
+anything is reserved the validator refuses `time_s` on another role
+(`param_unsupported`), a keyframe without one (`keyframe_time_required`), one
+outside the clip or two at one time (`keyframe_time_out_of_range`), one off the
+grid (`keyframe_off_grid`) and uneven times on an `even` model
+(`keyframe_timing_uneven`; left out, litegen spaces them), and hands the
+keyframes on in time order.
+
+| behaviour | `pixverse/v5-multi-transition` | `mock/keyframe-video` | proof | status |
+|---|---|---|---|---|
+| times → vendor form | `multi_transition` items in time order, each `duration` the whole seconds to the next keyframe, the last 0, every segment carrying the prompt; the first keyframe must sit at 0 s (refused before any call) | frame `round(time_s × fps)` is the keyframe's image, unchanged; blends between | adapter `timed_keyframes_reach_multi_transition_as_segment_durations`, `a_multi_transition_starts_at_its_first_keyframe`; HTTP `the_frame_at_each_keyframes_time_is_that_keyframes_image` | 🟡 wiremock / ✅ mock |
+| catalog | 2–16 keyframes, `timing: any`, `time_step_s: 1` | 0–8, `timing: any` | HTTP `the_listing_says_which_models_take_timed_keyframes`; loader `a_keyframe_role_says_how_its_times_are_placed`; OpenAPI `timed_keyframes_document_their_time_and_each_models_timing` | ✅ |
+| refusals, before billing | the codes above | the codes above | HTTP `keyframe_times_are_checked_before_anything_is_billed`; validator `keyframes_reach_the_vendor_in_time_order`, `even_keyframes_are_spaced_by_litegen_or_must_already_be_even`, `a_keyframe_off_the_vendors_grid_is_refused` | ✅ |
+
+Not carried yet: Luma `ray-3.2` (frame indexes on a 24 fps grid, up to 64)
+lives on Luma's separate Agents API, and Runway `aleph2` takes keyframes only
+on video-to-video, which needs `source_video` (P2). Not verified live: no
+PixVerse key is available here.
+
 ## 3D (`model3d`)
 
 **fal is the implemented 3D vendor** — `fal/hyper3d-rodin`, `fal/trellis` and

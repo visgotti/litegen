@@ -341,6 +341,7 @@ pub fn validate_video(
     }
 
     check_refs(schema, &mut req.base.reference_images, strict, &mut dropped)?;
+    check_keyframes(schema, &mut req)?;
     check_extra(schema, &mut req.base.extra, strict, &mut dropped)?;
 
     Ok(VideoValidationOutput { request: req, dropped })
@@ -1024,6 +1025,92 @@ fn check_size(v: &str, spec: &SizeSpec, param: &str) -> Result<(), ValidationErr
 fn parse_size(s: &str) -> Option<(u32, u32)> {
     let (w, h) = s.split_once('x').or_else(|| s.split_once('X'))?;
     Some((w.parse().ok()?, h.parse().ok()?))
+}
+
+/// Timed keyframes (3D doc §5). Only `keyframe` references carry a `time_s`,
+/// and each sits within the clip — the request's duration, else the model's
+/// default; a model with no duration param makes its clip from the keyframes —
+/// at a time of its own, on the vendor's grid (`time_step_s`). An `even`
+/// model's keyframes are evenly spaced from start to end: litegen spaces them
+/// when every time is left out. They leave sorted by time.
+fn check_keyframes(schema: &ModelSchema, req: &mut VideoGenerationRequest) -> Result<(), ValidationError> {
+    const EPS: f64 = 1e-3;
+    let refs = &mut req.base.reference_images;
+    if let Some(r) = refs.iter().find(|r| r.time_s.is_some() && r.role.as_deref() != Some("keyframe")) {
+        return Err(ValidationError::new(
+            "param_unsupported",
+            format!("time_s goes on keyframe references, not on '{}'", r.role.as_deref().unwrap_or("a reference without a role")),
+            Some("reference_images"),
+        ));
+    }
+    let Some(spec) = schema.ref_inputs.as_ref().and_then(|r| r.roles.get("keyframe")) else {
+        return Ok(());
+    };
+    let slots: Vec<usize> = (0..refs.len()).filter(|&i| refs[i].role.as_deref() == Some("keyframe")).collect();
+    if slots.is_empty() {
+        return Ok(());
+    }
+    let duration = schema
+        .params
+        .contains_key("duration_seconds")
+        .then(|| resolve_duration_seconds(schema, req.duration_seconds));
+    let even = spec.timing == Some(crate::capabilities::KeyframeTiming::Even);
+    if even && slots.iter().all(|&i| refs[i].time_s.is_none()) {
+        if let Some(d) = duration {
+            let n = slots.len();
+            for (k, &i) in slots.iter().enumerate() {
+                refs[i].time_s = Some(if n == 1 { 0.0 } else { d * k as f64 / (n - 1) as f64 });
+            }
+        }
+    }
+    let out_of_range = |msg: String| ValidationError::new("keyframe_time_out_of_range", msg, Some("reference_images"));
+    for &i in &slots {
+        let Some(t) = refs[i].time_s else {
+            return Err(ValidationError::new(
+                "keyframe_time_required",
+                "every keyframe reference needs time_s: seconds from the start of the clip",
+                Some("reference_images"),
+            ));
+        };
+        if !t.is_finite() || t < 0.0 || duration.is_some_and(|d| t > d + EPS) {
+            return Err(out_of_range(match duration {
+                Some(d) => format!("keyframe time {t} s is outside the {d} s clip"),
+                None => format!("keyframe time {t} s is negative"),
+            }));
+        }
+        if let Some(step) = spec.time_step_s {
+            if ((t / step).round() * step - t).abs() > EPS {
+                return Err(ValidationError::new(
+                    "keyframe_off_grid",
+                    format!("'{}' places keyframes on a {step} s grid; {t} s is not on it", schema.id),
+                    Some("reference_images"),
+                ));
+            }
+        }
+    }
+    let mut ordered: Vec<ReferenceImage> = slots.iter().map(|&i| refs[i].clone()).collect();
+    ordered.sort_by(|a, b| a.time_s.unwrap_or_default().total_cmp(&b.time_s.unwrap_or_default()));
+    if let Some(w) = ordered.windows(2).find(|w| (w[1].time_s.unwrap_or_default() - w[0].time_s.unwrap_or_default()).abs() <= EPS) {
+        return Err(out_of_range(format!("two keyframes at {} s", w[0].time_s.unwrap_or_default())));
+    }
+    if even && ordered.len() > 1 {
+        let (first, last) = (ordered[0].time_s.unwrap_or_default(), ordered[ordered.len() - 1].time_s.unwrap_or_default());
+        let gap = (last - first) / (ordered.len() - 1) as f64;
+        let uneven = first.abs() > EPS
+            || duration.is_some_and(|d| (last - d).abs() > EPS)
+            || ordered.iter().enumerate().any(|(k, r)| (r.time_s.unwrap_or_default() - (first + gap * k as f64)).abs() > EPS);
+        if uneven {
+            return Err(ValidationError::new(
+                "keyframe_timing_uneven",
+                format!("'{}' spaces keyframes evenly from the start of the clip to its end; leave time_s out, or send even times", schema.id),
+                Some("reference_images"),
+            ));
+        }
+    }
+    for (&i, r) in slots.iter().zip(ordered) {
+        refs[i] = r;
+    }
+    Ok(())
 }
 
 /// Multiview-to-3D (3D doc §3E). `view-*` references mean multiview, so they

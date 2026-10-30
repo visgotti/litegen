@@ -45,6 +45,8 @@ pub struct MaterializeContext {
 pub struct MaterializedRef {
     pub role: String,
     pub form: MaterializedRefForm,
+    /// A `keyframe` reference's time, seconds from the start of the clip.
+    pub time_s: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -152,8 +154,9 @@ impl Materializer {
         for r in refs {
             let role = r.role.clone().or_else(|| ri.default_role.clone())
                 .ok_or_else(|| MaterializeError::Ref("ref missing role".into()))?;
+            let time_s = r.time_s;
             let form = self.convert(&role, r, &ri.provider_format, ri.data_uri, ctx).await?;
-            out_refs.push(MaterializedRef { role, form });
+            out_refs.push(MaterializedRef { role, form, time_s });
         }
         // No conversion uploads anything any more (see the `→ Url` arms in
         // `convert`), so there is nothing to clean up. The guard stays wired to

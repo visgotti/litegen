@@ -1,16 +1,9 @@
-from typing import (
-    Any,
-    Dict,
-    List,
-    Type,
-    TypeVar,
-    Union,
-    cast,
-)
+from typing import Any, Dict, List, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.keyframe_timing import KeyframeTiming
 from ..models.mask_convention import MaskConvention
 from ..types import UNSET, Unset
 
@@ -27,6 +20,9 @@ class RefRoleSpec:
         native_grow (Union[Unset, bool]): The mask role's vendor grows masks itself (Stability's `grow_mask`):
             `mask_grow_px` goes to it, explicitly, instead of litegen dilating.
         required (Union[Unset, bool]):
+        time_step_s (Union[None, Unset, float]): The `keyframe` role's time grid, when the vendor takes only multiples
+            of it (PixVerse: whole seconds). A time off it is refused.
+        timing (Union[KeyframeTiming, None, Unset]):
     """
 
     max_count: int
@@ -34,6 +30,8 @@ class RefRoleSpec:
     convention: Union[MaskConvention, None, Unset] = UNSET
     native_grow: Union[Unset, bool] = UNSET
     required: Union[Unset, bool] = UNSET
+    time_step_s: Union[None, Unset, float] = UNSET
+    timing: Union[KeyframeTiming, None, Unset] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -53,6 +51,20 @@ class RefRoleSpec:
 
         required = self.required
 
+        time_step_s: Union[None, Unset, float]
+        if isinstance(self.time_step_s, Unset):
+            time_step_s = UNSET
+        else:
+            time_step_s = self.time_step_s
+
+        timing: Union[None, Unset, str]
+        if isinstance(self.timing, Unset):
+            timing = UNSET
+        elif isinstance(self.timing, KeyframeTiming):
+            timing = self.timing.value
+        else:
+            timing = self.timing
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -67,6 +79,10 @@ class RefRoleSpec:
             field_dict["native_grow"] = native_grow
         if required is not UNSET:
             field_dict["required"] = required
+        if time_step_s is not UNSET:
+            field_dict["time_step_s"] = time_step_s
+        if timing is not UNSET:
+            field_dict["timing"] = timing
 
         return field_dict
 
@@ -98,12 +114,40 @@ class RefRoleSpec:
 
         required = d.pop("required", UNSET)
 
+        def _parse_time_step_s(data: object) -> Union[None, Unset, float]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, float], data)
+
+        time_step_s = _parse_time_step_s(d.pop("time_step_s", UNSET))
+
+        def _parse_timing(data: object) -> Union[KeyframeTiming, None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                timing_type_1 = KeyframeTiming(data)
+
+                return timing_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[KeyframeTiming, None, Unset], data)
+
+        timing = _parse_timing(d.pop("timing", UNSET))
+
         ref_role_spec = cls(
             max_count=max_count,
             min_count=min_count,
             convention=convention,
             native_grow=native_grow,
             required=required,
+            time_step_s=time_step_s,
+            timing=timing,
         )
 
         ref_role_spec.additional_properties = d

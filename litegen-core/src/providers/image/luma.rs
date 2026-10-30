@@ -427,7 +427,7 @@ mod tests {
         let base = make_base("a serene alpine lake", "luma/photon-1");
         let extras = make_extras();
         let materialized = MaterializedRequest {
-            refs: vec![MaterializedRef { role: "init".into(), form: MaterializedRefForm::Url("https://cdn/x.jpg".into()) }],
+            refs: vec![MaterializedRef { role: "init".into(), form: MaterializedRefForm::Url("https://cdn/x.jpg".into()), time_s: None }],
             cleanup: Cleanup::empty(),
         };
 
@@ -481,8 +481,8 @@ mod tests {
         let base = make_base("the same man as a knight", "luma/photon-1");
         let materialized = MaterializedRequest {
             refs: vec![
-                MaterializedRef { role: "character".into(), form: MaterializedRefForm::Url("https://cdn/face1.jpg".into()) },
-                MaterializedRef { role: "character".into(), form: MaterializedRefForm::Url("https://cdn/face2.jpg".into()) },
+                MaterializedRef { role: "character".into(), form: MaterializedRefForm::Url("https://cdn/face1.jpg".into()), time_s: None },
+                MaterializedRef { role: "character".into(), form: MaterializedRefForm::Url("https://cdn/face2.jpg".into()), time_s: None },
             ],
             cleanup: Cleanup::empty(),
         };

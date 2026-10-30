@@ -394,6 +394,7 @@ mod tests {
             refs: vec![MaterializedRef {
                 role: "first_frame".to_string(),
                 form: MaterializedRefForm::Url(url.to_string()),
+                time_s: None,
             }],
             cleanup: crate::proxy::materializer::Cleanup::empty(),
         }

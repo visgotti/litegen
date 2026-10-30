@@ -130,6 +130,12 @@ export type Region = components["schemas"]["Region"];
  * `views` from this list; a multiview-to-3D model takes `view-<name>` references.
  */
 export type ImageView = components["schemas"]["ImageView"];
+/**
+ * Where a video model's `keyframe` references may sit
+ * (`capabilities.keyframe_timing`): `any` time each, or `even` spacing from
+ * the start of the clip to its end.
+ */
+export type KeyframeTiming = components["schemas"]["KeyframeTiming"];
 /** Which pixels of a mask edit. Callers always send `white_edits`; litegen converts. */
 export type MaskConvention = components["schemas"]["MaskConvention"];
 /** How a model receives a `region`: its own `box`, or drawn as its `mask`. */

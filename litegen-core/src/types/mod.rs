@@ -90,6 +90,10 @@ pub struct ReferenceImage {
     pub value: String,
     #[serde(default)]
     pub role: Option<String>,
+    /// Seconds from the start of the clip, on a `keyframe` reference (3D doc
+    /// §5): the video shows this image at that time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_s: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1065,6 +1069,16 @@ pub struct ModelCapabilities {
     /// Upper bound of the model's `target_polycount` param, when it takes one.
     #[serde(default)]
     pub max_polycount: Option<u32>,
+    /// Takes `keyframe` references, each pinned at its `time_s` (3D doc §5).
+    #[serde(default)]
+    pub supports_keyframes: bool,
+    /// The most `keyframe` references one request may carry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_keyframes: Option<u32>,
+    /// `any`: each keyframe at its own time; `even`: evenly spaced over the
+    /// clip, start and end included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyframe_timing: Option<crate::capabilities::KeyframeTiming>,
     /// Takes `region` (3D doc §4).
     #[serde(default)]
     pub supports_region_edit: bool,

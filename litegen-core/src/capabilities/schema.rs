@@ -415,6 +415,24 @@ pub struct RefRoleSpec {
     /// `mask_grow_px` goes to it, explicitly, instead of litegen dilating.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub native_grow: bool,
+    /// The `keyframe` role's timing (3D doc §5): `any` time each, or `even`
+    /// spacing over the clip. Required on that role, refused on others.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<KeyframeTiming>,
+    /// The `keyframe` role's time grid, when the vendor takes only multiples
+    /// of it (PixVerse: whole seconds). A time off it is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_step_s: Option<f64>,
+}
+
+/// Where a model's keyframes may sit in the clip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyframeTiming {
+    /// Each keyframe at its own `time_s`.
+    Any,
+    /// Evenly spaced from the start of the clip to its end.
+    Even,
 }
 
 /// Which pixels of a mask mean "edit".

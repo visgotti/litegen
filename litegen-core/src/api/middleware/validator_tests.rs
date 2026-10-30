@@ -171,9 +171,9 @@ models:
         let m = r.get("t/strict").unwrap();
         let mut req = img("hi");
         req.base.reference_images = vec![
-            ReferenceImage { kind: RefImageKind::Url, value: "u1".into(), role: Some("init".into()) },
-            ReferenceImage { kind: RefImageKind::Url, value: "u2".into(), role: Some("mask".into()) },
-            ReferenceImage { kind: RefImageKind::Url, value: "u3".into(), role: None },
+            ReferenceImage { kind: RefImageKind::Url, value: "u1".into(), role: Some("init".into()), time_s: None },
+            ReferenceImage { kind: RefImageKind::Url, value: "u2".into(), role: Some("mask".into()), time_s: None },
+            ReferenceImage { kind: RefImageKind::Url, value: "u3".into(), role: None, time_s: None },
         ];
         let err = validate_image(m, req).unwrap_err();
         assert_eq!(err.code, "ref_total_exceeded");
@@ -185,8 +185,8 @@ models:
         let m = r.get("t/strict").unwrap();
         let mut req = img("hi");
         req.base.reference_images = vec![
-            ReferenceImage { kind: RefImageKind::Url, value: "u1".into(), role: Some("init".into()) },
-            ReferenceImage { kind: RefImageKind::Url, value: "u2".into(), role: Some("init".into()) },
+            ReferenceImage { kind: RefImageKind::Url, value: "u1".into(), role: Some("init".into()), time_s: None },
+            ReferenceImage { kind: RefImageKind::Url, value: "u2".into(), role: Some("init".into()), time_s: None },
         ];
         let err = validate_image(m, req).unwrap_err();
         assert_eq!(err.code, "ref_role_count_out_of_range");
@@ -198,7 +198,7 @@ models:
         let m = r.get("t/strict").unwrap();
         let mut req = img("hi");
         req.base.reference_images = vec![
-            ReferenceImage { kind: RefImageKind::Url, value: "u".into(), role: Some("ghost".into()) },
+            ReferenceImage { kind: RefImageKind::Url, value: "u".into(), role: Some("ghost".into()), time_s: None },
         ];
         let err = validate_image(m, req).unwrap_err();
         assert_eq!(err.code, "ref_role_unknown");
@@ -211,7 +211,7 @@ models:
         let mut req = img("hi");
         req.base.strict = false;
         req.base.reference_images = vec![
-            ReferenceImage { kind: RefImageKind::Url, value: "u".into(), role: Some("ghost".into()) },
+            ReferenceImage { kind: RefImageKind::Url, value: "u".into(), role: Some("ghost".into()), time_s: None },
         ];
         let out = validate_image(m, req).unwrap();
         assert!(out.request.base.reference_images.is_empty());
@@ -392,6 +392,68 @@ models:
         assert_eq!(err.param.as_deref(), Some("duration_seconds"));
     }
 
+    // ─── Timed keyframes (3D doc §5) ─────────────────────────────────────────
+
+    fn keyframe_model(timing: &str, step: &str, duration: &str) -> CapabilityRegistry {
+        CapabilityRegistry::from_yaml_strs(&[("k.yaml", format!(r#"
+models:
+  - id: k/m
+    provider: k
+    media_type: video
+    display_name: K
+    pricing: {{ base_cost_usd: 0.1 }}
+    capabilities: {{ image_to_video: true }}
+    prompt: {{ required: true }}
+    params:
+{duration}
+    ref_inputs:
+      max_total: 8
+      provider_format: {{ form: url }}
+      roles:
+        keyframe: {{ required: false, min_count: 0, max_count: 8, timing: {timing}{step} }}
+"#).as_str())]).unwrap()
+    }
+
+    fn keyframed(times: &[Option<f64>]) -> VideoGenerationRequest {
+        let mut req = vid_json("k/m");
+        req.duration_seconds = Some(4.0);
+        req.base.reference_images = times
+            .iter()
+            .enumerate()
+            .map(|(i, t)| ReferenceImage { kind: RefImageKind::Url, value: format!("https://x/{i}.png"), role: Some("keyframe".into()), time_s: *t })
+            .collect();
+        req
+    }
+
+    const DURATION: &str = "      duration_seconds: { kind: float, min: 1.0, max: 10.0, default: 5.0 }";
+
+    #[test]
+    fn keyframes_reach_the_vendor_in_time_order() {
+        let r = keyframe_model("any", "", DURATION);
+        let out = validate_video(r.get("k/m").unwrap(), keyframed(&[Some(3.0), Some(0.0), Some(1.25)])).unwrap();
+        let order: Vec<(String, Option<f64>)> = out.request.base.reference_images.iter().map(|r| (r.value.clone(), r.time_s)).collect();
+        assert_eq!(order, [("https://x/1.png".into(), Some(0.0)), ("https://x/2.png".into(), Some(1.25)), ("https://x/0.png".into(), Some(3.0))]);
+    }
+
+    #[test]
+    fn even_keyframes_are_spaced_by_litegen_or_must_already_be_even() {
+        let r = keyframe_model("even", "", DURATION);
+        let out = validate_video(r.get("k/m").unwrap(), keyframed(&[None, None, None])).unwrap();
+        let times: Vec<Option<f64>> = out.request.base.reference_images.iter().map(|r| r.time_s).collect();
+        assert_eq!(times, [Some(0.0), Some(2.0), Some(4.0)], "start to end of the 4 s clip");
+        assert!(validate_video(r.get("k/m").unwrap(), keyframed(&[Some(0.0), Some(2.0), Some(4.0)])).is_ok());
+        let err = validate_video(r.get("k/m").unwrap(), keyframed(&[Some(0.0), Some(1.0), Some(4.0)])).unwrap_err();
+        assert_eq!(err.code, "keyframe_timing_uneven", "{}", err.message);
+    }
+
+    #[test]
+    fn a_keyframe_off_the_vendors_grid_is_refused() {
+        let r = keyframe_model("any", ", time_step_s: 1.0", "      {}");
+        assert!(validate_video(r.get("k/m").unwrap(), keyframed(&[Some(0.0), Some(2.0), Some(7.0)])).is_ok(), "no duration param: the keyframes make the clip");
+        let err = validate_video(r.get("k/m").unwrap(), keyframed(&[Some(0.0), Some(1.5)])).unwrap_err();
+        assert_eq!(err.code, "keyframe_off_grid", "{}", err.message);
+    }
+
     // ─── Prompt and required-image rules shared by every family ─────────────
 
     fn edit_model(init_role: &str, prompt: &str) -> CapabilityRegistry {
@@ -417,7 +479,7 @@ models:
         let mut r = img("hi");
         r.base.model = "t/edit".into();
         r.base.reference_images = (0..n)
-            .map(|i| ReferenceImage { kind: RefImageKind::Url, value: format!("https://x/{i}.png"), role: Some("init".into()) })
+            .map(|i| ReferenceImage { kind: RefImageKind::Url, value: format!("https://x/{i}.png"), role: Some("init".into()), time_s: None })
             .collect();
         r
     }

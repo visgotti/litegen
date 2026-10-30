@@ -671,8 +671,8 @@ mod tests {
         extras.size = None;
         let materialized = MaterializedRequest {
             refs: vec![
-                MaterializedRef { role: "init".to_string(), form: MaterializedRefForm::Base64("aW1n".to_string()) },
-                MaterializedRef { role: "init".to_string(), form: MaterializedRefForm::Url("https://x/ref.png".to_string()) },
+                MaterializedRef { role: "init".to_string(), form: MaterializedRefForm::Base64("aW1n".to_string()), time_s: None },
+                MaterializedRef { role: "init".to_string(), form: MaterializedRefForm::Url("https://x/ref.png".to_string()), time_s: None },
             ],
             cleanup: Cleanup::empty(),
         };
