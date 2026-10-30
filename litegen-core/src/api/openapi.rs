@@ -515,6 +515,19 @@ mod tests {
     }
 
     #[test]
+    fn an_error_documents_the_vendors_own_answer_and_whether_to_retry() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        let detail = &s["ErrorDetail"];
+        assert!(mentions(property(detail, "code"), "string"), "{}", property(detail, "code"));
+        assert!(mentions(property(detail, "retryable"), "boolean"), "{}", property(detail, "retryable"));
+        assert!(mentions(property(detail, "provider_error"), "#/components/schemas/VendorError"), "{}", property(detail, "provider_error"));
+        for f in ["status", "code", "message"] {
+            property(&s["VendorError"], f);
+        }
+    }
+
+    #[test]
     fn a_models_reference_spec_says_whether_its_vendor_takes_data_uris() {
         let d = doc();
         let p = property(&d["components"]["schemas"]["RefInputSpec"], "data_uri");

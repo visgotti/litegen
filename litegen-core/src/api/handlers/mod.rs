@@ -3696,7 +3696,7 @@ fn validation_rejection_response(message: &str, code: u16, model: &str) -> axum:
         "error": {
             "type": "validation_error",
             "message": message,
-            "code": code,
+            "code": "validation_error",
             "model": model,
         }
     });
@@ -3761,7 +3761,7 @@ fn quota_exceeded_response() -> axum::response::Response {
     (
         StatusCode::PAYMENT_REQUIRED,
         Json(serde_json::json!({
-            "error": { "message": "quota exceeded", "type": "quota_exceeded", "code": 402 }
+            "error": { "message": "quota exceeded", "type": "quota_exceeded", "code": "quota_exceeded" }
         })),
     ).into_response()
 }
@@ -3962,24 +3962,22 @@ mod cache_scope_tests {
     }
 }
 
+/// An error body; its `code` is the error's type, a string like every `code`
+/// litegen sends (PixelGenie L15).
 fn error_response(message: &str, code: u16) -> serde_json::Value {
-    serde_json::json!({
-        "error": {
-            "message": message,
-            "type": match code {
-                400 => "invalid_request_error",
-                401 => "authentication_error",
-                403 => "forbidden",
-                404 => "not_found_error",
-                424 => "provider_not_configured",
-                429 => "rate_limit_error",
-                502 => "provider_error",
-                503 => "service_unavailable",
-                _ => "internal_error",
-            },
-            "code": code
-        }
-    })
+    let kind = match code {
+        400 => "invalid_request_error",
+        401 => "authentication_error",
+        403 => "forbidden",
+        404 => "not_found_error",
+        424 => "provider_not_configured",
+        429 => "rate_limit_error",
+        502 => "provider_error",
+        503 => "service_unavailable",
+        504 => "vendor_timeout",
+        _ => "internal_error",
+    };
+    serde_json::json!({ "error": { "message": message, "type": kind, "code": kind } })
 }
 
 /// Store an image response's images and record it as a `completed` generation
@@ -4314,15 +4312,33 @@ async fn apply_image_edit(
 /// accepted one, and is never re-sent.
 fn generation_error_response(e: &crate::proxy::router::ProxyError) -> axum::response::Response {
     let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    use crate::proxy::router::ProxyError;
+    // A vendor's own answer reaches the caller (PixelGenie L15): its status,
+    // code and message, and whether the same request may work later.
+    let vendor_body = |kind: &str, vendor: &crate::proxy::router::VendorError, vendor_job_id: &Option<String>| {
+        serde_json::json!({
+            "error": {
+                "message": e.to_string(),
+                "type": kind,
+                "code": kind,
+                "retryable": vendor.retryable(),
+                "provider_error": vendor,
+                "vendor_job_id": vendor_job_id,
+            }
+        })
+    };
     let body = match e {
-        crate::proxy::router::ProxyError::VendorTimeout { vendor_job_id, .. } => serde_json::json!({
+        ProxyError::VendorTimeout { vendor_job_id, .. } => serde_json::json!({
             "error": {
                 "message": e.to_string(),
                 "type": "vendor_timeout",
                 "code": "vendor_timeout",
+                "retryable": true,
                 "vendor_job_id": vendor_job_id,
             }
         }),
+        ProxyError::VendorRejected { vendor, vendor_job_id, .. } => vendor_body("vendor_rejected", vendor, vendor_job_id),
+        ProxyError::VendorFailed { vendor, vendor_job_id, .. } => vendor_body("vendor_error", vendor, vendor_job_id),
         _ => error_response(&e.to_string(), status.as_u16()),
     };
     let mut resp = (status, Json(body)).into_response();
@@ -4340,7 +4356,7 @@ fn provider_not_configured_response(provider: &str) -> axum::response::Response 
     let body = serde_json::json!({
         "error": {
             "type": "provider_not_configured",
-            "code": 400,
+            "code": "provider_not_configured",
             "message": format!(
                 "Provider '{provider}' is not configured for this application. \
                  Add a provider credential in the dashboard."

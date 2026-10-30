@@ -16,6 +16,11 @@ class LiteGenAPIError(LiteGenError):
     the model the request named. Branch on ``code`` and ``param`` rather than
     parsing the message. ``retry_after`` is the wait, in seconds, the server's
     ``Retry-After`` header asked for (a 429 or 503), else ``None``.
+
+    When a vendor refused or failed the request (``type`` ``vendor_rejected``
+    or ``vendor_error``), ``provider_error`` is the vendor's own answer —
+    ``{"status", "code", "message"}`` — and ``retryable`` says whether the
+    same request may work later.
     """
 
     def __init__(
@@ -29,6 +34,7 @@ class LiteGenAPIError(LiteGenError):
         param: str | None = None,
         model: str | None = None,
         retry_after: float | None = None,
+        retryable: bool | None = None,
     ) -> None:
         super().__init__(message)
         self.status = status
@@ -38,6 +44,7 @@ class LiteGenAPIError(LiteGenError):
         self.param = param
         self.model = model
         self.retry_after = retry_after
+        self.retryable = retryable
 
 
 class LiteGenValidationError(LiteGenAPIError):

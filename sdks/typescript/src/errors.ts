@@ -1,6 +1,7 @@
 import type { components } from "./generated/schema";
 
 type ErrorDetail = components["schemas"]["ErrorDetail"];
+type VendorError = components["schemas"]["VendorError"];
 
 export class LiteGenError extends Error {
   constructor(message: string) {
@@ -21,7 +22,13 @@ export class LiteGenAPIError extends LiteGenError {
   readonly param?: string;
   /** The model the failed request named, on validation errors. */
   readonly model?: string;
-  readonly providerError?: unknown;
+  /**
+   * The vendor's own answer when it refused or failed the request (`type`
+   * `vendor_rejected` or `vendor_error`): its HTTP status, code and message.
+   */
+  readonly providerError?: VendorError;
+  /** Whether the same request may work later (a vendor's 5xx, 429 or timeout). */
+  readonly retryable?: boolean;
   /**
    * The wait the server's `Retry-After` header asked for (a 429 or 503), in
    * milliseconds; undefined when it sent none.
@@ -33,15 +40,15 @@ export class LiteGenAPIError extends LiteGenError {
     this.name = "LiteGenAPIError";
     this.status = status;
     this.type = detail.type;
-    // The server emits `code` as a number in some paths and a string in others,
-    // while the declared type is `string`. Coerce so `error.code === "429"`
-    // comparisons behave as the type promises, regardless of the wire form.
+    // `code` is always a string on the wire (L15); coerce anyway so a stale
+    // server's number still compares as the declared type promises.
     this.code = detail.code != null ? String(detail.code) : undefined;
     // The server writes `"param": null` when a validation error names no
     // field; normalise both to undefined so `err.param ?? …` reads naturally.
     this.param = typeof detail.param === "string" ? detail.param : undefined;
     this.model = typeof detail.model === "string" ? detail.model : undefined;
     this.providerError = detail.provider_error ?? undefined;
+    this.retryable = typeof detail.retryable === "boolean" ? detail.retryable : undefined;
     this.retryAfterMs = retryAfterMs;
   }
 }

@@ -273,13 +273,7 @@ impl ProxyRouter {
                 }
             }
 
-            let o = output.ok_or_else(|| {
-                let err_str = last_error.map(|e| with_vendor_job(e.to_string(), extras.vendor_job.get()));
-                ProxyError::AllDeploymentsFailed {
-                    model: schema.id.clone(),
-                    last_error: err_str,
-                }
-            })?;
+            let o = output.ok_or_else(|| failure(&schema.id, &schema.provider, last_error, extras.vendor_job.get()))?;
             (schema.provider.clone(), o)
         };
 
@@ -435,10 +429,7 @@ impl ProxyRouter {
                         if let Some(job) = extras.vendor_job.get() {
                             // The vendor took the job: no other deployment may
                             // be sent it too.
-                            return Err(ProxyError::AllDeploymentsFailed {
-                                model: schema.id.clone(),
-                                last_error: Some(with_vendor_job(e.to_string(), Some(job))),
-                            });
+                            return Err(failure(&schema.id, &deployment.provider, Some(e), Some(job)));
                         }
                         let resend = may_resend(&e, false);
                         last_error = Some(e);
@@ -450,10 +441,7 @@ impl ProxyRouter {
             }
         }
 
-        Err(ProxyError::AllDeploymentsFailed {
-            model: schema.id.clone(),
-            last_error: last_error.map(|e| e.to_string()),
-        })
+        Err(failure(&schema.id, &schema.provider, last_error, None))
     }
 
     /// Weighted round-robin across deployments: pick a deployment by weight hash,
@@ -630,13 +618,7 @@ impl ProxyRouter {
                 }
             }
 
-            let h = handle.ok_or_else(|| {
-                let err_str = last_error.map(|e| e.to_string());
-                ProxyError::AllDeploymentsFailed {
-                    model: schema.id.clone(),
-                    last_error: err_str,
-                }
-            })?;
+            let h = handle.ok_or_else(|| failure(&schema.id, &schema.provider, last_error, None))?;
             (schema.provider.clone(), h)
         };
 
@@ -843,10 +825,7 @@ impl ProxyRouter {
             }
         }
 
-        let handle = handle.ok_or_else(|| ProxyError::AllDeploymentsFailed {
-            model: schema.id.clone(),
-            last_error: last_error.map(|e| e.to_string()),
-        })?;
+        let handle = handle.ok_or_else(|| failure(&schema.id, &schema.provider, last_error, None))?;
 
         // One submitted job produces one mesh: one unit at this request's
         // price — `n` is meaningless here, exactly as it is for video.
@@ -1177,10 +1156,7 @@ impl ProxyRouter {
             }
         }
 
-        Err(ProxyError::AllDeploymentsFailed {
-            model: schema.id.clone(),
-            last_error: last_error.map(|e| e.to_string()),
-        })
+        Err(failure(&schema.id, &schema.provider, last_error, None))
     }
 
     /// Weighted round-robin for video deployments.
@@ -1684,6 +1660,26 @@ pub enum ProxyError {
         retryable: bool,
     },
 
+    /// The vendor refused the request (its 4xx, PixelGenie L15): sending it
+    /// unchanged again will not help.
+    #[error("{provider} rejected the request for model {model}: {}{}", vendor.message, vendor_job_id.as_ref().map(|j| format!(" (vendor job {j})")).unwrap_or_default())]
+    VendorRejected {
+        model: String,
+        provider: String,
+        vendor: VendorError,
+        vendor_job_id: Option<String>,
+    },
+
+    /// The vendor failed (a 5xx, a 429, or no answer at all): the same
+    /// request may work later.
+    #[error("{provider} failed for model {model}: {}{}", vendor.message, vendor_job_id.as_ref().map(|j| format!(" (vendor job {j})")).unwrap_or_default())]
+    VendorFailed {
+        model: String,
+        provider: String,
+        vendor: VendorError,
+        vendor_job_id: Option<String>,
+    },
+
     #[error("Internal error: {0}")]
     Internal(String),
 
@@ -1716,6 +1712,11 @@ impl ProxyError {
             Self::Internal(_) => 500,
             Self::NotFound(_) => 404,
             Self::VendorTimeout { .. } => 504,
+            // Its refusal of litegen's own credential is not the caller's to fix.
+            Self::VendorRejected { vendor, .. } if matches!(vendor.status, Some(401 | 403)) => 424,
+            Self::VendorRejected { .. } => 400,
+            Self::VendorFailed { vendor, .. } if vendor.status == Some(429) => 429,
+            Self::VendorFailed { .. } => 502,
         }
     }
 
@@ -1726,9 +1727,70 @@ impl ProxyError {
     pub fn reached_vendor(&self) -> bool {
         match self {
             Self::ModelNotFound { .. } | Self::ProviderNotConfigured(_) | Self::NoDeployments { .. } => false,
-            Self::AllDeploymentsFailed { .. } | Self::ProviderError { .. } | Self::VendorTimeout { .. } => true,
+            Self::AllDeploymentsFailed { .. }
+            | Self::ProviderError { .. }
+            | Self::VendorTimeout { .. }
+            | Self::VendorRejected { .. }
+            | Self::VendorFailed { .. } => true,
             Self::Internal(_) | Self::NotFound(_) => false,
         }
+    }
+}
+
+/// What a vendor said when it refused or failed (PixelGenie L15): its HTTP
+/// status, its own error code and its message, read from the error shapes
+/// vendors use (`{"error": {"message", "code"}}`, fal's `detail` list,
+/// `{"code", "message"}` envelopes).
+pub use crate::types::VendorError;
+
+impl VendorError {
+    fn from_provider(err: &ProviderError) -> Self {
+        let (status, body, fallback) = match err {
+            ProviderError::RequestFailed { status_code, provider_error, message, .. } => (*status_code, provider_error.clone(), message.clone()),
+            ProviderError::RateLimited { .. } => (Some(429), None, err.to_string()),
+            other => (None, None, other.to_string()),
+        };
+        let body = body.unwrap_or(serde_json::Value::Null);
+        let text = |v: &serde_json::Value| match v {
+            serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+            serde_json::Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        };
+        let first_detail = &body["detail"][0];
+        let code = [&body["error"]["code"], &body["error"]["type"], &first_detail["type"], &body["code"], &body["error_code"], &body["type"]]
+            .into_iter()
+            .find_map(text)
+            .filter(|c| c != "0");
+        let message = [&body["error"]["message"], &first_detail["msg"], &body["detail"], &body["message"], &body["msg"], &body["error"]]
+            .into_iter()
+            .find_map(text)
+            .unwrap_or(fallback);
+        Self { status, code, message }
+    }
+
+    /// Whether the same request may work later: no answer, a 5xx, or a 429.
+    pub fn retryable(&self) -> bool {
+        self.status.is_none_or(|s| s >= 500 || s == 429 || s == 408)
+    }
+}
+
+/// The error a caller sees once every attempt has failed (PixelGenie L15): a
+/// vendor's 4xx is its refusal, a 5xx or a dropped connection its failure, a
+/// timeout a timeout, and a refusal before any call stays the adapter's.
+fn failure(model: &str, provider: &str, last: Option<ProviderError>, vendor_job_id: Option<String>) -> ProxyError {
+    let Some(err) = last else {
+        return ProxyError::AllDeploymentsFailed { model: model.to_string(), last_error: None };
+    };
+    let (model, provider) = (model.to_string(), provider.to_string());
+    match &err {
+        ProviderError::Timeout { .. } => ProxyError::VendorTimeout { model, provider, vendor_job_id },
+        ProviderError::RequestFailed { status_code: Some(s), .. } if (400..500).contains(s) && !matches!(s, 408 | 429) => {
+            ProxyError::VendorRejected { model, provider, vendor: VendorError::from_provider(&err), vendor_job_id }
+        }
+        ProviderError::RequestFailed { .. } | ProviderError::RateLimited { .. } => {
+            ProxyError::VendorFailed { model, provider, vendor: VendorError::from_provider(&err), vendor_job_id }
+        }
+        _ => ProxyError::ProviderError { provider, error: with_vendor_job(err.to_string(), vendor_job_id), retryable: false },
     }
 }
 
@@ -2036,7 +2098,7 @@ mod model3d_router_tests {
         };
 
         let out = router.generate_model3d(&schema, &base, &extras, &refs, None).await;
-        assert!(matches!(out, Err(ProxyError::AllDeploymentsFailed { .. })), "{:?}", out.err());
+        assert!(matches!(out, Err(ProxyError::VendorTimeout { .. })), "{:?}", out.err());
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "a timed-out submit must not be sent again");
     }
 }

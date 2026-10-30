@@ -148,6 +148,7 @@ def _raise_for_status(resp: httpx.Response) -> None:
         param=param if isinstance(param, str) else None,
         model=model if isinstance(model, str) else None,
         retry_after=_retry_after_seconds(resp.headers.get("retry-after")),
+        retryable=detail.get("retryable") if isinstance(detail.get("retryable"), bool) else None,
     )
 
 

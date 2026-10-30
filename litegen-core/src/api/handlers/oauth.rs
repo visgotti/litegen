@@ -915,7 +915,7 @@ pub async fn oauth_redirect(
             Json(json!({
                 "error": {
                     "type": "invalid_oauth_state",
-                    "code": 400,
+                    "code": "invalid_oauth_state",
                     "message": "Missing or invalid OAuth provider context"
                 }
             })),
@@ -1996,7 +1996,7 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["error"]["type"], "invalid_oauth_state");
-        assert_eq!(body["error"]["code"], 400);
+        assert_eq!(body["error"]["code"], "invalid_oauth_state");
     }
 
     #[tokio::test]

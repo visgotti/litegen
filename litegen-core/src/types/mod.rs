@@ -1434,8 +1434,14 @@ pub struct ErrorDetail {
     /// `param_enum_mismatch`, `prompt_required`, `ref_role_required`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_error: Option<serde_json::Value>,
+    /// The vendor's own answer, on `vendor_rejected` and `vendor_error`
+    /// (PixelGenie L15).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_error: Option<VendorError>,
+    /// Whether the same request may work later: a vendor's 5xx, 429 or
+    /// timeout, but not its refusal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retryable: Option<bool>,
     /// The request field that failed validation — `output_formats`, `prompt`,
     /// `reference_images`, `extra.<key>` — so a caller can tell which one to fix
     /// without parsing `message`. Validation errors only.
@@ -1450,6 +1456,16 @@ pub struct ErrorDetail {
     /// not record).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vendor_job_id: Option<String>,
+}
+
+/// What a vendor said when it refused or failed a request (PixelGenie L15):
+/// its HTTP status (none when it never answered), its own error code and its
+/// message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct VendorError {
+    pub status: Option<u16>,
+    pub code: Option<String>,
+    pub message: String,
 }
 
 // ─── Generations (DB-backed polling) ───────────────────────────────────────

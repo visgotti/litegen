@@ -136,6 +136,8 @@ export type ImageView = components["schemas"]["ImageView"];
  * `replaced_by` names the catalog model to move to.
  */
 export type ModelStatus = components["schemas"]["ModelStatus"];
+/** What a vendor said when it refused or failed a request (`LiteGenAPIError.providerError`). */
+export type VendorError = components["schemas"]["VendorError"];
 /**
  * Where a video model's `keyframe` references may sit
  * (`capabilities.keyframe_timing`): `any` time each, or `even` spacing from

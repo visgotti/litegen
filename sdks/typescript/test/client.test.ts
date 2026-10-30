@@ -89,6 +89,33 @@ describe("LiteGenClient.images.generate", () => {
   });
 });
 
+describe("vendor errors (L15)", () => {
+  it("carries the vendor's own answer and whether to retry", async () => {
+    const fetchImpl = mockFetch(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "fal failed for model fal/flux-dev: upstream overloaded",
+              type: "vendor_error",
+              code: "vendor_error",
+              retryable: true,
+              provider_error: { status: 503, code: null, message: "upstream overloaded" },
+            },
+          }),
+          { status: 502, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    const client = new LiteGenClient({ apiKey: "lg", fetch: fetchImpl });
+    const err = await client.images
+      .generate({ prompt: "x", model: "fal/flux-dev", n: 1, strict: true, reference_images: [], response_format: "url" })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LiteGenAPIError);
+    const api = err as LiteGenAPIError;
+    expect([api.code, api.retryable, api.providerError?.status]).toEqual(["vendor_error", true, 503]);
+  });
+});
+
 describe("LiteGenClient.videos.waitForCompletion", () => {
   it("polls until status is completed", async () => {
     let calls = 0;

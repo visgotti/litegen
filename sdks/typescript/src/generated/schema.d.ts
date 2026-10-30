@@ -2237,7 +2237,12 @@ export interface components {
              *     without parsing `message`. Validation errors only.
              */
             param?: string | null;
-            provider_error?: unknown;
+            provider_error?: null | components["schemas"]["VendorError"];
+            /**
+             * @description Whether the same request may work later: a vendor's 5xx, 429 or
+             *     timeout, but not its refusal.
+             */
+            retryable?: boolean | null;
             /**
              * @description The error's family, e.g. `validation_error`, `authentication_error`,
              *     `quota_exceeded`, `provider_not_configured`.
@@ -4113,6 +4118,17 @@ export interface components {
             role: components["schemas"]["Role"];
             /** Format: date-time */
             updated_at: string;
+        };
+        /**
+         * @description What a vendor said when it refused or failed a request (PixelGenie L15):
+         *     its HTTP status (none when it never answered), its own error code and its
+         *     message.
+         */
+        VendorError: {
+            code?: string | null;
+            message: string;
+            /** Format: int32 */
+            status?: number | null;
         };
         VideoGenerationRequest: components["schemas"]["BaseGenerationRequest"] & {
             aspect_ratio?: string | null;

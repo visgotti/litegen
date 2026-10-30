@@ -36,7 +36,7 @@ pub struct DeletedResponse {
 pub(crate) fn err(status: StatusCode, kind: &str, message: &str) -> Response {
     (
         status,
-        Json(serde_json::json!({ "error": { "message": message, "type": kind, "code": status.as_u16() } })),
+        Json(serde_json::json!({ "error": { "message": message, "type": kind, "code": kind } })),
     )
         .into_response()
 }

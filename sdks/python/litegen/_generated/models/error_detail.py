@@ -1,9 +1,22 @@
-from typing import Any, Dict, List, Type, TypeVar, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.vendor_error import VendorError
+
 
 T = TypeVar("T", bound="ErrorDetail")
 
@@ -21,7 +34,9 @@ class ErrorDetail:
         param (Union[None, Unset, str]): The request field that failed validation — `output_formats`, `prompt`,
             `reference_images`, `extra.<key>` — so a caller can tell which one to fix
             without parsing `message`. Validation errors only.
-        provider_error (Union[Unset, Any]):
+        provider_error (Union['VendorError', None, Unset]):
+        retryable (Union[None, Unset, bool]): Whether the same request may work later: a vendor's 5xx, 429 or
+            timeout, but not its refusal.
         vendor_job_id (Union[None, Unset, str]): The vendor's own job id, on `vendor_timeout` (the job the vendor had
             accepted when litegen stopped waiting, if it had; not re-sent) and on
             `generation_record_failed` (a job the vendor took that litegen could
@@ -33,11 +48,14 @@ class ErrorDetail:
     code: Union[None, Unset, str] = UNSET
     model: Union[None, Unset, str] = UNSET
     param: Union[None, Unset, str] = UNSET
-    provider_error: Union[Unset, Any] = UNSET
+    provider_error: Union["VendorError", None, Unset] = UNSET
+    retryable: Union[None, Unset, bool] = UNSET
     vendor_job_id: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        from ..models.vendor_error import VendorError
+
         message = self.message
 
         type = self.type
@@ -60,7 +78,19 @@ class ErrorDetail:
         else:
             param = self.param
 
-        provider_error = self.provider_error
+        provider_error: Union[Dict[str, Any], None, Unset]
+        if isinstance(self.provider_error, Unset):
+            provider_error = UNSET
+        elif isinstance(self.provider_error, VendorError):
+            provider_error = self.provider_error.to_dict()
+        else:
+            provider_error = self.provider_error
+
+        retryable: Union[None, Unset, bool]
+        if isinstance(self.retryable, Unset):
+            retryable = UNSET
+        else:
+            retryable = self.retryable
 
         vendor_job_id: Union[None, Unset, str]
         if isinstance(self.vendor_job_id, Unset):
@@ -84,6 +114,8 @@ class ErrorDetail:
             field_dict["param"] = param
         if provider_error is not UNSET:
             field_dict["provider_error"] = provider_error
+        if retryable is not UNSET:
+            field_dict["retryable"] = retryable
         if vendor_job_id is not UNSET:
             field_dict["vendor_job_id"] = vendor_job_id
 
@@ -91,6 +123,8 @@ class ErrorDetail:
 
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
+        from ..models.vendor_error import VendorError
+
         d = src_dict.copy()
         message = d.pop("message")
 
@@ -123,7 +157,31 @@ class ErrorDetail:
 
         param = _parse_param(d.pop("param", UNSET))
 
-        provider_error = d.pop("provider_error", UNSET)
+        def _parse_provider_error(data: object) -> Union["VendorError", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                provider_error_type_1 = VendorError.from_dict(data)
+
+                return provider_error_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union["VendorError", None, Unset], data)
+
+        provider_error = _parse_provider_error(d.pop("provider_error", UNSET))
+
+        def _parse_retryable(data: object) -> Union[None, Unset, bool]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, bool], data)
+
+        retryable = _parse_retryable(d.pop("retryable", UNSET))
 
         def _parse_vendor_job_id(data: object) -> Union[None, Unset, str]:
             if data is None:
@@ -141,6 +199,7 @@ class ErrorDetail:
             model=model,
             param=param,
             provider_error=provider_error,
+            retryable=retryable,
             vendor_job_id=vendor_job_id,
         )
 

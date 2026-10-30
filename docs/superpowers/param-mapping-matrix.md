@@ -96,6 +96,22 @@ says so, instead of failing (or being swapped) at the vendor.
 | model ids | an id an adapter has no arm for is `ModelNotSupported`, never billed as another model: Runway (image, video), Leonardo (image, video), Luma (image, video), fal (image, video — `fal/video` is now an arm of its own) and Google image; Google video passes its id through | each adapter's `every_catalog_row_resolves_and_an_unknown_id_does_not` (every row has its own arm) | ✅ |
 | sizes | refused, never snapped: a freeform size spec now carries `min_pixels`, `max_pixels` and `max_aspect`, and the GPT Image 2 rows declare OpenAI's (655,360–8,294,400 pixels, 3:1); the OpenAI adapter refuses anything else instead of snapping it | validator `a_size_the_vendor_cannot_make_is_refused_not_snapped`; adapter `gpt_image_2_sizes_follow_the_documented_constraints`; conformance `gpt_image_sizes_carry_every_openai_limit`; OpenAPI `a_freeform_size_documents_the_vendors_pixel_and_aspect_limits` | ✅ |
 
+## Vendor errors (L15)
+
+Once every attempt has failed, the adapter's last error decides what the
+caller sees; every error body's `code` is a string (the error's `type` unless
+a more specific code exists).
+
+| vendor answer | litegen | body | proof | status |
+|---|---|---|---|---|
+| 4xx (but 401/403, 408, 429) | 400 `vendor_rejected`, `retryable: false` | `provider_error: {status, code, message}` read from the vendor's error shape (OpenAI `error.{code,message}`, fal `detail[0].{type,msg}`, `{code, message}` envelopes) | HTTP `a_vendors_4xx_is_a_litegen_4xx_that_names_the_vendors_reason` | ✅ wiremock |
+| 401 / 403 (litegen's key refused) | 424 `vendor_rejected` | same | — | 🟡 |
+| 5xx or no answer | 502 `vendor_error`, `retryable: true` | same | HTTP `a_vendors_5xx_is_a_502_that_says_to_retry` | ✅ wiremock |
+| 429 | 429 `vendor_error`, `retryable: true` | same | — | 🟡 |
+| timeout | 504 `vendor_timeout`, `retryable: true`, `vendor_job_id` when accepted | — | existing timeout tests | ✅ |
+| refused before any call (`InvalidRequest`, `ModelNotSupported`) | 400 | message | existing adapter tests | ✅ |
+| every `code` | a string | — | HTTP `every_error_code_is_a_string`; SDKs `test_a_vendor_rejection_carries_the_vendors_answer_and_whether_to_retry`, `carries the vendor's own answer and whether to retry`; OpenAPI `an_error_documents_the_vendors_own_answer_and_whether_to_retry` | ✅ |
+
 ## Prices that match the bill (3D doc §3G, L14)
 
 A row's `pricing.base_cost_usd` is the vendor's price for its default request;

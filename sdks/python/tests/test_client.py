@@ -83,6 +83,29 @@ def test_provider_error_raised_as_api_error_not_validation() -> None:
 
 
 @respx.mock
+def test_a_vendor_rejection_carries_the_vendors_answer_and_whether_to_retry() -> None:
+    respx.post("http://localhost:4000/v1/images/generations").mock(
+        return_value=Response(
+            400,
+            json={
+                "error": {
+                    "message": "fal rejected the request for model fal/flux-dev: prompt flagged",
+                    "type": "vendor_rejected",
+                    "code": "vendor_rejected",
+                    "retryable": False,
+                    "provider_error": {"status": 422, "code": "content_policy_violation", "message": "prompt flagged"},
+                }
+            },
+        )
+    )
+    client = LiteGenClient()
+    with pytest.raises(LiteGenAPIError) as exc:
+        client.images.generate(prompt="x", model="fal/flux-dev")
+    assert (exc.value.code, exc.value.retryable) == ("vendor_rejected", False)
+    assert exc.value.provider_error["code"] == "content_policy_violation"
+
+
+@respx.mock
 def test_video_wait_for_completion_polls_until_done() -> None:
     statuses = ["processing", "processing", "completed"]
 

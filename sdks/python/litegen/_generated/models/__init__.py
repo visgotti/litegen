@@ -204,6 +204,7 @@ from .update_member_request import UpdateMemberRequest
 from .update_org_request import UpdateOrgRequest
 from .usage_info import UsageInfo
 from .user import User
+from .vendor_error import VendorError
 from .video_generation_request import VideoGenerationRequest
 from .video_generation_response import VideoGenerationResponse
 from .webhook_delivery import WebhookDelivery
@@ -406,6 +407,7 @@ __all__ = (
     "UpdateOrgRequest",
     "UsageInfo",
     "User",
+    "VendorError",
     "VideoGenerationRequest",
     "VideoGenerationResponse",
     "WebhookDelivery",

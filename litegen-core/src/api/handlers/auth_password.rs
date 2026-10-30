@@ -52,7 +52,7 @@ fn password_disabled_resp() -> Response {
         Json(json!({
             "error": {
                 "type": "password_auth_disabled",
-                "code": 403,
+                "code": "password_auth_disabled",
                 "message": "Password authentication is disabled; use Google or GitHub."
             }
         })),
@@ -1484,7 +1484,7 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["error"]["type"], "password_auth_disabled");
-        assert_eq!(body["error"]["code"], 403);
+        assert_eq!(body["error"]["code"], "password_auth_disabled");
 
         // Login → 403 password_auth_disabled
         let req = Request::builder()
@@ -1520,7 +1520,7 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["error"]["type"], "password_auth_disabled");
-        assert_eq!(body["error"]["code"], 403);
+        assert_eq!(body["error"]["code"], "password_auth_disabled");
 
         // confirm → 403 password_auth_disabled
         let req = Request::builder()

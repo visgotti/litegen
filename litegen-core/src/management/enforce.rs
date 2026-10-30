@@ -76,7 +76,7 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for RequestAttribution {
 fn refuse(status: StatusCode, kind: &str, message: &str) -> Response {
     (
         status,
-        Json(serde_json::json!({ "error": { "message": message, "type": kind, "code": status.as_u16() } })),
+        Json(serde_json::json!({ "error": { "message": message, "type": kind, "code": kind } })),
     )
         .into_response()
 }
@@ -87,7 +87,7 @@ fn store_error(e: sqlx::Error) -> Response {
         StatusCode::SERVICE_UNAVAILABLE,
         [("retry-after", "1")],
         Json(serde_json::json!({ "error": {
-            "message": "temporarily unable to authorize request", "type": "service_unavailable", "code": 503
+            "message": "temporarily unable to authorize request", "type": "service_unavailable", "code": "service_unavailable"
         } })),
     )
         .into_response()

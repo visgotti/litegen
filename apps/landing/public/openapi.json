@@ -7932,7 +7932,24 @@
                         ],
                         "description": "The request field that failed validation \u2014 `output_formats`, `prompt`,\n`reference_images`, `extra.<key>` \u2014 so a caller can tell which one to fix\nwithout parsing `message`. Validation errors only."
                     },
-                    "provider_error": {},
+                    "provider_error": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/VendorError",
+                                "description": "The vendor's own answer, on `vendor_rejected` and `vendor_error`\n(PixelGenie L15)."
+                            }
+                        ]
+                    },
+                    "retryable": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "Whether the same request may work later: a vendor's 5xx, 429 or\ntimeout, but not its refusal."
+                    },
                     "type": {
                         "type": "string",
                         "description": "The error's family, e.g. `validation_error`, `authentication_error`,\n`quota_exceeded`, `provider_not_configured`."
@@ -13190,6 +13207,32 @@
                     "updated_at": {
                         "type": "string",
                         "format": "date-time"
+                    }
+                }
+            },
+            "VendorError": {
+                "type": "object",
+                "description": "What a vendor said when it refused or failed a request (PixelGenie L15):\nits HTTP status (none when it never answered), its own error code and its\nmessage.",
+                "required": [
+                    "message"
+                ],
+                "properties": {
+                    "code": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "message": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "minimum": 0
                     }
                 }
             },

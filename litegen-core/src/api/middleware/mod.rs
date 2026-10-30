@@ -432,7 +432,7 @@ pub async fn auth_middleware(
             "error": {
                 "message": "Missing API key. Provide via Authorization: Bearer <key>",
                 "type": "authentication_error",
-                "code": 401
+                "code": "authentication_error"
             }
         })),
     )
@@ -446,7 +446,7 @@ fn unauthorized_response(msg: &str) -> Response {
             "error": {
                 "message": msg,
                 "type": "authentication_error",
-                "code": 401
+                "code": "authentication_error"
             }
         })),
     )
@@ -460,7 +460,7 @@ fn forbidden_response(msg: &str) -> Response {
             "error": {
                 "message": msg,
                 "type": "forbidden",
-                "code": 403
+                "code": "forbidden"
             }
         })),
     )
@@ -509,7 +509,7 @@ async fn handle_db_key(
                             "error": {
                                 "message": "API key expired",
                                 "type": "authentication_error",
-                                "code": 401
+                                "code": "authentication_error"
                             }
                         })),
                     ).into_response();
@@ -525,7 +525,7 @@ async fn handle_db_key(
                             "error": {
                                 "message": "Token quota exceeded for this API key",
                                 "type": "quota_exceeded",
-                                "code": 402
+                                "code": "quota_exceeded"
                             }
                         })),
                     ).into_response();
@@ -564,7 +564,7 @@ async fn handle_db_key(
                                 "error": {
                                     "message": format!("Rate limit exceeded. Retry after {} seconds.", retry_after),
                                     "type": "rate_limit_exceeded",
-                                    "code": 429
+                                    "code": "rate_limit_exceeded"
                                 }
                             })),
                         ).into_response();
@@ -624,7 +624,7 @@ async fn handle_db_key(
                 "error": {
                     "message": "Invalid or inactive API key",
                     "type": "authentication_error",
-                    "code": 401
+                    "code": "authentication_error"
                 }
             })),
         ).into_response(),
@@ -636,7 +636,7 @@ async fn handle_db_key(
                     "error": {
                         "message": "Internal authentication error",
                         "type": "internal_error",
-                        "code": 500
+                        "code": "internal_error"
                     }
                 })),
             ).into_response()
@@ -658,7 +658,7 @@ pub async fn check_scope(required: Scope, request: Request, next: Next) -> Respo
                 "error": {
                     "message": "Insufficient scope for this endpoint",
                     "type": "forbidden_scope",
-                    "code": 403
+                    "code": "forbidden_scope"
                 }
             })),
         ).into_response(),
@@ -668,7 +668,7 @@ pub async fn check_scope(required: Scope, request: Request, next: Next) -> Respo
                 "error": {
                     "message": "Not authenticated",
                     "type": "authentication_error",
-                    "code": 401
+                    "code": "authentication_error"
                 }
             })),
         ).into_response(),
@@ -721,7 +721,7 @@ pub async fn csrf_middleware(
                 "error": {
                     "message": "CSRF token missing",
                     "type": "csrf_error",
-                    "code": 403
+                    "code": "csrf_error"
                 }
             })),
         )
@@ -736,7 +736,7 @@ pub async fn csrf_middleware(
                 "error": {
                     "message": "Session not found",
                     "type": "authentication_error",
-                    "code": 401
+                    "code": "authentication_error"
                 }
             })),
         )
@@ -750,7 +750,7 @@ pub async fn csrf_middleware(
                 "error": {
                     "message": "Invalid CSRF token",
                     "type": "csrf_error",
-                    "code": 403
+                    "code": "csrf_error"
                 }
             })),
         )
@@ -774,7 +774,7 @@ pub async fn check_permission(required: Permission, request: Request, next: Next
                 "error": {
                     "message": format!("Permission '{}' required", required.as_str()),
                     "type": "forbidden_permission",
-                    "code": 403
+                    "code": "forbidden_permission"
                 }
             })),
         )
@@ -785,7 +785,7 @@ pub async fn check_permission(required: Permission, request: Request, next: Next
                 "error": {
                     "message": "Not authenticated",
                     "type": "authentication_error",
-                    "code": 401
+                    "code": "authentication_error"
                 }
             })),
         )
