@@ -104,20 +104,76 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
             return Err(bad(format!("model '{}' declares native_orientation, which only model3d models have", m.id)));
         }
         use crate::mesh::normalize::Axis;
+        if o.up == "source" || o.front == "source" {
+            if o.up != o.front {
+                return Err(bad(format!(
+                    "model '{}' native_orientation keeps its source's axes only as a pair: up and front both `source`", m.id
+                )));
+            }
+            if m.task == ModelTask::Generate {
+                return Err(bad(format!(
+                    "model '{}' native_orientation is `source`, but a generation model has no source to keep", m.id
+                )));
+            }
+        }
         // Spelled exactly as the API reports it.
         let axis = |name: &str, v: &str| Axis::parse(v).filter(|a| a.as_str() == v).ok_or_else(|| bad(format!(
             "model '{}' native_orientation.{} '{}' is not one of +x, -x, +y, -y, +z, -z", m.id, name, v
         )));
+        let keeps_source = o.up == "source";
+        if !keeps_source {
         let (up, front) = (axis("up", &o.up)?, axis("front", &o.front)?);
         if up.as_str()[1..] == front.as_str()[1..] {
             return Err(bad(format!(
                 "model '{}' native_orientation up '{}' and front '{}' are not at right angles", m.id, o.up, o.front
             )));
         }
+        }
         if o.evidence.trim().is_empty() {
             return Err(bad(format!(
                 "model '{}' native_orientation names no evidence; an orientation nobody has seen is a guess", m.id
             )));
+        }
+    }
+
+    // 3D doc §3C: the clips an animate model makes.
+    if let Some(spec) = m.params.get("animations") {
+        let ParamSpec::AnimationList(a) = spec else {
+            return Err(bad(format!("model '{}' animations must be kind: animation_list", m.id)));
+        };
+        if m.media_type != MediaType::Model3d {
+            return Err(bad(format!("model '{}' declares animations, which only model3d models have", m.id)));
+        }
+        if a.max_items == 0 {
+            return Err(bad(format!("model '{}' animations.max_items must be at least 1", m.id)));
+        }
+        let vocab: Vec<&str> = crate::types::Model3dAnimationPreset::ALL.iter().map(|p| p.as_str()).collect();
+        let mut seen: Vec<&str> = Vec::new();
+        for p in &a.presets {
+            if p.id.trim().is_empty() {
+                return Err(bad(format!("model '{}' animations has a preset with no id", m.id)));
+            }
+            if seen.contains(&p.id.as_str()) {
+                return Err(bad(format!("model '{}' animations lists preset '{}' twice", m.id, p.id)));
+            }
+            seen.push(&p.id);
+            if let Some(c) = &p.canonical {
+                if !vocab.contains(&c.as_str()) {
+                    return Err(bad(format!(
+                        "model '{}' animations preset '{}' is tagged '{}', which is not one of {:?}", m.id, p.id, c, vocab
+                    )));
+                }
+            }
+        }
+        if let Some(t) = &a.text_to_motion {
+            if !(t.min_duration_s > 0.0 && t.min_duration_s <= t.max_duration_s) {
+                return Err(bad(format!(
+                    "model '{}' animations.text_to_motion needs 0 < min_duration_s <= max_duration_s", m.id
+                )));
+            }
+        }
+        if a.presets.is_empty() && a.text_to_motion.is_none() {
+            return Err(bad(format!("model '{}' animations offers neither presets nor text_to_motion", m.id)));
         }
     }
 

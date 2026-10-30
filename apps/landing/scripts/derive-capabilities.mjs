@@ -107,4 +107,5 @@ export const FALLBACK_CAPABILITIES = {
   pixverse:  { provider: 'pixverse',  inputs: { text: true,  image: true,  multi: true  }, outputs: { image: false, video: true,  model3d: false } },
   // 3D only: its rig takes a mesh, none of the text/image inputs above.
   tripo:     { provider: 'tripo',     inputs: { text: false, image: false, multi: false }, outputs: { image: false, video: false, model3d: true  } },
+  meshy:     { provider: 'meshy',     inputs: { text: false, image: false, multi: false }, outputs: { image: false, video: false, model3d: true  } },
 };

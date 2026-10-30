@@ -503,4 +503,60 @@ models:
 "#).unwrap_err().to_string();
         assert!(err.contains("native_orientation") && err.contains("model3d"), "{err}");
     }
+
+    // ─── animations (3D doc §3C) ────────────────────────────────────────────
+
+    const ANIMATIONS: &str = "      source_model: { kind: source_model, formats: [glb], requires_skin: true }\n      animations:\n        kind: animation_list\n        max_items: 5\n        presets:\n          - { id: \"preset:walk\", canonical: walk, loopable: true }\n          - { id: \"preset:slash\", canonical: attack_melee }\n          - { id: \"preset:dive\" }\n        text_to_motion: { min_duration_s: 4, max_duration_s: 10 }\n        in_place: native\n";
+
+    fn animate(params: &str) -> Result<CapabilityRegistry, LoadError> {
+        yaml(&model3d("    task: animate", "{}", &format!("    params:\n{params}")))
+    }
+
+    #[test]
+    fn an_animate_model_declares_its_presets_and_motion_limits() {
+        let r = animate(ANIMATIONS).unwrap();
+        match r.get("x/op").unwrap().params.get("animations") {
+            Some(ParamSpec::AnimationList(a)) => {
+                assert_eq!(a.max_items, 5);
+                assert_eq!(a.presets.len(), 3);
+                assert_eq!(a.presets[0].canonical.as_deref(), Some("walk"));
+                assert!(a.presets[0].loopable);
+                assert_eq!(a.presets[2].canonical, None, "a vendor id with no canonical twin");
+                let t = a.text_to_motion.as_ref().unwrap();
+                assert_eq!((t.min_duration_s, t.max_duration_s), (4.0, 10.0));
+                assert_eq!(a.in_place, InPlaceMode::Native);
+            }
+            other => panic!("animations is {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_preset_tagged_outside_the_canonical_vocabulary_is_refused() {
+        let bad = ANIMATIONS.replace("canonical: attack_melee", "canonical: moonwalk");
+        let err = animate(&bad).unwrap_err().to_string();
+        assert!(err.contains("moonwalk"), "{err}");
+    }
+
+    #[test]
+    fn preset_ids_are_unique_and_limits_are_sane() {
+        let dup = ANIMATIONS.replace("preset:dive", "preset:walk");
+        assert!(animate(&dup).unwrap_err().to_string().contains("preset:walk"));
+        let none = ANIMATIONS.replace("max_items: 5", "max_items: 0");
+        assert!(animate(&none).unwrap_err().to_string().contains("max_items"));
+        let backwards = ANIMATIONS.replace("min_duration_s: 4, max_duration_s: 10", "min_duration_s: 10, max_duration_s: 4");
+        assert!(animate(&backwards).unwrap_err().to_string().contains("text_to_motion"));
+    }
+
+    #[test]
+    fn an_operation_may_keep_its_sources_orientation() {
+        let line = format!("    task: animate\n    native_orientation: {{ up: source, front: source, evidence: \"returns the source mesh\" }}");
+        let r = yaml(&model3d(&line, "{}", &format!("    params:\n{ANIMATIONS}"))).unwrap();
+        let o = r.get("x/op").unwrap().native_orientation.clone().unwrap();
+        assert_eq!((o.up.as_str(), o.front.as_str()), ("source", "source"));
+        // Only an operation has a source to keep, and both axes go together.
+        let err = oriented("    native_orientation: { up: source, front: source, evidence: \"e\" }").unwrap_err().to_string();
+        assert!(err.contains("source"), "{err}");
+        let half = format!("    task: animate\n    native_orientation: {{ up: \"+y\", front: source, evidence: \"e\" }}");
+        assert!(yaml(&model3d(&half, "{}", &format!("    params:\n{ANIMATIONS}"))).is_err());
+    }
 }

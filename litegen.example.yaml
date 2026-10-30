@@ -61,6 +61,8 @@ providers:
   tripo:
     api_key: ""  # or TRIPO_API_KEY (Tripo 3D; Authorization: Bearer tsk_…)
     # api_base: "https://openapi.tripo3d.com/v3"  # China-mainland keys only; or TRIPO_API_BASE
+  meshy:
+    api_key: ""  # or MESHY_API_KEY (Meshy; Authorization: Bearer msy_…; API credits are prepaid)
   runway:
     api_key: ""  # or set RUNWAY_API_KEY env var (Gen-4 image + video)
   luma:

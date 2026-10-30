@@ -3547,6 +3547,132 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://docs.lumalabs.ai/docs/api"
   },
   {
+    "id": "meshy/animate",
+    "provider": "meshy",
+    "displayName": "Meshy Animation",
+    "description": "Up to ten clips from Meshy's animation library on a rig made by meshy/rig on the same Meshy account — Meshy animates only its own rig, so any other source is refused 422 `source_not_chainable` — merged into one file in request order. Each action at most once per request.",
+    "mediaType": "model3d",
+    "output": "model3d",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "source_model",
+        "kind": "source_model"
+      },
+      {
+        "name": "animations",
+        "kind": "animation_list"
+      },
+      {
+        "name": "fps",
+        "kind": "int",
+        "min": 1,
+        "max": 120
+      },
+      {
+        "name": "output_formats",
+        "kind": "string_array",
+        "enum": [
+          "glb",
+          "fbx"
+        ],
+        "default": [
+          "glb"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.06
+    },
+    "tags": [
+      "animation",
+      "3d-operation"
+    ],
+    "referenceUrl": "https://docs.meshy.ai/en/api/animation"
+  },
+  {
+    "id": "meshy/rig",
+    "provider": "meshy",
+    "displayName": "Meshy Auto Rig",
+    "description": "Meshy's auto-rigger: a textured character GLB facing +Z in, a rigged GLB out (with Meshy's own FBX when one is promised). Humanoids by default; `skeleton: quadruped` for four-legged characters. Chain meshy/animate onto the result.",
+    "mediaType": "model3d",
+    "output": "model3d",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "source_model",
+        "kind": "source_model"
+      },
+      {
+        "name": "skeleton",
+        "kind": "string",
+        "enum": [
+          "humanoid",
+          "quadruped"
+        ],
+        "default": "humanoid"
+      },
+      {
+        "name": "height_m",
+        "kind": "float",
+        "default": 1.7
+      },
+      {
+        "name": "output_formats",
+        "kind": "string_array",
+        "enum": [
+          "glb",
+          "fbx"
+        ],
+        "default": [
+          "glb"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.1
+    },
+    "tags": [
+      "rig",
+      "3d-operation"
+    ],
+    "referenceUrl": "https://docs.meshy.ai/en/api/rigging"
+  },
+  {
     "id": "minimax/image-01",
     "provider": "minimax",
     "displayName": "MiniMax image-01",
@@ -6171,6 +6297,67 @@ export const MODELS: ModelEntry[] = [
       "photorealistic"
     ],
     "referenceUrl": "https://platform.stability.ai/docs/api-reference"
+  },
+  {
+    "id": "tripo/animate",
+    "provider": "tripo",
+    "displayName": "Tripo Animation Retarget",
+    "description": "Adds up to five preset clips to a rig made by tripo/rig on the same Tripo account — Tripo retargets only onto its own rig's task id, so any other source is refused 422 `source_not_chainable`. Humanoid presets play on humanoid rigs, the creature walks on creature rigs.",
+    "mediaType": "model3d",
+    "output": "model3d",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "source_model",
+        "kind": "source_model"
+      },
+      {
+        "name": "animations",
+        "kind": "animation_list"
+      },
+      {
+        "name": "fps",
+        "kind": "int",
+        "min": 1,
+        "max": 120
+      },
+      {
+        "name": "output_formats",
+        "kind": "string_array",
+        "enum": [
+          "glb",
+          "fbx"
+        ],
+        "default": [
+          "glb"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.1
+    },
+    "tags": [
+      "animation",
+      "3d-operation"
+    ],
+    "referenceUrl": "https://developers.tripo3d.ai/en/docs/animations-retarget"
   },
   {
     "id": "tripo/rig",

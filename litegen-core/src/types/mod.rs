@@ -363,6 +363,89 @@ impl Model3dJointNaming {
     }
 }
 
+/// The canonical animation presets (`animations[].preset`, 3D doc §3C). A
+/// model maps the ones it plays onto its own preset ids; a request may name
+/// either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Model3dAnimationPreset {
+    Idle,
+    Walk,
+    Run,
+    Jump,
+    Fall,
+    AttackMelee,
+    AttackRanged,
+    Cast,
+    Hurt,
+    Death,
+    Crouch,
+    Climb,
+    Turn,
+}
+
+impl Model3dAnimationPreset {
+    pub const ALL: [Model3dAnimationPreset; 13] = [
+        Model3dAnimationPreset::Idle,
+        Model3dAnimationPreset::Walk,
+        Model3dAnimationPreset::Run,
+        Model3dAnimationPreset::Jump,
+        Model3dAnimationPreset::Fall,
+        Model3dAnimationPreset::AttackMelee,
+        Model3dAnimationPreset::AttackRanged,
+        Model3dAnimationPreset::Cast,
+        Model3dAnimationPreset::Hurt,
+        Model3dAnimationPreset::Death,
+        Model3dAnimationPreset::Crouch,
+        Model3dAnimationPreset::Climb,
+        Model3dAnimationPreset::Turn,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Model3dAnimationPreset::Idle => "idle",
+            Model3dAnimationPreset::Walk => "walk",
+            Model3dAnimationPreset::Run => "run",
+            Model3dAnimationPreset::Jump => "jump",
+            Model3dAnimationPreset::Fall => "fall",
+            Model3dAnimationPreset::AttackMelee => "attack_melee",
+            Model3dAnimationPreset::AttackRanged => "attack_ranged",
+            Model3dAnimationPreset::Cast => "cast",
+            Model3dAnimationPreset::Hurt => "hurt",
+            Model3dAnimationPreset::Death => "death",
+            Model3dAnimationPreset::Crouch => "crouch",
+            Model3dAnimationPreset::Climb => "climb",
+            Model3dAnimationPreset::Turn => "turn",
+        }
+    }
+}
+
+/// One clip an `animate` request asks for (3D doc §3C).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct AnimationRequest {
+    /// The clip's name in the delivered file: unique within the request, 1–64
+    /// characters of `[A-Za-z0-9_.-]`.
+    pub name: String,
+    /// A canonical preset (`Model3dAnimationPreset`) or one of the model's
+    /// own preset ids. Exactly one of `preset` and `prompt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    /// Text-to-motion, where the model offers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// A prompt clip's length in seconds, within the model's
+    /// `text_to_motion` range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_s: Option<f64>,
+    /// Keep the root in place horizontally (vertical movement stays).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_place: Option<bool>,
+    /// A loop hint, recorded in the manifest; nothing is resampled to force a
+    /// loop.
+    #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
+    pub loop_requested: Option<bool>,
+}
+
 /// OpenAPI schema for the superseded `output_format`: the format vocabulary,
 /// marked deprecated.
 ///
@@ -443,6 +526,13 @@ pub struct Model3dGenerationRequest {
     /// The character's height in metres, for a vendor that scales its rig.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height_m: Option<f64>,
+    /// The clips to make, in order: one glTF animation per entry, named
+    /// exactly its `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animations: Option<Vec<AnimationRequest>>,
+    /// Frames per second of the delivered clips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u32>,
     /// The mesh an operation (`rig`, `animate`, `texture`, `remesh`,
     /// `segment`) works on, required by every model whose task is not
     /// `generate`. A litegen generation id chains a step onto the last; a URL

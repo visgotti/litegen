@@ -474,10 +474,15 @@ fn model3d_enum_vocabularies_match_the_documented_vendor_sets() {
 #[test]
 fn no_3d_model_advertises_image_or_video_only_params() {
     // A 3D row carrying `size`/`fps`/`duration_seconds` would render nonsense
-    // controls in the Playground and in any schema-driven client panel.
+    // controls in the Playground and in any schema-driven client panel. The
+    // one exception is `fps` on a model that makes clips (3D doc §3C: "fps
+    // reuses the existing canonical param"): clips have a frame rate.
     let reg = registry();
     for m in model3d_models(&reg) {
         for forbidden in ["size", "fps", "duration_seconds", "aspect_ratio"] {
+            if forbidden == "fps" && m.params.contains_key("animations") {
+                continue;
+            }
             assert!(
                 !m.params.contains_key(forbidden),
                 "{} is a 3D model but advertises the {} param",

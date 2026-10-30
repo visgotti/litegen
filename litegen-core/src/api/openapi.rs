@@ -175,6 +175,11 @@ use utoipa::OpenApi;
         crate::types::Model3dSymmetry,
         crate::types::Model3dSkeleton,
         crate::types::Model3dJointNaming,
+        // The canonical presets: a clip's `preset` is a free string (it may be
+        // a model's own id), so nothing references this enum — named here so
+        // both SDKs carry the vocabulary.
+        crate::types::Model3dAnimationPreset,
+        crate::types::AnimationRequest,
         crate::capabilities::ModelTask,
         crate::types::ReferenceImage,
         crate::types::RefImageKind,
@@ -396,6 +401,28 @@ mod tests {
             json!(["humanoid", "quadruped", "hexapod", "octopod", "avian", "serpentine", "aquatic", "other"]),
         );
         assert_eq!(s["Model3dJointNaming"]["enum"], json!(["vendor", "vrm", "mixamo", "unity", "unreal"]));
+    }
+
+    #[test]
+    fn the_3d_request_types_its_clips_and_the_catalog_types_their_spec() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        let req = &s["Model3dGenerationRequest"];
+        assert!(mentions(property(req, "animations"), "#/components/schemas/AnimationRequest"), "{}", property(req, "animations"));
+        assert!(mentions(property(req, "fps"), "integer"), "{}", property(req, "fps"));
+        for field in ["name", "preset", "prompt", "duration_s", "in_place", "loop"] {
+            property(&s["AnimationRequest"], field);
+        }
+        assert_eq!(s["AnimationRequest"]["required"], json!(["name"]));
+        assert_eq!(
+            s["Model3dAnimationPreset"]["enum"],
+            json!(["idle", "walk", "run", "jump", "fall", "attack_melee", "attack_ranged", "cast", "hurt", "death", "crouch", "climb", "turn"]),
+        );
+        for field in ["max_items", "presets", "text_to_motion", "in_place"] {
+            property(&s["ParamSpecAnimationList"], field);
+        }
+        assert_eq!(s["InPlaceMode"]["enum"], json!(["litegen", "native"]));
+        assert!(mentions(&s["ParamSpec"], "animation_list"), "the union names the new kind");
     }
 
     #[test]

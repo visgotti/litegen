@@ -1,13 +1,4 @@
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Type,
-    TypeVar,
-    Union,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -23,6 +14,7 @@ from ..models.model_3d_topology import Model3DTopology
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.animation_request import AnimationRequest
     from ..models.reference_image import ReferenceImage
     from ..models.source_ref import SourceRef
 
@@ -57,6 +49,10 @@ class Model3DGenerationRequest:
             reference_images (Union[Unset, List['ReferenceImage']]):
             seed (Union[None, Unset, int]):
             strict (Union[Unset, bool]):
+            animations (Union[List['AnimationRequest'], None, Unset]): The clips to make, in order: one glTF animation per
+                entry, named
+                exactly its `name`.
+            fps (Union[None, Unset, int]): Frames per second of the delivered clips.
             height_m (Union[None, Unset, float]): The character's height in metres, for a vendor that scales its rig.
             joint_naming (Union[Model3DJointNaming, None, Unset]):
             output_format (Union[Unset, Model3DGenerationRequestOutputFormat]): Superseded by `output_formats`. A lone value
@@ -93,6 +89,8 @@ class Model3DGenerationRequest:
     reference_images: Union[Unset, List["ReferenceImage"]] = UNSET
     seed: Union[None, Unset, int] = UNSET
     strict: Union[Unset, bool] = UNSET
+    animations: Union[List["AnimationRequest"], None, Unset] = UNSET
+    fps: Union[None, Unset, int] = UNSET
     height_m: Union[None, Unset, float] = UNSET
     joint_naming: Union[Model3DJointNaming, None, Unset] = UNSET
     output_format: Union[Unset, Model3DGenerationRequestOutputFormat] = UNSET
@@ -140,6 +138,24 @@ class Model3DGenerationRequest:
             seed = self.seed
 
         strict = self.strict
+
+        animations: Union[List[Dict[str, Any]], None, Unset]
+        if isinstance(self.animations, Unset):
+            animations = UNSET
+        elif isinstance(self.animations, list):
+            animations = []
+            for animations_type_0_item_data in self.animations:
+                animations_type_0_item = animations_type_0_item_data.to_dict()
+                animations.append(animations_type_0_item)
+
+        else:
+            animations = self.animations
+
+        fps: Union[None, Unset, int]
+        if isinstance(self.fps, Unset):
+            fps = UNSET
+        else:
+            fps = self.fps
 
         height_m: Union[None, Unset, float]
         if isinstance(self.height_m, Unset):
@@ -250,6 +266,10 @@ class Model3DGenerationRequest:
             field_dict["seed"] = seed
         if strict is not UNSET:
             field_dict["strict"] = strict
+        if animations is not UNSET:
+            field_dict["animations"] = animations
+        if fps is not UNSET:
+            field_dict["fps"] = fps
         if height_m is not UNSET:
             field_dict["height_m"] = height_m
         if joint_naming is not UNSET:
@@ -279,6 +299,7 @@ class Model3DGenerationRequest:
 
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
+        from ..models.animation_request import AnimationRequest
         from ..models.reference_image import ReferenceImage
         from ..models.source_ref import SourceRef
 
@@ -319,6 +340,41 @@ class Model3DGenerationRequest:
         seed = _parse_seed(d.pop("seed", UNSET))
 
         strict = d.pop("strict", UNSET)
+
+        def _parse_animations(
+            data: object,
+        ) -> Union[List["AnimationRequest"], None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                animations_type_0 = []
+                _animations_type_0 = data
+                for animations_type_0_item_data in _animations_type_0:
+                    animations_type_0_item = AnimationRequest.from_dict(
+                        animations_type_0_item_data
+                    )
+
+                    animations_type_0.append(animations_type_0_item)
+
+                return animations_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[List["AnimationRequest"], None, Unset], data)
+
+        animations = _parse_animations(d.pop("animations", UNSET))
+
+        def _parse_fps(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        fps = _parse_fps(d.pop("fps", UNSET))
 
         def _parse_height_m(data: object) -> Union[None, Unset, float]:
             if data is None:
@@ -493,6 +549,8 @@ class Model3DGenerationRequest:
             reference_images=reference_images,
             seed=seed,
             strict=strict,
+            animations=animations,
+            fps=fps,
             height_m=height_m,
             joint_naming=joint_naming,
             output_format=output_format,

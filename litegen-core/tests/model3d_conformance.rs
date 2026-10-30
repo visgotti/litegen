@@ -200,3 +200,69 @@ fn fal_meshy_rig_takes_a_textured_glb_within_meshys_limits() {
     assert!(!m.params.contains_key("skeleton") && !m.params.contains_key("joint_naming"), "Meshy rigs humanoids with its own names");
     assert!((m.pricing.base_cost_usd - 0.20).abs() < 1e-9, "no animation is sent, so none is billed");
 }
+
+// ─── Animation rows (PixelGenie 3D doc §3C) ─────────────────────────────────
+
+fn animation_spec(m: &ModelSchema) -> &litegen::capabilities::ParamSpecAnimationList {
+    match m.params.get("animations") {
+        Some(ParamSpec::AnimationList(a)) => a,
+        other => panic!("{}: animations is {other:?}", m.id),
+    }
+}
+
+/// @see <https://developers.tripo3d.ai/en/docs/animations-retarget> (2026-10-30):
+/// input "The returned task_id of the rigged model."; animations "up to 5";
+/// the v2.5/v3.0 presets; `animate_in_place`. Price: "Animation Retarget / 10
+/// / animation".
+#[test]
+fn tripo_animate_offers_the_retarget_presets_on_tripos_own_rig() {
+    let reg = catalog();
+    let m = reg.get("tripo/animate").expect("tripo/animate");
+    assert_eq!(m.task, litegen::capabilities::ModelTask::Animate);
+    assert!(source_spec(m).requires_skin);
+    let a = animation_spec(m);
+    assert_eq!(a.max_items, 5);
+    assert_eq!(a.in_place, litegen::capabilities::InPlaceMode::Native, "animate_in_place");
+    assert!(a.text_to_motion.is_none(), "Tripo documents no text-to-motion");
+    let ids: Vec<&str> = a.presets.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(ids.len(), 16);
+    for id in ["preset:idle", "preset:walk", "preset:slash", "preset:quadruped:walk", "preset:aquatic:march"] {
+        assert!(ids.contains(&id), "{id}");
+    }
+    assert!((m.pricing.base_cost_usd - 0.10).abs() < 1e-9);
+    assert_eq!(m.native_orientation.as_ref().map(|o| o.front.as_str()), Some("source"));
+}
+
+/// @see <https://docs.meshy.ai/en/api/animation> (2026-10-30): action_ids "1
+/// to 10 … with no repeats"; no in-place flag; post_process change_fps.
+/// @see <https://docs.meshy.ai/en/api/rigging>: GLB, "100 MB as a data URI",
+/// "at most 320,000 faces"; animation_type biped | quadruped (OpenAPI).
+#[test]
+fn meshy_rig_and_animate_take_what_meshys_endpoints_accept() {
+    let reg = catalog();
+    let rig = reg.get("meshy/rig").expect("meshy/rig");
+    let src = source_spec(rig);
+    assert_eq!((src.formats.as_slice(), src.max_bytes, src.max_faces, src.requires_texture), (["glb".to_string()].as_slice(), Some(100_000_000), Some(320_000), true));
+    assert_eq!(string_enum(rig, "skeleton"), ["humanoid", "quadruped"]);
+    assert!(matches!(rig.params.get("height_m"), Some(ParamSpec::Float(_))));
+    let anim = reg.get("meshy/animate").expect("meshy/animate");
+    let a = animation_spec(anim);
+    assert_eq!(a.max_items, 10);
+    assert_eq!(a.in_place, litegen::capabilities::InPlaceMode::Litegen, "Meshy has no in-place flag");
+    assert!(a.presets.iter().all(|p| p.id.parse::<u32>().is_ok() && p.label.is_some()), "library ids, with Meshy's names");
+    for (id, canonical) in [("0", "idle"), ("4", "attack_melee"), ("8", "death")] {
+        let p = a.presets.iter().find(|p| p.id == id).unwrap();
+        assert_eq!(p.canonical.as_deref(), Some(canonical), "{id}");
+    }
+}
+
+#[test]
+fn every_animate_model_keeps_its_sources_orientation_or_proves_its_own() {
+    // An animate model hands back the rig it was given; claiming fixed axes
+    // for it would be a guess about the caller's mesh.
+    let reg = catalog();
+    for m in model3d(&reg).into_iter().filter(|m| m.task == litegen::capabilities::ModelTask::Animate) {
+        let o = m.native_orientation.as_ref().unwrap_or_else(|| panic!("{}: no native_orientation", m.id));
+        assert_eq!((o.up.as_str(), o.front.as_str()), ("source", "source"), "{}", m.id);
+    }
+}

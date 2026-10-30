@@ -1890,6 +1890,7 @@ mod model3d_router_tests {
             texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
+            animations: Vec::new(), fps: None,
             skeleton: None, joint_naming: None, height_m: None, preflight: None,
         };
         let refs = crate::proxy::materializer::MaterializedRequest {
@@ -2023,6 +2024,7 @@ mod model3d_router_tests {
             texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
+            animations: Vec::new(), fps: None,
             skeleton: None, joint_naming: None, height_m: None, preflight: None,
         };
         let refs = crate::proxy::materializer::MaterializedRequest {

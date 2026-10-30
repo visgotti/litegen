@@ -3,7 +3,7 @@
 //! what lets a client send a superset of params without knowing which model
 //! supports which knob.
 
-use litegen::api::middleware::validator::validate_model3d;
+use litegen::api::middleware::validator::{validate_model3d, ValidationError};
 use litegen::proxy::model3d_convert::is_derivable;
 use litegen::capabilities::*;
 use litegen::types::*;
@@ -52,6 +52,7 @@ fn req(strict: bool) -> Model3dGenerationRequest {
         symmetry: None, topology: None, rig: None,
         skeleton: None, joint_naming: None, height_m: None,
         source_model: None,
+        animations: None, fps: None,
     }
 }
 
@@ -452,12 +453,25 @@ fn every_3d_param() -> Vec<(&'static str, Setter, IsSet)> {
         ("skeleton", |r| r.skeleton = Some("humanoid".into()), |r| r.skeleton.is_some()),
         ("joint_naming", |r| r.joint_naming = Some("vrm".into()), |r| r.joint_naming.is_some()),
         ("height_m", |r| r.height_m = Some(1.8), |r| r.height_m.is_some()),
+        ("animations", |r| r.animations = Some(vec![clip("walk", Some("walk"), None)]), |r| r.animations.is_some()),
+        ("fps", |r| r.fps = Some(30), |r| r.fps.is_some()),
         ("negative_prompt", |r| r.base.negative_prompt = Some("blurry".into()), |r| r.base.negative_prompt.is_some()),
     ]
 }
 
-/// The params only a rig declares (3D doc §3B).
-const RIG_PARAMS: [&str; 3] = ["skeleton", "joint_naming", "height_m"];
+/// The params only a rig or an animation declares (3D doc §3B, §3C).
+const RIG_PARAMS: [&str; 5] = ["skeleton", "joint_naming", "height_m", "animations", "fps"];
+
+fn clip(name: &str, preset: Option<&str>, prompt: Option<&str>) -> AnimationRequest {
+    AnimationRequest {
+        name: name.into(),
+        preset: preset.map(str::to_string),
+        prompt: prompt.map(str::to_string),
+        duration_s: None,
+        in_place: None,
+        loop_requested: None,
+    }
+}
 
 #[test]
 fn every_3d_param_is_refused_in_strict_and_dropped_in_lax_where_undeclared() {
@@ -507,7 +521,7 @@ fn rig_request(strict: bool) -> Model3dGenerationRequest {
 #[test]
 fn the_rig_params_pass_through_on_the_rig_that_declares_them() {
     let schema = real("mock/rig-3d");
-    for (param, set, is_set) in every_3d_param().into_iter().filter(|(p, _, _)| RIG_PARAMS.contains(p)) {
+    for (param, set, is_set) in every_3d_param().into_iter().filter(|(p, _, _)| RIG_PARAMS[..3].contains(p)) {
         let mut r = rig_request(true);
         set(&mut r);
         let out = validate_model3d(&schema, r).unwrap_or_else(|e| panic!("{param}: {e:?}"));
@@ -538,6 +552,95 @@ fn a_height_outside_the_rigs_range_is_refused() {
         let err = validate_model3d(&schema, r).unwrap_err();
         assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_out_of_range", Some("height_m")), "{h}");
     }
+}
+
+// ─── animations (3D doc §3C) ─────────────────────────────────────────────────
+
+fn animate_request(clips: Vec<AnimationRequest>) -> Model3dGenerationRequest {
+    let mut r = rig_request(true);
+    r.base.model = "mock/animate-3d".into();
+    r.animations = Some(clips);
+    r
+}
+
+fn animate_err(clips: Vec<AnimationRequest>) -> ValidationError {
+    validate_model3d(&real("mock/animate-3d"), animate_request(clips)).unwrap_err()
+}
+
+#[test]
+fn a_clip_names_a_canonical_preset_or_one_of_the_models_own() {
+    let out = validate_model3d(
+        &real("mock/animate-3d"),
+        animate_request(vec![clip("walk", Some("walk"), None), clip("wave", Some("mock:wave"), None)]),
+    )
+    .unwrap();
+    assert_eq!(out.request.animations.as_ref().unwrap().len(), 2);
+    let err = animate_err(vec![clip("moon", Some("moonwalk"), None)]);
+    assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_enum_mismatch", Some("animations")), "{}", err.message);
+}
+
+#[test]
+fn clip_names_are_unique_and_well_formed() {
+    for clips in [
+        vec![clip("walk", Some("walk"), None), clip("walk", Some("run"), None)],
+        vec![clip("", Some("walk"), None)],
+        vec![clip(&"a".repeat(65), Some("walk"), None)],
+        vec![clip("walk cycle", Some("walk"), None)],
+        vec![clip("walk/1", Some("walk"), None)],
+    ] {
+        let err = animate_err(clips.clone());
+        assert_eq!((err.code.as_str(), err.param.as_deref()), ("animation_name_invalid", Some("animations")), "{clips:?}");
+    }
+    assert!(validate_model3d(&real("mock/animate-3d"), animate_request(vec![clip("Walk_01.v-2", Some("walk"), None)])).is_ok());
+}
+
+#[test]
+fn a_clip_is_exactly_one_of_a_preset_or_a_prompt() {
+    for c in [clip("both", Some("walk"), Some("a cheer")), clip("neither", None, None)] {
+        let err = animate_err(vec![c]);
+        assert_eq!((err.code.as_str(), err.param.as_deref()), ("animation_clip_invalid", Some("animations")));
+    }
+    let mut timed = clip("walk", Some("walk"), None);
+    timed.duration_s = Some(3.0);
+    assert_eq!(animate_err(vec![timed]).code, "animation_clip_invalid", "a preset's length is the preset's");
+}
+
+#[test]
+fn a_prompt_clip_lasts_within_the_models_text_to_motion_range() {
+    let mut cheer = clip("cheer", None, Some("raises both fists and cheers"));
+    cheer.duration_s = Some(3.0);
+    assert!(validate_model3d(&real("mock/animate-3d"), animate_request(vec![cheer.clone()])).is_ok());
+    for d in [0.5, 10.5, f64::NAN] {
+        cheer.duration_s = Some(d);
+        let err = animate_err(vec![cheer.clone()]);
+        assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_out_of_range", Some("animations")), "{d}");
+    }
+}
+
+#[test]
+fn a_prompt_clip_needs_a_model_that_makes_motion_from_text() {
+    let mut schema = real("mock/animate-3d");
+    if let Some(ParamSpec::AnimationList(a)) = schema.params.get_mut("animations") {
+        a.text_to_motion = None;
+    }
+    let err = validate_model3d(&schema, animate_request(vec![clip("cheer", None, Some("cheers"))])).unwrap_err();
+    assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_unsupported", Some("animations")));
+}
+
+#[test]
+fn a_clip_list_is_never_empty_nor_longer_than_the_model_allows() {
+    assert_eq!(animate_err(vec![]).code, "param_out_of_range");
+    let six: Vec<AnimationRequest> = (0..6).map(|i| clip(&format!("c{i}"), Some("walk"), None)).collect();
+    let err = animate_err(six);
+    assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_too_many", Some("animations")));
+}
+
+#[test]
+fn fps_on_an_animation_stays_in_its_range() {
+    let mut r = animate_request(vec![clip("walk", Some("walk"), None)]);
+    r.fps = Some(61);
+    let err = validate_model3d(&real("mock/animate-3d"), r).unwrap_err();
+    assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_out_of_range", Some("fps")));
 }
 
 #[test]

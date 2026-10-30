@@ -1705,6 +1705,44 @@ export interface components {
             schema: components["schemas"]["ModelSchema"];
             source: components["schemas"]["ModelSource"];
         };
+        AnimationPresetSpec: {
+            /** @description The canonical preset it plays, when it has one. */
+            canonical?: string | null;
+            /** @description The vendor's own id for the clip. */
+            id: string;
+            /** @description The vendor's own name for it, for people choosing one. */
+            label?: string | null;
+            /** @description Whether the vendor made it to loop. */
+            loopable?: boolean;
+        };
+        /** @description One clip an `animate` request asks for (3D doc §3C). */
+        AnimationRequest: {
+            /**
+             * Format: double
+             * @description A prompt clip's length in seconds, within the model's
+             *     `text_to_motion` range.
+             */
+            duration_s?: number | null;
+            /** @description Keep the root in place horizontally (vertical movement stays). */
+            in_place?: boolean | null;
+            /**
+             * @description A loop hint, recorded in the manifest; nothing is resampled to force a
+             *     loop.
+             */
+            loop?: boolean | null;
+            /**
+             * @description The clip's name in the delivered file: unique within the request, 1–64
+             *     characters of `[A-Za-z0-9_.-]`.
+             */
+            name: string;
+            /**
+             * @description A canonical preset (`Model3dAnimationPreset`) or one of the model's
+             *     own preset ids. Exactly one of `preset` and `prompt`.
+             */
+            preset?: string | null;
+            /** @description Text-to-motion, where the model offers it. */
+            prompt?: string | null;
+        };
         /** @description API key for authenticating with the LiteGen proxy. */
         ApiKey: {
             app_id?: string | null;
@@ -2369,6 +2407,11 @@ export interface components {
             /** @description URL of the generated image (if response_format=url). */
             url?: string | null;
         };
+        /**
+         * @description Who keeps a clip in place.
+         * @enum {string}
+         */
+        InPlaceMode: "litegen" | "native";
         Invitation: {
             /** Format: date-time */
             created_at: string;
@@ -2461,6 +2504,13 @@ export interface components {
             role: string;
             user_id: string;
         };
+        /**
+         * @description The canonical animation presets (`animations[].preset`, 3D doc §3C). A
+         *     model maps the ones it plays onto its own preset ids; a request may name
+         *     either.
+         * @enum {string}
+         */
+        Model3dAnimationPreset: "idle" | "walk" | "run" | "jump" | "fall" | "attack_melee" | "attack_ranged" | "cast" | "hurt" | "death" | "crouch" | "climb" | "turn";
         /**
          * @description One file produced by a 3D generation, re-hosted on litegen storage (the
          *     app's own bucket when it configured one).
@@ -2562,6 +2612,16 @@ export interface components {
          *     false. A supported param with a bad VALUE is refused in both modes.
          */
         Model3dGenerationRequest: components["schemas"]["BaseGenerationRequest"] & {
+            /**
+             * @description The clips to make, in order: one glTF animation per entry, named
+             *     exactly its `name`.
+             */
+            animations?: components["schemas"]["AnimationRequest"][] | null;
+            /**
+             * Format: int32
+             * @description Frames per second of the delivered clips.
+             */
+            fps?: number | null;
             /**
              * Format: double
              * @description The character's height in metres, for a vendor that scales its rig.
@@ -2823,14 +2883,22 @@ export interface components {
         /**
          * @description The axes a 3D model's vendor builds its meshes along (3D doc §2 rule 3).
          *     Where they differ from glTF's (+Y up, +Z front), litegen adds a root
-         *     rotation and the manifest says `oriented_by: "litegen"`.
+         *     rotation and the manifest says `oriented_by: "litegen"`. An operation that
+         *     hands back its source's own geometry says `source` for both: its output
+         *     faces wherever the source did.
          */
         NativeOrientation: {
             /** @description What showed it: the run, sample file or page. */
             evidence: string;
-            /** @description The axis the asset's front faces, at right angles to `up`. */
+            /**
+             * @description The axis the asset's front faces, at right angles to `up`; `source`
+             *     with `up`.
+             */
             front: string;
-            /** @description `+x`, `-x`, `+y`, `-y`, `+z` or `-z`. */
+            /**
+             * @description `+x`, `-x`, `+y`, `-y`, `+z` or `-z`; `source` on an operation that
+             *     keeps its source's axes.
+             */
             up: string;
         };
         OrgAllowedModels: {
@@ -3030,7 +3098,29 @@ export interface components {
         }) | (components["schemas"]["ParamSpecSourceModel"] & {
             /** @enum {string} */
             kind: "source_model";
+        }) | (components["schemas"]["ParamSpecAnimationList"] & {
+            /** @enum {string} */
+            kind: "animation_list";
         });
+        /** @description The clips an `animate` model makes (`animations`, 3D doc §3C). */
+        ParamSpecAnimationList: {
+            description?: string | null;
+            /**
+             * @description How `in_place: true` is honoured: by the vendor's own flag, or by
+             *     litegen removing the root's horizontal travel.
+             */
+            in_place?: components["schemas"]["InPlaceMode"];
+            label?: string | null;
+            /** @description The most clips one request may ask for. */
+            max_items: number;
+            /**
+             * @description The model's presets: its own ids, each optionally tagged with the
+             *     canonical preset (`Model3dAnimationPreset`) it plays. A request names
+             *     either.
+             */
+            presets?: components["schemas"]["AnimationPresetSpec"][];
+            text_to_motion?: null | components["schemas"]["TextToMotionSpec"];
+        };
         ParamSpecAspectRatio: {
             allowed: string[];
             default?: string | null;
@@ -3735,6 +3825,12 @@ export interface components {
             group?: string | null;
             /** Format: int64 */
             requests: number;
+        };
+        TextToMotionSpec: {
+            /** Format: double */
+            max_duration_s: number;
+            /** Format: double */
+            min_duration_s: number;
         };
         TransferOwnerRequest: {
             new_owner_id: string;

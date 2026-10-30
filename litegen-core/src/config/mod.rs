@@ -635,6 +635,7 @@ fn load_provider_env_overrides(builder: &mut config::ConfigBuilder<config::build
         // base to https://openapi.tripo3d.com/v3.
         ("TRIPO_API_KEY", "providers.tripo.api_key"),
         ("TRIPO_API_BASE", "providers.tripo.api_base"),
+        ("MESHY_API_KEY", "providers.meshy.api_key"),
         // ── Signing-scheme vendors (key_id/key_secret/region) ──
         ("KLING_ACCESS_KEY", "providers.kling.key_id"),
         ("KLING_SECRET_KEY", "providers.kling.key_secret"),

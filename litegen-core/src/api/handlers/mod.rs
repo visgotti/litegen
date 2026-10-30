@@ -1007,6 +1007,13 @@ pub async fn generate_3d(
         skeleton: validated.request.skeleton.clone(),
         joint_naming: validated.request.joint_naming.clone(),
         height_m: validated.request.height_m,
+        animations: match (validated.request.animations.as_deref(), validated.schema.params.get("animations")) {
+            (Some(clips), Some(crate::capabilities::ParamSpec::AnimationList(spec))) => {
+                crate::providers::AnimationClip::resolve(clips, spec)
+            }
+            _ => Vec::new(),
+        },
+        fps: validated.request.fps,
         extra: validated.request.base.extra.clone(),
         source: None,
         preflight: None,
@@ -4057,12 +4064,23 @@ async fn resolve_source_model(
         .filter(|g| g.provider == provider)
         .filter(|g| g.metadata.as_ref().and_then(|m| m.get("vendor_account")).and_then(|v| v.as_str()) == Some(vendor_account))
         .and_then(|g| g.provider_job_id.clone());
+    // Where the source's delivered mesh faces, by its own manifest: an
+    // operation that keeps its source's axes faces there too.
+    let front = origin.as_ref().and_then(|g| {
+        g.metadata.as_ref()?["assets"]
+            .as_array()?
+            .iter()
+            .find(|a| a["kind"] == "mesh")?["scene"]["front"]
+            .as_str()
+            .map(str::to_string)
+    });
     let record = serde_json::json!({
         "generation_id": origin.as_ref().map(|g| g.id.clone()),
         "sha256": prepared.sha256,
         "format": prepared.format,
         "received_format": prepared.received_format,
         "facts": prepared.facts,
+        "front": front,
     });
     let input = crate::providers::SourceInput {
         bytes: prepared.bytes,
@@ -4070,6 +4088,7 @@ async fn resolve_source_model(
         sha256: prepared.sha256,
         facts: prepared.facts,
         vendor_task_id,
+        front,
         delivered: Default::default(),
     };
     Ok((input, record))

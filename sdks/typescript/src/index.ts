@@ -154,6 +154,16 @@ export type Model3dSkeleton = components["schemas"]["Model3dSkeleton"];
 /** The joint names a rig is delivered with (`joint_naming`); `vendor` keeps the vendor's own. */
 export type Model3dJointNaming = components["schemas"]["Model3dJointNaming"];
 /**
+ * One clip an `animate` model makes (`animations[]`): exactly one of `preset`
+ * and `prompt`, delivered as a glTF animation named exactly `name`, in order.
+ */
+export type AnimationRequest = components["schemas"]["AnimationRequest"];
+/** The canonical presets; a model maps the ones it plays onto its own ids. */
+export type Model3dAnimationPreset = components["schemas"]["Model3dAnimationPreset"];
+/** An animate model's `params.animations`: its presets, limits and how it keeps clips in place. */
+export type ParamSpecAnimationList = components["schemas"]["ParamSpecAnimationList"];
+export type AnimationPresetSpec = components["schemas"]["AnimationPresetSpec"];
+/**
  * What a catalog model does (`task` on its schema, `capabilities.task` in the
  * listing): `generate`, or an operation on an existing asset such as `rig` or
  * `animate`, submitted to its modality's usual generation endpoint.

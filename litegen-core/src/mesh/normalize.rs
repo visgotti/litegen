@@ -224,6 +224,56 @@ pub struct TranscodeReport {
     pub dropped: Vec<String>,
 }
 
+/// Key every channel of animation `anim` at `fps`: evenly spaced from the
+/// clip's start, with its end kept, each value sampled from the source curve.
+/// Linear and step channels keep their interpolation; a cubic spline becomes
+/// linear through its samples. Whether anything changed: a clip already keyed
+/// so is left alone.
+pub fn resample(scene: &mut Scene, anim: usize, fps: u32) -> bool {
+    let Some(a) = scene.animations.get(anim) else { return false };
+    let Some((lo, hi)) = a.time_range() else { return false };
+    if fps == 0 || hi <= lo {
+        return false;
+    }
+    let step = 1.0 / fps as f64;
+    let intervals = (((hi - lo) as f64) / step).floor() as usize;
+    let mut times: Vec<f32> = (0..=intervals).map(|k| (lo as f64 + k as f64 * step) as f32).collect();
+    if times.last().is_some_and(|t| (hi - t).abs() > 1e-4) {
+        times.push(hi);
+    }
+    let on_grid = a.channels.iter().all(|c| {
+        c.times.len() == times.len() && c.times.iter().zip(&times).all(|(x, y)| (x - y).abs() < 1e-4)
+    });
+    if on_grid {
+        return false;
+    }
+    let targets: Vec<usize> = a
+        .channels
+        .iter()
+        .map(|c| scene.nodes.get(c.node).and_then(|n| n.mesh).map_or(0, |m| scene.meshes[m].target_count()))
+        .collect();
+    let a = &mut scene.animations[anim];
+    for (ch, targets) in a.channels.iter_mut().zip(targets) {
+        let stride = ch.stride(targets);
+        let values: Vec<f32> = times.iter().flat_map(|&t| super::pose::sample_channel(ch, t, stride)).collect();
+        ch.times = times.clone();
+        ch.values = values;
+        if ch.interpolation == Interpolation::CubicSpline {
+            ch.interpolation = Interpolation::Linear;
+        }
+    }
+    true
+}
+
+/// Remove clips that do not move: no keys, or every key at one instant (a
+/// pose, like the bind-pose clip Meshy ships in its rigged file). How many
+/// went.
+pub fn drop_static_animations(scene: &mut Scene) -> usize {
+    let before = scene.animations.len();
+    scene.animations.retain(|a| a.time_range().is_some_and(|(lo, hi)| hi - lo > 1e-6));
+    before - scene.animations.len()
+}
+
 /// Re-encode every WebP image as PNG: core glTF readers decode only PNG and
 /// JPEG, and a delivered file must need no extension to read. A KTX2 image
 /// (Basis Universal, which nothing in-process decodes) is dropped from the
@@ -381,6 +431,38 @@ mod tests {
         let after = super::super::inspect::inspect(&s).unwrap().animations[0].root_travel_m;
         assert!(after[0].abs() < 1e-5 && after[2].abs() < 1e-5, "{after:?}");
         assert!((after[1] - before[1]).abs() < 1e-5, "vertical movement is kept: {after:?} vs {before:?}");
+    }
+
+    #[test]
+    fn a_clip_is_rekeyed_at_the_asked_rate_and_left_alone_when_it_already_is() {
+        let mut s = marker();
+        s.animations.push(Animation {
+            name: Some("slide".into()),
+            channels: vec![Channel {
+                node: 0,
+                path: AnimPath::Translation,
+                interpolation: Interpolation::Linear,
+                times: vec![0.0, 1.0],
+                values: vec![0.0, 0.0, 0.0, 0.0, 0.0, 2.0],
+            }],
+        });
+        assert!(resample(&mut s, 0, 4));
+        let ch = &s.animations[0].channels[0];
+        assert_eq!(ch.times, [0.0, 0.25, 0.5, 0.75, 1.0]);
+        assert!((ch.values[3 * 2 + 2] - 1.0).abs() < 1e-6, "halfway, halfway there: {:?}", ch.values);
+        assert!(!resample(&mut s, 0, 4), "already keyed at 4 fps");
+    }
+
+    #[test]
+    fn static_clips_are_told_apart_from_motion() {
+        let mut s = marker();
+        let still = |name: &str, times: Vec<f32>| Animation {
+            name: Some(name.into()),
+            channels: vec![Channel { node: 0, path: AnimPath::Translation, interpolation: Interpolation::Linear, values: vec![0.0; 3 * times.len()], times }],
+        };
+        s.animations = vec![still("pose", vec![0.0]), still("walk", vec![0.0, 1.0])];
+        assert_eq!(drop_static_animations(&mut s), 1);
+        assert_eq!(s.animations.iter().map(|a| a.name.clone().unwrap()).collect::<Vec<_>>(), ["walk"]);
     }
 
     #[test]

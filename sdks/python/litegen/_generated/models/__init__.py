@@ -5,6 +5,8 @@ from .account_user import AccountUser
 from .add_member_request import AddMemberRequest
 from .admin_model_list_response import AdminModelListResponse
 from .admin_model_view import AdminModelView
+from .animation_preset_spec import AnimationPresetSpec
+from .animation_request import AnimationRequest
 from .api_key import ApiKey
 from .api_key_created_response import ApiKeyCreatedResponse
 from .api_key_detail import ApiKeyDetail
@@ -53,6 +55,7 @@ from .health_response import HealthResponse
 from .image_generation_request import ImageGenerationRequest
 from .image_generation_response import ImageGenerationResponse
 from .image_result import ImageResult
+from .in_place_mode import InPlaceMode
 from .invitation import Invitation
 from .invitation_view import InvitationView
 from .invite_request import InviteRequest
@@ -65,6 +68,7 @@ from .liveness_response import LivenessResponse
 from .login_request import LoginRequest
 from .media_type import MediaType
 from .member_view import MemberView
+from .model_3d_animation_preset import Model3DAnimationPreset
 from .model_3d_asset import Model3DAsset
 from .model_3d_asset_kind import Model3DAssetKind
 from .model_3d_convert_formats import Model3DConvertFormats
@@ -110,6 +114,7 @@ from .paginated_response_webhook_delivery import PaginatedResponseWebhookDeliver
 from .paginated_response_webhook_delivery_data_item import (
     PaginatedResponseWebhookDeliveryDataItem,
 )
+from .param_spec_animation_list import ParamSpecAnimationList
 from .param_spec_aspect_ratio import ParamSpecAspectRatio
 from .param_spec_bool import ParamSpecBool
 from .param_spec_float import ParamSpecFloat
@@ -180,6 +185,7 @@ from .spend_log_entry import SpendLogEntry
 from .spend_logs_response import SpendLogsResponse
 from .spend_report_response import SpendReportResponse
 from .spend_report_row import SpendReportRow
+from .text_to_motion_spec import TextToMotionSpec
 from .transfer_owner_request import TransferOwnerRequest
 from .update_api_key_request import UpdateApiKeyRequest
 from .update_app_request import UpdateAppRequest
@@ -199,6 +205,8 @@ __all__ = (
     "AddMemberRequest",
     "AdminModelListResponse",
     "AdminModelView",
+    "AnimationPresetSpec",
+    "AnimationRequest",
     "ApiKey",
     "ApiKeyCreatedResponse",
     "ApiKeyDetail",
@@ -247,6 +255,7 @@ __all__ = (
     "ImageGenerationRequest",
     "ImageGenerationResponse",
     "ImageResult",
+    "InPlaceMode",
     "Invitation",
     "InvitationView",
     "InviteRequest",
@@ -259,6 +268,7 @@ __all__ = (
     "LoginRequest",
     "MediaType",
     "MemberView",
+    "Model3DAnimationPreset",
     "Model3DAsset",
     "Model3DAssetKind",
     "Model3DConvertFormats",
@@ -296,6 +306,7 @@ __all__ = (
     "PaginatedResponseRequestLogDataItem",
     "PaginatedResponseWebhookDelivery",
     "PaginatedResponseWebhookDeliveryDataItem",
+    "ParamSpecAnimationList",
     "ParamSpecAspectRatio",
     "ParamSpecBool",
     "ParamSpecFloat",
@@ -366,6 +377,7 @@ __all__ = (
     "SpendLogsResponse",
     "SpendReportResponse",
     "SpendReportRow",
+    "TextToMotionSpec",
     "TransferOwnerRequest",
     "UpdateApiKeyRequest",
     "UpdateAppRequest",

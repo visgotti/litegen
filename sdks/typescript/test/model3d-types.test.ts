@@ -9,6 +9,8 @@ import type {
   ModelInfo,
   ModelSchema,
   ModelTask,
+  AnimationRequest,
+  Model3dAnimationPreset,
   Model3dJointNaming,
   Model3dSkeleton,
   NativeOrientation,
@@ -73,6 +75,14 @@ describe("3D vocabulary types", () => {
   it("exposes the asset kinds as constants matching the schema", () => {
     expectTypeOf<Model3dAssetKind>().toEqualTypeOf<Model3dAsset["kind"]>();
     expect(Object.values(Model3dAssetKind)).toEqual(["mesh", "texture", "preview", "original"]);
+  });
+
+  it("types an animate request's clips", () => {
+    expectTypeOf<Model3dGenerationRequest["animations"]>().toEqualTypeOf<AnimationRequest[] | null | undefined>();
+    expectTypeOf<Model3dGenerationRequest["fps"]>().toEqualTypeOf<number | null | undefined>();
+    const walk: AnimationRequest = { name: "walk", preset: "walk", in_place: true, loop: true };
+    const preset: Model3dAnimationPreset = "attack_melee";
+    expect([walk.name, preset]).toEqual(["walk", "attack_melee"]);
   });
 
   it("types the rig params from their vocabularies", () => {

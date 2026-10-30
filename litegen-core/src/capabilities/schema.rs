@@ -287,6 +287,60 @@ pub enum ParamSpec {
     AspectRatio(ParamSpecAspectRatio),
     Seed(ParamSpecSeed),
     SourceModel(ParamSpecSourceModel),
+    AnimationList(ParamSpecAnimationList),
+}
+
+/// The clips an `animate` model makes (`animations`, 3D doc §3C).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct ParamSpecAnimationList {
+    /// The most clips one request may ask for.
+    pub max_items: usize,
+    /// The model's presets: its own ids, each optionally tagged with the
+    /// canonical preset (`Model3dAnimationPreset`) it plays. A request names
+    /// either.
+    #[serde(default)]
+    pub presets: Vec<AnimationPresetSpec>,
+    /// Present when the model makes clips from a prompt (text-to-motion).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_to_motion: Option<TextToMotionSpec>,
+    /// How `in_place: true` is honoured: by the vendor's own flag, or by
+    /// litegen removing the root's horizontal travel.
+    #[serde(default)]
+    pub in_place: InPlaceMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct AnimationPresetSpec {
+    /// The vendor's own id for the clip.
+    pub id: String,
+    /// The vendor's own name for it, for people choosing one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The canonical preset it plays, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical: Option<String>,
+    /// Whether the vendor made it to loop.
+    #[serde(default)]
+    pub loopable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct TextToMotionSpec {
+    pub min_duration_s: f64,
+    pub max_duration_s: f64,
+}
+
+/// Who keeps a clip in place.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum InPlaceMode {
+    /// litegen removes the root's horizontal travel.
+    #[default]
+    Litegen,
+    /// The vendor's own flag (Tripo's `animate_in_place`).
+    Native,
 }
 
 // ─── SizeSpec ───────────────────────────────────────────────────────────────
@@ -357,12 +411,16 @@ pub enum RefProviderFormat {
 
 /// The axes a 3D model's vendor builds its meshes along (3D doc §2 rule 3).
 /// Where they differ from glTF's (+Y up, +Z front), litegen adds a root
-/// rotation and the manifest says `oriented_by: "litegen"`.
+/// rotation and the manifest says `oriented_by: "litegen"`. An operation that
+/// hands back its source's own geometry says `source` for both: its output
+/// faces wherever the source did.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct NativeOrientation {
-    /// `+x`, `-x`, `+y`, `-y`, `+z` or `-z`.
+    /// `+x`, `-x`, `+y`, `-y`, `+z` or `-z`; `source` on an operation that
+    /// keeps its source's axes.
     pub up: String,
-    /// The axis the asset's front faces, at right angles to `up`.
+    /// The axis the asset's front faces, at right angles to `up`; `source`
+    /// with `up`.
     pub front: String,
     /// What showed it: the run, sample file or page.
     pub evidence: String,
@@ -501,6 +559,8 @@ pub const KNOWN_PARAMS: &[&str] = &[
     "skeleton",
     "joint_naming",
     "height_m",
+    // Animation (3D doc §3C); `fps` is shared with video.
+    "animations",
 ];
 
 /// The `ParamSpec` kind(s) a canonical param may be declared with: exactly the
@@ -523,6 +583,7 @@ pub fn canonical_param_kinds(name: &str) -> &'static [&'static str] {
         "output_formats" => &["string_array"],
         "output_format" | "symmetry" | "topology" | "skeleton" | "joint_naming" => &["string"],
         "height_m" => &["float"],
+        "animations" => &["animation_list"],
         "texture" | "pbr" | "rig" => &["bool"],
         "target_polycount" => &["int"],
         "source_model" => &["source_model"],
@@ -543,6 +604,7 @@ impl ParamSpec {
             ParamSpec::AspectRatio(_) => "aspect_ratio",
             ParamSpec::Seed(_) => "seed",
             ParamSpec::SourceModel(_) => "source_model",
+            ParamSpec::AnimationList(_) => "animation_list",
         }
     }
 }

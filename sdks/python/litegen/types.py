@@ -50,6 +50,13 @@ Model3dSkeleton = Literal[
 Model3dJointNaming = Literal["vendor", "vrm", "mixamo", "unity", "unreal"]
 """The joint names a rig is delivered with; ``vendor`` keeps the vendor's own."""
 
+Model3dAnimationPreset = Literal[
+    "idle", "walk", "run", "jump", "fall", "attack_melee", "attack_ranged",
+    "cast", "hurt", "death", "crouch", "climb", "turn",
+]
+"""The canonical animation presets. A model maps the ones it plays onto its own
+preset ids (``params.animations.presets``); a clip may name either."""
+
 Model3dAssetKind = Literal["mesh", "texture", "preview", "original"]
 """What a :class:`Model3dAsset` is: the mesh itself, a texture map, a preview
 render, or ``original`` — the vendor's own file, kept beside a mesh litegen
@@ -118,6 +125,25 @@ class SourceRef(TypedDict):
     format: NotRequired[Model3dFormat | None]
 
 
+class AnimationRequest(TypedDict):
+    """One clip an ``animate`` model makes: exactly one of ``preset`` and
+    ``prompt``. Delivered as a glTF animation named exactly ``name``, in
+    request order."""
+
+    name: str
+    """Unique within the request, 1–64 characters of ``[A-Za-z0-9_.-]``."""
+    preset: NotRequired[str | None]
+    """A :data:`Model3dAnimationPreset` or one of the model's own preset ids."""
+    prompt: NotRequired[str | None]
+    """Text-to-motion, where the model offers it."""
+    duration_s: NotRequired[float | None]
+    """A prompt clip's length, within the model's ``text_to_motion`` range."""
+    in_place: NotRequired[bool | None]
+    """Keep the root in place horizontally; the manifest says who did."""
+    loop: NotRequired[bool | None]
+    """A loop hint, recorded in the manifest."""
+
+
 class Model3dGenerateParams(TypedDict, total=False):
     """Body of ``POST /v1/models3d/generations``, and of ``POST /v1/models3d/cost``,
     which prices the same request without starting a job.
@@ -182,6 +208,10 @@ class Model3dGenerateParams(TypedDict, total=False):
     """The joint names to deliver the rig with (rig models)."""
     height_m: float | None
     """The character's height in metres, where the rig model takes one."""
+    animations: list[AnimationRequest] | None
+    """The clips an ``animate`` model makes, in order."""
+    fps: int | None
+    """Frames per second of the delivered clips."""
 
 
 # ─── Responses ───────────────────────────────────────────────────────────────

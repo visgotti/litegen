@@ -1,11 +1,14 @@
 // Tripo (VAST AI) — the v3 API docs, every page served as a markdown twin
 // (`<page>.md`). Carried: the rig (POST /animations/rig, after the free
-// POST /animations/rig-check). The vendor ids are the rig `model` versions the
-// adapter sends — mapping mirrors litegen-core/src/providers/model3d/tripo.rs
-// `rig_model`: v3.0 for humanoids and `others`, v2.5 for creatures. Ids come
-// only from the code-formatted values opening the `### model` section's list
-// items, so versions named in prose are not counted. The price page is
-// server-rendered HTML; its credit lines are snapshotted for the rig family.
+// POST /animations/rig-check) and the retarget (POST /animations/retarget).
+// The rig's vendor ids are the rig `model` versions the adapter sends —
+// mapping mirrors litegen-core/src/providers/model3d/tripo.rs `rig_model`:
+// v3.0 for humanoids and `others`, v2.5 for creatures — read only from the
+// code-formatted values opening the `### model` section's list items. The
+// retarget's are the preset ids the catalog row offers, read from the
+// `### animation` section's bullets for v2.5/v3.0 rigs (the v1.0 rig's
+// `preset:biped:*` list is acknowledged). The price page is server-rendered
+// HTML; its credit lines are snapshotted.
 
 const DOCS = 'https://developers.tripo3d.ai/en/docs';
 const VERSION = /^v\d+\.\d+-\d{8}$/;
@@ -39,6 +42,12 @@ export default {
   provider: 'tripo',
   models: {
     'tripo/rig': ['v3.0-20260909', 'v2.5-20260210'],
+    'tripo/animate': [
+      'preset:idle', 'preset:walk', 'preset:run', 'preset:dive', 'preset:climb', 'preset:jump',
+      'preset:slash', 'preset:shoot', 'preset:hurt', 'preset:fall', 'preset:turn',
+      'preset:quadruped:walk', 'preset:hexapod:walk', 'preset:octopod:walk',
+      'preset:serpentine:march', 'preset:aquatic:march',
+    ],
   },
   sources: [
     {
@@ -47,6 +56,19 @@ export default {
       expect: 'text',
       extract: (md) => listed(section(md, 'model')).filter((id) => VERSION.test(id)),
       snapshot: (md) => params(md, ['model', 'rig_type', 'spec', 'out_format']),
+    },
+    {
+      key: 'retarget',
+      url: `${DOCS}/animations-retarget.md`,
+      expect: 'text',
+      // Every code-formatted preset id in the `### animation` section: the
+      // v2.5/v3.0 bullets and the v1.0 run-on list.
+      extract: (md) => [...section(md, 'animation').matchAll(/`(preset:[\w:.-]+)`/g)].map((m) => m[1]),
+      snapshot: (md) => {
+        const animation = section(md, 'animation');
+        const v3 = [...animation.matchAll(/^- [^:\n]+: (.+)$/gm)].map((m) => m[1].trim()).join('\n');
+        return `presets (v2.5/v3.0):\n${v3}\n` + params(md, ['out_format']) + `animate_in_place: ${/### animate_in_place/.test(md)}\n`;
+      },
     },
     {
       key: 'rig-check',
@@ -82,6 +104,7 @@ export default {
     },
   ],
   acknowledged: [
+    { pattern: /^preset:biped:/, reason: 'skipped 2026-10-30: the v1.0 rig model\'s 90+ biped presets; tripo/rig makes v2.5/v3.0 rigs, which take the preset: ids carried' },
     { id: 'v1.0-20240301', reason: 'skipped 2026-10-30: biped-only legacy rig model (Tripo\'s default); v3.0-20260909 is "recommended for humanoid characters" and takes every spec' },
   ],
   untyped: {},

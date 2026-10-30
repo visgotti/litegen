@@ -37,13 +37,10 @@ pub struct NativeOrientationPlan {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ClipPlan {
     pub name: String,
-    /// Whether the clip must stay in place.
+    /// Whether the clip must stay in place. One that arrives in place was
+    /// made so by the vendor; one that does not, litegen holds.
     #[serde(default)]
     pub in_place: Option<bool>,
-    /// The vendor was asked for in-place output (Tripo's `animate_in_place`),
-    /// so a clip that arrives in place was made so by the vendor.
-    #[serde(default)]
-    pub vendor_in_place: bool,
     #[serde(default)]
     pub loop_requested: Option<bool>,
 }
@@ -68,6 +65,9 @@ pub struct DeliveryPlan {
     /// The skeleton the request asked the rig to be (`humanoid`, `quadruped`, …).
     #[serde(default)]
     pub skeleton: Option<String>,
+    /// The frame rate every clip is keyed at.
+    #[serde(default)]
+    pub fps: Option<u32>,
 }
 
 impl DeliveryPlan {
@@ -79,11 +79,25 @@ impl DeliveryPlan {
             } else {
                 extras.output_formats.clone()
             },
-            orientation: schema
-                .native_orientation
-                .as_ref()
-                .map(|o| NativeOrientationPlan { up: o.up.clone(), front: o.front.clone() }),
+            orientation: match schema.native_orientation.as_ref() {
+                // An operation that keeps its source's axes faces where the
+                // source's own manifest says it did — proven, or unverified.
+                Some(o) if o.up == "source" => extras
+                    .source
+                    .as_ref()
+                    .and_then(|s| s.front.as_deref())
+                    .filter(|f| *f == "+z")
+                    .map(|_| NativeOrientationPlan { up: "+y".into(), front: "+z".into() }),
+                Some(o) => Some(NativeOrientationPlan { up: o.up.clone(), front: o.front.clone() }),
+                None => None,
+            },
             skeleton: extras.skeleton.clone(),
+            clips: extras
+                .animations
+                .iter()
+                .map(|c| ClipPlan { name: c.name.clone(), in_place: c.in_place, loop_requested: c.loop_requested })
+                .collect(),
+            fps: extras.fps,
             ..Default::default()
         }
     }
@@ -274,8 +288,31 @@ pub fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
     }
     changed |= normalize::unique_node_names(&mut scene);
     changed |= normalize::rename_nodes(&mut scene, &plan.joint_renames);
+    // One clip per requested name, in order (3D doc §3C): a promise like the
+    // containers. A pose clip a vendor adds beside them is not one of them.
+    if !plan.clips.is_empty() {
+        if scene.animations.len() > plan.clips.len() && normalize::drop_static_animations(&mut scene) > 0 {
+            changed = true;
+        }
+        if scene.animations.len() != plan.clips.len() {
+            return Delivered {
+                fatal: Some(format!(
+                    "the provider returned {} clip(s) for the {} requested ({})",
+                    scene.animations.len(),
+                    plan.clips.len(),
+                    plan.clips.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")
+                )),
+                ..Default::default()
+            };
+        }
+    }
     let clip_names: Vec<String> = plan.clips.iter().map(|c| c.name.clone()).collect();
     changed |= normalize::name_animations(&mut scene, &clip_names);
+    if let Some(fps) = plan.fps {
+        for i in 0..scene.animations.len() {
+            changed |= normalize::resample(&mut scene, i, fps);
+        }
+    }
     let mut litegen_in_place = vec![false; scene.animations.len()];
     if let Ok(facts) = crate::mesh::inspect::inspect(&scene) {
         for (i, clip) in plan.clips.iter().enumerate() {
@@ -472,6 +509,7 @@ mod tests {
             texture: None, pbr: None, target_polycount: None, symmetry: None, topology: None, rig: None,
             skeleton: Some("quadruped".into()), joint_naming: None, height_m: None,
             extra: None, source: None, preflight: None,
+            animations: Vec::new(), fps: None,
         };
         let plan = DeliveryPlan::for_request(&schema, &extras);
         assert_eq!(plan.skeleton.as_deref(), Some("quadruped"));
@@ -479,6 +517,47 @@ mod tests {
         let skin = meshes(&deliver(vec![mesh("glb", rig)], &plan))[0].manifest.clone().unwrap().skin.unwrap();
         assert_eq!(skin.skeleton.as_deref(), Some("quadruped"));
         assert!(skin.humanoid.is_none(), "never a guess: {:?}", skin.humanoid);
+    }
+
+    /// The mock humanoid carrying `clips` (name, key times) on its hips.
+    fn animated(clips: &[(&str, &[f32])]) -> Vec<u8> {
+        use crate::mesh::scene::{AnimPath, Animation, Channel, Interpolation};
+        let mut s = crate::providers::model3d::humanoid::rigged_humanoid(&crate::providers::model3d::humanoid::MOCK_JOINTS);
+        for (name, times) in clips {
+            s.animations.push(Animation {
+                name: Some(name.to_string()),
+                channels: vec![Channel {
+                    node: 0,
+                    path: AnimPath::Translation,
+                    interpolation: Interpolation::Linear,
+                    times: times.to_vec(),
+                    values: times.iter().flat_map(|t| [0.0, 0.95, *t]).collect(),
+                }],
+            });
+        }
+        crate::mesh::glb::write_scene(&s).unwrap()
+    }
+
+    fn clip_plan(names: &[&str]) -> DeliveryPlan {
+        DeliveryPlan {
+            clips: names.iter().map(|n| ClipPlan { name: n.to_string(), in_place: Some(false), loop_requested: None }).collect(),
+            ..plan(&["glb"], Some(("+y", "+z")))
+        }
+    }
+
+    #[test]
+    fn a_vendor_returning_fewer_clips_than_asked_fails_the_delivery() {
+        let d = deliver(vec![mesh("glb", animated(&[("Armature|walk", &[0.0, 1.0])]))], &clip_plan(&["walk", "idle"]));
+        assert!(d.fatal.as_deref().is_some_and(|e| e.contains("1 clip(s) for the 2 requested")), "{:?}", d.fatal);
+    }
+
+    #[test]
+    fn a_pose_clip_beside_the_asked_ones_is_dropped_and_the_rest_named_in_order() {
+        let vendor = animated(&[("Armature|clip0|baselayer", &[0.0]), ("Armature|walk", &[0.0, 1.0]), ("Armature|run", &[0.0, 0.5])]);
+        let d = deliver(vec![mesh("glb", vendor)], &clip_plan(&["walk", "run"]));
+        assert!(d.fatal.is_none(), "{:?}", d.fatal);
+        let names: Vec<String> = meshes(&d)[0].manifest.as_ref().unwrap().animations.iter().map(|a| a.name.clone()).collect();
+        assert_eq!(names, ["walk", "run"]);
     }
 
     #[test]

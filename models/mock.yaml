@@ -449,6 +449,61 @@ models:
     extra_allowlist: []
     tags: [mock, test, rig]
 
+  - id: mock/animate-3d
+    provider: mock
+    media_type: model3d
+    task: animate
+    native_orientation:
+      up: source
+      front: source
+      evidence: the mock hands back its source mesh unchanged, plus clips (litegen-core/src/providers/model3d/mock.rs)
+    display_name: Mock Animate 3D
+    description: >-
+      Returns the rigged source plus one LINEAR clip per requested `name`, in
+      order — 1 s for a preset, `duration_s` for a prompt. The root travels
+      1 m along +Z unless the clip asks `in_place`; like Tripo's single flag,
+      the mock keeps clips in place itself only when every clip asks, and
+      otherwise litegen removes the travel. Keys at `fps` (30 by default).
+      Refuses an unrigged source (`source_not_rigged`) before anything runs.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: {}
+    prompt: { required: false, max_length: 0 }
+    params:
+      source_model:
+        kind: source_model
+        formats: [glb]
+        max_bytes: 52428800
+        requires_skin: true
+        label: Source mesh
+        description: The rigged mesh to animate.
+      animations:
+        kind: animation_list
+        max_items: 5
+        presets:
+          - { id: "mock:idle", canonical: idle, loopable: true }
+          - { id: "mock:walk", canonical: walk, loopable: true }
+          - { id: "mock:run", canonical: run, loopable: true }
+          - { id: "mock:wave" }
+        text_to_motion: { min_duration_s: 1, max_duration_s: 10 }
+        in_place: native
+        label: Animations
+        description: Clips to make, in order, each named as given.
+      fps:
+        kind: int
+        min: 1
+        max: 60
+        default: 30
+        label: Frames per second
+      output_formats:
+        kind: string_array
+        enum_values: [glb]
+        max_items: 1
+        default: [glb]
+        label: Output formats
+        description: Mesh containers. The mock emits glb; litegen derives the rest.
+    extra_allowlist: []
+    tags: [mock, test]
+
   - id: mock/turned-3d
     provider: mock
     media_type: model3d

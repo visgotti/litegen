@@ -368,8 +368,8 @@ specific to 3D:
   `multiview_to_3d`. Each needs its roles: `image_to_3d` needs an `init` role,
   and multiview needs at least two `view-*` roles
   (`every_3d_model_advertising_image_modes_declares_the_matching_ref_roles`).
-  A 3D row may not declare `size`, `fps`, `duration_seconds` or
-  `aspect_ratio`.
+  A 3D row may not declare `size`, `duration_seconds` or `aspect_ratio`,
+  and declares `fps` only beside `animations` (clips have a frame rate).
 - **Prompt.** Use `prompt.required: false` when the image modes need no
   prompt, and take `max_length` from the schema. An endpoint with no prompt
   field at all (TRELLIS) declares `max_length: 0`: strict callers then get

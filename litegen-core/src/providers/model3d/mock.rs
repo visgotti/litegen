@@ -44,6 +44,77 @@ const RIG_MODEL: &str = "mock/rig-3d";
 /// catalog row declares so, and litegen turns it to face +Z.
 const TURNED_MODEL: &str = "mock/turned-3d";
 
+/// The animation operation: the rigged source plus one clip per request entry.
+const ANIMATE_MODEL: &str = "mock/animate-3d";
+
+/// The rigged source plus one LINEAR clip per requested clip, in order,
+/// named `mock_clip_<i>` (litegen names them as asked). Over each clip the
+/// skeleton's root rises and falls 5 cm and travels 1 m along +Z — or holds
+/// still horizontally when EVERY clip asks to be in place, the way a vendor
+/// with one in-place flag (Tripo's `animate_in_place`) honours it. A preset
+/// clip lasts 1 s, a prompt clip its `duration_s`; keys at `fps`. Any clips
+/// the source carried are replaced.
+fn animate_source(
+    source: &crate::providers::SourceInput,
+    clips: &[crate::providers::AnimationClip],
+    fps: u32,
+) -> Result<Vec<u8>, ProviderError> {
+    use crate::mesh::scene::{AnimPath, Animation, Channel, Interpolation, Transform};
+    let format = crate::mesh::MeshFormat::parse(&source.format)
+        .ok_or_else(|| ProviderError::InvalidRequest(format!("mock/animate-3d cannot read '{}'", source.format)))?;
+    let mut scene = crate::mesh::read_scene(&source.bytes, format, &crate::mesh::package::NoSidecars)
+        .map_err(|e| ProviderError::InvalidRequest(format!("mock/animate-3d cannot read the source: {e}")))?
+        .scene;
+    let skin = scene.skins.first().ok_or_else(|| ProviderError::InvalidRequest("mock/animate-3d needs a rigged source".into()))?;
+    let root = skin.skeleton.or_else(|| skin.joints.first().copied()).ok_or_else(|| ProviderError::InvalidRequest("the source's skin has no joints".into()))?;
+    let base = match &scene.nodes[root].transform {
+        Transform::Trs { translation, .. } => *translation,
+        Transform::Matrix(m) => [m[12], m[13], m[14]],
+    };
+    // Travel is 1 m in the world: divided by the uniform scale above the root.
+    let mut parent_of = vec![None; scene.nodes.len()];
+    for (i, n) in scene.nodes.iter().enumerate() {
+        for &c in &n.children {
+            parent_of[c] = Some(i);
+        }
+    }
+    let mut scale_above = 1.0f64;
+    let mut at = parent_of[root];
+    while let Some(p) = at {
+        if let Transform::Trs { scale, .. } = &scene.nodes[p].transform {
+            scale_above *= scale[0];
+        }
+        at = parent_of[p];
+    }
+    let travel = if clips.iter().all(|c| c.in_place == Some(true)) { 0.0 } else { 1.0 / scale_above };
+    let fps = fps.max(1);
+    scene.animations = clips
+        .iter()
+        .enumerate()
+        .map(|(i, clip)| {
+            let duration = clip.duration_s.unwrap_or(1.0);
+            let keys = ((duration * fps as f64).round() as usize).max(1);
+            let times: Vec<f32> = (0..=keys).map(|k| (k as f64 / fps as f64) as f32).collect();
+            let values: Vec<f32> = times
+                .iter()
+                .flat_map(|&t| {
+                    let u = t as f64 / duration;
+                    [
+                        base[0] as f32,
+                        (base[1] + 0.05 / scale_above * (std::f64::consts::TAU * u).sin()) as f32,
+                        (base[2] + travel * u) as f32,
+                    ]
+                })
+                .collect();
+            Animation {
+                name: Some(format!("mock_clip_{i}")),
+                channels: vec![Channel { node: root, path: AnimPath::Translation, interpolation: Interpolation::Linear, times, values }],
+            }
+        })
+        .collect();
+    crate::mesh::glb::write_scene(&scene).map_err(|e| ProviderError::InvalidRequest(format!("mock/animate-3d could not write its result: {e}")))
+}
+
 struct Job {
     model: String,
     /// One entry per container the caller was promised, in request order.
@@ -148,6 +219,30 @@ impl Model3dProvider for MockModel3dProvider {
         } else {
             extras.output_formats.clone()
         };
+        if model.id == ANIMATE_MODEL {
+            let source = extras.source.as_ref().ok_or_else(|| {
+                ProviderError::InvalidRequest("mock/animate-3d needs a source_model".into())
+            })?;
+            source.record(match &source.vendor_task_id {
+                Some(id) if jobs().read().await.contains_key(id) => crate::providers::SourceDelivery::VendorTask,
+                _ => crate::providers::SourceDelivery::DataUri,
+            });
+            let animated = animate_source(source, &extras.animations, extras.fps.unwrap_or(30))?;
+            let job = Arc::new(Job {
+                model: model.id.clone(),
+                meshes: vec![("glb".into(), animated)],
+                preview: generate_visual_image_png("animated"),
+                polls: AtomicU32::new(0),
+                finished_at: std::sync::OnceLock::new(),
+            });
+            jobs().write().await.insert(job_id.clone(), job);
+            return Ok(Model3dGenerationHandle {
+                provider_job_id: job_id,
+                provider: "mock".to_string(),
+                model: model.id.clone(),
+                stage_context: None,
+            });
+        }
         if model.id == RIG_MODEL {
             // Any source litegen let through becomes the same rig. Chained by
             // the mock's own task id when the source is one of its jobs, as a
@@ -409,6 +504,7 @@ mod tests {
             texture: Some(true), pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
+            animations: Vec::new(), fps: None,
             skeleton: None, joint_naming: None, height_m: None, preflight: None,
         }
     }

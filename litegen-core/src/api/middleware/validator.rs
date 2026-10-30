@@ -589,6 +589,43 @@ pub fn validate_model3d(
             }
         }
     }
+    if let Some(v) = req.fps {
+        match schema.params.get("fps") {
+            Some(ParamSpec::Int(s)) => {
+                let v = v as i64;
+                if s.min.is_some_and(|m| v < m) || s.max.is_some_and(|m| v > m) {
+                    return Err(ValidationError::new("param_out_of_range", format!("fps {} out of range", v), Some("fps")));
+                }
+            }
+            Some(_) | None => {
+                if strict {
+                    return Err(ValidationError::new(
+                        "param_unsupported",
+                        format!("fps not supported by '{}'", schema.id),
+                        Some("fps"),
+                    ));
+                }
+                dropped.push("fps".into());
+                req.fps = None;
+            }
+        }
+    }
+    if req.animations.is_some() {
+        match schema.params.get("animations") {
+            Some(ParamSpec::AnimationList(spec)) => check_animations(req.animations.as_deref().unwrap_or_default(), spec, &schema.id)?,
+            Some(_) | None => {
+                if strict {
+                    return Err(ValidationError::new(
+                        "param_unsupported",
+                        format!("animations not supported by '{}'", schema.id),
+                        Some("animations"),
+                    ));
+                }
+                dropped.push("animations".into());
+                req.animations = None;
+            }
+        }
+    }
     bool_param!(req.texture, "texture");
     bool_param!(req.pbr, "pbr");
     bool_param!(req.rig, "rig");
@@ -760,6 +797,66 @@ fn check_prompt(
                 format!("prompt length {} > {}", len, max),
                 Some("prompt"),
             ));
+        }
+    }
+    Ok(())
+}
+
+/// A clip list against the model's `animation_list` spec (3D doc §3C): every
+/// name unique and 1–64 of `[A-Za-z0-9_.-]`; each clip exactly one of a
+/// preset the model plays (canonical or its own id) and a prompt (where it
+/// makes motion from text, for a length within its range).
+fn check_animations(
+    clips: &[AnimationRequest],
+    spec: &crate::capabilities::ParamSpecAnimationList,
+    model: &str,
+) -> Result<(), ValidationError> {
+    let fail = |code: &str, msg: String| Err(ValidationError::new(code, msg, Some("animations")));
+    if clips.is_empty() {
+        return fail("param_out_of_range", "animations must name at least one clip".into());
+    }
+    if clips.len() > spec.max_items {
+        return fail("param_too_many", format!("'{model}' makes at most {} clips per request; {} asked", spec.max_items, clips.len()));
+    }
+    let mut names: Vec<&str> = Vec::new();
+    for c in clips {
+        let well_formed = (1..=64).contains(&c.name.chars().count())
+            && c.name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'));
+        if !well_formed {
+            return fail("animation_name_invalid", format!("clip name '{}' must be 1–64 characters of A–Z, a–z, 0–9, _ . -", c.name));
+        }
+        if names.contains(&c.name.as_str()) {
+            return fail("animation_name_invalid", format!("clip name '{}' is used twice; names must be unique", c.name));
+        }
+        names.push(&c.name);
+        match (c.preset.as_deref(), c.prompt.as_deref()) {
+            (Some(p), None) => {
+                if c.duration_s.is_some() {
+                    return fail("animation_clip_invalid", format!("clip '{}': duration_s is for prompt clips; a preset lasts as long as it lasts", c.name));
+                }
+                let known = spec.presets.iter().any(|s| s.id == p || s.canonical.as_deref() == Some(p));
+                if !known {
+                    let offered: Vec<&str> = spec
+                        .presets
+                        .iter()
+                        .flat_map(|s| s.canonical.as_deref().into_iter().chain(std::iter::once(s.id.as_str())))
+                        .collect();
+                    return fail("param_enum_mismatch", format!("clip '{}': '{model}' has no preset '{p}'; it plays {offered:?}", c.name));
+                }
+            }
+            (None, Some(_)) => {
+                let Some(t) = &spec.text_to_motion else {
+                    return fail("param_unsupported", format!("clip '{}': '{model}' makes no motion from a prompt", c.name));
+                };
+                if let Some(d) = c.duration_s {
+                    if !(d.is_finite() && d >= t.min_duration_s && d <= t.max_duration_s) {
+                        return fail("param_out_of_range", format!(
+                            "clip '{}': duration_s {d} is outside {}–{} s", c.name, t.min_duration_s, t.max_duration_s
+                        ));
+                    }
+                }
+            }
+            _ => return fail("animation_clip_invalid", format!("clip '{}' needs exactly one of preset and prompt", c.name)),
         }
     }
     Ok(())

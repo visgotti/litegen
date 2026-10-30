@@ -67,3 +67,84 @@ models:
         description: Mesh containers. Tripo emits glb or fbx; litegen derives the rest.
     extra_allowlist: []
     tags: [rig, 3d-operation]
+
+  # ─── Animation (PixelGenie 3D doc §3C) ─────────────────────────────────────
+  # @see https://developers.tripo3d.ai/en/docs/animations-retarget (2026-10-30)
+  #   input ("The returned task_id of the rigged model." — nothing else),
+  #   animations (up to 5: "Sending more than 5 returns an error"),
+  #   out_format (glb | fbx), animate_in_place (default false: "Play
+  #   animation in place without displacement."), export_with_geometry
+  #   (default true). Preset ids for v2.5/v3.0 rigs, all rig types:
+  #   preset:idle, walk, run, dive, climb, jump, slash, shoot, hurt, fall,
+  #   turn; preset:quadruped:walk, hexapod:walk, octopod:walk,
+  #   serpentine:march, aquatic:march. Tripo documents no fps and no
+  #   text-to-motion; litegen keys the clips at `fps` itself.
+  - id: tripo/animate
+    provider: tripo
+    media_type: model3d
+    task: animate
+    native_orientation:
+      up: source
+      front: source
+      evidence: Tripo retargets clips onto the rig it made, exporting that rig's geometry (`export_with_geometry`)
+    display_name: Tripo Animation Retarget
+    description: >-
+      Adds up to five preset clips to a rig made by tripo/rig on the same
+      Tripo account — Tripo retargets only onto its own rig's task id, so any
+      other source is refused 422 `source_not_chainable`. Humanoid presets
+      play on humanoid rigs, the creature walks on creature rigs.
+    docs_url: https://developers.tripo3d.ai/en/docs/animations-retarget
+    # @see https://developers.tripo3d.ai/en/pricing (2026-10-30)
+    #   "Animation Retarget / 10 / animation"; "1 credit = $0.01 USD".
+    #   10 credits × $0.01 = $0.10 for one clip, the default request;
+    #   variable_pricing records the per-clip rate flat billing does not.
+    pricing:
+      base_cost_usd: 0.10
+      variable_pricing: { per_animation_usd: 0.10 }
+    capabilities: {}
+    prompt: { required: false, max_length: 0 }
+    params:
+      source_model:
+        kind: source_model
+        formats: [glb, fbx]
+        requires_skin: true
+        label: Source rig
+        description: A tripo/rig generation made on the same Tripo account (Tripo takes only its task id).
+      animations:
+        kind: animation_list
+        max_items: 5
+        presets:
+          - { id: "preset:idle", canonical: idle }
+          - { id: "preset:walk", canonical: walk }
+          - { id: "preset:run", canonical: run }
+          - { id: "preset:jump", canonical: jump }
+          - { id: "preset:fall", canonical: fall }
+          - { id: "preset:slash", canonical: attack_melee }
+          - { id: "preset:shoot", canonical: attack_ranged }
+          - { id: "preset:hurt", canonical: hurt }
+          - { id: "preset:climb", canonical: climb }
+          - { id: "preset:turn", canonical: turn }
+          - { id: "preset:dive" }
+          - { id: "preset:quadruped:walk" }
+          - { id: "preset:hexapod:walk" }
+          - { id: "preset:octopod:walk" }
+          - { id: "preset:serpentine:march" }
+          - { id: "preset:aquatic:march" }
+        in_place: native
+        label: Animations
+        description: Up to five Tripo presets, in order, each named as given.
+      fps:
+        kind: int
+        min: 1
+        max: 120
+        label: Frames per second
+        description: litegen keys the delivered clips at this rate (Tripo takes none).
+      output_formats:
+        kind: string_array
+        enum_values: [glb, fbx]
+        max_items: 1
+        default: [glb]
+        label: Output formats
+        description: Mesh containers. Tripo emits glb or fbx; litegen derives the rest.
+    extra_allowlist: []
+    tags: [animation, 3d-operation]

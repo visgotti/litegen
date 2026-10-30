@@ -33,8 +33,12 @@
 //! - Errors — Verbatim: "A task-creation request may have succeeded even if
 //!   its response was lost; avoid resubmitting until its outcome is known.":
 //!   <https://developers.tripo3d.ai/en/docs/error-handling>
-//! - Price — "1 credit = $0.01 USD" · "Auto Rig / 25" · "Rig Check / Free":
-//!   <https://developers.tripo3d.ai/en/pricing>
+//! - Retarget — Verbatim: "The returned task_id of the rigged model." (its
+//!   `input`, and nothing else); `animations` "up to 5"; `animate_in_place`
+//!   "Play animation in place without displacement.":
+//!   <https://developers.tripo3d.ai/en/docs/animations-retarget>
+//! - Price — "1 credit = $0.01 USD" · "Auto Rig / 25" · "Rig Check / Free" ·
+//!   "Animation Retarget / 10 / animation": <https://developers.tripo3d.ai/en/pricing>
 
 use async_trait::async_trait;
 use reqwest::{Client, Method, RequestBuilder, StatusCode};
@@ -68,7 +72,10 @@ const CHECK_BUDGET: Duration = Duration::from_secs(100);
 
 /// The litegen models served here. A test ties it to `models/tripo.yaml`
 /// both ways.
-pub const MODELS: &[&str] = &["tripo/rig"];
+pub const MODELS: &[&str] = &["tripo/rig", "tripo/animate"];
+
+/// Retarget's preset limit: "up to 5. Sending more than 5 returns an error."
+const MAX_RETARGET_CLIPS: usize = 5;
 
 /// Tripo's `rig_type` for a canonical skeleton (3D doc §3B: its `biped` is
 /// litegen's `humanoid`, its `others` litegen's `other`).
@@ -317,6 +324,60 @@ impl TripoModel3dProvider {
         }
     }
 
+    /// One container from Tripo, which emits glb or fbx; litegen derives the
+    /// rest. Its own fbx when one was promised (`prefers_vendor_native`).
+    fn out_format(extras: &Model3dExtras) -> &'static str {
+        if extras
+            .output_formats
+            .iter()
+            .any(|f| f.eq_ignore_ascii_case("fbx") && crate::proxy::model3d_convert::prefers_vendor_native(f))
+        {
+            "fbx"
+        } else {
+            "glb"
+        }
+    }
+
+    /// Retarget presets onto a Tripo rig: `POST /v3/animations/retarget`.
+    async fn submit_retarget(&self, model: &ModelSchema, extras: &Model3dExtras) -> Result<Model3dGenerationHandle, ProviderError> {
+        let source = extras
+            .source
+            .as_ref()
+            .ok_or_else(|| ProviderError::InvalidRequest(format!("'{}' needs a source_model", model.id)))?;
+        let input = source.vendor_task_id.clone().ok_or_else(|| {
+            ProviderError::InvalidRequest("Tripo retargets only onto a rig it made on this account; rig with tripo/rig first".into())
+        })?;
+        let presets = extras
+            .animations
+            .iter()
+            .map(|c| c.preset.clone().ok_or_else(|| ProviderError::InvalidRequest(format!("clip '{}': Tripo makes no motion from a prompt", c.name))))
+            .collect::<Result<Vec<_>, _>>()?;
+        if presets.is_empty() || presets.len() > MAX_RETARGET_CLIPS {
+            return Err(ProviderError::InvalidRequest(format!(
+                "Tripo retargets 1 to {MAX_RETARGET_CLIPS} presets per call; {} asked",
+                presets.len()
+            )));
+        }
+        let mut body = json!({ "input": input, "animations": presets, "out_format": Self::out_format(extras) });
+        // One flag for the whole call: it keeps every clip in place, so it is
+        // sent only when every clip asks. Otherwise litegen holds the ones
+        // that do (`model3d_deliver`).
+        if extras.animations.iter().all(|c| c.in_place == Some(true)) {
+            body["animate_in_place"] = json!(true);
+        }
+        let created = self
+            .call(self.request(Method::POST, "animations/retarget")?.json(&body), "retarget", true)
+            .await?;
+        let task = Self::task_id(&created, "retarget")?;
+        source.record(SourceDelivery::VendorTask);
+        Ok(Model3dGenerationHandle {
+            provider_job_id: task.clone(),
+            provider: "tripo".to_string(),
+            model: model.id.clone(),
+            stage_context: Some(json!({ "task_id": task })),
+        })
+    }
+
     fn served(model: &ModelSchema) -> Result<(), ProviderError> {
         if MODELS.contains(&model.id.as_str()) {
             Ok(())
@@ -357,6 +418,16 @@ impl Model3dProvider for TripoModel3dProvider {
             .source
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidRequest(format!("'{}' needs a source_model", model.id)))?;
+        if model.id == "tripo/animate" {
+            // Retarget takes nothing but the task id of a rig Tripo made.
+            return Ok(match source.vendor_task_id {
+                Some(_) => Preflight::Proceed { context: None },
+                None => Preflight::Refuse {
+                    code: "source_not_chainable",
+                    message: "Tripo retargets only onto a rig it made on this Tripo account: send a tripo/rig generation's id".into(),
+                },
+            });
+        }
         let (input, delivery) = self.input(source).await?;
         let created = self
             .call(self.request(Method::POST, "animations/rig-check")?.json(&json!({ "input": input })), "rig-check", true)
@@ -432,6 +503,9 @@ impl Model3dProvider for TripoModel3dProvider {
         _materialized: &MaterializedRequest,
     ) -> Result<Model3dGenerationHandle, ProviderError> {
         Self::served(model)?;
+        if model.id == "tripo/animate" {
+            return self.submit_retarget(model, extras).await;
+        }
         let source = extras
             .source
             .as_ref()
@@ -455,18 +529,7 @@ impl Model3dProvider for TripoModel3dProvider {
             (Some(i), Some(_)) => (i.to_string(), SourceDelivery::Upload),
             _ => self.input(source).await?,
         };
-        // One container from Tripo; litegen derives the rest. Its own fbx when
-        // one was promised (`prefers_vendor_native`).
-        let out_format = if extras
-            .output_formats
-            .iter()
-            .any(|f| f.eq_ignore_ascii_case("fbx") && crate::proxy::model3d_convert::prefers_vendor_native(f))
-        {
-            "fbx"
-        } else {
-            "glb"
-        };
-        let mut body = json!({ "input": input, "model": rig_model(rig), "rig_type": rig, "out_format": out_format });
+        let mut body = json!({ "input": input, "model": rig_model(rig), "rig_type": rig, "out_format": Self::out_format(extras) });
         if let Some(s) = spec {
             body["spec"] = json!(s);
         }
@@ -614,6 +677,7 @@ mod tests {
             sha256: "00".into(),
             facts: crate::proxy::model3d_source::SourceFacts { triangles: 12, skinned: false, textured: false },
             vendor_task_id: vendor_task_id.map(str::to_string),
+            front: None,
             delivered: Default::default(),
         }
     }
@@ -627,6 +691,7 @@ mod tests {
             height_m: None,
             extra: None,
             source: Some(src),
+            animations: Vec::new(), fps: None,
             preflight: None,
         }
     }
@@ -833,6 +898,78 @@ mod tests {
             .await;
         let err = provider(&busy).generate(&ref_schema("tripo/rig"), &base(), &x, &no_refs()).await.unwrap_err();
         assert!(err.is_retryable(), "a 429 was refused, not accepted: {err:?}");
+    }
+
+    // ─── Retarget: animations on a Tripo rig ────────────────────────────────
+    // @see <https://developers.tripo3d.ai/en/docs/animations-retarget>
+
+    fn clips(specs: &[(&str, &str, Option<bool>)]) -> Vec<crate::providers::AnimationClip> {
+        specs
+            .iter()
+            .map(|(name, preset, in_place)| crate::providers::AnimationClip {
+                name: name.to_string(),
+                preset: Some(preset.to_string()),
+                prompt: None,
+                duration_s: None,
+                in_place: *in_place,
+                loop_requested: None,
+            })
+            .collect()
+    }
+
+    fn animate_extras(chained: Option<&str>, clips: Vec<crate::providers::AnimationClip>) -> Model3dExtras {
+        let mut x = extras(&["glb"], None, None, source(chained));
+        x.animations = clips;
+        x
+    }
+
+    async fn retarget(server: &MockServer, x: &Model3dExtras) -> (Model3dGenerationHandle, Value) {
+        Mock::given(method("POST"))
+            .and(path("/v3/animations/retarget"))
+            .and(header("authorization", "Bearer tsk_pooled"))
+            .respond_with(ok(json!({ "task_id": "anim-1" })))
+            .mount(server)
+            .await;
+        let h = provider(server).generate(&ref_schema("tripo/animate"), &base(), x, &no_refs()).await.unwrap();
+        let sent = received(server, "/v3/animations/retarget").await;
+        assert_eq!(sent.len(), 1);
+        (h, serde_json::from_slice(&sent[0].body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_retarget_sends_the_rigs_task_id_its_presets_and_tripos_in_place_flag() {
+        let server = MockServer::start().await;
+        let x = animate_extras(Some("rig-task-9"), clips(&[("walk", "preset:walk", Some(true)), ("idle", "preset:idle", Some(true))]));
+        let (h, body) = retarget(&server, &x).await;
+        assert_eq!(body, json!({
+            "input": "rig-task-9",
+            "animations": ["preset:walk", "preset:idle"],
+            "out_format": "glb",
+            "animate_in_place": true,
+        }));
+        assert_eq!(h.stage_context, Some(json!({ "task_id": "anim-1" })));
+        assert_eq!(x.source.as_ref().unwrap().delivery(), Some(SourceDelivery::VendorTask));
+    }
+
+    #[tokio::test]
+    async fn clips_that_differ_on_in_place_leave_it_to_litegen() {
+        let server = MockServer::start().await;
+        let x = animate_extras(Some("rig-task-9"), clips(&[("walk", "preset:walk", Some(true)), ("run", "preset:run", Some(false))]));
+        let (_, body) = retarget(&server, &x).await;
+        assert!(body.get("animate_in_place").is_none(), "one flag cannot serve both: {body}");
+    }
+
+    #[tokio::test]
+    async fn a_source_tripo_did_not_rig_is_refused_before_any_call() {
+        let server = MockServer::start().await;
+        let x = animate_extras(None, clips(&[("walk", "preset:walk", None)]));
+        let verdict = provider(&server).preflight(&ref_schema("tripo/animate"), &x).await.unwrap();
+        let Preflight::Refuse { code, message } = verdict else { panic!("{verdict:?}") };
+        assert_eq!(code, "source_not_chainable");
+        assert!(message.contains("tripo/rig"), "{message}");
+        assert!(server.received_requests().await.unwrap().is_empty());
+        let chained = animate_extras(Some("rig-task-9"), clips(&[("walk", "preset:walk", None)]));
+        assert!(matches!(provider(&server).preflight(&ref_schema("tripo/animate"), &chained).await.unwrap(), Preflight::Proceed { .. }));
     }
 
     // ─── Poll ───────────────────────────────────────────────────────────────

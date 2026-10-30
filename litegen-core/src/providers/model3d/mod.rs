@@ -34,6 +34,14 @@
 //! | `output_formats` | `out_format` (glb \| fbx, 1/job)       | glb, plus Meshy's fbx when promised | glb              |
 //! | preflight        | `rig-check` (free) → 422 `not_riggable` | —                                   | flat → `not_riggable` |
 //!
+//! | litegen          | `tripo/animate`                        | `meshy/rig`, `meshy/animate`        | `mock/animate-3d` |
+//! |------------------|----------------------------------------|-------------------------------------|-------------------|
+//! | `source_model`   | `input` = its rig's task id only       | rig: `model_url` (`data:`) or `input_task_id`; animate: `rig_task_id` only | rigged glb |
+//! | `animations`     | `animations` (preset ids, ≤ 5)          | `action_ids` (library ids, ≤ 10, no repeats) | one clip per entry |
+//! | `in_place`       | `animate_in_place` when every clip asks | — (litegen holds the clip)          | natively when every clip asks |
+//! | `fps`            | — (litegen keys the clips)              | `post_process: change_fps` (24/25/30/60, fbx) | keys at `fps` |
+//! | `skeleton`, `height_m` | —                                | rig: `animation_type`, `height_meters` | —           |
+//!
 //! `output_formats` is the one param that is a promise rather than a hint:
 //! adapters ask the vendor for ONE container, and litegen derives the rest
 //! locally (`proxy::model3d_convert`). A vendor's own format field matters for
@@ -64,5 +72,6 @@ pub(crate) mod download;
 pub mod fal;
 pub mod glb;
 pub mod humanoid;
+pub mod meshy;
 pub mod mock;
 pub mod tripo;

@@ -57,6 +57,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
   { name: 'Vidu', video: true, logo: 'vidu.png' },
   { name: 'PixVerse', video: true, logo: 'pixverse.png' },
   { name: 'Tripo' },
+  { name: 'Meshy' },
   // Aggregators / self-hosted.
   { name: 'Replicate', image: true, video: true, logo: 'replicate.png' },
   { name: 'Fal', image: true, video: true, logo: 'fal.png' },

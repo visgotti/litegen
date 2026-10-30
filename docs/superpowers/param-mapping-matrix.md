@@ -246,6 +246,37 @@ key, and `failed`, `cancelled`, `banned`, `expired` → failed with Tripo's
 retryable, a lost reply is not (`tripos_error_envelope_reaches_the_caller`).
 Not verified live: no Tripo or fal key is available here.
 
+### Animation (3D doc §3C)
+
+An `animate` model adds one clip per `animations[]` entry to a rigged source,
+in request order. litegen names the clips exactly as asked (dropping a static
+pose clip a vendor adds, and failing the generation when fewer clips come back
+than were asked), holds `in_place` clips the vendor did not, keys every clip at
+`fps` when the vendor did not, and measures each clip into the manifest from
+its keys. An animate model returns its source's geometry, so its catalog row
+says `native_orientation: {up: source, front: source}` and the delivered front
+is the source manifest's.
+
+| litegen param | ParamSpec | `tripo/animate` | `meshy/animate` | `mock/animate-3d` | proof | status |
+|---|---|---|---|---|---|---|
+| `animations[].preset` | `animation_list` | `animations` (≤ 5; the 16 v2.5/v3.0 preset ids, 10 tagged canonical) | `action_ids` (≤ 10, no repeats — refused before the call; 678 library ids with Meshy's names, 12 tagged canonical) | `mock:*` (3 canonical) | validator `a_clip_names_a_canonical_preset_or_one_of_the_models_own`; tripo `a_retarget_sends_the_rigs_task_id_its_presets_and_tripos_in_place_flag`; meshy `an_animation_goes_to_the_meshy_rig_with_its_action_ids_and_change_fps`, `a_repeated_action_is_refused_before_any_call`; conformance `tripo_animate_offers_the_retarget_presets_on_tripos_own_rig`, `meshy_rig_and_animate_take_what_meshys_endpoints_accept` | 🟡 wiremock / ✅ mock |
+| `animations[].name` | — | renamed by litegen in order | renamed by litegen | renamed by litegen | validator `clip_names_are_unique_and_well_formed`; delivery `a_pose_clip_beside_the_asked_ones_is_dropped_and_the_rest_named_in_order`, `a_vendor_returning_fewer_clips_than_asked_fails_the_delivery`; HTTP `one_clip_per_name_in_request_order_kept_in_place_by_the_vendor` | ✅ |
+| `animations[].prompt`, `.duration_s` | `text_to_motion` | — | — (text-to-motion is a second billed task; not carried) | 1–10 s | validator `a_clip_is_exactly_one_of_a_preset_or_a_prompt`, `a_prompt_clip_lasts_within_the_models_text_to_motion_range`, `a_prompt_clip_needs_a_model_that_makes_motion_from_text`; HTTP `a_prompt_clip_lasts_the_duration_asked` | ✅ mock |
+| `animations[].in_place` | `in_place: native \| litegen` | `animate_in_place: true` when every clip asks; otherwise litegen holds the in-place ones | litegen holds them (`in_place: litegen`) | natively when every clip asks | tripo `clips_that_differ_on_in_place_leave_it_to_litegen`; HTTP `a_travelling_clip_moves_one_metre_along_z_and_litegen_holds_the_in_place_one` (manifest `in_place_by`) | 🟡 wiremock / ✅ mock |
+| `animations[].loop` | — | hint only | hint only | hint only | HTTP `one_clip_per_name_in_request_order_kept_in_place_by_the_vendor` (`loop_requested`) | ✅ |
+| `fps` | `int` (3D: only beside `animations`) | — (litegen keys the clips) | `post_process: {operation_type: change_fps, fps}` at 24/25/30/60 (its fbx); litegen keys the glb | keys at `fps` | meshy `a_rate_meshy_cannot_make_is_left_to_litegen`, `a_finished_animation_downloads_the_glb_and_the_rate_changed_fbx_promised`; mesh `a_clip_is_rekeyed_at_the_asked_rate_and_left_alone_when_it_already_is`; HTTP `clips_are_keyed_at_the_requested_fps`; validator `fps_on_an_animation_stays_in_its_range` | 🟡 wiremock / ✅ mock |
+| `source_model` | `source_model` | the rig's Tripo task id only; anything else → 422 `source_not_chainable` | `rig_task_id` only; anything else → 422 `source_not_chainable` | a rigged glb; unrigged → 422 `source_not_rigged` | tripo `a_source_tripo_did_not_rig_is_refused_before_any_call`; meshy `a_source_meshy_did_not_rig_is_not_chainable`; HTTP `an_unrigged_source_is_refused_before_anything_is_billed` | 🟡 wiremock / ✅ mock |
+
+`meshy/rig` maps `source_model` to `model_url` (a glb `data:` URI) or
+`input_task_id`, `skeleton` to `animation_type` (biped | quadruped) and
+`height_m` to `height_meters` (`a_rig_sends_the_source_as_a_glb_data_uri_with_its_height_and_skeleton`,
+`a_humanoid_rig_asks_for_a_biped_and_a_bare_one_sends_merely_the_source`).
+Meshy statuses map PENDING → pending, IN_PROGRESS → processing, SUCCEEDED →
+completed, FAILED and CANCELED → failed with `task_error.message`
+(`every_task_status_is_mapped`); a create is never re-sent after a 5xx, as
+Meshy asks (`meshys_message_reaches_the_caller_and_a_create_is_never_resent_after_a_5xx`).
+Not verified live: no Tripo or Meshy key is available here.
+
 ### Normalised delivery (3D doc §2 rule 3, §3D)
 
 One step, `proxy::model3d_deliver::deliver`, runs on a finished job's files at
@@ -406,6 +437,10 @@ field name — but it is what makes the family behave the same on every model:
   `max_items`, the served set a superset of the native one, a `docs_url` on
   every vendor row, no-prompt models never requiring one, image-only models
   requiring their image.
+- `litegen-core/tests/animate_api.rs` — animation over HTTP against
+  `mock/animate-3d`: clip order and names, in place by the vendor or litegen,
+  `fps`, prompt length, the loop hint, the inherited front, and an unrigged
+  source costing nothing.
 - `litegen-core/tests/rig_api.rs` — rigging over HTTP against `mock/rig-3d`:
   the exact §3I skeleton and humanoid map, `joint_naming: vrm`, `height_m`,
   and a source the preflight refuses costing nothing.

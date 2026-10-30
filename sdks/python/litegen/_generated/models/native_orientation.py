@@ -10,12 +10,16 @@ T = TypeVar("T", bound="NativeOrientation")
 class NativeOrientation:
     """The axes a 3D model's vendor builds its meshes along (3D doc §2 rule 3).
     Where they differ from glTF's (+Y up, +Z front), litegen adds a root
-    rotation and the manifest says `oriented_by: "litegen"`.
+    rotation and the manifest says `oriented_by: "litegen"`. An operation that
+    hands back its source's own geometry says `source` for both: its output
+    faces wherever the source did.
 
         Attributes:
             evidence (str): What showed it: the run, sample file or page.
-            front (str): The axis the asset's front faces, at right angles to `up`.
-            up (str): `+x`, `-x`, `+y`, `-y`, `+z` or `-z`.
+            front (str): The axis the asset's front faces, at right angles to `up`; `source`
+                with `up`.
+            up (str): `+x`, `-x`, `+y`, `-y`, `+z` or `-z`; `source` on an operation that
+                keeps its source's axes.
     """
 
     evidence: str

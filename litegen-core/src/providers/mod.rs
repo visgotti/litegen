@@ -409,6 +409,11 @@ pub struct Model3dExtras {
     pub joint_naming: Option<String>,
     /// The character's height in metres.
     pub height_m: Option<f64>,
+    /// The clips to make, in order (3D doc §3C), presets resolved to the
+    /// model's own ids.
+    pub animations: Vec<AnimationClip>,
+    /// Frames per second of the delivered clips.
+    pub fps: Option<u32>,
     /// Vendor fields the canonical vocabulary does not cover, bounded by the
     /// model's `extra_allowlist` in strict mode. An adapter must never let one
     /// overwrite a field it derived from a canonical param above.
@@ -451,6 +456,46 @@ impl SourceDelivery {
     }
 }
 
+/// One clip an animate request asks for, resolved against the model's catalog
+/// row (3D doc §3C).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct AnimationClip {
+    /// The clip's name in the delivered file.
+    pub name: String,
+    /// The model's own preset id, resolved from a canonical one; `None` for a
+    /// prompt clip.
+    pub preset: Option<String>,
+    /// Text-to-motion.
+    pub prompt: Option<String>,
+    /// A prompt clip's length in seconds.
+    pub duration_s: Option<f64>,
+    pub in_place: Option<bool>,
+    pub loop_requested: Option<bool>,
+}
+
+impl AnimationClip {
+    /// The request's clips with every preset as the model's own id.
+    pub fn resolve(clips: &[crate::types::AnimationRequest], spec: &crate::capabilities::ParamSpecAnimationList) -> Vec<AnimationClip> {
+        clips
+            .iter()
+            .map(|c| AnimationClip {
+                name: c.name.clone(),
+                preset: c.preset.as_deref().map(|p| {
+                    spec.presets
+                        .iter()
+                        .find(|s| s.id == p)
+                        .or_else(|| spec.presets.iter().find(|s| s.canonical.as_deref() == Some(p)))
+                        .map_or_else(|| p.to_string(), |s| s.id.clone())
+                }),
+                prompt: c.prompt.clone(),
+                duration_s: c.duration_s,
+                in_place: c.in_place,
+                loop_requested: c.loop_requested,
+            })
+            .collect()
+    }
+}
+
 /// An operation's source mesh, as its adapter receives it.
 #[derive(Debug, Clone)]
 pub struct SourceInput {
@@ -464,6 +509,9 @@ pub struct SourceInput {
     /// provider on this same vendor account: Tripo and Meshy chain by it, and
     /// some of their operations accept nothing else.
     pub vendor_task_id: Option<String>,
+    /// The axis a litegen generation's delivered mesh faces, from its
+    /// manifest (`+z`, or `unverified`); `None` for a file of the caller's own.
+    pub front: Option<String>,
     /// Where the adapter says how it sent the source.
     pub delivered: Arc<std::sync::Mutex<Option<SourceDelivery>>>,
 }

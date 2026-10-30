@@ -1351,6 +1351,7 @@ mod tests {
             rig: None,
             extra: None,
             source: None,
+            animations: Vec::new(), fps: None,
             skeleton: None, joint_naming: None, height_m: None, preflight: None,
         }
     }
@@ -2037,6 +2038,7 @@ mod tests {
             topology: None,
             rig: None,
             source_model: None,
+            animations: None, fps: None,
             skeleton: None, joint_naming: None, height_m: None,
         };
         let est = p.estimate_cost(&hunyuan, &req).await.unwrap();
@@ -2085,6 +2087,7 @@ mod tests {
             sha256: "00".into(),
             facts: crate::proxy::model3d_source::SourceFacts { triangles: 12, skinned: false, textured: true },
             vendor_task_id: None,
+            front: None,
             delivered: Default::default(),
         });
         (x, glb)

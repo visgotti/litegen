@@ -1031,6 +1031,7 @@ mod poller_tests {
             texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
+            animations: Vec::new(), fps: None,
             skeleton: None, joint_naming: None, height_m: None, preflight: None,
         };
         p.generate(&schema, &base, &extras, &Default::default()).await.unwrap().provider_job_id
@@ -1163,6 +1164,7 @@ mod poller_tests {
             texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
+            animations: Vec::new(), fps: None,
             skeleton: None, joint_naming: None, height_m: None, preflight: None,
         };
         let resp = router.generate_model3d(&staged_schema(), &base, &extras, &Default::default(), None).await.unwrap();
@@ -1282,6 +1284,7 @@ mod poller_tests {
             texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
+            animations: Vec::new(), fps: None,
             skeleton: None, joint_naming: None, height_m: None, preflight: None,
         };
         let plan = crate::proxy::model3d_deliver::DeliveryPlan::for_request(&schema, &extras);

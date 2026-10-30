@@ -37,6 +37,7 @@ export const PROVIDER_DOCS = {
   replicate: 'https://replicate.com/docs/reference/http',
   fal: 'https://fal.ai/docs/documentation',
   tripo: 'https://developers.tripo3d.ai/en/docs/introduction',
+  meshy: 'https://docs.meshy.ai/en/api/quick-start',
 };
 
 /**

@@ -1,0 +1,803 @@
+# Meshy — first-party 3D operations on Meshy's API (https://api.meshy.ai/openapi).
+# Auth: `Authorization: Bearer msy_…`. API credits are prepaid and bought
+# separately: "The Meshy API uses prepaid credits. Before you send API
+# requests, buy API credits in your subscription settings"
+# (https://docs.meshy.ai/en/api/pricing, 2026-10-30), and no USD price for
+# them is published. Prices below use the Pro plan's $20 for 1,000 credits
+# ($0.02 a credit, https://www.meshy.ai/pricing, 2026-10-30) — provisional.
+# @see https://docs.meshy.ai/openapi.json (RiggingRequest, AnimationRequest; 2026-10-30)
+
+models:
+  # ─── Rigging (PixelGenie 3D doc §3B) ───────────────────────────────────────
+  # @see https://docs.meshy.ai/en/api/rigging (2026-10-30): model_url ("a GLB
+  #   (`.glb`) file of at most 400 MB from an `http` or `https` URL, or 100 MB
+  #   as a data URI") or input_task_id; height_meters (default 1.7); "The
+  #   model can have at most 320,000 faces"; "Rigging isn't suitable for these
+  #   models: - Untextured meshes - Non-humanoid assets"; "The character's
+  #   face must point toward the +Z axis". animation_type (biped | quadruped,
+  #   default biped) is in the OpenAPI spec only.
+  - id: meshy/rig
+    provider: meshy
+    media_type: model3d
+    task: rig
+    display_name: Meshy Auto Rig
+    description: >-
+      Meshy's auto-rigger: a textured character GLB facing +Z in, a rigged
+      GLB out (with Meshy's own FBX when one is promised). Humanoids by
+      default; `skeleton: quadruped` for four-legged characters. Chain
+      meshy/animate onto the result.
+    docs_url: https://docs.meshy.ai/en/api/rigging
+    # "Automatic rigging | 5 per request" (credits) × $0.02 = $0.10, provisional.
+    pricing: { base_cost_usd: 0.10 }
+    capabilities: {}
+    prompt: { required: false, max_length: 0 }
+    params:
+      source_model:
+        kind: source_model
+        formats: [glb]
+        max_bytes: 100000000
+        max_faces: 320000
+        requires_texture: true
+        label: Source mesh
+        description: A textured character facing +Z, sent inline (at most 100 MB and 320,000 faces).
+      skeleton:
+        kind: string
+        enum_values: [humanoid, quadruped]
+        default: humanoid
+        label: Skeleton
+        description: Meshy's animation_type (biped or quadruped).
+      height_m:
+        kind: float
+        default: 1.7
+        label: Height (m)
+        description: The character's height in metres (Meshy's height_meters).
+      output_formats:
+        kind: string_array
+        enum_values: [glb, fbx]
+        max_items: 1
+        default: [glb]
+        label: Output formats
+        description: Meshy returns glb and fbx; litegen derives the rest.
+    extra_allowlist: []
+    tags: [rig, 3d-operation]
+
+  # ─── Animation (PixelGenie 3D doc §3C) ─────────────────────────────────────
+  # @see https://docs.meshy.ai/en/api/animation (2026-10-30): rig_task_id ("The
+  #   ID of the Rigging task whose character to animate"), action_ids ("The
+  #   IDs of 1 to 10 preset animations to apply at once, with no repeats"; one
+  #   merged file, one clip per action in order), post_process {operation_type:
+  #   change_fps, fps: 24 | 25 | 30 | 60}, which returns
+  #   processed_animation_fps_fbx_url. Meshy has no in-place flag (its library
+  #   has `_inplace` variants), so litegen holds in-place clips itself.
+  # @see https://api.meshy.ai/web/public/animations/resources (2026-10-30): the
+  #   library, every id below with Meshy's name. The canonical tags are
+  #   litegen's choice of the plainest clip for each.
+  - id: meshy/animate
+    provider: meshy
+    media_type: model3d
+    task: animate
+    native_orientation:
+      up: source
+      front: source
+      evidence: Meshy retargets the clips onto the character it rigged (rig_task_id) and returns it with its skin
+    display_name: Meshy Animation
+    description: >-
+      Up to ten clips from Meshy's animation library on a rig made by
+      meshy/rig on the same Meshy account — Meshy animates only its own rig,
+      so any other source is refused 422 `source_not_chainable` — merged into
+      one file in request order. Each action at most once per request.
+    docs_url: https://docs.meshy.ai/en/api/animation
+    # "3 per action" (credits) × $0.02 = $0.06 for one clip, provisional;
+    # variable_pricing records the per-clip rate flat billing does not.
+    pricing:
+      base_cost_usd: 0.06
+      variable_pricing: { per_animation_usd: 0.06 }
+    capabilities: {}
+    prompt: { required: false, max_length: 0 }
+    params:
+      source_model:
+        kind: source_model
+        formats: [glb]
+        requires_skin: true
+        label: Source rig
+        description: A meshy/rig generation made on the same Meshy account (Meshy animates only its own rig task).
+      animations:
+        kind: animation_list
+        max_items: 10
+        in_place: litegen
+        label: Animations
+        description: Up to ten library clips, in order, each named as given.
+        presets:
+          - { id: "0", label: "Idle", canonical: idle }
+          - { id: "1", label: "Walking Woman" }
+          - { id: "2", label: "Alert" }
+          - { id: "3", label: "Arise" }
+          - { id: "4", label: "Attack", canonical: attack_melee }
+          - { id: "5", label: "BackLeft Run" }
+          - { id: "6", label: "BackRight Run" }
+          - { id: "7", label: "BeHit FlyUp" }
+          - { id: "8", label: "Dead", canonical: death }
+          - { id: "9", label: "ForwardLeft Run Fight" }
+          - { id: "10", label: "ForwardRight Run Fight" }
+          - { id: "11", label: "Idle 1" }
+          - { id: "12", label: "Idle 2" }
+          - { id: "13", label: "Jump Run" }
+          - { id: "14", label: "Run 2" }
+          - { id: "15", label: "Run 3" }
+          - { id: "16", label: "Run Fast", canonical: run }
+          - { id: "17", label: "Skill 1" }
+          - { id: "18", label: "Skill 2" }
+          - { id: "19", label: "Skill 3" }
+          - { id: "20", label: "Walk Fight Back" }
+          - { id: "21", label: "Walk Fight Forward" }
+          - { id: "22", label: "Funny Dancing 1" }
+          - { id: "23", label: "Funny Dancing 2" }
+          - { id: "24", label: "Funny Dancing 3" }
+          - { id: "25", label: "Agree Gesture" }
+          - { id: "26", label: "Angry Stomp" }
+          - { id: "27", label: "Big Heart Gesture" }
+          - { id: "28", label: "Big Wave Hello" }
+          - { id: "29", label: "Call Gesture" }
+          - { id: "30", label: "Casual Walk", canonical: walk }
+          - { id: "31", label: "Catching Breath" }
+          - { id: "32", label: "Chair Sit Idle Female" }
+          - { id: "33", label: "Chair Sit Idle Male" }
+          - { id: "34", label: "Checkout Gesture" }
+          - { id: "35", label: "Clapping Run" }
+          - { id: "36", label: "Confused Scratch" }
+          - { id: "37", label: "Discuss While Moving" }
+          - { id: "38", label: "Dozing Elderly" }
+          - { id: "39", label: "Excited Walk Female" }
+          - { id: "40", label: "Excited Walk Male" }
+          - { id: "41", label: "Formal Bow" }
+          - { id: "42", label: "Gentlemans Bow" }
+          - { id: "43", label: "Handbag Walk" }
+          - { id: "44", label: "Happy Jump Female" }
+          - { id: "45", label: "Indoor Play" }
+          - { id: "46", label: "Jump Rope" }
+          - { id: "47", label: "Listening Gesture" }
+          - { id: "48", label: "Mirror Viewing" }
+          - { id: "49", label: "Motivational Cheer" }
+          - { id: "50", label: "Phone Call Gesture" }
+          - { id: "51", label: "Shouting Angrily" }
+          - { id: "52", label: "Sit to Stand Transition Female" }
+          - { id: "53", label: "Sit to Stand Transition Male" }
+          - { id: "54", label: "Squat Stance" }
+          - { id: "55", label: "Stage Walk" }
+          - { id: "56", label: "Stand and Chat" }
+          - { id: "57", label: "Stand to Sit Transition Male" }
+          - { id: "58", label: "Step to Sit Transition" }
+          - { id: "59", label: "Victory Cheer" }
+          - { id: "60", label: "Walk to Sit" }
+          - { id: "61", label: "Happy Jump Male" }
+          - { id: "62", label: "Penguin Walk" }
+          - { id: "63", label: "Arm Circle Shuffle" }
+          - { id: "64", label: "All Night Dance" }
+          - { id: "65", label: "Bass Beats" }
+          - { id: "66", label: "Boom Dance" }
+          - { id: "67", label: "Bubble Dance" }
+          - { id: "68", label: "Cherish Pop Dance" }
+          - { id: "69", label: "Crystal Beads" }
+          - { id: "70", label: "Cardio Dance" }
+          - { id: "71", label: "Denim Pop Dance" }
+          - { id: "72", label: "Dont You Dare" }
+          - { id: "73", label: "Fast Lightning" }
+          - { id: "74", label: "Gangnam Groove" }
+          - { id: "75", label: "Indoor Swing" }
+          - { id: "76", label: "Love You Pop Dance" }
+          - { id: "77", label: "Magic Genie" }
+          - { id: "78", label: "Rhythmic Dance" }
+          - { id: "79", label: "OMG Groove" }
+          - { id: "80", label: "Pop Dance LSA2" }
+          - { id: "81", label: "Pod Baby Groove" }
+          - { id: "82", label: "Shake It Off Dance" }
+          - { id: "83", label: "Superlove Pop Dance" }
+          - { id: "84", label: "You Groove" }
+          - { id: "85", label: "Axe Stance" }
+          - { id: "86", label: "Jump Attack", canonical: jump }
+          - { id: "87", label: "Boxing Practice" }
+          - { id: "88", label: "Chest Pound Taunt" }
+          - { id: "89", label: "Combat Idel" }
+          - { id: "90", label: "Counterstrike" }
+          - { id: "91", label: "Double Blade Spin" }
+          - { id: "92", label: "Double Combo Attack" }
+          - { id: "93", label: "Dodge and Counter" }
+          - { id: "94", label: "Flying Fist Kick" }
+          - { id: "95", label: "Gun Hold Left Turn" }
+          - { id: "96", label: "Kung Fu Punch" }
+          - { id: "97", label: "Left Slash" }
+          - { id: "98", label: "Run and Shoot" }
+          - { id: "99", label: "Reaping Swing" }
+          - { id: "100", label: "Spin Down and Stand Up" }
+          - { id: "101", label: "Sword Shout" }
+          - { id: "102", label: "Sword Judgment" }
+          - { id: "103", label: "Simple Kick" }
+          - { id: "104", label: "Side Shot" }
+          - { id: "105", label: "Triple Combo Attack" }
+          - { id: "106", label: "Hot walk" }
+          - { id: "107", label: "Confident Strut" }
+          - { id: "108", label: "Flirty Strut" }
+          - { id: "109", label: "Groovy Walk" }
+          - { id: "110", label: "Hello Run" }
+          - { id: "111", label: "Injured Walk" }
+          - { id: "112", label: "Frankenstein Walk" }
+          - { id: "113", label: "Mummy Stagger" }
+          - { id: "114", label: "Proud Strut" }
+          - { id: "115", label: "Quick Walk" }
+          - { id: "116", label: "Run to Walk Transition" }
+          - { id: "117", label: "Red Carpet Walk" }
+          - { id: "118", label: "Skip Forward" }
+          - { id: "119", label: "Slow Orc Walk" }
+          - { id: "120", label: "Touch and Run" }
+          - { id: "121", label: "Thoughtful Walk" }
+          - { id: "122", label: "Texting Walk" }
+          - { id: "123", label: "Unsteady Walk" }
+          - { id: "124", label: "Walking with Phone" }
+          - { id: "125", label: "Charged Spell Cast", canonical: cast }
+          - { id: "126", label: "Charged Spell Cast 1" }
+          - { id: "127", label: "Charged Ground Slam" }
+          - { id: "128", label: "Heavy Hammer Swing" }
+          - { id: "129", label: "Mage Soell Cast" }
+          - { id: "130", label: "Mage Soell Cast 1" }
+          - { id: "131", label: "Mage Soell Cast 2" }
+          - { id: "132", label: "Mage Soell Cast 3" }
+          - { id: "133", label: "Mage Soell Cast 4" }
+          - { id: "134", label: "Mage Soell Cast 5" }
+          - { id: "135", label: "Mage Soell Cast 6" }
+          - { id: "136", label: "Mage Soell Cast 7" }
+          - { id: "137", label: "Mage Soell Cast 8" }
+          - { id: "138", label: "Block1" }
+          - { id: "139", label: "Block2" }
+          - { id: "140", label: "Block3" }
+          - { id: "141", label: "Block4" }
+          - { id: "142", label: "Block5" }
+          - { id: "143", label: "Block6" }
+          - { id: "144", label: "Block8" }
+          - { id: "145", label: "Block9" }
+          - { id: "146", label: "Block10" }
+          - { id: "147", label: "Sword Parry" }
+          - { id: "148", label: "Sword Parry Backward" }
+          - { id: "149", label: "Two-handed Parry" }
+          - { id: "150", label: "Hit Reaction with Bow" }
+          - { id: "151", label: "Sword Parry Backward 1" }
+          - { id: "152", label: "Sword Parry Backward 2" }
+          - { id: "153", label: "Sword Parry Backward 3" }
+          - { id: "154", label: "Sword Parry Backward 4" }
+          - { id: "155", label: "Sword Parry Backward 5" }
+          - { id: "156", label: "Stand Dodge" }
+          - { id: "157", label: "Stand Dodge 1" }
+          - { id: "158", label: "Roll Dodge" }
+          - { id: "159", label: "Roll Dodge 1" }
+          - { id: "160", label: "Roll Dodge 2" }
+          - { id: "161", label: "Roll Dodge 3" }
+          - { id: "162", label: "Stand Dodge 2" }
+          - { id: "163", label: "Roll Dodge 4" }
+          - { id: "164", label: "Stand Dodge 3" }
+          - { id: "165", label: "Kneeling Reload" }
+          - { id: "166", label: "Running Reload" }
+          - { id: "167", label: "Slow Walk Reload" }
+          - { id: "168", label: "Prone Reload" }
+          - { id: "169", label: "Forward Reload (subtle)" }
+          - { id: "170", label: "Standing Reload" }
+          - { id: "171", label: "Hit Reaction to Waist" }
+          - { id: "172", label: "Electrocution Reaction" }
+          - { id: "173", label: "Slap Reaction" }
+          - { id: "174", label: "Face Punch Reaction" }
+          - { id: "175", label: "Face Punch Reaction 1" }
+          - { id: "176", label: "Face Punch Reaction 2" }
+          - { id: "177", label: "Gunshot Reaction" }
+          - { id: "178", label: "Hit Reaction", canonical: hurt }
+          - { id: "179", label: "Hit Reaction 1" }
+          - { id: "180", label: "Shot in the Back and Fall" }
+          - { id: "181", label: "Electrocuted Fall" }
+          - { id: "182", label: "Shot and Blown Back" }
+          - { id: "183", label: "Shot and Fall Backward" }
+          - { id: "184", label: "Shot and Fall Forward" }
+          - { id: "185", label: "Shot and Slow Fall Backward" }
+          - { id: "186", label: "Strangled and Fall Forward" }
+          - { id: "187", label: "Knock Down" }
+          - { id: "188", label: "Fall Dead from Abdominal Injury" }
+          - { id: "189", label: "Dying Backwards" }
+          - { id: "190", label: "Knock Down 1" }
+          - { id: "191", label: "Left Jab from Guard" }
+          - { id: "192", label: "Right Jab from Guard" }
+          - { id: "193", label: "Left Hook from Guard" }
+          - { id: "194", label: "Right Uppercut from Guard" }
+          - { id: "195", label: "Right Upper Hook from Guard" }
+          - { id: "196", label: "Left Uppercut from Guard" }
+          - { id: "197", label: "Left Short Hook from Guard" }
+          - { id: "198", label: "Punch Combo" }
+          - { id: "199", label: "Weapon Combo" }
+          - { id: "200", label: "Punch Combo 1" }
+          - { id: "201", label: "Punch Combo 2" }
+          - { id: "202", label: "Weapon Combo 1" }
+          - { id: "203", label: "Punch Combo 3" }
+          - { id: "204", label: "Punch Combo 4" }
+          - { id: "205", label: "Punch Combo 5" }
+          - { id: "206", label: "Spartan Kick" }
+          - { id: "207", label: "Roundhouse Kick" }
+          - { id: "208", label: "Lunge Roundhouse Kick" }
+          - { id: "209", label: "Boxing Guard, Right Straight Kick" }
+          - { id: "210", label: "Boxing Guard, Prep Straight Punch" }
+          - { id: "211", label: "Boxing Guard, Step Knee Strike" }
+          - { id: "212", label: "Elbow Strike" }
+          - { id: "213", label: "Leg Sweep" }
+          - { id: "214", label: "Punch Forward with Both Fists" }
+          - { id: "215", label: "High Kick" }
+          - { id: "216", label: "Lunge Spin Kick" }
+          - { id: "217", label: "Sweeping Kick" }
+          - { id: "218", label: "Step-in High Kick" }
+          - { id: "219", label: "Right-hand Sword Slash" }
+          - { id: "220", label: "Shield Push Left" }
+          - { id: "221", label: "Charged Upward Slash" }
+          - { id: "222", label: "Draw and Shoot from Back" }
+          - { id: "223", label: "Draw and Shoot from Back 1" }
+          - { id: "224", label: "Archery Shot", canonical: attack_ranged }
+          - { id: "225", label: "Archery Shot 1" }
+          - { id: "226", label: "Archery Shot 2" }
+          - { id: "227", label: "Archery Shot 3" }
+          - { id: "228", label: "Walk Forward with Bow Aimed" }
+          - { id: "229", label: "Draw and Shoot from Back 2" }
+          - { id: "230", label: "Walk Backward with Bow Aimed" }
+          - { id: "231", label: "Archery Aim with Lateral Scan" }
+          - { id: "232", label: "Cowboy Quick Draw Shooting" }
+          - { id: "233", label: "Walk Backward While Shooting" }
+          - { id: "234", label: "Walk Forward While Shooting" }
+          - { id: "235", label: "Forward Roll and Fire" }
+          - { id: "236", label: "Draw and Shoot Left" }
+          - { id: "237", label: "Charged Axe Chop" }
+          - { id: "238", label: "Axe Spin Attack" }
+          - { id: "239", label: "Crouch Pull and Throw" }
+          - { id: "240", label: "Thrust Slash" }
+          - { id: "241", label: "Weapon Combo 2" }
+          - { id: "242", label: "Charged Slash" }
+          - { id: "243", label: "Idle 3" }
+          - { id: "244", label: "Idle 4" }
+          - { id: "245", label: "Idle 5" }
+          - { id: "246", label: "Idle 6" }
+          - { id: "247", label: "Idle 7" }
+          - { id: "248", label: "Idle 8" }
+          - { id: "249", label: "Idle 9" }
+          - { id: "250", label: "Idle 10" }
+          - { id: "251", label: "Idle 11" }
+          - { id: "252", label: "Idle 12" }
+          - { id: "253", label: "Idle 13" }
+          - { id: "254", label: "Idle 14" }
+          - { id: "255", label: "Angry Ground Stomp" }
+          - { id: "256", label: "Angry Ground Stomp 1" }
+          - { id: "257", label: "Angry Ground Stomp 2" }
+          - { id: "258", label: "Crouchlookaroundbow" }
+          - { id: "259", label: "Step Forward and Push" }
+          - { id: "260", label: "Push Forward and Stop" }
+          - { id: "261", label: "Push and Walk Forward" }
+          - { id: "262", label: "Crouch and Push Forward" }
+          - { id: "263", label: "Sleep on Desk" }
+          - { id: "264", label: "Cough While Sleeping" }
+          - { id: "265", label: "Groan Holding Stomach in Sleep" }
+          - { id: "266", label: "Lie Down, Hands Spread" }
+          - { id: "267", label: "Sleep Normally" }
+          - { id: "268", label: "Sit and Doze Off" }
+          - { id: "269", label: "Sleep" }
+          - { id: "270", label: "Toss and Turn" }
+          - { id: "271", label: "Wake Up and Look Up" }
+          - { id: "272", label: "Lie on Chair, Sunbathe and Sleep" }
+          - { id: "273", label: "Male Run Forward Pick Up Left" }
+          - { id: "274", label: "Female Crouch Pick Up Place Side" }
+          - { id: "275", label: "Female Run Forward Pick Up Right" }
+          - { id: "276", label: "Male Bend Over Pick Up" }
+          - { id: "277", label: "Female Crouch Pick Fruit Basket Stand" }
+          - { id: "278", label: "Female Stand Pick Fruit Basket" }
+          - { id: "279", label: "Female Crouch Pick Gun Point Forward" }
+          - { id: "280", label: "Female Crouch Pick Throw Forward" }
+          - { id: "281", label: "Female Bend Over Pick Up Inspect" }
+          - { id: "282", label: "Female Walk Pick Put in Pocket" }
+          - { id: "283", label: "Pull Radish" }
+          - { id: "284", label: "Collect Object" }
+          - { id: "285", label: "Open Door" }
+          - { id: "286", label: "Open Door 1" }
+          - { id: "287", label: "Open Door 2" }
+          - { id: "288", label: "Open Door 3" }
+          - { id: "289", label: "Open Door 4" }
+          - { id: "290", label: "Wave One Hand" }
+          - { id: "291", label: "Wave for Help" }
+          - { id: "292", label: "Gesture with Hand on Gun" }
+          - { id: "293", label: "Wave for Help 1" }
+          - { id: "294", label: "Wave for Help 2" }
+          - { id: "295", label: "Wave for Help 3" }
+          - { id: "296", label: "Wave for Help 4" }
+          - { id: "297", label: "Personalized Gesture" }
+          - { id: "298", label: "Cheer with Both Hands Up" }
+          - { id: "299", label: "Stand Clap and Sit Down" }
+          - { id: "300", label: "Sit Cheer with Left Hand" }
+          - { id: "301", label: "Cheer with Both Hands 1" }
+          - { id: "302", label: "Stand Wave and Sit Down" }
+          - { id: "303", label: "Cheer with Both Hands" }
+          - { id: "304", label: "Seated Fist Pump" }
+          - { id: "305", label: "Stand Cheer and Sit Down" }
+          - { id: "306", label: "Cheer with One Hand Up" }
+          - { id: "307", label: "Sitting Answering Questions" }
+          - { id: "308", label: "Talk Passionately" }
+          - { id: "309", label: "Talk with Left Hand on Hip" }
+          - { id: "310", label: "Talk with Left Hand Raised" }
+          - { id: "311", label: "Stand Talking Angry" }
+          - { id: "312", label: "Phone Conversation" }
+          - { id: "313", label: "Talk with Hands Open" }
+          - { id: "314", label: "Talk with Right Hand Open" }
+          - { id: "315", label: "Hand on Hip Gesture" }
+          - { id: "316", label: "Headache Relief" }
+          - { id: "317", label: "Shrug" }
+          - { id: "318", label: "Scheming Hand Rub" }
+          - { id: "319", label: "Air Squat" }
+          - { id: "320", label: "Bicep Curl" }
+          - { id: "321", label: "Bicycle Crunch" }
+          - { id: "322", label: "Circle Crunch" }
+          - { id: "323", label: "Golf Drive" }
+          - { id: "324", label: "Idle to Push Up" }
+          - { id: "325", label: "Jump Push Up" }
+          - { id: "326", label: "Jumping Jacks" }
+          - { id: "327", label: "Kettlebell Swing" }
+          - { id: "328", label: "Push Up to Idle" }
+          - { id: "329", label: "Push Up" }
+          - { id: "330", label: "Situps" }
+          - { id: "331", label: "Sumo High Pull" }
+          - { id: "333", label: "Look Around Dumbfounded" }
+          - { id: "334", label: "Lower Weapon, Look, Raise" }
+          - { id: "335", label: "Axe Breathe and Look Around" }
+          - { id: "336", label: "Long Breathe and Look Around" }
+          - { id: "337", label: "Torch Look Around" }
+          - { id: "338", label: "Short Breathe and Look Around" }
+          - { id: "339", label: "Walking Scan with Sudden Look Back" }
+          - { id: "340", label: "Crawl and Look Back" }
+          - { id: "341", label: "Walk Slowly and Look Around" }
+          - { id: "342", label: "Stand and Drink" }
+          - { id: "343", label: "Sit and Drink" }
+          - { id: "344", label: "Stand Up 1" }
+          - { id: "345", label: "Stand Up 2" }
+          - { id: "346", label: "Stand Up 3" }
+          - { id: "347", label: "Stand Up 4" }
+          - { id: "348", label: "Stand Up 5" }
+          - { id: "349", label: "Stand Up 6" }
+          - { id: "350", label: "Stand Up 7" }
+          - { id: "351", label: "Stand Up 8" }
+          - { id: "352", label: "Stand Up 9" }
+          - { id: "353", label: "Stand Up 10" }
+          - { id: "354", label: "Sitting Clap" }
+          - { id: "355", label: "Sit Finger Wag No" }
+          - { id: "356", label: "Sit Hands on Head Lean Back" }
+          - { id: "357", label: "Sit Thumbs Up Right" }
+          - { id: "358", label: "Sit Shout Hands on Mouth" }
+          - { id: "359", label: "Look Back and Sit" }
+          - { id: "360", label: "Sit to Standtransition Female 2" }
+          - { id: "361", label: "Sit Dodge" }
+          - { id: "362", label: "Sit Cross-legged" }
+          - { id: "363", label: "Sit Cross-legged on Floor" }
+          - { id: "364", label: "Sit on Chair Arms Crossed" }
+          - { id: "365", label: "Kneel on One Knee and Stand" }
+          - { id: "366", label: "Falling Down", canonical: fall }
+          - { id: "367", label: "Sidelying Reach Help" }
+          - { id: "368", label: "Angry to Tantrum Sit" }
+          - { id: "369", label: "Lie Back Leg Swing" }
+          - { id: "370", label: "Stand to Side Lying" }
+          - { id: "371", label: "Sit Lie Bed" }
+          - { id: "372", label: "Prone Reach Help" }
+          - { id: "375", label: "Handstand Flip" }
+          - { id: "376", label: "Punch Pose" }
+          - { id: "377", label: "Relax Arms, Then Strike Battle Pose" }
+          - { id: "378", label: "Large Step, Then High Kick" }
+          - { id: "379", label: "Side Jumps in Horse Stance." }
+          - { id: "381", label: "Step Right for Exercise" }
+          - { id: "382", label: "Jump and Slam Back Down" }
+          - { id: "384", label: "Quick Step and Spin Dodge" }
+          - { id: "385", label: "Boxing Warm-up" }
+          - { id: "386", label: "Zombie Scream" }
+          - { id: "387", label: "Half Squat with Thumb Up" }
+          - { id: "388", label: "Show Both Arm Muscles" }
+          - { id: "389", label: "Grip and Throw Down" }
+          - { id: "390", label: "Stand on Pole and Balance" }
+          - { id: "391", label: "Head Hold in Pain" }
+          - { id: "392", label: "Ground Flip and Sweep Up" }
+          - { id: "393", label: "Baseball Pitching" }
+          - { id: "394", label: "Backflip and Hooks" }
+          - { id: "395", label: "Breakdance 1990" }
+          - { id: "396", label: "Burpee Exercise" }
+          - { id: "397", label: "360 Power Spin Jump" }
+          - { id: "398", label: "Crouch Charge and Throw" }
+          - { id: "399", label: "Step Step Turn Kick" }
+          - { id: "401", label: "Sprint, Roll, and Flip" }
+          - { id: "402", label: "Run and Leap" }
+          - { id: "403", label: "Victory Fist Pump" }
+          - { id: "404", label: "Crouch and Step Back" }
+          - { id: "405", label: "Joyful Dance with Hand Sway" }
+          - { id: "406", label: "Thomas Flair to Jump Up" }
+          - { id: "407", label: "Wall Push Jump and Flip" }
+          - { id: "408", label: "Jazz Hands" }
+          - { id: "409", label: "Finger Wag No" }
+          - { id: "410", label: "Kick a Soccer Ball" }
+          - { id: "411", label: "Neck Slashing Gesture" }
+          - { id: "412", label: "Victory" }
+          - { id: "413", label: "Backflip and Rise" }
+          - { id: "414", label: "Double Kick Forward." }
+          - { id: "415", label: "Happy Sway Standing" }
+          - { id: "416", label: "Hit in Back While Running" }
+          - { id: "417", label: "Hop with Arms Raised" }
+          - { id: "419", label: "Jump to Catch and Fall" }
+          - { id: "420", label: "Left Hand Bitten, Step Back" }
+          - { id: "421", label: "Over Shoulder Throw" }
+          - { id: "422", label: "Rising Flying Kick" }
+          - { id: "425", label: "Vault with Rifle" }
+          - { id: "426", label: "Roll Behind Cover" }
+          - { id: "427", label: "Vault and Land" }
+          - { id: "428", label: "Unarmed Vault" }
+          - { id: "429", label: "Parkour Vault" }
+          - { id: "430", label: "Parkour Vault with Roll" }
+          - { id: "431", label: "Parkour Vault 1" }
+          - { id: "432", label: "Parkour Vault 2" }
+          - { id: "433", label: "Parkour Vault 3" }
+          - { id: "434", label: "Fast Ladder Climb" }
+          - { id: "435", label: "Ladder Climb Finish" }
+          - { id: "436", label: "Ladder Mount Start" }
+          - { id: "437", label: "Slow Ladder Climb" }
+          - { id: "438", label: "Ladder Climb Loop", canonical: climb }
+          - { id: "439", label: "Climb Left with Both Limbs" }
+          - { id: "440", label: "Climb Right with Both Limbs" }
+          - { id: "441", label: "Climb Stairs" }
+          - { id: "442", label: "Fast Stair Climb" }
+          - { id: "444", label: "Climbing Up Wall" }
+          - { id: "445", label: "Diagonal Wall Run" }
+          - { id: "446", label: "Hang and Climb Left" }
+          - { id: "447", label: "Hang and Climb Rght" }
+          - { id: "448", label: "Jump and Grab Wall" }
+          - { id: "449", label: "Climb Up Rope" }
+          - { id: "450", label: "Wall Flip" }
+          - { id: "451", label: "One-arm Handstand" }
+          - { id: "452", label: "Backflip" }
+          - { id: "453", label: "Backflip Sweep Kick" }
+          - { id: "455", label: "Sweep Kick" }
+          - { id: "456", label: "Jumping Head Scissor Takedown" }
+          - { id: "457", label: "Jumping Punch" }
+          - { id: "458", label: "Unicycle Jump Dismount" }
+          - { id: "459", label: "Run, Jump, and Roll" }
+          - { id: "460", label: "Jump with Arms Open" }
+          - { id: "461", label: "Jump with Arms and Legs Open" }
+          - { id: "462", label: "Backflip Jump" }
+          - { id: "463", label: "Run and Jump" }
+          - { id: "464", label: "Leap and Punch" }
+          - { id: "465", label: "Leap Right and Catch" }
+          - { id: "466", label: "Regular Jump" }
+          - { id: "467", label: "Jump Over Obstacle 2" }
+          - { id: "468", label: "Back Jump" }
+          - { id: "470", label: "Jumping Down" }
+          - { id: "471", label: "Jump Over Obstacle" }
+          - { id: "472", label: "Jump Over Obstacle 1" }
+          - { id: "473", label: "Quad Jump Left" }
+          - { id: "474", label: "Quad Jump Up" }
+          - { id: "475", label: "Quad Climb Right" }
+          - { id: "476", label: "Hang and Push with Foot" }
+          - { id: "477", label: "Rope Hang Idle" }
+          - { id: "478", label: "Bar Hang Idle" }
+          - { id: "479", label: "Upside Down Rope Hang" }
+          - { id: "480", label: "Upside Down Rope Hang 1" }
+          - { id: "481", label: "Upside Down Rope Hang 2" }
+          - { id: "482", label: "Grab Wall Midair Idle" }
+          - { id: "483", label: "Slow Bar Hang Left" }
+          - { id: "484", label: "Slow Bar Hang Right" }
+          - { id: "485", label: "Jump and Hang on Bar" }
+          - { id: "486", label: "Wall Support to Step Down" }
+          - { id: "487", label: "Climb Attempt and Fall 3" }
+          - { id: "488", label: "Climb Attempt and Fall 4" }
+          - { id: "489", label: "Climb Attempt and Fall 5" }
+          - { id: "490", label: "Fall Down" }
+          - { id: "491", label: "Fall from Bar" }
+          - { id: "492", label: "Wall Support, Jump to Ground" }
+          - { id: "493", label: "Jump Down from Wall" }
+          - { id: "494", label: "Swing on Rope to Ground" }
+          - { id: "495", label: "Grab Bar and Swing Forward" }
+          - { id: "496", label: "Rope Hang Backflip to Crouch" }
+          - { id: "497", label: "Climbing Down Wall" }
+          - { id: "498", label: "Climb Attempt and Fall" }
+          - { id: "499", label: "Climb Attempt and Fall 1" }
+          - { id: "500", label: "Climb Attempt and Fall 2" }
+          - { id: "501", label: "Leap of Faith" }
+          - { id: "502", label: "Fall 1" }
+          - { id: "503", label: "Fall 2" }
+          - { id: "504", label: "Fall 3" }
+          - { id: "505", label: "Fall 4" }
+          - { id: "506", label: "Dive Down and Land" }
+          - { id: "507", label: "Dive Down and Land 1" }
+          - { id: "508", label: "Dive Down and Land " }
+          - { id: "509", label: "Lean Forward Sprint" }
+          - { id: "510", label: "Standard Forward Charge" }
+          - { id: "511", label: "Rifle Charge" }
+          - { id: "512", label: "Male Head-down Charge" }
+          - { id: "513", label: "Female Head-down Charge" }
+          - { id: "514", label: "Female Bow Charge Left Hand" }
+          - { id: "515", label: "Female Throwing Stance Charge" }
+          - { id: "516", label: "Slide Light" }
+          - { id: "517", label: "Slide Right" }
+          - { id: "518", label: "Sliding Rool" }
+          - { id: "519", label: "Sliding Stumble" }
+          - { id: "520", label: "Crouch Walk with Torch" }
+          - { id: "521", label: "Crouch Walk Left with Torch" }
+          - { id: "522", label: "Crouch Walk Right with Torch" }
+          - { id: "523", label: "Cautious Crouch Walk Backward" }
+          - { id: "524", label: "Cautious Crouch Walk Forward" }
+          - { id: "525", label: "Cautious Crouch Walk Left" }
+          - { id: "526", label: "Cautious Crouch Walk Right" }
+          - { id: "527", label: "Crouch Walk Left with Gun" }
+          - { id: "528", label: "Walk Left with Gun" }
+          - { id: "529", label: "Walk Backward with Gun" }
+          - { id: "530", label: "Run Fast 3" }
+          - { id: "531", label: "Sprint and Sudden Stop" }
+          - { id: "532", label: "Run Fast 4" }
+          - { id: "533", label: "Run Fast 5" }
+          - { id: "534", label: "Run Fast 6" }
+          - { id: "535", label: "Run Fast 7" }
+          - { id: "536", label: "Run Fast 8" }
+          - { id: "537", label: "Run Fast 9" }
+          - { id: "538", label: "Run Fast 10" }
+          - { id: "539", label: "Run Fast 2" }
+          - { id: "540", label: "Injured Walk Backward" }
+          - { id: "541", label: "Walk Backward with Gun 1" }
+          - { id: "542", label: "Walk Backward with Grenade" }
+          - { id: "543", label: "Step Back" }
+          - { id: "544", label: "Walk Backward" }
+          - { id: "545", label: "Walk Backward with Bow" }
+          - { id: "546", label: "Walk Backward with Sword" }
+          - { id: "547", label: "Walk Backward with Bow 1" }
+          - { id: "548", label: "Walk Backward with Sword & Shield" }
+          - { id: "549", label: "Crawl Backward" }
+          - { id: "550", label: "Carry Heavy Cannon Forward" }
+          - { id: "551", label: "Carry Heavy Object Walk" }
+          - { id: "552", label: "Carry Water Bucket Walk" }
+          - { id: "553", label: "Elderly Shaky Walk" }
+          - { id: "554", label: "Funky Walk" }
+          - { id: "555", label: "Limping Walk 1" }
+          - { id: "556", label: "Limping Walk 2" }
+          - { id: "557", label: "Limping Walk 3" }
+          - { id: "558", label: "Limping Walk" }
+          - { id: "559", label: "Sneaky Walk" }
+          - { id: "560", label: "Spear Walk" }
+          - { id: "561", label: "Step Hip Hop Dance" }
+          - { id: "562", label: "Stumble Walk" }
+          - { id: "563", label: "Stylish Walk" }
+          - { id: "564", label: "Tightrope Walk" }
+          - { id: "565", label: "Walk with Umbrella" }
+          - { id: "566", label: "Walking 2" }
+          - { id: "567", label: "Walk with Walker Support" }
+          - { id: "568", label: "Swim Idle" }
+          - { id: "569", label: "Swim Forward" }
+          - { id: "570", label: "Swimming to Edge" }
+          - { id: "571", label: "Run Turn Left" }
+          - { id: "572", label: "Walk Turn Left", canonical: turn }
+          - { id: "573", label: "Rifle Turn Left" }
+          - { id: "574", label: "Walk Turn Left with Weapon" }
+          - { id: "575", label: "Combat Idle Turn Left" }
+          - { id: "576", label: "Idle Turn Left" }
+          - { id: "577", label: "Idle Step Turn Left" }
+          - { id: "578", label: "Idle Torch Turn Left" }
+          - { id: "579", label: "Depressed Full Turn Left" }
+          - { id: "580", label: "Sword and Shield Alert Turn Left" }
+          - { id: "581", label: "Run Sharp Turn Right" }
+          - { id: "582", label: "Run Turn Right" }
+          - { id: "583", label: "Walk Turn Right" }
+          - { id: "584", label: "Walk Turn Right (female)" }
+          - { id: "585", label: "Rifle Aim Turn Right" }
+          - { id: "586", label: "Idle Turn Right" }
+          - { id: "587", label: "Walk Turn Right (idle Style)" }
+          - { id: "588", label: "Frustrated Turn Right" }
+          - { id: "589", label: "Alert Quick Turn Right" }
+          - { id: "590", label: "Sword and Shield Alert Turn Right" }
+          - { id: "591", label: "Hip Hop Dance" }
+          - { id: "592", label: "Hip Hop Dance 1" }
+          - { id: "593", label: "Hip Hop Dance 2" }
+          - { id: "594", label: "Hip Hop Dance 3" }
+          - { id: "595", label: "Jazz Danc" }
+          - { id: "596", label: "Ymca Dance" }
+          - { id: "597", label: "Hip Hop Dance " }
+          - { id: "598", label: "Kettlebell Swing 1" }
+          - { id: "599", label: "Idle 15" }
+          - { id: "601", label: "Backflip" }
+          - { id: "604", label: "Backflip Sweep Kick" }
+          - { id: "605", label: "Back Jump" }
+          - { id: "606", label: "BackLeft Run" }
+          - { id: "607", label: "BackRight Run" }
+          - { id: "608", label: "BeHit FlyUp" }
+          - { id: "609", label: "Boxing Practice" }
+          - { id: "610", label: "Carry Heavy Cannon Forward" }
+          - { id: "611", label: "Carry Heavy Object Walk" }
+          - { id: "612", label: "Carry Water Bucket Walk" }
+          - { id: "613", label: "Casual Walk" }
+          - { id: "615", label: "Cautious Crouch Walk Backward" }
+          - { id: "616", label: "Cautious Crouch Walk Forward" }
+          - { id: "617", label: "Cautious Crouch Walk Left" }
+          - { id: "618", label: "Cautious Crouch Walk Right" }
+          - { id: "619", label: "Climb Left with Both Limbs" }
+          - { id: "620", label: "Climb Right with Both Limbs" }
+          - { id: "621", label: "Confident Strut" }
+          - { id: "622", label: "Crawl Backward" }
+          - { id: "623", label: "Crouch Walk Left with Gun" }
+          - { id: "624", label: "Crouch Walk Left with Torch" }
+          - { id: "625", label: "Crouch Walk Right with Torch" }
+          - { id: "626", label: "Elderly Shaky Walk" }
+          - { id: "627", label: "Female Bow Charge Left Hand" }
+          - { id: "628", label: "Female Throwing Stance Charge" }
+          - { id: "629", label: "Flirty Strut" }
+          - { id: "630", label: "ForwardLeft Run Fight" }
+          - { id: "631", label: "ForwardRight Run Fight" }
+          - { id: "632", label: "Funky Walk" }
+          - { id: "635", label: "Handbag Walk" }
+          - { id: "636", label: "Hello Run" }
+          - { id: "637", label: "Injured Walk" }
+          - { id: "638", label: "Injured Walk Backward" }
+          - { id: "639", label: "Jazz Hands" }
+          - { id: "640", label: "Jump Over Obstacle" }
+          - { id: "641", label: "Jump Over Obstacle 1" }
+          - { id: "642", label: "Jump Over Obstacle 2" }
+          - { id: "643", label: "Jump Run" }
+          - { id: "644", label: "Lean Forward Sprint" }
+          - { id: "645", label: "Limping Walk" }
+          - { id: "646", label: "Limping Walk 1" }
+          - { id: "647", label: "Limping Walk 2" }
+          - { id: "648", label: "Limping Walk 3" }
+          - { id: "649", label: "Lunge Roundhouse Kick" }
+          - { id: "650", label: "Mummy Stagger" }
+          - { id: "651", label: "Parkour Vault with Roll" }
+          - { id: "652", label: "Proud Strut" }
+          - { id: "653", label: "Red Carpet Walk" }
+          - { id: "654", label: "Rifle Charge" }
+          - { id: "656", label: "Run and Leap" }
+          - { id: "657", label: "Run Fast 10" }
+          - { id: "658", label: "Run Fast 2" }
+          - { id: "659", label: "Run Fast 3" }
+          - { id: "660", label: "Run Fast 4" }
+          - { id: "661", label: "Run Fast 5" }
+          - { id: "662", label: "Run Fast 6" }
+          - { id: "663", label: "Run Fast 7" }
+          - { id: "664", label: "Run Fast 8" }
+          - { id: "665", label: "Run Fast 9" }
+          - { id: "666", label: "Running Reload" }
+          - { id: "667", label: "Run to Walk Transition" }
+          - { id: "668", label: "Skip Forward" }
+          - { id: "669", label: "Slow Orc Walk" }
+          - { id: "670", label: "Slow Walk Reload" }
+          - { id: "671", label: "Sneaky Walk" }
+          - { id: "672", label: "Spear Walk" }
+          - { id: "673", label: "Standard Forward Charge" }
+          - { id: "674", label: "Stumble Walk" }
+          - { id: "675", label: "Stylish Walk" }
+          - { id: "676", label: "Texting Walk" }
+          - { id: "677", label: "Tightrope Walk" }
+          - { id: "678", label: "Unsteady Walk" }
+          - { id: "679", label: "Walk Backward" }
+          - { id: "680", label: "Walk Backward While Shooting" }
+          - { id: "681", label: "Walk Backward with Bow" }
+          - { id: "682", label: "Walk Backward with Bow 1" }
+          - { id: "683", label: "Walk Backward with Bow Aimed" }
+          - { id: "684", label: "Walk Backward with Grenade" }
+          - { id: "685", label: "Walk Backward with Gun" }
+          - { id: "686", label: "Walk Backward with Gun 1" }
+          - { id: "687", label: "Walk Backward with Sword" }
+          - { id: "688", label: "Walk Fight Back" }
+          - { id: "689", label: "Walk Fight Forward" }
+          - { id: "690", label: "Walk Forward While Shooting" }
+          - { id: "691", label: "Walk Forward with Bow Aimed" }
+          - { id: "692", label: "Walking 2" }
+          - { id: "693", label: "Walking with Phone" }
+          - { id: "694", label: "Walk Left with Gun" }
+          - { id: "695", label: "Walk with Umbrella" }
+          - { id: "696", label: "Walk with Walker Support" }
+      fps:
+        kind: int
+        min: 1
+        max: 120
+        label: Frames per second
+        description: The delivered clips' frame rate. Meshy's own fbx comes at 24, 25, 30 or 60; litegen keys the glb.
+      output_formats:
+        kind: string_array
+        enum_values: [glb, fbx]
+        max_items: 1
+        default: [glb]
+        label: Output formats
+        description: Meshy returns glb and fbx; litegen derives the rest.
+    extra_allowlist: []
+    tags: [animation, 3d-operation]

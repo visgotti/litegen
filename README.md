@@ -297,7 +297,8 @@ modality automatically.
 |----------|-------|-------|----|--------|
 | OpenAI | ✅ | — | — | GPT Image 2.5 / 2 / 1 · _(Sora 2 and the Videos API shut down 2026-09-24)_ |
 | Fal.ai | ✅ | ✅ | ✅ | Flux, SDXL, Recraft · Kling, MiniMax, SVD, LTX · Hyper3D Rodin, TRELLIS, Hunyuan3D v2, Meshy rigging |
-| Tripo | — | — | ✅ | Auto rig (after Tripo's free rig-check) |
+| Tripo | — | — | ✅ | Auto rig (after Tripo's free rig-check) · animation retarget |
+| Meshy | — | — | ✅ | Auto rig · animation library (680 clips) |
 | Replicate | ✅ | ✅ | — | Flux, SDXL, SD3 · AnimateDiff, SVD, Zeroscope |
 | Google | ✅ | 🔜 | — | Imagen 3, Gemini 2.5/3 image · _Veo 3 video — public API, not yet wired_ |
 | Stability AI | ✅ | — | 🔜 | SD3.5, Core, Ultra, SDXL · _(Stable Video hosted API discontinued)_ |
@@ -307,10 +308,10 @@ modality automatically.
 **Legend:** ✅ supported in litegen · 🔜 vendor offers a public API for this modality but litegen
 hasn't wired it yet (see [Roadmap: missing providers](#roadmap--missing-providers)) · — no public API.
 
-**3D (`model3d`):** generation through fal (Rodin, TRELLIS, Hunyuan3D v2), and rigging through
-Tripo and fal's Meshy endpoint (see [Generate 3D Model](#generate-3d-model)); every delivered mesh
-is normalised and carries a measured manifest. Meshy direct, Stability 3D and Rodin direct are
-deferred.
+**3D (`model3d`):** generation through fal (Rodin, TRELLIS, Hunyuan3D v2); rigging through Tripo,
+Meshy and fal's Meshy endpoint; animation through Tripo and Meshy (see
+[Generate 3D Model](#generate-3d-model)). Every delivered mesh is normalised and carries a measured
+manifest. Meshy and Tripo generation, Stability 3D and Rodin direct are deferred.
 
 ## Roadmap — Missing Providers
 
