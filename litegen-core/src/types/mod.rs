@@ -52,6 +52,10 @@ pub struct ImageGenerationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Vec<ImageView>>)]
     pub views: Option<Vec<String>>,
+    /// Grow the init image's canvas by this many pixels a side (3D doc §4);
+    /// the model's `expand` spec says how much and whether it only centres.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expand: Option<Expand>,
     /// Grow the edit area outward by this many pixels: the vendor's own
     /// setting where it has one (sent explicitly, even as 0), else litegen
     /// dilates the mask itself. Default 0.
@@ -212,6 +216,11 @@ pub struct ImageResult {
     /// Content type of the image (e.g. "image/png").
     #[serde(default = "default_content_type")]
     pub content_type: String,
+    /// The image's size in pixels, read from its bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
     /// Index in the batch.
     pub index: u32,
 }
@@ -594,6 +603,20 @@ impl ImageView {
     pub fn parse(s: &str) -> Option<ImageView> {
         Self::ALL.into_iter().find(|v| v.as_str() == s)
     }
+}
+
+/// Pixels to add to each side of the init image's canvas (3D doc §4): the
+/// result is the whole canvas, with the source at (`left`, `top`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+pub struct Expand {
+    #[serde(default)]
+    pub left: u32,
+    #[serde(default)]
+    pub top: u32,
+    #[serde(default)]
+    pub right: u32,
+    #[serde(default)]
+    pub bottom: u32,
 }
 
 /// A rectangle of an image, in its pixels: top-left origin, ends exclusive
@@ -1343,6 +1366,9 @@ pub struct ModelCapabilities {
     /// mesh it delivers: true on every 3D model.
     #[serde(default)]
     pub supports_placement: bool,
+    /// Takes `expand` (3D doc §4).
+    #[serde(default)]
+    pub supports_expand: bool,
     /// Serves `POST /v1/images/segmentations` (PixelGenie L7).
     #[serde(default)]
     pub supports_segmentation: bool,

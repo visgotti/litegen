@@ -479,6 +479,7 @@ mod tests {
             steps: None, guidance_scale: None, strength: None, response_format: "url".to_string(), extra: None,
             edit: None, views: Vec::new(),
             output_format: None, background: None,
+            expand: None,
         }
     }
 

@@ -267,6 +267,9 @@ impl VendorJobSink {
 /// Extra image-specific parameters extracted from a validated request.
 #[derive(serde::Serialize)]
 pub struct ImageExtras {
+    /// Pixels to add a side (3D doc §4), checked against the model's spec.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expand: Option<crate::types::Expand>,
     pub size: Option<String>,
     pub aspect_ratio: Option<String>,
     pub quality: Option<String>,

@@ -165,6 +165,8 @@ use utoipa::OpenApi;
         crate::types::SegmentationMask,
         crate::capabilities::SegmentationPromptType,
         crate::capabilities::ParamSpecSegmentationPrompts,
+        crate::capabilities::ParamSpecExpand,
+        crate::types::Expand,
         crate::types::ImageResult,
         crate::types::VideoGenerationRequest,
         crate::types::VideoGenerationResponse,
@@ -453,6 +455,24 @@ mod tests {
             property(&s["ModelCapabilities"], f);
         }
         assert!(mentions(&s["ParamSpec"], "\"region\""), "the union names the region kind");
+    }
+
+    #[test]
+    fn expand_documents_its_sides_the_delivered_size_and_the_catalog_spec() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        assert!(mentions(property(&s["ImageGenerationRequest"], "expand"), "#/components/schemas/Expand"));
+        for f in ["left", "top", "right", "bottom"] {
+            assert!(mentions(property(&s["Expand"], f), "integer"), "{f}");
+        }
+        for f in ["width", "height"] {
+            assert!(mentions(property(&s["ImageResult"], f), "integer"), "{f}");
+        }
+        assert!(mentions(property(&s["ModelCapabilities"], "supports_expand"), "boolean"));
+        for f in ["centered_only", "max_px"] {
+            property(&s["ParamSpecExpand"], f);
+        }
+        assert!(mentions(&s["ParamSpec"], "\"expand\""), "the union names the new kind");
     }
 
     #[test]

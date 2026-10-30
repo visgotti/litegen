@@ -670,6 +670,7 @@ mod tests {
             edit: None, views: Vec::new(),
             extra: None,
             output_format: None, background: None,
+            expand: None,
         }
     }
 
@@ -871,6 +872,7 @@ mod tests {
             response_format: "b64_json".to_string(),
             region: None, mask_grow_px: None, views: None,
             output_format: None, background: None,
+            expand: None,
         };
         provider
             .estimate_cost(&ref_schema(id), &request)

@@ -912,4 +912,30 @@ models:
         let err = row("{ kind: int, min: 256, max: 4096 }").unwrap_err().to_string();
         assert!(err.contains("texture_resolution") && err.contains("values"), "{err}");
     }
+
+    // ─── Expand (3D doc §4, P2) ───────────────────────────────────────────────
+
+    #[test]
+    fn an_expand_model_takes_the_init_image_it_grows() {
+        let row = |roles: &str| yaml(&format!(r#"
+models:
+  - id: x/expand
+    provider: x
+    media_type: image
+    display_name: Expand
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ image_to_image: true }}
+    prompt: {{ required: false }}
+    params:
+      expand: {{ kind: expand, max_px: 100 }}
+    ref_inputs:
+      max_total: 1
+      provider_format: {{ form: base64 }}
+      roles:
+{roles}
+"#));
+        assert!(row("        init: { required: true, min_count: 1, max_count: 1 }").is_ok());
+        let err = row("        style: { required: false, min_count: 0, max_count: 1 }").unwrap_err().to_string();
+        assert!(err.contains("expand") && err.contains("init"), "{err}");
+    }
 }

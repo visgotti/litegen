@@ -285,6 +285,30 @@ listing serves `mask_convention: white_edits` for every model that takes one.
 
 Not verified live: no OpenAI, Stability or Ideogram key is available here.
 
+### Expanded canvases (3D doc §4, P2)
+
+`expand: {left, top, right, bottom}` (pixels, each 0 or more, at least one
+not) grows the init image's canvas; the result is the whole canvas with the
+source at (`left`, `top`). Every image now reports its `width` and `height`,
+read from its bytes — so the delivered canvas size is what the vendor sent,
+never a promise. The row's `expand` spec (listed as `supports_expand`) says
+the most pixels a side (`max_px`) and whether the vendor only centres
+(`centered_only`: left = right and top = bottom, else 400
+`expand_unsupported`). Refused before billing: no init image
+(`init_required`), nothing added or a side over `max_px`
+(`param_out_of_range`), a mask or region beside it (`param_conflict`), a
+model without the spec (`param_unsupported`); the loader requires an `init`
+role of a model that takes `expand`.
+
+| row | vendor call | price | proof | status |
+|---|---|---|---|---|
+| `mock/expand-image` | the init exactly at (left, top), every new pixel #ffcd75; at most 512 px a side | $0 | HTTP `the_canvas_grows_by_each_side_with_the_source_at_left_top`, `an_expansion_the_model_cannot_make_is_refused_before_billing` (no log), `the_listing_says_which_models_expand`; validator `a_vendor_that_only_centres_takes_only_symmetric_expansions`; loader `an_expand_model_takes_the_init_image_it_grows` | ✅ mock |
+| `stability/outpaint` | `POST /v2beta/stable-image/edit/outpaint` multipart `image`, `left`, `up` (top), `right`, `down` (bottom), each 0–2000; `prompt` only when given; `output_format`; `creativity` an extra | $0.04 (4 credits) | adapter `outpaint_sends_each_side_as_stabilitys_direction`; conformance `stability_outpaint_grows_each_side_by_up_to_2000_px` | 🟡 wiremock |
+
+Kling's ratio-per-side expansion and Ideogram's centred reframe are not
+wired (no Kling or Ideogram image route for them yet); BFL Expand, Recraft
+and Bria are §4's other candidates. Not verified live: no Stability key.
+
 ### Multiview images (3D doc §3E)
 
 An image model with `task: multiview` turns its one `init` image into one

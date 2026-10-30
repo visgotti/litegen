@@ -122,6 +122,8 @@ export type ImageResult = components["schemas"]["ImageResult"];
  * drawn as its mask; with a `mask` too, the edit area is where they overlap.
  */
 export type Region = components["schemas"]["Region"];
+/** Pixels to add to each side of the init image's canvas; the source lands at (left, top). */
+export type Expand = components["schemas"]["Expand"];
 /** `POST /v1/images/segmentations` (PixelGenie L7): an image and what to select in it. */
 export type ImageSegmentationRequest = components["schemas"]["ImageSegmentationRequest"];
 /** One mask per object selected, best first. */

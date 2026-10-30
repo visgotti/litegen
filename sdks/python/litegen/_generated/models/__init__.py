@@ -45,6 +45,7 @@ from .entity_limits import EntityLimits
 from .entity_type import EntityType
 from .error_detail import ErrorDetail
 from .error_response import ErrorResponse
+from .expand import Expand
 from .gateway_settings import GatewaySettings
 from .gateway_settings_view import GatewaySettingsView
 from .generation import Generation
@@ -125,6 +126,7 @@ from .paginated_response_webhook_delivery_data_item import (
 from .param_spec_animation_list import ParamSpecAnimationList
 from .param_spec_aspect_ratio import ParamSpecAspectRatio
 from .param_spec_bool import ParamSpecBool
+from .param_spec_expand import ParamSpecExpand
 from .param_spec_float import ParamSpecFloat
 from .param_spec_int import ParamSpecInt
 from .param_spec_region import ParamSpecRegion
@@ -272,6 +274,7 @@ __all__ = (
     "EntityType",
     "ErrorDetail",
     "ErrorResponse",
+    "Expand",
     "GatewaySettings",
     "GatewaySettingsView",
     "Generation",
@@ -344,6 +347,7 @@ __all__ = (
     "ParamSpecAnimationList",
     "ParamSpecAspectRatio",
     "ParamSpecBool",
+    "ParamSpecExpand",
     "ParamSpecFloat",
     "ParamSpecInt",
     "ParamSpecRegion",

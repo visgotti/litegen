@@ -447,6 +447,7 @@ mod tests {
             edit: None, views: Vec::new(),
             extra: None,
             output_format: None, background: None,
+            expand: None,
         }
     }
 
@@ -512,6 +513,7 @@ mod tests {
             edit: None, views: Vec::new(),
             extra: None,
             output_format: None, background: None,
+            expand: None,
         };
 
         // Every aspect ratio any Runway model advertises.

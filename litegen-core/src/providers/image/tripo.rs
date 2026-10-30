@@ -236,6 +236,7 @@ mod tests {
             views: views.iter().map(|v| v.to_string()).collect(),
             vendor_job: Default::default(),
             output_format: None, background: None,
+            expand: None,
         }
     }
 

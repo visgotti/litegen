@@ -6980,6 +6980,69 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1inpaint/post"
   },
   {
+    "id": "stability/outpaint",
+    "provider": "stability",
+    "displayName": "Stable Image Outpaint",
+    "description": "Stability's Outpaint: grows the init image's canvas by up to 2,000 px a side, filling the new space, optionally guided by a prompt.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "expand",
+        "kind": "expand"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.04
+    },
+    "tags": [
+      "image-to-image",
+      "outpainting"
+    ],
+    "referenceUrl": "https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1outpaint/post"
+  },
+  {
     "id": "stability/remove-background",
     "provider": "stability",
     "displayName": "Stable Image Remove Background",

@@ -3333,3 +3333,21 @@ fn background_removal_rows_restate_their_vendors_prices_and_containers() {
     // Bria's prompt is billed $0.03 instead of $0.018, so the row takes none.
     assert_eq!(reg.get("fal/bria-rmbg-2").unwrap().prompt.max_length, Some(0));
 }
+
+// ─── Expanded canvases (PixelGenie 3D doc §4, P2) ───────────────────────────
+
+/// Stability's Outpaint takes `left`, `right`, `up` and `down`, each "minimum":
+/// 0, "maximum": 2000 (<https://api.stability.ai/v2alpha/openapi>,
+/// 2026-10-30); "Outpaint … 4" credits at "$0.01" each (pricing.md).
+#[test]
+fn stability_outpaint_grows_each_side_by_up_to_2000_px() {
+    use litegen::capabilities::ParamSpec;
+    let reg = registry();
+    let m = reg.get("stability/outpaint").expect("the row");
+    match m.params.get("expand") {
+        Some(ParamSpec::Expand(e)) => assert_eq!((e.centered_only, e.max_px), (false, Some(2000))),
+        other => panic!("{other:?}"),
+    }
+    assert!(m.ref_inputs.as_ref().unwrap().roles["init"].required);
+    assert!((m.pricing.base_cost_usd - 0.04).abs() < 1e-9);
+}

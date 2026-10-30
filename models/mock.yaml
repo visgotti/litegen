@@ -710,6 +710,32 @@ models:
       background: { kind: string, enum_values: [transparent, opaque] }
     tags: [mock, test, formats]
 
+  # ─── Expanded canvases (PixelGenie 3D doc §4, P2) ─────────────────────────
+  - id: mock/expand-image
+    provider: mock
+    media_type: image
+    display_name: Mock Expand Image
+    description: >-
+      Grows the init image's canvas by `expand` (at most 512 px a side): the
+      init exactly at (left, top) and every new pixel #ffcd75.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { image_to_image: true }
+    prompt: { required: false, max_length: 1000 }
+    params:
+      expand:
+        kind: expand
+        max_px: 512
+        label: Expand
+        description: Pixels to add to each side of the canvas.
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: []
+    tags: [mock, test, expand]
+
   # ─── Background removal (PixelGenie L8) ───────────────────────────────────
   - id: mock/remove-background
     provider: mock

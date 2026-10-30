@@ -27,6 +27,7 @@ const V2_ENDPOINTS = [
   '/v2beta/stable-image/generate/ultra',
   '/v2beta/stable-image/edit/inpaint',
   '/v2beta/stable-image/edit/remove-background',
+  '/v2beta/stable-image/edit/outpaint',
 ];
 const V1_ENDPOINTS = [
   '/v1/generation/{engine_id}/text-to-image',
@@ -54,7 +55,7 @@ function generateModels(spec) {
     ids.push(...(enumValues.length ? [...enumValues, ...describedModels(spec, path)] : [route]));
   }
   // The carried edit routes (the adapter calls no others).
-  for (const route of ['edit/inpaint', 'edit/remove-background']) {
+  for (const route of ['edit/inpaint', 'edit/remove-background', 'edit/outpaint']) {
     if (spec.paths[`/v2beta/stable-image/${route}`]?.post) ids.push(route);
   }
   return ids;
@@ -100,6 +101,7 @@ export default {
     'stability/sdxl': 'stable-diffusion-xl-1024-v1-0',
     'stability/inpaint': 'edit/inpaint',
     'stability/remove-background': 'edit/remove-background',
+    'stability/outpaint': 'edit/outpaint',
   },
   sources: [
     {

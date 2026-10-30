@@ -8077,6 +8077,32 @@
                     }
                 }
             },
+            "Expand": {
+                "type": "object",
+                "description": "Pixels to add to each side of the init image's canvas (3D doc \u00a74): the\nresult is the whole canvas, with the source at (`left`, `top`).",
+                "properties": {
+                    "bottom": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "left": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "right": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "top": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    }
+                }
+            },
             "GatewaySettings": {
                 "type": "object",
                 "description": "Gateway-wide settings editable at runtime.",
@@ -8395,6 +8421,17 @@
                                     }
                                 ]
                             },
+                            "expand": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Expand",
+                                        "description": "Grow the init image's canvas by this many pixels a side (3D doc \u00a74);\nthe model's `expand` spec says how much and whether it only centres."
+                                    }
+                                ]
+                            },
                             "guidance_scale": {
                                 "type": [
                                     "number",
@@ -8558,6 +8595,14 @@
                         "type": "string",
                         "description": "Content type of the image (e.g. \"image/png\")."
                     },
+                    "height": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "minimum": 0
+                    },
                     "index": {
                         "type": "integer",
                         "format": "int32",
@@ -8588,6 +8633,15 @@
                                 "description": "The view this image shows, from a `multiview` model."
                             }
                         ]
+                    },
+                    "width": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "The image's size in pixels, read from its bytes.",
+                        "minimum": 0
                     },
                     "yaw_deg": {
                         "type": [
@@ -9558,6 +9612,10 @@
                     "supports_background_removal": {
                         "type": "boolean",
                         "description": "Takes one `init` image and returns it as an RGBA PNG with its\nbackground removed (PixelGenie L8)."
+                    },
+                    "supports_expand": {
+                        "type": "boolean",
+                        "description": "Takes `expand` (3D doc \u00a74)."
                     },
                     "supports_first_frame": {
                         "type": "boolean"
@@ -10866,6 +10924,27 @@
                                 }
                             }
                         ]
+                    },
+                    {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/ParamSpecExpand"
+                            },
+                            {
+                                "type": "object",
+                                "required": [
+                                    "kind"
+                                ],
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                            "expand"
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
                     }
                 ]
             },
@@ -10969,6 +11048,37 @@
                             "string",
                             "null"
                         ]
+                    }
+                }
+            },
+            "ParamSpecExpand": {
+                "type": "object",
+                "description": "`expand` on a model (3D doc \u00a74): how its vendor grows a canvas.",
+                "properties": {
+                    "centered_only": {
+                        "type": "boolean",
+                        "description": "The vendor only centres the source: left must equal right, and top\nbottom (anything else is `expand_unsupported`)."
+                    },
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "max_px": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "The most pixels it adds to one side.",
+                        "minimum": 0
                     }
                 }
             },

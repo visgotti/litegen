@@ -202,6 +202,44 @@ models:
     extra_allowlist: []
     tags: [image-to-image, inpainting]
 
+  # 3D doc §4 (P2). Multipart: image (required; jpeg, png or webp, "Every side
+  # must be at least 64 pixels", "Total pixel count must be between 4,096 and
+  # 9,437,184 pixels", "aspect ratio must be between 1:2.5 and 2.5:1"), left,
+  # right, up, down (0–2000; "At least one outpainting direction must be
+  # supplied with a non-zero value"), prompt, creativity, seed, output_format
+  # png | jpeg | webp, style_preset.
+  # @see https://api.stability.ai/v2alpha/openapi (read 2026-10-30)
+  - id: stability/outpaint
+    provider: stability
+    media_type: image
+    display_name: Stable Image Outpaint
+    description: >-
+      Stability's Outpaint: grows the init image's canvas by up to 2,000 px a
+      side, filling the new space, optionally guided by a prompt.
+    docs_url: https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1outpaint/post
+    # "Outpaint | Inserts additional content in an image to fill in the space
+    # in any direction | 4" credits; "1 credit = $0.01" → $0.04
+    # (docs.stability.ai/pricing.md, read 2026-10-30).
+    pricing: { base_cost_usd: 0.04 }
+    capabilities: { image_to_image: true }
+    prompt: { required: false, max_length: 10000 }
+    params:
+      expand:
+        kind: expand
+        max_px: 2000
+        label: Expand
+        description: Pixels to add to each side (Stability's left, up, right, down).
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image } }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: [creativity]
+    tags: [image-to-image, outpainting]
+
   # PixelGenie L8. Multipart: image (required; jpeg, png or webp, "Every side
   # must be at least 64 pixels", "Total pixel count must be between 4,096 and
   # 4,194,304 pixels"), output_format png | webp (default png). No prompt.

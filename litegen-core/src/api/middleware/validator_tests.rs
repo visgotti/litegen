@@ -61,6 +61,7 @@ models:
             response_format: "url".into(),
             region: None, mask_grow_px: None, views: None,
             output_format: None, background: None,
+            expand: None,
         }
     }
 
@@ -701,5 +702,40 @@ models:
         let plain = registry();
         let err = require_task(plain.get("t/strict").unwrap(), ModelTask::Segment).unwrap_err();
         assert!(err.message.contains("/v1/images/generations"), "{}", err.message);
+    }
+
+    // ─── Expand (3D doc §4, P2) ───────────────────────────────────────────────
+
+    #[test]
+    fn a_vendor_that_only_centres_takes_only_symmetric_expansions() {
+        let r = CapabilityRegistry::from_yaml_strs(&[("t.yaml", r#"
+models:
+  - id: t/centred
+    provider: t
+    media_type: image
+    display_name: Centred
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { image_to_image: true }
+    prompt: { required: false, max_length: 100 }
+    params:
+      expand: { kind: expand, centered_only: true, max_px: 100 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+"#)]).unwrap();
+        let m = r.get("t/centred").unwrap();
+        let ask = |l: u32, t: u32, rt: u32, b: u32| {
+            let mut req = with_images(1);
+            req.base.model = "t/centred".into();
+            req.base.prompt = String::new();
+            req.expand = Some(Expand { left: l, top: t, right: rt, bottom: b });
+            validate_image(m, req)
+        };
+        assert!(ask(10, 4, 10, 4).is_ok());
+        let err = ask(10, 0, 0, 0).unwrap_err();
+        assert_eq!((err.code.as_str(), err.param.as_deref()), ("expand_unsupported", Some("expand")));
     }
 }

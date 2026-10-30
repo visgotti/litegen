@@ -336,6 +336,21 @@ pub enum ParamSpec {
     AnimationList(ParamSpecAnimationList),
     Region(ParamSpecRegion),
     SegmentationPrompts(ParamSpecSegmentationPrompts),
+    Expand(ParamSpecExpand),
+}
+
+/// `expand` on a model (3D doc §4): how its vendor grows a canvas.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ParamSpecExpand {
+    /// The vendor only centres the source: left must equal right, and top
+    /// bottom (anything else is `expand_unsupported`).
+    #[serde(default)]
+    pub centered_only: bool,
+    /// The most pixels it adds to one side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_px: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
 
 /// `prompts` on a segmentation model (PixelGenie L7): what it can be asked
@@ -808,6 +823,8 @@ pub const KNOWN_PARAMS: &[&str] = &[
     // Texturing (3D doc §3F).
     "texture_resolution",
     "keep_uvs",
+    // Expanded canvases (3D doc §4).
+    "expand",
 ];
 
 /// The `ParamSpec` kind(s) a canonical param may be declared with: exactly the
@@ -838,6 +855,7 @@ pub fn canonical_param_kinds(name: &str) -> &'static [&'static str] {
         "target_polycount" => &["int"],
         "source_model" => &["source_model"],
         "prompts" => &["segmentation_prompts"],
+        "expand" => &["expand"],
         _ => &[],
     }
 }
@@ -858,6 +876,7 @@ impl ParamSpec {
             ParamSpec::AnimationList(_) => "animation_list",
             ParamSpec::Region(_) => "region",
             ParamSpec::SegmentationPrompts(_) => "segmentation_prompts",
+            ParamSpec::Expand(_) => "expand",
         }
     }
 }

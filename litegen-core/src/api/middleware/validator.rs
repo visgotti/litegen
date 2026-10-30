@@ -136,6 +136,7 @@ pub fn validate_image(
     check_prompt(schema, &mut req.base.prompt, strict, &mut dropped)?;
     check_image_edit(schema, &mut req, strict, &mut dropped)?;
     check_views(schema, &mut req, strict, &mut dropped)?;
+    check_expand(schema, &mut req, strict, &mut dropped)?;
 
     macro_rules! check_param {
         ($field:expr, $key:literal, $variant:pat => $body:block) => {
@@ -1042,6 +1043,48 @@ fn check_image_edit(
             "init_required",
             "a mask or region edits an init image; send one with role init",
             Some("reference_images"),
+        ));
+    }
+    Ok(())
+}
+
+/// `expand` (3D doc §4, P2): a model that grows canvases, an init image to
+/// grow, something added, within the vendor's per-side limit, symmetric for
+/// a vendor that only centres, and neither a mask nor a region beside it.
+fn check_expand(
+    schema: &ModelSchema,
+    req: &mut ImageGenerationRequest,
+    strict: bool,
+    dropped: &mut Vec<String>,
+) -> Result<(), ValidationError> {
+    let Some(e) = req.expand else { return Ok(()) };
+    let Some(ParamSpec::Expand(spec)) = schema.params.get("expand") else {
+        if strict {
+            return Err(ValidationError::new("param_unsupported", format!("expand not supported by '{}'", schema.id), Some("expand")));
+        }
+        dropped.push("expand".into());
+        req.expand = None;
+        return Ok(());
+    };
+    let refs = &req.base.reference_images;
+    if !refs.iter().any(|r| r.role.as_deref() == Some("init") || r.role.is_none()) {
+        return Err(ValidationError::new("init_required", "expand grows an init image's canvas; send one with role init", Some("reference_images")));
+    }
+    if refs.iter().any(|r| r.role.as_deref() == Some("mask")) || req.region.is_some() {
+        return Err(ValidationError::new("param_conflict", "expand grows the canvas; it cannot be combined with a mask or a region", Some("expand")));
+    }
+    let sides = [e.left, e.top, e.right, e.bottom];
+    if sides.iter().all(|s| *s == 0) {
+        return Err(ValidationError::new("param_out_of_range", "expand adds nothing: give at least one side some pixels", Some("expand")));
+    }
+    if let Some(max) = spec.max_px.filter(|max| sides.iter().any(|s| s > max)) {
+        return Err(ValidationError::new("param_out_of_range", format!("'{}' adds at most {max} px to a side", schema.id), Some("expand")));
+    }
+    if spec.centered_only && (e.left != e.right || e.top != e.bottom) {
+        return Err(ValidationError::new(
+            "expand_unsupported",
+            format!("'{}' only centres the source: left must equal right, and top bottom", schema.id),
+            Some("expand"),
         ));
     }
     Ok(())

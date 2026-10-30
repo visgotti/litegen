@@ -218,6 +218,13 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
+    // 3D doc §4 (P2): expand grows an init image's canvas.
+    if matches!(m.params.get("expand"), Some(ParamSpec::Expand(_)))
+        && !(m.media_type == MediaType::Image && m.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("init")))
+    {
+        return Err(bad(format!("model '{}' takes expand but no init image to grow", m.id)));
+    }
+
     // 3D doc §3F: a texture model lists the map sizes it paints at, so the
     // listing's `texture_resolutions` names every size the validator takes.
     if let Some(ParamSpec::Int(r)) = m.params.get("texture_resolution") {

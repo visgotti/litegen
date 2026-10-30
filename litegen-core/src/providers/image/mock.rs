@@ -86,6 +86,30 @@ fn formatted_image(prompt: &str, format: Option<&str>, background: Option<&str>)
     Ok(out)
 }
 
+/// The expand mock (3D doc §4).
+const EXPAND_MODEL: &str = "mock/expand-image";
+
+/// `mock/expand-image`'s answer: the canvas grown by `expand`, the init
+/// image exactly at (left, top) and every new pixel `EDIT_FILL`.
+fn expand_canvas(extras: &ImageExtras, materialized: &MaterializedRequest) -> Result<Vec<u8>, ProviderError> {
+    use crate::proxy::materializer::MaterializedRefForm;
+    use base64::Engine;
+    let e = extras.expand.ok_or_else(|| ProviderError::InvalidRequest("mock/expand-image needs expand".into()))?;
+    let init = materialized.refs.iter().find(|r| r.role == "init").and_then(|r| match &r.form {
+        MaterializedRefForm::Base64(b) => base64::engine::general_purpose::STANDARD.decode(b).ok(),
+        MaterializedRefForm::MultipartField { bytes, .. } => Some(bytes.to_vec()),
+        MaterializedRefForm::Url(_) => None,
+    });
+    let init = init.ok_or_else(|| ProviderError::InvalidRequest("mock/expand-image needs an init image".into()))?;
+    let unreadable = |err: image::ImageError| ProviderError::InvalidRequest(format!("mock/expand-image: {err}"));
+    let src = image::load_from_memory(&init).map_err(unreadable)?.to_rgba8();
+    let mut canvas = image::RgbaImage::from_pixel(src.width() + e.left + e.right, src.height() + e.top + e.bottom, image::Rgba(EDIT_FILL));
+    image::imageops::replace(&mut canvas, &src, i64::from(e.left), i64::from(e.top));
+    let mut out = Vec::new();
+    canvas.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).map_err(unreadable)?;
+    Ok(out)
+}
+
 /// The background-removal mock (PixelGenie L8).
 const REMOVE_BACKGROUND_MODEL: &str = "mock/remove-background";
 
@@ -310,6 +334,14 @@ impl ImageProvider for MockProvider {
                 more: Vec::new(),
             });
         }
+        if model.id == EXPAND_MODEL {
+            return Ok(GenerationOutput {
+                data: expand_canvas(_extras, _materialized)?,
+                content_type: "image/png".to_string(),
+                metadata,
+                more: Vec::new(),
+            });
+        }
         if model.id == REMOVE_BACKGROUND_MODEL {
             return Ok(GenerationOutput {
                 data: remove_background(_materialized)?,
@@ -436,6 +468,7 @@ mod tests {
             edit: None, views: Vec::new(),
             extra: None,
             output_format: None, background: None,
+            expand: None,
         }
     }
 
@@ -525,6 +558,7 @@ mod tests {
             response_format: "url".to_string(),
             region: None, mask_grow_px: None, views: None,
             output_format: None, background: None,
+            expand: None,
         };
         let cost = provider.estimate_cost(&schema, &req).await.unwrap();
         // mock/test-model has base_cost_usd: 0.0

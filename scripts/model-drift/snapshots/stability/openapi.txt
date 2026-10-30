@@ -87,6 +87,99 @@
     ],
     "type": "object"
   },
+  "POST /v2beta/stable-image/edit/outpaint (multipart/form-data)": {
+    "properties": {
+      "creativity": {
+        "allOf": [
+          {
+            "default": 0.35,
+            "maximum": 0.5,
+            "minimum": 0.2,
+            "type": "number"
+          },
+          {
+            "default": 0.5,
+            "maximum": 1,
+            "minimum": 0
+          }
+        ]
+      },
+      "down": {
+        "default": 0,
+        "maximum": 2000,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "left": {
+        "default": 0,
+        "maximum": 2000,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "png",
+          "jpeg",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 0,
+        "type": "string"
+      },
+      "right": {
+        "default": 0,
+        "maximum": 2000,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "seed": {
+        "default": 0,
+        "maximum": 4294967294,
+        "minimum": 0,
+        "type": "number"
+      },
+      "style_preset": {
+        "enum": [
+          "enhance",
+          "anime",
+          "photographic",
+          "digital-art",
+          "comic-book",
+          "fantasy-art",
+          "line-art",
+          "analog-film",
+          "neon-punk",
+          "isometric",
+          "low-poly",
+          "origami",
+          "modeling-compound",
+          "cinematic",
+          "3d-model",
+          "pixel-art",
+          "tile-texture"
+        ],
+        "type": "string"
+      },
+      "up": {
+        "default": 0,
+        "maximum": 2000,
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "image"
+    ],
+    "type": "object"
+  },
   "POST /v2beta/stable-image/edit/remove-background (multipart/form-data)": {
     "properties": {
       "image": {

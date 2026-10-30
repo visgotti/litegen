@@ -399,6 +399,7 @@ mod tests {
             edit: None, views: Vec::new(),
             extra: None,
             output_format: None, background: None,
+            expand: None,
         }
     }
 

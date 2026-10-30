@@ -84,6 +84,7 @@ impl StabilityProvider {
             "ultra" => "ultra".to_string(),
             "inpaint" => "inpaint".to_string(),
             "remove-background" => "remove-background".to_string(),
+            "outpaint" => "outpaint".to_string(),
             "sdxl" => "stable-diffusion-xl-1024-v1-0".to_string(),
             "sd-1.6" | "sd1.6" => "stable-diffusion-v1-6".to_string(),
             _ => native.to_string(),
@@ -95,7 +96,7 @@ impl StabilityProvider {
     ///
     /// @see <https://platform.stability.ai/docs/api-reference#tag/Generate> — V2beta Stable Image generate routes
     /// @see <https://platform.stability.ai/docs/api-reference#tag/Edit> — the edit routes (`edit/inpaint`,
-    ///   `edit/remove-background`)
+    ///   `edit/remove-background`, `edit/outpaint`)
     fn v2_endpoint(model: &str) -> Option<&'static str> {
         match model {
             "sd3.5-large" | "sd3.5-large-turbo" | "sd3.5-medium" => Some("generate/sd3"),
@@ -103,6 +104,7 @@ impl StabilityProvider {
             "ultra" => Some("generate/ultra"),
             "inpaint" => Some("edit/inpaint"),
             "remove-background" => Some("edit/remove-background"),
+            "outpaint" => Some("edit/outpaint"),
             _ => None,
         }
     }
@@ -202,10 +204,20 @@ impl ImageProvider for StabilityProvider {
             // Remove Background (PixelGenie L8) takes only `image` and
             // `output_format`.
             let matting = route == "edit/remove-background";
+            // Outpaint (3D doc §4) grows the canvas by `left`, `up`, `right`
+            // and `down`; its prompt is optional.
+            let outpaint = route == "edit/outpaint";
 
             let mut form = reqwest::multipart::Form::new();
-            if !matting {
+            if !matting && !(outpaint && base.prompt.trim().is_empty()) {
                 form = form.text("prompt", base.prompt.clone());
+            }
+            if let (true, Some(e)) = (outpaint, extras.expand) {
+                form = form
+                    .text("left", e.left.to_string())
+                    .text("up", e.top.to_string())
+                    .text("right", e.right.to_string())
+                    .text("down", e.bottom.to_string());
             }
 
             // Only /generate/sd3 has a `model` property — the core and ultra
@@ -278,7 +290,7 @@ impl ImageProvider for StabilityProvider {
             // requires the prompt, image, and strength parameters") and is
             // "only valid for image-to-image requests" — so default it when a
             // reference image is present, and never send it otherwise.
-            if has_image_ref && !inpaint && !matting {
+            if has_image_ref && !inpaint && !matting && !outpaint {
                 form = form.text("strength", format!("{:.2}", extras.strength.unwrap_or(0.5)));
             }
 
@@ -674,7 +686,7 @@ impl Default for ModelCapabilities {
             supports_transparent_background: false, lossy_only: false,
             supports_fixed_camera: false, supports_audio_toggle: false, supports_loop: false, duration_values: Vec::new(),
             supports_background_removal: false, supports_segmentation: false, segmentation_prompts: Vec::new(),
-            texture_resolutions: Vec::new(), supports_keep_uvs: false, supports_placement: false,
+            texture_resolutions: Vec::new(), supports_keep_uvs: false, supports_placement: false, supports_expand: false,
         }
     }
 }
@@ -744,6 +756,7 @@ mod tests {
             edit: None, views: Vec::new(),
             extra: None,
             output_format: None, background: None,
+            expand: None,
         }
     }
 
@@ -1061,6 +1074,53 @@ mod tests {
         assert!(String::from_utf8_lossy(body).contains("name=\"image\""), "the image part");
         for absent in ["prompt", "model", "mode", "strength", "aspect_ratio", "seed", "grow_mask"] {
             assert!(multipart_field(body, absent).is_none(), "{absent} is not a remove-background field");
+        }
+    }
+
+    /// Outpaint grows the canvas by `left`, `right`, `up` and `down` (0–2000
+    /// px each, at least one non-zero) around `image`; the prompt is optional.
+    /// @see <https://api.stability.ai/v2alpha/openapi> — `/v2beta/stable-image/edit/outpaint`
+    #[tokio::test]
+    async fn outpaint_sends_each_side_as_stabilitys_direction() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2beta/stable-image/edit/outpaint"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"WIDER".to_vec()).insert_header("content-type", "image/png"))
+            .mount(&server)
+            .await;
+        let materialized = crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".to_string(),
+                form: crate::proxy::materializer::MaterializedRefForm::MultipartField {
+                    field_name: "image".to_string(),
+                    bytes: bytes::Bytes::from_static(b"src"),
+                    content_type: "image/png".to_string(),
+                },
+                time_s: None,
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+        let mut base = make_base("more sky", "stability/outpaint");
+        base.seed = None;
+        let extras = ImageExtras {
+            aspect_ratio: None,
+            size: None,
+            style: None,
+            strength: None,
+            expand: Some(crate::types::Expand { left: 5, top: 7, right: 0, bottom: 2 }),
+            ..make_extras_sd3()
+        };
+        let out = make_provider(&server.uri())
+            .generate(&ref_schema("stability/outpaint"), &base, &extras, &materialized)
+            .await
+            .expect("generate");
+        assert_eq!(out.data, b"WIDER");
+        let body = &server.received_requests().await.unwrap()[0].body;
+        for (field, want) in [("left", "5"), ("up", "7"), ("right", "0"), ("down", "2"), ("prompt", "more sky"), ("output_format", "png")] {
+            assert_eq!(multipart_field(body, field).as_deref(), Some(want), "{field}");
+        }
+        for absent in ["model", "mode", "strength", "aspect_ratio", "grow_mask"] {
+            assert!(multipart_field(body, absent).is_none(), "{absent} is not an outpaint field");
         }
     }
 }

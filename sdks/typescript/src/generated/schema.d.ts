@@ -2279,6 +2279,20 @@ export interface components {
         ErrorResponse: {
             error: components["schemas"]["ErrorDetail"];
         };
+        /**
+         * @description Pixels to add to each side of the init image's canvas (3D doc §4): the
+         *     result is the whole canvas, with the source at (`left`, `top`).
+         */
+        Expand: {
+            /** Format: int32 */
+            bottom?: number;
+            /** Format: int32 */
+            left?: number;
+            /** Format: int32 */
+            right?: number;
+            /** Format: int32 */
+            top?: number;
+        };
         /** @description Gateway-wide settings editable at runtime. */
         GatewaySettings: {
             /** @description URL that receives budget alerts (soft budget crossed, hard budget hit). */
@@ -2401,6 +2415,7 @@ export interface components {
         ImageGenerationRequest: components["schemas"]["BaseGenerationRequest"] & {
             aspect_ratio?: string | null;
             background?: null | components["schemas"]["ImageBackground"];
+            expand?: null | components["schemas"]["Expand"];
             /** Format: double */
             guidance_scale?: number | null;
             /**
@@ -2457,6 +2472,8 @@ export interface components {
             b64_json?: string | null;
             /** @description Content type of the image (e.g. "image/png"). */
             content_type?: string;
+            /** Format: int32 */
+            height?: number | null;
             /**
              * Format: int32
              * @description Index in the batch.
@@ -2467,6 +2484,11 @@ export interface components {
             /** @description URL of the generated image (if response_format=url). */
             url?: string | null;
             view?: null | components["schemas"]["ImageView"];
+            /**
+             * Format: int32
+             * @description The image's size in pixels, read from its bytes.
+             */
+            width?: number | null;
             /**
              * Format: double
              * @description The camera's yaw for `view`, in degrees (see `ImageView`).
@@ -2912,6 +2934,8 @@ export interface components {
              *     background removed (PixelGenie L8).
              */
             supports_background_removal?: boolean;
+            /** @description Takes `expand` (3D doc §4). */
+            supports_expand?: boolean;
             supports_first_frame?: boolean;
             /** @description Takes `camera: fixed` (PixelGenie L10). */
             supports_fixed_camera?: boolean;
@@ -3342,6 +3366,9 @@ export interface components {
         }) | (components["schemas"]["ParamSpecSegmentationPrompts"] & {
             /** @enum {string} */
             kind: "segmentation_prompts";
+        }) | (components["schemas"]["ParamSpecExpand"] & {
+            /** @enum {string} */
+            kind: "expand";
         });
         /** @description The clips an `animate` model makes (`animations`, 3D doc §3C). */
         ParamSpecAnimationList: {
@@ -3372,6 +3399,21 @@ export interface components {
             default?: boolean | null;
             description?: string | null;
             label?: string | null;
+        };
+        /** @description `expand` on a model (3D doc §4): how its vendor grows a canvas. */
+        ParamSpecExpand: {
+            /**
+             * @description The vendor only centres the source: left must equal right, and top
+             *     bottom (anything else is `expand_unsupported`).
+             */
+            centered_only?: boolean;
+            description?: string | null;
+            label?: string | null;
+            /**
+             * Format: int32
+             * @description The most pixels it adds to one side.
+             */
+            max_px?: number | null;
         };
         ParamSpecFloat: {
             /** Format: double */

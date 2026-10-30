@@ -217,6 +217,17 @@ class SegmentationMask(TypedDict):
     """The smallest box around the white pixels, measured by LiteGen."""
 
 
+class Expand(TypedDict):
+    """Pixels to add to each side of the init image's canvas (``expand=`` on
+    ``images.generate``, where the model's listing says ``supports_expand``).
+    The result is the whole canvas, with the source at (``left``, ``top``)."""
+
+    left: NotRequired[int]
+    top: NotRequired[int]
+    right: NotRequired[int]
+    bottom: NotRequired[int]
+
+
 class ReferenceImage(TypedDict):
     """An input image. On a 3D model its ``role`` selects the mode; there is no
     separate mode switch:

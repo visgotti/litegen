@@ -45,6 +45,7 @@ class ModelCapabilities:
         supports_audio_toggle (Union[Unset, bool]): Takes `audio: false` (or `true`) to leave audio out (or in).
         supports_background_removal (Union[Unset, bool]): Takes one `init` image and returns it as an RGBA PNG with its
             background removed (PixelGenie L8).
+        supports_expand (Union[Unset, bool]): Takes `expand` (3D doc §4).
         supports_first_frame (Union[Unset, bool]):
         supports_fixed_camera (Union[Unset, bool]): Takes `camera: fixed` (PixelGenie L10).
         supports_image_to_3d (Union[Unset, bool]): Accepts one `init` reference image (image-to-3D).
@@ -99,6 +100,7 @@ class ModelCapabilities:
     supported_sizes: Union[Unset, List[str]] = UNSET
     supports_audio_toggle: Union[Unset, bool] = UNSET
     supports_background_removal: Union[Unset, bool] = UNSET
+    supports_expand: Union[Unset, bool] = UNSET
     supports_first_frame: Union[Unset, bool] = UNSET
     supports_fixed_camera: Union[Unset, bool] = UNSET
     supports_image_to_3d: Union[Unset, bool] = UNSET
@@ -207,6 +209,8 @@ class ModelCapabilities:
 
         supports_background_removal = self.supports_background_removal
 
+        supports_expand = self.supports_expand
+
         supports_first_frame = self.supports_first_frame
 
         supports_fixed_camera = self.supports_fixed_camera
@@ -295,6 +299,8 @@ class ModelCapabilities:
             field_dict["supports_audio_toggle"] = supports_audio_toggle
         if supports_background_removal is not UNSET:
             field_dict["supports_background_removal"] = supports_background_removal
+        if supports_expand is not UNSET:
+            field_dict["supports_expand"] = supports_expand
         if supports_first_frame is not UNSET:
             field_dict["supports_first_frame"] = supports_first_frame
         if supports_fixed_camera is not UNSET:
@@ -477,6 +483,8 @@ class ModelCapabilities:
 
         supports_background_removal = d.pop("supports_background_removal", UNSET)
 
+        supports_expand = d.pop("supports_expand", UNSET)
+
         supports_first_frame = d.pop("supports_first_frame", UNSET)
 
         supports_fixed_camera = d.pop("supports_fixed_camera", UNSET)
@@ -547,6 +555,7 @@ class ModelCapabilities:
             supported_sizes=supported_sizes,
             supports_audio_toggle=supports_audio_toggle,
             supports_background_removal=supports_background_removal,
+            supports_expand=supports_expand,
             supports_first_frame=supports_first_frame,
             supports_fixed_camera=supports_fixed_camera,
             supports_image_to_3d=supports_image_to_3d,

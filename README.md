@@ -136,6 +136,10 @@ entry of `views` (`front`, `left`, `back`, `right`, …), each returned with its
 the camera's position around +Y from the subject's front (+Z) towards +X, so front 0, left 90,
 back 180 and right 270. The call is billed once, however many views come back.
 
+A model whose listing says `supports_expand` (`stability/outpaint`) grows the init image's canvas
+with `expand: { "left": 64, "top": 0, "right": 64, "bottom": 128 }` (pixels a side); every image
+reports the `width` and `height` it came back at.
+
 A model whose listing says `supports_background_removal` (`fal/bria-rmbg-2`, `fal/birefnet-v2`,
 `recraft/remove-background`, `stability/remove-background`) is an edit that takes only an `init`
 image and returns it as an RGBA PNG with its background transparent.

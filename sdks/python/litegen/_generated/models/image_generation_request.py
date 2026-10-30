@@ -9,6 +9,7 @@ from ..models.image_view import ImageView
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.expand import Expand
     from ..models.reference_image import ReferenceImage
     from ..models.region import Region
 
@@ -35,6 +36,7 @@ class ImageGenerationRequest:
         strict (Union[Unset, bool]):
         aspect_ratio (Union[None, Unset, str]):
         background (Union[ImageBackground, None, Unset]):
+        expand (Union['Expand', None, Unset]):
         guidance_scale (Union[None, Unset, float]):
         mask_grow_px (Union[None, Unset, int]): Grow the edit area outward by this many pixels: the vendor's own
             setting where it has one (sent explicitly, even as 0), else litegen
@@ -62,6 +64,7 @@ class ImageGenerationRequest:
     strict: Union[Unset, bool] = UNSET
     aspect_ratio: Union[None, Unset, str] = UNSET
     background: Union[ImageBackground, None, Unset] = UNSET
+    expand: Union["Expand", None, Unset] = UNSET
     guidance_scale: Union[None, Unset, float] = UNSET
     mask_grow_px: Union[None, Unset, int] = UNSET
     output_format: Union[ImageOutputFormat, None, Unset] = UNSET
@@ -76,6 +79,7 @@ class ImageGenerationRequest:
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        from ..models.expand import Expand
         from ..models.region import Region
 
         model = self.model
@@ -122,6 +126,14 @@ class ImageGenerationRequest:
             background = self.background.value
         else:
             background = self.background
+
+        expand: Union[Dict[str, Any], None, Unset]
+        if isinstance(self.expand, Unset):
+            expand = UNSET
+        elif isinstance(self.expand, Expand):
+            expand = self.expand.to_dict()
+        else:
+            expand = self.expand
 
         guidance_scale: Union[None, Unset, float]
         if isinstance(self.guidance_scale, Unset):
@@ -222,6 +234,8 @@ class ImageGenerationRequest:
             field_dict["aspect_ratio"] = aspect_ratio
         if background is not UNSET:
             field_dict["background"] = background
+        if expand is not UNSET:
+            field_dict["expand"] = expand
         if guidance_scale is not UNSET:
             field_dict["guidance_scale"] = guidance_scale
         if mask_grow_px is not UNSET:
@@ -249,6 +263,7 @@ class ImageGenerationRequest:
 
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
+        from ..models.expand import Expand
         from ..models.reference_image import ReferenceImage
         from ..models.region import Region
 
@@ -315,6 +330,23 @@ class ImageGenerationRequest:
             return cast(Union[ImageBackground, None, Unset], data)
 
         background = _parse_background(d.pop("background", UNSET))
+
+        def _parse_expand(data: object) -> Union["Expand", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                expand_type_1 = Expand.from_dict(data)
+
+                return expand_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union["Expand", None, Unset], data)
+
+        expand = _parse_expand(d.pop("expand", UNSET))
 
         def _parse_guidance_scale(data: object) -> Union[None, Unset, float]:
             if data is None:
@@ -449,6 +481,7 @@ class ImageGenerationRequest:
             strict=strict,
             aspect_ratio=aspect_ratio,
             background=background,
+            expand=expand,
             guidance_scale=guidance_scale,
             mask_grow_px=mask_grow_px,
             output_format=output_format,

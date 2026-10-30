@@ -587,6 +587,7 @@ impl ProxyRouter {
             response_format: extras.response_format.clone(),
             region: None, mask_grow_px: None, views: None,
             output_format: None, background: None,
+            expand: extras.expand,
         };
         for d in deployments {
             let cost = if let Some(p) = self.registry.image_provider_for_request(&d.provider, app_creds.clone()).await {
@@ -1515,6 +1516,12 @@ async fn build_image_results(
         };
         let view = image.metadata.get("view").and_then(|v| v.as_str()).map(String::from);
         let yaw_deg = image.metadata.get("yaw_deg").and_then(|v| v.as_f64());
+        // The size it came back at, from its header (3D doc §4: an expanded
+        // canvas is reported as delivered).
+        let size = image::ImageReader::new(std::io::Cursor::new(&image.data))
+            .with_guessed_format()
+            .ok()
+            .and_then(|r| r.into_dimensions().ok());
         results.push(ImageResult {
             url,
             b64_json,
@@ -1522,6 +1529,8 @@ async fn build_image_results(
             view,
             yaw_deg,
             content_type,
+            width: size.map(|s| s.0),
+            height: size.map(|s| s.1),
             index: index as u32,
         });
     }
