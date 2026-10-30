@@ -649,6 +649,11 @@ impl ModelSchema {
     /// reading, since a model declaring the scalar could only ever emit one
     /// container per job.
     pub fn output_formats_spec(&self) -> Option<ParamSpecStringArray> {
+        // An image model's `output_format` is its image container (L9), not
+        // this superseded 3D spelling.
+        if self.media_type != MediaType::Model3d {
+            return None;
+        }
         match self.params.get("output_formats") {
             Some(ParamSpec::StringArray(s)) => return Some(s.clone()),
             // A wrong-kinded `output_formats` is a catalog bug, not a missing
@@ -703,6 +708,8 @@ pub struct ModelsFile {
 
 /// Canonical param names. The loader rejects unknown keys to keep yaml honest.
 pub const KNOWN_PARAMS: &[&str] = &[
+    "output_format",
+    "background",
     "negative_prompt",
     "seed",
     "steps",
@@ -763,7 +770,7 @@ pub fn canonical_param_kinds(name: &str) -> &'static [&'static str] {
         "size" => &["size"],
         "aspect_ratio" => &["aspect_ratio"],
         "output_formats" | "views" => &["string_array"],
-        "output_format" | "symmetry" | "topology" | "skeleton" | "joint_naming" => &["string"],
+        "output_format" | "background" | "symmetry" | "topology" | "skeleton" | "joint_naming" => &["string"],
         "height_m" => &["float"],
         "animations" => &["animation_list"],
         "region" => &["region"],

@@ -528,6 +528,20 @@ mod tests {
     }
 
     #[test]
+    fn an_image_request_documents_its_container_and_background() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        assert_eq!(s["ImageOutputFormat"]["enum"], json!(["png", "webp", "jpeg"]));
+        assert_eq!(s["ImageBackground"]["enum"], json!(["transparent", "opaque"]));
+        let req = &s["ImageGenerationRequest"];
+        assert!(mentions(property(req, "output_format"), "#/components/schemas/ImageOutputFormat"), "{}", property(req, "output_format"));
+        assert!(mentions(property(req, "background"), "#/components/schemas/ImageBackground"), "{}", property(req, "background"));
+        for f in ["supports_transparent_background", "lossy_only", "output_formats"] {
+            property(&s["ModelCapabilities"], f);
+        }
+    }
+
+    #[test]
     fn a_models_reference_spec_says_whether_its_vendor_takes_data_uris() {
         let d = doc();
         let p = property(&d["components"]["schemas"]["RefInputSpec"], "data_uri");

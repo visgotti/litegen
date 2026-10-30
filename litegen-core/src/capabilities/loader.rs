@@ -380,8 +380,27 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
             )));
         }
     }
-    if let Some(ParamSpec::String(s)) = m.params.get("output_format") {
-        in_vocab("output_format", &s.enum_values, &formats)?;
+    match (m.media_type, m.params.get("output_format"), m.params.get("background")) {
+        (MediaType::Model3d, Some(ParamSpec::String(s)), _) => in_vocab("output_format", &s.enum_values, &formats)?,
+        // PixelGenie L9: an image's container and background, from closed
+        // vocabularies the validator and every adapter share.
+        (MediaType::Image, out, bg) => {
+            let containers: Vec<&str> = crate::types::ImageOutputFormat::ALL.iter().map(|f| f.as_str()).collect();
+            match out {
+                Some(ParamSpec::String(s)) => {
+                    in_vocab("output_format", &s.enum_values, &containers)?;
+                    in_vocab("output_format default", &s.default.iter().cloned().collect::<Vec<_>>(), &s.enum_values.iter().map(String::as_str).collect::<Vec<_>>())?;
+                }
+                Some(_) => return Err(bad(format!("model '{}' output_format must be kind: string", m.id))),
+                None => {}
+            }
+            match bg {
+                Some(ParamSpec::String(s)) => in_vocab("background", &s.enum_values, &["transparent", "opaque"])?,
+                Some(_) => return Err(bad(format!("model '{}' background must be kind: string", m.id))),
+                None => {}
+            }
+        }
+        _ => {}
     }
     if let Some(ParamSpec::String(s)) = m.params.get("topology") {
         let vocab: Vec<&str> = Model3dTopology::ALL.iter().map(|t| t.as_str()).collect();

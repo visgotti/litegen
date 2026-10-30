@@ -232,6 +232,10 @@ impl ImageProvider for FalProvider {
                 }
             }
         }
+        // PixelGenie L9: the asked container, after `extra` so it wins.
+        if let Some(f) = extras.output_format.as_deref() {
+            body["output_format"] = Value::String(f.to_string());
+        }
 
         let resp = crate::providers::inject_trace_headers(
             self.client
@@ -459,6 +463,7 @@ mod tests {
             response_format: "url".to_string(),
             edit: None, views: Vec::new(),
             extra: None,
+            output_format: None, background: None,
         }
     }
 
@@ -498,7 +503,8 @@ mod tests {
         let provider = make_provider(&server.uri());
         let schema = ref_schema("fal/flux-dev");
         let base = make_base("a neon city at night", "fal/flux-dev");
-        let extras = make_extras();
+        let mut extras = make_extras();
+        extras.output_format = Some("png".into());
         let materialized = empty_materialized();
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
@@ -517,6 +523,7 @@ mod tests {
         assert_eq!(body["seed"], 42);
         assert_eq!(body["guidance_scale"], 3.5);
         assert_eq!(body["num_inference_steps"], 28);
+        assert_eq!(body["output_format"], "png", "PixelGenie L9: the asked container");
     }
 
     /// fal renamed `fal-ai/recraft-v3` to `fal-ai/recraft/v3/text-to-image`:

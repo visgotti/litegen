@@ -60,6 +60,7 @@ models:
             steps: None, guidance_scale: None, strength: None,
             response_format: "url".into(),
             region: None, mask_grow_px: None, views: None,
+            output_format: None, background: None,
         }
     }
 

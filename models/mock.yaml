@@ -574,6 +574,23 @@ models:
     extra_allowlist: []
     tags: [mock, test, multiview]
 
+  - id: mock/format-image
+    provider: mock
+    media_type: image
+    display_name: Mock Format Image
+    description: >-
+      Returns its image in the asked container (PNG by default, WebP or JPEG)
+      and, with background transparent, a fully transparent 4 px frame — and
+      labels everything image/png, so the content_type a caller sees is
+      litegen's reading of the bytes (PixelGenie L9).
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      background: { kind: string, enum_values: [transparent, opaque] }
+    tags: [mock, test, formats]
+
   # ─── Prices that follow the request (PixelGenie 3D doc §3G, L14) ───────────
   - id: mock/priced-image
     provider: mock

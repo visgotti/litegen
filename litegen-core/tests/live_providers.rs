@@ -75,6 +75,7 @@ fn img_extras() -> ImageExtras {
         response_format: "url".to_string(),
         edit: None, views: Vec::new(),
         extra: None,
+        output_format: None, background: None,
     }
 }
 

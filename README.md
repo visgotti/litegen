@@ -127,6 +127,10 @@ curl -X POST http://localhost:4000/v1/images/generations \
   }'
 ```
 
+`output_format` (`png`, `webp` or `jpeg`) and `background` (`transparent` or `opaque`) are request
+fields where a model's listing offers them (`output_formats`, `supports_transparent_background`;
+`lossy_only` marks a model with no PNG). Every image's `content_type` is read from its bytes.
+
 A model whose `task` is `multiview` (`tripo/multiview`) turns one `init` image into one image per
 entry of `views` (`front`, `left`, `back`, `right`, …), each returned with its `view` and `yaw_deg`:
 the camera's position around +Y from the subject's front (+Z) towards +X, so front 0, left 90,

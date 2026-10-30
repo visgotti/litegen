@@ -316,6 +316,11 @@ impl ImageProvider for ReplicateProvider {
                 }
             }
         }
+        // PixelGenie L9: the asked container, in Replicate's spelling
+        // ("webp", "jpg", "png").
+        if let Some(f) = extras.output_format.as_deref() {
+            input["output_format"] = Value::String(if f == "jpeg" { "jpg" } else { f }.to_string());
+        }
 
         // Build the prediction request body
         let body = if let Some(ver) = &version {
@@ -529,6 +534,7 @@ mod tests {
             response_format: "url".to_string(),
             edit: None, views: Vec::new(),
             extra: None,
+            output_format: None, background: None,
         }
     }
 
@@ -574,7 +580,8 @@ mod tests {
         let provider = make_provider(&format!("{}/v1", server.uri()));
         let schema = ref_schema("replicate/flux-dev");
         let base = make_base("a futuristic city", "replicate/flux-dev");
-        let extras = make_extras();
+        let mut extras = make_extras();
+        extras.output_format = Some("jpeg".into());
         let materialized = empty_materialized();
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
@@ -595,6 +602,7 @@ mod tests {
         assert_eq!(body["input"]["prompt"], "a futuristic city");
         assert_eq!(body["input"]["aspect_ratio"], "1:1");
         assert_eq!(body["input"]["seed"], 123);
+        assert_eq!(body["input"]["output_format"], "jpg", "PixelGenie L9: Replicate spells jpeg jpg");
         // flux-dev's guidance field is `guidance`, not `guidance_scale`.
         assert_eq!(body["input"]["guidance"], 3.5);
         assert!(body["input"].get("guidance_scale").is_none());

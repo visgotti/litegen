@@ -57,6 +57,16 @@ pub struct ImageGenerationRequest {
     /// dilates the mask itself. Default 0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask_grow_px: Option<u32>,
+    /// The image container to return (PixelGenie L9): one of the model's
+    /// `capabilities.output_formats`. Omitted means the vendor's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<ImageOutputFormat>)]
+    pub output_format: Option<String>,
+    /// `transparent` for a real alpha channel where the model supports it
+    /// (`supports_transparent_background`); needs `png` or `webp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<ImageBackground>)]
+    pub background: Option<String>,
     #[serde(default)] pub size: Option<String>,
     #[serde(default)] pub aspect_ratio: Option<String>,
     #[serde(default)] pub quality: Option<String>,
@@ -81,6 +91,35 @@ pub struct VideoGenerationRequest {
     #[serde(default)] pub aspect_ratio: Option<String>,
     #[serde(default)] pub resolution: Option<String>,
     #[serde(default)] pub fps: Option<u32>,
+}
+
+/// An image container litegen asks a vendor for (PixelGenie L9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageOutputFormat {
+    Png,
+    Webp,
+    Jpeg,
+}
+
+impl ImageOutputFormat {
+    pub const ALL: [ImageOutputFormat; 3] = [ImageOutputFormat::Png, ImageOutputFormat::Webp, ImageOutputFormat::Jpeg];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ImageOutputFormat::Png => "png",
+            ImageOutputFormat::Webp => "webp",
+            ImageOutputFormat::Jpeg => "jpeg",
+        }
+    }
+}
+
+/// An image's background (PixelGenie L9): `transparent` is a real alpha channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageBackground {
+    Transparent,
+    Opaque,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1111,6 +1150,12 @@ pub struct ModelCapabilities {
     /// takes a mask, whatever its vendor reads — litegen converts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask_convention: Option<crate::capabilities::MaskConvention>,
+    /// Takes `background: transparent` (PixelGenie L9).
+    #[serde(default)]
+    pub supports_transparent_background: bool,
+    /// Returns only lossy containers (no PNG).
+    #[serde(default)]
+    pub lossy_only: bool,
 }
 
 fn default_max_images() -> u32 {

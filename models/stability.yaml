@@ -8,6 +8,8 @@ models:
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
+      # PixelGenie L9: output_format png | jpeg | webp, default png (v2beta).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
       negative_prompt: { kind: string, max_length: 10000 }
       seed: { kind: seed, min: 0, max: 4294967294 }
       aspect_ratio:
@@ -21,7 +23,7 @@ models:
       provider_format: { form: multipart, field_map: { init: image } }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [output_format, style_preset]
+    extra_allowlist: [style_preset]
     tags: [text-to-image, image-to-image]
 
   # SD 3.5 Medium on the same /v2beta/stable-image/generate/sd3 route and body
@@ -41,6 +43,8 @@ models:
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
+      # PixelGenie L9: output_format png | jpeg | webp, default png (v2beta).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
       negative_prompt: { kind: string, max_length: 10000 }
       seed: { kind: seed, min: 0, max: 4294967294 }
       aspect_ratio:
@@ -54,7 +58,7 @@ models:
       provider_format: { form: multipart, field_map: { init: image } }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [output_format, style_preset]
+    extra_allowlist: [style_preset]
     tags: [text-to-image, image-to-image]
 
   - id: stability/sd3-turbo
@@ -66,6 +70,8 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
+      # PixelGenie L9: output_format png | jpeg | webp, default png (v2beta).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
       negative_prompt: { kind: string, max_length: 10000 }
       seed: { kind: seed, min: 0, max: 4294967294 }
       aspect_ratio:
@@ -74,7 +80,7 @@ models:
         # (https://api.stability.ai/v2alpha/openapi).
         allowed: ["1:1", "16:9", "9:16", "3:2", "2:3", "4:5", "5:4", "21:9", "9:21"]
         default: "1:1"
-    extra_allowlist: [output_format]
+    extra_allowlist: []
     tags: [text-to-image, fast]
 
   - id: stability/core
@@ -86,6 +92,8 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
+      # PixelGenie L9: output_format png | jpeg | webp, default png (v2beta).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
       negative_prompt: { kind: string, max_length: 10000 }
       seed: { kind: seed, min: 0, max: 4294967294 }
       aspect_ratio:
@@ -95,7 +103,7 @@ models:
       style:
         kind: string
         enum_values: [3d-model, analog-film, anime, cinematic, comic-book, digital-art, enhance, fantasy-art, isometric, line-art, low-poly, modeling-compound, neon-punk, origami, photographic, pixel-art, tile-texture]
-    extra_allowlist: [output_format]
+    extra_allowlist: []
     tags: [text-to-image, fast, affordable]
 
   - id: stability/ultra
@@ -107,13 +115,15 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 10000 }
     params:
+      # PixelGenie L9: output_format png | jpeg | webp, default png (v2beta).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
       negative_prompt: { kind: string, max_length: 10000 }
       seed: { kind: seed, min: 0, max: 4294967294 }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["1:1", "16:9", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"]
         default: "1:1"
-    extra_allowlist: [output_format]
+    extra_allowlist: []
     tags: [text-to-image, premium, photorealistic]
 
   - id: stability/sdxl

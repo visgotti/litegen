@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.image_background import ImageBackground
+from ..models.image_output_format import ImageOutputFormat
 from ..models.image_view import ImageView
 from ..types import UNSET, Unset
 
@@ -32,10 +34,12 @@ class ImageGenerationRequest:
         seed (Union[None, Unset, int]):
         strict (Union[Unset, bool]):
         aspect_ratio (Union[None, Unset, str]):
+        background (Union[ImageBackground, None, Unset]):
         guidance_scale (Union[None, Unset, float]):
         mask_grow_px (Union[None, Unset, int]): Grow the edit area outward by this many pixels: the vendor's own
             setting where it has one (sent explicitly, even as 0), else litegen
             dilates the mask itself. Default 0.
+        output_format (Union[ImageOutputFormat, None, Unset]):
         quality (Union[None, Unset, str]):
         region (Union['Region', None, Unset]):
         response_format (Union[Unset, str]):
@@ -57,8 +61,10 @@ class ImageGenerationRequest:
     seed: Union[None, Unset, int] = UNSET
     strict: Union[Unset, bool] = UNSET
     aspect_ratio: Union[None, Unset, str] = UNSET
+    background: Union[ImageBackground, None, Unset] = UNSET
     guidance_scale: Union[None, Unset, float] = UNSET
     mask_grow_px: Union[None, Unset, int] = UNSET
+    output_format: Union[ImageOutputFormat, None, Unset] = UNSET
     quality: Union[None, Unset, str] = UNSET
     region: Union["Region", None, Unset] = UNSET
     response_format: Union[Unset, str] = UNSET
@@ -109,6 +115,14 @@ class ImageGenerationRequest:
         else:
             aspect_ratio = self.aspect_ratio
 
+        background: Union[None, Unset, str]
+        if isinstance(self.background, Unset):
+            background = UNSET
+        elif isinstance(self.background, ImageBackground):
+            background = self.background.value
+        else:
+            background = self.background
+
         guidance_scale: Union[None, Unset, float]
         if isinstance(self.guidance_scale, Unset):
             guidance_scale = UNSET
@@ -120,6 +134,14 @@ class ImageGenerationRequest:
             mask_grow_px = UNSET
         else:
             mask_grow_px = self.mask_grow_px
+
+        output_format: Union[None, Unset, str]
+        if isinstance(self.output_format, Unset):
+            output_format = UNSET
+        elif isinstance(self.output_format, ImageOutputFormat):
+            output_format = self.output_format.value
+        else:
+            output_format = self.output_format
 
         quality: Union[None, Unset, str]
         if isinstance(self.quality, Unset):
@@ -198,10 +220,14 @@ class ImageGenerationRequest:
             field_dict["strict"] = strict
         if aspect_ratio is not UNSET:
             field_dict["aspect_ratio"] = aspect_ratio
+        if background is not UNSET:
+            field_dict["background"] = background
         if guidance_scale is not UNSET:
             field_dict["guidance_scale"] = guidance_scale
         if mask_grow_px is not UNSET:
             field_dict["mask_grow_px"] = mask_grow_px
+        if output_format is not UNSET:
+            field_dict["output_format"] = output_format
         if quality is not UNSET:
             field_dict["quality"] = quality
         if region is not UNSET:
@@ -273,6 +299,23 @@ class ImageGenerationRequest:
 
         aspect_ratio = _parse_aspect_ratio(d.pop("aspect_ratio", UNSET))
 
+        def _parse_background(data: object) -> Union[ImageBackground, None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                background_type_1 = ImageBackground(data)
+
+                return background_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[ImageBackground, None, Unset], data)
+
+        background = _parse_background(d.pop("background", UNSET))
+
         def _parse_guidance_scale(data: object) -> Union[None, Unset, float]:
             if data is None:
                 return data
@@ -290,6 +333,23 @@ class ImageGenerationRequest:
             return cast(Union[None, Unset, int], data)
 
         mask_grow_px = _parse_mask_grow_px(d.pop("mask_grow_px", UNSET))
+
+        def _parse_output_format(data: object) -> Union[ImageOutputFormat, None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                output_format_type_1 = ImageOutputFormat(data)
+
+                return output_format_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[ImageOutputFormat, None, Unset], data)
+
+        output_format = _parse_output_format(d.pop("output_format", UNSET))
 
         def _parse_quality(data: object) -> Union[None, Unset, str]:
             if data is None:
@@ -388,8 +448,10 @@ class ImageGenerationRequest:
             seed=seed,
             strict=strict,
             aspect_ratio=aspect_ratio,
+            background=background,
             guidance_scale=guidance_scale,
             mask_grow_px=mask_grow_px,
+            output_format=output_format,
             quality=quality,
             region=region,
             response_format=response_format,

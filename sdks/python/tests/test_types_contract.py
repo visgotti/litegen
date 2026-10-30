@@ -149,6 +149,8 @@ def test_model3d_params_cover_the_request_schema() -> None:
         ("ImageView", t.ImageView),
         ("KeyframeTiming", t.KeyframeTiming),
         ("ModelStatus", t.ModelStatus),
+        ("ImageOutputFormat", t.ImageOutputFormat),
+        ("ImageBackground", t.ImageBackground),
         ("MaskConvention", t.MaskConvention),
         ("RegionInput", t.RegionInput),
         ("PreservesUnmasked", t.PreservesUnmasked),

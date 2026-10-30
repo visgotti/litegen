@@ -8252,6 +8252,14 @@
                     }
                 }
             },
+            "ImageBackground": {
+                "type": "string",
+                "description": "An image's background (PixelGenie L9): `transparent` is a real alpha channel.",
+                "enum": [
+                    "transparent",
+                    "opaque"
+                ]
+            },
             "ImageGenerationRequest": {
                 "allOf": [
                     {
@@ -8264,6 +8272,17 @@
                                 "type": [
                                     "string",
                                     "null"
+                                ]
+                            },
+                            "background": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/ImageBackground",
+                                        "description": "`transparent` for a real alpha channel where the model supports it\n(`supports_transparent_background`); needs `png` or `webp`."
+                                    }
                                 ]
                             },
                             "guidance_scale": {
@@ -8281,6 +8300,17 @@
                                 "format": "int32",
                                 "description": "Grow the edit area outward by this many pixels: the vendor's own\nsetting where it has one (sent explicitly, even as 0), else litegen\ndilates the mask itself. Default 0.",
                                 "minimum": 0
+                            },
+                            "output_format": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/ImageOutputFormat",
+                                        "description": "The image container to return (PixelGenie L9): one of the model's\n`capabilities.output_formats`. Omitted means the vendor's default."
+                                    }
+                                ]
                             },
                             "quality": {
                                 "type": [
@@ -8390,6 +8420,15 @@
                         ]
                     }
                 }
+            },
+            "ImageOutputFormat": {
+                "type": "string",
+                "description": "An image container litegen asks a vendor for (PixelGenie L9).",
+                "enum": [
+                    "png",
+                    "webp",
+                    "jpeg"
+                ]
             },
             "ImageResult": {
                 "type": "object",
@@ -9199,6 +9238,10 @@
                             }
                         ]
                     },
+                    "lossy_only": {
+                        "type": "boolean",
+                        "description": "Returns only lossy containers (no PNG)."
+                    },
                     "mask_convention": {
                         "oneOf": [
                             {
@@ -9338,6 +9381,10 @@
                     "supports_texture": {
                         "type": "boolean",
                         "description": "Takes the `texture` param."
+                    },
+                    "supports_transparent_background": {
+                        "type": "boolean",
+                        "description": "Takes `background: transparent` (PixelGenie L9)."
                     },
                     "task": {
                         "$ref": "#/components/schemas/ModelTask",

@@ -81,6 +81,16 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -130,6 +140,16 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 10000
     },
     "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
       {
         "name": "seed",
         "kind": "seed",
@@ -181,6 +201,16 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -222,6 +252,16 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 10000
     },
     "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
       {
         "name": "seed",
         "kind": "seed",
@@ -278,6 +318,16 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 10000
     },
     "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
       {
         "name": "seed",
         "kind": "seed",
@@ -337,6 +387,16 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -387,6 +447,16 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -435,6 +505,16 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 10000
     },
     "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
       {
         "name": "seed",
         "kind": "seed",
@@ -884,6 +964,16 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -938,6 +1028,15 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 5000
     },
     "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "jpeg"
+      },
       {
         "name": "seed",
         "kind": "seed",
@@ -994,6 +1093,15 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "jpeg"
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -1034,6 +1142,15 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 5000
     },
     "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "jpeg"
+      },
       {
         "name": "seed",
         "kind": "seed",
@@ -1509,6 +1626,15 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 5000
     },
     "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "jpeg"
+        ],
+        "default": "jpeg"
+      },
       {
         "name": "negative_prompt",
         "kind": "string"
@@ -3606,7 +3732,16 @@ export const MODELS: ModelEntry[] = [
       "required": true,
       "maxLength": 1000
     },
-    "params": [],
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "jpeg"
+        ],
+        "default": "jpeg"
+      }
+    ],
     "pricing": {
       "baseCostUsd": 0.015
     },
@@ -3674,7 +3809,16 @@ export const MODELS: ModelEntry[] = [
       "required": true,
       "maxLength": 1000
     },
-    "params": [],
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "jpeg"
+        ],
+        "default": "jpeg"
+      }
+    ],
     "pricing": {
       "baseCostUsd": 0.002
     },
@@ -4474,6 +4618,24 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "background",
+        "kind": "string",
+        "enum": [
+          "transparent",
+          "opaque"
+        ]
+      },
+      {
         "name": "quality",
         "kind": "string",
         "enum": [
@@ -4534,6 +4696,24 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 32000
     },
     "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "background",
+        "kind": "string",
+        "enum": [
+          "transparent",
+          "opaque"
+        ]
+      },
       {
         "name": "quality",
         "kind": "string",
@@ -4598,6 +4778,24 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 32000
     },
     "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
+        "name": "background",
+        "kind": "string",
+        "enum": [
+          "transparent",
+          "opaque"
+        ]
+      },
       {
         "name": "quality",
         "kind": "string",
@@ -5597,6 +5795,16 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "webp"
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -5657,6 +5865,16 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 5000
     },
     "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "webp"
+      },
       {
         "name": "seed",
         "kind": "seed",
@@ -5724,6 +5942,16 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "webp"
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -5785,6 +6013,16 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "webp"
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -5843,6 +6081,16 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 5000
     },
     "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "webp"
+      },
       {
         "name": "negative_prompt",
         "kind": "string"
@@ -6260,6 +6508,16 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
         "name": "negative_prompt",
         "kind": "string"
       },
@@ -6409,6 +6667,16 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
+      {
         "name": "negative_prompt",
         "kind": "string"
       },
@@ -6470,6 +6738,16 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 10000
     },
     "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
       {
         "name": "negative_prompt",
         "kind": "string"
@@ -6533,6 +6811,16 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 10000
     },
     "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
       {
         "name": "negative_prompt",
         "kind": "string"
@@ -6678,6 +6966,16 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 10000
     },
     "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      },
       {
         "name": "negative_prompt",
         "kind": "string"

@@ -280,6 +280,13 @@ pub struct ImageExtras {
     /// model's default set (3D doc §3E). Empty for other models.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub views: Vec<String>,
+    /// The container to ask the vendor for (`png` | `webp` | `jpeg`), when
+    /// the request named one (PixelGenie L9).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<String>,
+    /// `transparent` | `opaque`, when the request named one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
     /// A partial edit (3D doc §4) after litegen checked and converted it: the
     /// mask itself travels as the `mask` reference, in the vendor's
     /// convention.

@@ -136,6 +136,10 @@ export type ImageView = components["schemas"]["ImageView"];
  * `replaced_by` names the catalog model to move to.
  */
 export type ModelStatus = components["schemas"]["ModelStatus"];
+/** An image container (`output_format`): one of the model's `capabilities.output_formats`. */
+export type ImageOutputFormat = components["schemas"]["ImageOutputFormat"];
+/** An image's background: `transparent` is a real alpha channel (needs PNG or WebP). */
+export type ImageBackground = components["schemas"]["ImageBackground"];
 /** What a vendor said when it refused or failed a request (`LiteGenAPIError.providerError`). */
 export type VendorError = components["schemas"]["VendorError"];
 /**

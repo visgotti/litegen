@@ -179,6 +179,8 @@ pub async fn generate_image(
         },
         edit,
         extra: validated.request.base.extra.clone(),
+        output_format: validated.request.output_format.clone(),
+        background: validated.request.background.clone(),
     };
 
     // Resolve the calling app's BYO credential for this model's provider. A
@@ -1805,6 +1807,11 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
     };
     let takes_mask = s.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("mask"));
     let keyframes = s.ref_inputs.as_ref().and_then(|r| r.roles.get("keyframe"));
+    // An image model's containers (PixelGenie L9): its output_format values.
+    let image_formats: Vec<String> = match s.params.get("output_format") {
+        Some(crate::capabilities::ParamSpec::String(f)) if s.media_type == crate::capabilities::MediaType::Image => f.enum_values.clone(),
+        _ => Vec::new(),
+    };
     ModelInfo {
         status: s.status(),
         deprecated_at: s.deprecated_at.clone(),
@@ -1847,7 +1854,7 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             supports_rig: declares_bool(s, "rig"),
             supports_texture: declares_bool(s, "texture"),
             supports_source_model: matches!(s.params.get("source_model"), Some(crate::capabilities::ParamSpec::SourceModel(_))),
-            output_formats: extract_output_formats(s),
+            output_formats: if s.media_type == crate::capabilities::MediaType::Image { image_formats.clone() } else { extract_output_formats(s) },
             max_polycount: extract_max_polycount(s),
             supports_region_edit: region.is_some(),
             region_input: region.map(|r| r.input),
@@ -1856,6 +1863,11 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             supports_keyframes: keyframes.is_some(),
             max_keyframes: keyframes.map(|k| k.max_count),
             keyframe_timing: keyframes.and_then(|k| k.timing),
+            supports_transparent_background: matches!(
+                s.params.get("background"),
+                Some(crate::capabilities::ParamSpec::String(b)) if b.enum_values.iter().any(|v| v == "transparent")
+            ),
+            lossy_only: !image_formats.is_empty() && !image_formats.iter().any(|f| f == "png"),
         },
         pricing: Some(ModelPricing {
             base_cost_usd: s.pricing.base_cost_usd,

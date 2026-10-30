@@ -220,6 +220,30 @@ video   seed             seed          10  bedrock/amazon.nova-reel-v1:1
 | `strength` | Float | range | 3 | validator: **none** — no `strength_out_of_range` case exists (only `guidance_scale` is exercised for the Float kind). provider: strong — `stability::tests::image_to_image_sends_mode_image_to_image`, `strength_is_not_sent_for_text_to_image`, `image_to_image_defaults_strength_when_omitted` all assert presence/absence of the outbound `strength` multipart field. conformance: n/a. | 🟡 |
 | `steps` | Int | range | 13 | validator: `unsupported_param_strict_rejects` / `unsupported_param_lax_drops` prove the shared drop mechanism using `steps` as the literal example — this is genuine, param-named coverage, unlike the other rows above. No test exercises the *range* branch (`steps` out of `[min,max]`) specifically. provider: `fal::tests::generates_flux_dev_image` (`body["num_inference_steps"]==28` — **note the outbound rename `steps` → `num_inference_steps`**), `replicate::tests::generates_flux_dev_via_polling` (`body["input"]["num_inference_steps"]==28`) and `replicate::tests::guidance_and_steps_use_each_models_own_input_names` (each model's own input name: flux-dev `num_inference_steps`, flux-pro and SD3 `steps`, fallback `num_inference_steps`). Not universal: `stability.rs` sets `body["steps"]` (line 466) and the multipart `steps` field (line 375) with zero assertion. conformance: n/a. | 🟡 |
 
+### Output format and transparency (L9)
+
+`output_format` (`png` | `webp` | `jpeg`) and `background` (`transparent` |
+`opaque`) are request fields, validated against each row's params (strict
+refuses an undeclared one, lax drops and reports it); a transparent
+background with a JPEG container is 400 `param_conflict`. The listing serves
+`output_formats` (the row's `output_format` values), `supports_transparent_background`
+and `lossy_only` (no PNG on offer). Every returned image's `content_type` is
+read from its bytes (PNG, JPEG, WebP, GIF), whatever the adapter labelled it.
+
+| rows | `output_format` | default litegen sends | `background` | wire | proof | status |
+|---|---|---|---|---|---|---|
+| `openai/gpt-image-2`, `-2.5-sunburst`, `-2.5-flare` | png, webp, jpeg | none (OpenAI's png) | transparent, opaque | `output_format`, `background` (JSON and multipart) | `generates_dalle3_image_b64_json` | 🟡 wiremock |
+| `stability/{sd3-large, sd3.5-medium, sd3-turbo, core, ultra}` | png, webp, jpeg | png | — | multipart `output_format` | `generates_sd3_large_via_v2_multipart` | 🟡 wiremock |
+| `bfl/*` (8) | png, webp, jpeg | png (BFL's own is jpeg) | — | `output_format` | `generates_flux_pro_via_polling_url` | 🟡 wiremock |
+| `fal/flux-2` | png, webp, jpeg | none (fal's png) | — | `output_format` | — | 🟡 |
+| `fal/flux-pro`, `flux-dev`, `flux-schnell`, `sd35-medium` | png, jpeg | none (fal's jpeg) | — | `output_format` | `generates_flux_dev_image` | 🟡 wiremock |
+| `replicate/{flux-pro, flux-1.1-pro, flux-dev, flux-schnell, sd3}` | png, webp, jpeg | none (Replicate's webp) | — | `output_format`, jpeg sent as `jpg` | `generates_flux_dev_via_polling` | 🟡 wiremock |
+| `luma/photon-1`, `photon-flash-1` | jpeg (`lossy_only`) | — (no format field) | — | — | HTTP `the_listing_says_what_each_model_can_return` | ✅ |
+| `mock/format-image` | png, webp, jpeg | png | transparent, opaque | encodes as asked, labels everything png | HTTP `the_asked_format_comes_back_labelled_by_its_bytes`, `a_transparent_background_has_real_alpha`, `formats_and_backgrounds_a_model_cannot_make_are_refused` | ✅ mock |
+
+Other image rows declare no `output_format`: their `output_formats` is empty
+(the vendor decides) and `content_type` still comes from the bytes.
+
 ### References for URL-only vendors (L4)
 
 Every model takes a base64 or uploaded reference. For a vendor that takes

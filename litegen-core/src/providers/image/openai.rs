@@ -252,6 +252,13 @@ impl OpenAiProvider {
                 form = form.text(k.clone(), s);
             }
         }
+        // PixelGenie L9: the canonical container and background.
+        if let Some(f) = extras.output_format.as_deref() {
+            form = form.text("output_format", f.to_string());
+        }
+        if let Some(b) = extras.background.as_deref() {
+            form = form.text("background", b.to_string());
+        }
 
         Ok(Some(
             self.client
@@ -485,6 +492,14 @@ impl ImageProvider for OpenAiProvider {
                 }
             }
         }
+        // PixelGenie L9: the canonical container and background, after
+        // `extra` so a caller's canonical field wins.
+        if let Some(f) = extras.output_format.as_deref() {
+            body["output_format"] = Value::String(f.to_string());
+        }
+        if let Some(b) = extras.background.as_deref() {
+            body["background"] = Value::String(b.to_string());
+        }
 
         let resp = crate::providers::inject_trace_headers(
             self.client
@@ -654,6 +669,7 @@ mod tests {
             response_format: "b64_json".to_string(),
             edit: None, views: Vec::new(),
             extra: None,
+            output_format: None, background: None,
         }
     }
 
@@ -678,7 +694,9 @@ mod tests {
         let provider = make_provider_with_base(&format!("{}/v1/images/generations", server.uri()));
         let schema = ref_schema("openai/gpt-image-2");
         let base = make_base("a beautiful landscape", "openai/gpt-image-2");
-        let extras = make_extras(Some("1024x1024"), Some("high"), None);
+        let mut extras = make_extras(Some("1024x1024"), Some("high"), None);
+        extras.output_format = Some("webp".into());
+        extras.background = Some("transparent".into());
         let materialized = empty_materialized();
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
@@ -697,6 +715,8 @@ mod tests {
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
         assert_eq!(body["model"], "gpt-image-2");
         assert_eq!(body["prompt"], "a beautiful landscape");
+        // PixelGenie L9: the canonical container and background.
+        assert_eq!((&body["output_format"], &body["background"]), (&json!("webp"), &json!("transparent")));
         assert_eq!(body["size"], "1024x1024");
         assert_eq!(body["quality"], "high");
         assert_eq!(body["n"], 1);
@@ -850,6 +870,7 @@ mod tests {
             strength: None,
             response_format: "b64_json".to_string(),
             region: None, mask_grow_px: None, views: None,
+            output_format: None, background: None,
         };
         provider
             .estimate_cost(&ref_schema(id), &request)

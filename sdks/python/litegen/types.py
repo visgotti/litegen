@@ -102,6 +102,14 @@ back 180, back-right 225, right 270, front-right 315; top and bottom have none.
 A multiview image model takes ``views=`` from this list; a multiview-to-3D model
 takes ``view-<name>`` references."""
 
+ImageOutputFormat = Literal["png", "webp", "jpeg"]
+"""An image container (``output_format=`` on ``images.generate``): one of the
+model's ``capabilities.output_formats``; a ``lossy_only`` model offers no PNG."""
+
+ImageBackground = Literal["transparent", "opaque"]
+"""An image's background (``background=``): ``transparent`` is a real alpha
+channel, on models with ``supports_transparent_background``; it needs PNG or WebP."""
+
 ModelStatus = Literal["active", "deprecated", "retired"]
 """Where a model is in its vendor's lifecycle (``status`` on ``GET /v1/models``):
 ``deprecated`` models are still served until the day after their

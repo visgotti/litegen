@@ -8,6 +8,8 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
+      # PixelGenie L9: output_format webp | jpg | png, default webp (litegen says jpeg).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: webp }
       seed: { kind: seed, min: 0, max: 4294967294 }
       # The model's field is `guidance`, 2-5 (https://replicate.com/black-forest-labs/flux-pro/api/schema).
       # No steps: the model marks `steps` deprecated.
@@ -17,7 +19,7 @@ models:
         # flux-pro's enum has no 21:9 / 9:21 (https://replicate.com/black-forest-labs/flux-pro/api/schema)
         allowed: ["1:1","16:9","2:3","3:2","4:5","5:4","9:16","3:4","4:3"]
         default: "1:1"
-    extra_allowlist: [safety_tolerance, output_format, output_quality]
+    extra_allowlist: [safety_tolerance, output_quality]
     tags: [text-to-image, premium]
 
   # black-forest-labs/flux-1.1-pro, an official model (POST
@@ -40,6 +42,8 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
+      # PixelGenie L9: output_format webp | jpg | png, default webp (litegen says jpeg).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: webp }
       seed: { kind: seed, min: 0, max: 4294967294 }
       aspect_ratio:
         kind: aspect_ratio
@@ -47,7 +51,7 @@ models:
         # aspect_ratio=custom, which the adapter never sends, so no `size`.
         allowed: ["1:1","16:9","3:2","2:3","4:5","5:4","9:16","3:4","4:3"]
         default: "1:1"
-    extra_allowlist: [safety_tolerance, output_format, output_quality, prompt_upsampling]
+    extra_allowlist: [safety_tolerance, output_quality, prompt_upsampling]
     tags: [text-to-image, premium]
 
   - id: replicate/flux-dev
@@ -59,6 +63,8 @@ models:
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
+      # PixelGenie L9: output_format webp | jpg | png, default webp (litegen says jpeg).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: webp }
       seed: { kind: seed, min: 0, max: 4294967294 }
       guidance_scale: { kind: float, min: 0.0, max: 10.0, default: 3.5 }
       steps: { kind: int, min: 1, max: 50, default: 28 }
@@ -72,7 +78,7 @@ models:
       provider_format: { form: url }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [output_format, output_quality]
+    extra_allowlist: [output_quality]
     tags: [text-to-image, image-to-image]
 
   - id: replicate/flux-schnell
@@ -84,13 +90,15 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
+      # PixelGenie L9: output_format webp | jpg | png, default webp (litegen says jpeg).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: webp }
       seed: { kind: seed, min: 0, max: 4294967294 }
       steps: { kind: int, min: 1, max: 4, default: 4 }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["1:1","16:9","21:9","2:3","3:2","4:5","5:4","9:16","9:21","3:4","4:3"]
         default: "1:1"
-    extra_allowlist: [output_format, output_quality]
+    extra_allowlist: [output_quality]
     tags: [text-to-image, fast]
 
   - id: replicate/sdxl
@@ -136,6 +144,8 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
+      # PixelGenie L9: output_format webp | jpg | png, default webp (litegen says jpeg).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: webp }
       negative_prompt: { kind: string, max_length: 5000 }
       seed: { kind: seed, min: 0, max: 4294967294 }
       # The model's fields are `steps` (1-28) and `cfg` (default 3.5) (https://replicate.com/stability-ai/stable-diffusion-3/api/schema)
@@ -145,7 +155,7 @@ models:
         kind: aspect_ratio
         allowed: ["1:1","16:9","9:16","21:9","9:21","2:3","3:2","4:5","5:4"]
         default: "1:1"
-    extra_allowlist: [output_format]
+    extra_allowlist: []
     tags: [text-to-image]
 
   - id: replicate/video

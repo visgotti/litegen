@@ -306,6 +306,7 @@ mod tests {
             size: Some("2048x2048".to_string()), aspect_ratio: None, quality: None, style: None,
             steps: None, guidance_scale: None, strength: None, response_format: "url".to_string(), extra: None,
             edit: None, views: Vec::new(),
+            output_format: None, background: None,
         }
     }
 

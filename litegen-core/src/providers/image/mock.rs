@@ -59,6 +59,33 @@ fn multiview_images(prompt: &str, views: &[String]) -> Option<GenerationOutput> 
     Some(first)
 }
 
+/// The model that returns the container and background asked for (L9), and
+/// labels everything `image/png` so a test sees litegen read the bytes.
+const FORMAT_MODEL: &str = "mock/format-image";
+
+/// The prompt's image in `format` (`png` by default); with a transparent
+/// `background` the 4 px frame around it is fully transparent.
+fn formatted_image(prompt: &str, format: Option<&str>, background: Option<&str>) -> Result<Vec<u8>, ProviderError> {
+    let fail = |e: image::ImageError| ProviderError::InvalidRequest(format!("the mock could not encode its result: {e}"));
+    let mut img = image::load_from_memory(&generate_visual_image_png(prompt)).map_err(fail)?.to_rgba8();
+    if background == Some("transparent") {
+        let (w, h) = img.dimensions();
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            if x < 4 || y < 4 || x >= w - 4 || y >= h - 4 {
+                p[3] = 0;
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut out);
+    match format.unwrap_or("png") {
+        "jpeg" => image::DynamicImage::ImageRgba8(img).to_rgb8().write_to(&mut cursor, image::ImageFormat::Jpeg).map_err(fail)?,
+        "webp" => img.write_to(&mut cursor, image::ImageFormat::WebP).map_err(fail)?,
+        _ => img.write_to(&mut cursor, image::ImageFormat::Png).map_err(fail)?,
+    }
+    Ok(out)
+}
+
 /// The model that takes references only as URLs it can fetch (L4).
 const URL_ONLY_MODEL: &str = "mock/url-only-image";
 
@@ -212,6 +239,14 @@ impl ImageProvider for MockProvider {
         metadata.insert("prompt".to_string(), serde_json::Value::String(base.prompt.clone()));
         metadata.insert("provider".to_string(), serde_json::Value::String("mock".to_string()));
 
+        if model.id == FORMAT_MODEL {
+            return Ok(GenerationOutput {
+                data: formatted_image(&base.prompt, _extras.output_format.as_deref(), _extras.background.as_deref())?,
+                content_type: "image/png".to_string(),
+                metadata,
+                more: Vec::new(),
+            });
+        }
         if model.id == MULTIVIEW_MODEL {
             return multiview_images(&base.prompt, &_extras.views)
                 .ok_or_else(|| ProviderError::InvalidRequest("mock/multiview-image needs at least one view".into()));
@@ -322,6 +357,7 @@ mod tests {
             response_format: "url".to_string(),
             edit: None, views: Vec::new(),
             extra: None,
+            output_format: None, background: None,
         }
     }
 
@@ -410,6 +446,7 @@ mod tests {
             strength: None,
             response_format: "url".to_string(),
             region: None, mask_grow_px: None, views: None,
+            output_format: None, background: None,
         };
         let cost = provider.estimate_cost(&schema, &req).await.unwrap();
         // mock/test-model has base_cost_usd: 0.0

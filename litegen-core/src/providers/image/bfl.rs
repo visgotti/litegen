@@ -183,7 +183,8 @@ impl ImageProvider for BflProvider {
         if let Some(seed) = base.seed {
             body["seed"] = Value::Number(seed.into());
         }
-        body["output_format"] = Value::String("png".to_string());
+        // The asked container (PixelGenie L9); png when none is asked.
+        body["output_format"] = Value::String(extras.output_format.clone().unwrap_or_else(|| "png".to_string()));
 
         // Reference images: input_image (Kontext edit base) or image_prompt (Redux).
         for r in &materialized.refs {
@@ -349,6 +350,7 @@ mod tests {
             response_format: "url".to_string(),
             edit: None, views: Vec::new(),
             extra: None,
+            output_format: None, background: None,
         }
     }
 
@@ -382,7 +384,8 @@ mod tests {
         let provider = make_provider(&server.uri());
         let schema = ref_schema("bfl/flux-pro-1.1");
         let base = make_base("a cyberpunk fox", "bfl/flux-pro-1.1");
-        let extras = make_extras();
+        let mut extras = make_extras();
+        extras.output_format = Some("webp".into());
         let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
@@ -397,6 +400,7 @@ mod tests {
         let body: Value = serde_json::from_slice(&post.body).unwrap();
         assert_eq!(body["prompt"], "a cyberpunk fox");
         assert_eq!(body["width"], 1024);
+        assert_eq!(body["output_format"], "webp", "PixelGenie L9: the asked container");
         assert_eq!(body["height"], 1024);
         assert_eq!(body["seed"], 7);
     }

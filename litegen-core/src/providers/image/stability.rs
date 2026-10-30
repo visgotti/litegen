@@ -223,8 +223,8 @@ impl ImageProvider for StabilityProvider {
                 form = form.text("grow_mask", grow.to_string());
             }
 
-            // output_format defaults to "png" for bytes
-            form = form.text("output_format", "png");
+            // The asked container (PixelGenie L9); png when none is asked.
+            form = form.text("output_format", extras.output_format.clone().unwrap_or_else(|| "png".to_string()));
 
             // sd3 gates image-to-image behind `mode`; without it the uploaded
             // `image` part is ignored and the request runs as text-to-image.
@@ -663,6 +663,7 @@ impl Default for ModelCapabilities {
             preserves_unmasked: None,
             mask_convention: None,
             supports_keyframes: false, max_keyframes: None, keyframe_timing: None,
+            supports_transparent_background: false, lossy_only: false,
         }
     }
 }
@@ -731,6 +732,7 @@ mod tests {
             response_format: "url".to_string(),
             edit: None, views: Vec::new(),
             extra: None,
+            output_format: None, background: None,
         }
     }
 
@@ -753,7 +755,8 @@ mod tests {
         let provider = make_provider(&server.uri());
         let schema = ref_schema("stability/sd3-large");
         let base = make_base("a photorealistic landscape", "stability/sd3-large");
-        let extras = make_extras_sd3();
+        let mut extras = make_extras_sd3();
+        extras.output_format = Some("webp".into());
         let materialized = empty_materialized();
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
@@ -765,6 +768,7 @@ mod tests {
         let received = server.received_requests().await.unwrap();
         assert_eq!(received.len(), 1);
         let body_str = String::from_utf8_lossy(&received[0].body);
+        assert!(body_str.contains("name=\"output_format\"\r\n\r\nwebp"), "PixelGenie L9: the asked container: {body_str}");
         // Multipart body should contain these field names and values
         assert!(body_str.contains("a photorealistic landscape"), "prompt not in body");
         assert!(body_str.contains("sd3.5-large"), "model not in body");

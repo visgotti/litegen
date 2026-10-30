@@ -52,8 +52,10 @@ from .generation_asset import GenerationAsset
 from .generation_asset_list import GenerationAssetList
 from .generation_status import GenerationStatus
 from .health_response import HealthResponse
+from .image_background import ImageBackground
 from .image_generation_request import ImageGenerationRequest
 from .image_generation_response import ImageGenerationResponse
+from .image_output_format import ImageOutputFormat
 from .image_result import ImageResult
 from .image_view import ImageView
 from .in_place_mode import InPlaceMode
@@ -263,8 +265,10 @@ __all__ = (
     "GenerationAssetList",
     "GenerationStatus",
     "HealthResponse",
+    "ImageBackground",
     "ImageGenerationRequest",
     "ImageGenerationResponse",
+    "ImageOutputFormat",
     "ImageResult",
     "ImageView",
     "InPlaceMode",

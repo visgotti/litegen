@@ -252,6 +252,7 @@ mod tests {
             size: None, aspect_ratio: Some("16:9".to_string()), quality: None, style: None,
             steps: None, guidance_scale: None, strength: None, response_format: "url".to_string(), extra: None,
             edit: None, views: Vec::new(),
+            output_format: None, background: None,
         }
     }
 

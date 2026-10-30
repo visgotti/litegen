@@ -37,6 +37,10 @@ models:
     # (CreateImageRequest.prompt / CreateImageEditRequest.prompt).
     prompt: { required: true, max_length: 32000 }
     params:
+      # PixelGenie L9; "png, jpeg, or webp" (default png) and "transparent, opaque or auto"
+      # (default auto: litegen sends none when the caller names none).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      background: { kind: string, enum_values: [transparent, opaque] }
       # Same custom-size rules as gpt-image-2 ("Both models also support custom
       # dimensions ... multiples of 16, the aspect ratio must be between 1:3
       # and 3:1, and neither edge may exceed 3840 pixels. The total pixel count
@@ -71,7 +75,7 @@ models:
         mask: { required: false, min_count: 0, max_count: 1, convention: transparent_edits }
     # background supports opaque and transparent for both 2.5 models;
     # output_format png|jpeg|webp; output_compression 0-100 (CreateImageRequest).
-    extra_allowlist: [background, output_format, output_compression, moderation, user]
+    extra_allowlist: [output_compression, moderation, user]
     tags: [text-to-image, image-to-image, inpainting, premium]
 
   - id: openai/gpt-image-2.5-flare
@@ -89,6 +93,10 @@ models:
     capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
     prompt: { required: true, max_length: 32000 }
     params:
+      # PixelGenie L9; "png, jpeg, or webp" (default png) and "transparent, opaque or auto"
+      # (default auto: litegen sends none when the caller names none).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      background: { kind: string, enum_values: [transparent, opaque] }
       # Same size rules as Sunburst and gpt-image-2 (see above).
       size:
         kind: size
@@ -114,7 +122,7 @@ models:
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
         mask: { required: false, min_count: 0, max_count: 1, convention: transparent_edits }
-    extra_allowlist: [background, output_format, output_compression, moderation, user]
+    extra_allowlist: [output_compression, moderation, user]
     tags: [text-to-image, image-to-image, inpainting, fast]
 
   - id: openai/gpt-image-2
@@ -134,6 +142,10 @@ models:
     capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
     prompt: { required: true, max_length: 32000 }
     params:
+      # PixelGenie L9; "png, jpeg, or webp" (default png) and "transparent, opaque or auto"
+      # (default auto: litegen sends none when the caller names none).
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+      background: { kind: string, enum_values: [transparent, opaque] }
       # gpt-image-2 size constraints: max edge <= 3840, both edges multiples of
       # 16, long:short <= 3:1, 655,360..=8,294,400 total pixels; 2160x3840 (4K
       # portrait) is a listed size. Per-edge bounds cannot hold the pixel rule,
@@ -164,5 +176,5 @@ models:
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
         mask: { required: false, min_count: 0, max_count: 1, convention: transparent_edits }
-    extra_allowlist: [background, output_format, output_compression, moderation, user]
+    extra_allowlist: [output_compression, moderation, user]
     tags: [text-to-image, image-to-image, inpainting]

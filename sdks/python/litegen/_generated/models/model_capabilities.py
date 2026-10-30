@@ -20,6 +20,7 @@ class ModelCapabilities:
         supports_image_to_image (bool):
         supports_text_to_image (bool):
         keyframe_timing (Union[KeyframeTiming, None, Unset]):
+        lossy_only (Union[Unset, bool]): Returns only lossy containers (no PNG).
         mask_convention (Union[MaskConvention, None, Unset]):
         max_duration_seconds (Union[None, Unset, float]): The longest clip the model makes, from its `duration_seconds`
             param.
@@ -49,6 +50,7 @@ class ModelCapabilities:
         supports_text_to_3d (Union[Unset, bool]): Accepts a prompt with no reference images (text-to-3D).
         supports_text_to_video (Union[Unset, bool]):
         supports_texture (Union[Unset, bool]): Takes the `texture` param.
+        supports_transparent_background (Union[Unset, bool]): Takes `background: transparent` (PixelGenie L9).
         task (Union[Unset, ModelTask]): What a catalog model does.
 
             An operation on an existing asset is a model of its own, submitted to its
@@ -65,6 +67,7 @@ class ModelCapabilities:
     supports_image_to_image: bool
     supports_text_to_image: bool
     keyframe_timing: Union[KeyframeTiming, None, Unset] = UNSET
+    lossy_only: Union[Unset, bool] = UNSET
     mask_convention: Union[MaskConvention, None, Unset] = UNSET
     max_duration_seconds: Union[None, Unset, float] = UNSET
     max_images: Union[Unset, int] = UNSET
@@ -89,6 +92,7 @@ class ModelCapabilities:
     supports_text_to_3d: Union[Unset, bool] = UNSET
     supports_text_to_video: Union[Unset, bool] = UNSET
     supports_texture: Union[Unset, bool] = UNSET
+    supports_transparent_background: Union[Unset, bool] = UNSET
     task: Union[Unset, ModelTask] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -104,6 +108,8 @@ class ModelCapabilities:
             keyframe_timing = self.keyframe_timing.value
         else:
             keyframe_timing = self.keyframe_timing
+
+        lossy_only = self.lossy_only
 
         mask_convention: Union[None, Unset, str]
         if isinstance(self.mask_convention, Unset):
@@ -187,6 +193,8 @@ class ModelCapabilities:
 
         supports_texture = self.supports_texture
 
+        supports_transparent_background = self.supports_transparent_background
+
         task: Union[Unset, str] = UNSET
         if not isinstance(self.task, Unset):
             task = self.task.value
@@ -201,6 +209,8 @@ class ModelCapabilities:
         )
         if keyframe_timing is not UNSET:
             field_dict["keyframe_timing"] = keyframe_timing
+        if lossy_only is not UNSET:
+            field_dict["lossy_only"] = lossy_only
         if mask_convention is not UNSET:
             field_dict["mask_convention"] = mask_convention
         if max_duration_seconds is not UNSET:
@@ -249,6 +259,10 @@ class ModelCapabilities:
             field_dict["supports_text_to_video"] = supports_text_to_video
         if supports_texture is not UNSET:
             field_dict["supports_texture"] = supports_texture
+        if supports_transparent_background is not UNSET:
+            field_dict["supports_transparent_background"] = (
+                supports_transparent_background
+            )
         if task is not UNSET:
             field_dict["task"] = task
 
@@ -277,6 +291,8 @@ class ModelCapabilities:
             return cast(Union[KeyframeTiming, None, Unset], data)
 
         keyframe_timing = _parse_keyframe_timing(d.pop("keyframe_timing", UNSET))
+
+        lossy_only = d.pop("lossy_only", UNSET)
 
         def _parse_mask_convention(data: object) -> Union[MaskConvention, None, Unset]:
             if data is None:
@@ -398,6 +414,10 @@ class ModelCapabilities:
 
         supports_texture = d.pop("supports_texture", UNSET)
 
+        supports_transparent_background = d.pop(
+            "supports_transparent_background", UNSET
+        )
+
         _task = d.pop("task", UNSET)
         task: Union[Unset, ModelTask]
         if isinstance(_task, Unset):
@@ -409,6 +429,7 @@ class ModelCapabilities:
             supports_image_to_image=supports_image_to_image,
             supports_text_to_image=supports_text_to_image,
             keyframe_timing=keyframe_timing,
+            lossy_only=lossy_only,
             mask_convention=mask_convention,
             max_duration_seconds=max_duration_seconds,
             max_images=max_images,
@@ -433,6 +454,7 @@ class ModelCapabilities:
             supports_text_to_3d=supports_text_to_3d,
             supports_text_to_video=supports_text_to_video,
             supports_texture=supports_texture,
+            supports_transparent_background=supports_transparent_background,
             task=task,
         )
 

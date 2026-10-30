@@ -2371,8 +2371,14 @@ export interface components {
             providers: components["schemas"]["ProviderHealth"][];
             status: string;
         };
+        /**
+         * @description An image's background (PixelGenie L9): `transparent` is a real alpha channel.
+         * @enum {string}
+         */
+        ImageBackground: "transparent" | "opaque";
         ImageGenerationRequest: components["schemas"]["BaseGenerationRequest"] & {
             aspect_ratio?: string | null;
+            background?: null | components["schemas"]["ImageBackground"];
             /** Format: double */
             guidance_scale?: number | null;
             /**
@@ -2382,6 +2388,7 @@ export interface components {
              *     dilates the mask itself. Default 0.
              */
             mask_grow_px?: number | null;
+            output_format?: null | components["schemas"]["ImageOutputFormat"];
             quality?: string | null;
             region?: null | components["schemas"]["Region"];
             response_format?: string;
@@ -2417,6 +2424,11 @@ export interface components {
             provider: string;
             usage?: null | components["schemas"]["UsageInfo"];
         };
+        /**
+         * @description An image container litegen asks a vendor for (PixelGenie L9).
+         * @enum {string}
+         */
+        ImageOutputFormat: "png" | "webp" | "jpeg";
         /** @description A single generated image in the response. */
         ImageResult: {
             /** @description Base64-encoded image data (if response_format=b64_json). */
@@ -2774,6 +2786,8 @@ export interface components {
         Model3dTopology: "triangle" | "quad";
         ModelCapabilities: {
             keyframe_timing?: null | components["schemas"]["KeyframeTiming"];
+            /** @description Returns only lossy containers (no PNG). */
+            lossy_only?: boolean;
             mask_convention?: null | components["schemas"]["MaskConvention"];
             /**
              * Format: double
@@ -2833,6 +2847,8 @@ export interface components {
             supports_text_to_video?: boolean;
             /** @description Takes the `texture` param. */
             supports_texture?: boolean;
+            /** @description Takes `background: transparent` (PixelGenie L9). */
+            supports_transparent_background?: boolean;
             /**
              * @description What the model does: `generate`, or an operation on an existing asset
              *     such as `rig` or `animate`. The same value `GET /v1/models/{id}`

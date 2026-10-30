@@ -11,6 +11,8 @@ models:
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 1000 }
     params:
+      # "Luma always returns JPEG" (PixelGenie L9): no format choice is sent.
+      output_format: { kind: string, enum_values: [jpeg], default: jpeg }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["1:1","3:4","4:3","9:16","16:9","9:21","21:9"]
@@ -41,6 +43,8 @@ models:
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 1000 }
     params:
+      # "Luma always returns JPEG" (PixelGenie L9): no format choice is sent.
+      output_format: { kind: string, enum_values: [jpeg], default: jpeg }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["1:1","3:4","4:3","9:16","16:9","9:21","21:9"]

@@ -235,6 +235,7 @@ mod tests {
             response_format: "b64_json".into(), extra: None, edit: None,
             views: views.iter().map(|v| v.to_string()).collect(),
             vendor_job: Default::default(),
+            output_format: None, background: None,
         }
     }
 

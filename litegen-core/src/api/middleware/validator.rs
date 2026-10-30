@@ -139,6 +139,29 @@ pub fn validate_image(
         check_string(v, &s.enum_values, s.max_length, "style")?;
     });
 
+    // PixelGenie L9: the container and background a caller asks for.
+    check_param!(req.output_format, "output_format", ParamSpec::String(s) => {
+        let v = req.output_format.as_deref().unwrap();
+        check_string(v, &s.enum_values, s.max_length, "output_format")?;
+    });
+    check_param!(req.background, "background", ParamSpec::String(s) => {
+        let v = req.background.as_deref().unwrap();
+        check_string(v, &s.enum_values, s.max_length, "background")?;
+    });
+    if req.background.as_deref() == Some("transparent") {
+        let format = req.output_format.clone().or_else(|| match schema.params.get("output_format") {
+            Some(ParamSpec::String(s)) => s.default.clone(),
+            _ => None,
+        });
+        if format.as_deref() == Some("jpeg") {
+            return Err(ValidationError::new(
+                "param_conflict",
+                "a transparent background needs output_format png or webp; JPEG has no alpha channel",
+                Some("background"),
+            ));
+        }
+    }
+
     check_param!(req.aspect_ratio, "aspect_ratio", ParamSpec::AspectRatio(s) => {
         let v = req.aspect_ratio.as_deref().unwrap();
         if !s.allowed.iter().any(|a| a == v) {

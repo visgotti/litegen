@@ -512,6 +512,7 @@ impl ProxyRouter {
             strength: extras.strength,
             response_format: extras.response_format.clone(),
             region: None, mask_grow_px: None, views: None,
+            output_format: None, background: None,
         };
         for d in deployments {
             let cost = if let Some(p) = self.registry.image_provider_for_request(&d.provider, app_creds.clone()).await {
@@ -1422,8 +1423,10 @@ async fn build_image_results(
     let mut results = Vec::with_capacity(1 + output.more.len());
     for (index, image) in std::iter::once(output).chain(output.more.iter()).enumerate() {
         let generation_id = uuid::Uuid::new_v4().to_string();
+        // The bytes say what they are; an adapter's label can be wrong (L9).
+        let content_type = image_content_type(&image.data).map_or_else(|| image.content_type.clone(), str::to_string);
         // Try to upload to configured storage backend (S3, etc.)
-        let stored_url = image_store.store(&image.data, &image.content_type, &generation_id).await.ok();
+        let stored_url = image_store.store(&image.data, &content_type, &generation_id).await.ok();
         let encode = || base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image.data);
         let (url, b64_json) = match stored_url {
             // Image was uploaded to object storage — return URL
@@ -1440,11 +1443,27 @@ async fn build_image_results(
             revised_prompt: revised_prompt.clone(),
             view,
             yaw_deg,
-            content_type: image.content_type.clone(),
+            content_type,
             index: index as u32,
         });
     }
     results
+}
+
+/// An image's content type read from its first bytes (PixelGenie L9): PNG,
+/// JPEG, WebP or GIF, else `None` and the adapter's label stands.
+pub fn image_content_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else {
+        None
+    }
 }
 
 /// Upload every file a 3D provider returned to litegen storage and describe them
