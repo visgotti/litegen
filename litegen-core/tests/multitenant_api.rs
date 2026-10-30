@@ -1138,6 +1138,43 @@ async fn byo_missing_credential_returns_400() {
     );
 }
 
+// ─── A truthful `is_available` (3D doc §3G, L14) ───────────────────────────────
+//
+// The harness registers only `mock` globally. A model is available to a caller
+// when its provider can serve them — the caller's org stored its own
+// credential, or litegen has a platform default — the same test a generation
+// makes before answering `provider_not_configured`.
+#[tokio::test]
+async fn a_model_is_available_only_where_its_provider_can_serve_the_caller() {
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (_app_id, secret) = signup_app_and_key(&mut c, "availability").await;
+    let org_id = first_org_id(&mut c).await;
+    let mut bearer = Client::new(&app.base);
+    let auth = format!("Bearer {secret}");
+    let available = |list: &serde_json::Value, id: &str| -> Option<bool> {
+        list["data"].as_array()?.iter().find(|m| m["id"] == id)?["is_available"].as_bool()
+    };
+
+    let before = bearer.get_with("/v1/models", &[("authorization", &auth)]).await;
+    assert_eq!(before.status, 200, "{:?}", before.body);
+    assert_eq!(available(&before.body, "mock/image-gen"), Some(true), "a platform default serves mock");
+    assert_eq!(available(&before.body, "openai/gpt-image-2"), Some(false), "nothing serves openai yet");
+
+    let csrf = c.csrf().await;
+    let stored = c
+        .post_with(
+            &format!("/v1/orgs/{org_id}/provider-credentials"),
+            json!({ "provider": "openai", "credentials": { "api_key": "APPKEY" } }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(stored.status, 200, "store provider credential failed: {:?}", stored.body);
+    let after = bearer.get_with("/v1/models", &[("authorization", &auth)]).await;
+    assert_eq!(available(&after.body, "openai/gpt-image-2"), Some(true), "the org's own key serves openai");
+    assert_eq!(available(&after.body, "stability/inpaint"), Some(false), "but not stability");
+}
+
 // ─── Test: BYO — mock still works with no credential ───────────────────────────
 //
 // The mock provider needs no credential and is registered globally, so the no-cred

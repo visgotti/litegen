@@ -1701,9 +1701,39 @@ pub async fn list_models(
     };
     let mut served = state.registry.served();
     served.sort_by(|a, b| a.id.cmp(&b.id));
+    // Available means a generation would reach the vendor (L14): the caller's
+    // org stored its own credential for the provider, or litegen holds a
+    // platform default for the model's medium — the test a generation makes
+    // before it answers provider_not_configured.
+    let own: std::collections::HashSet<String> = match (key_ctx.as_ref().and_then(|c| c.org_id.as_deref()), state.secrets_key) {
+        (Some(org), Some(_)) => match state.db.list_org_provider_credentials(org).await {
+            Ok(creds) => creds.into_iter().map(|c| c.provider).collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "provider credential lookup failed; listing platform availability only");
+                Default::default()
+            }
+        },
+        _ => Default::default(),
+    };
+    let mut platform: std::collections::HashMap<(String, &'static str), bool> = std::collections::HashMap::new();
+    for m in &served {
+        let key = (m.provider.clone(), m.media_type.as_str());
+        if platform.contains_key(&key) {
+            continue;
+        }
+        let has = match m.media_type {
+            crate::capabilities::MediaType::Image => state.router.has_image_provider(&m.provider).await,
+            crate::capabilities::MediaType::Video => state.router.has_video_provider(&m.provider).await,
+            crate::capabilities::MediaType::Model3d => state.router.has_model3d_provider(&m.provider).await,
+        };
+        platform.insert(key, has);
+    }
     let models: Vec<ModelInfo> = served.iter()
         .filter(|m| allowed.as_ref().map_or(true, |set| set.contains(&m.id)))
-        .map(project_model_info)
+        .map(|m| ModelInfo {
+            is_available: own.contains(&m.provider) || platform[&(m.provider.clone(), m.media_type.as_str())],
+            ..project_model_info(m)
+        })
         .filter(|m| match q.media_type.as_deref() {
             None | Some("") => true,
             Some(want) => serde_json::to_value(m.media_type)
