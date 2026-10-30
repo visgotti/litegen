@@ -140,6 +140,11 @@ A model whose listing says `supports_expand` (`stability/outpaint`) grows the in
 with `expand: { "left": 64, "top": 0, "right": 64, "bottom": 128 }` (pixels a side); every image
 reports the `width` and `height` it came back at.
 
+`layout` places objects and words on a text-to-image canvas by boxes in canvas fractions
+(`supports_layout`, `layout_kinds`: Recraft V3 lays out single words), and `mask_prompt` names the
+area an edit replaces in text instead of a drawn mask (`supports_mask_prompt`:
+`stability/search-and-replace`).
+
 A model whose listing says `supports_background_removal` (`fal/bria-rmbg-2`, `fal/birefnet-v2`,
 `recraft/remove-background`, `stability/remove-background`) is an edit that takes only an `init`
 image and returns it as an RGBA PNG with its background transparent.

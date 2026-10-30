@@ -3351,3 +3351,30 @@ fn stability_outpaint_grows_each_side_by_up_to_2000_px() {
     assert!(m.ref_inputs.as_ref().unwrap().roles["init"].required);
     assert!((m.pricing.base_cost_usd - 0.04).abs() < 1e-9);
 }
+
+// ─── Per-box prompts and masks named in text (PixelGenie 3D doc §4, P2) ──────
+
+/// Recraft's text layout is "supported by Recraft V3 and Recraft V3 Vector
+/// models only", one word per element (endpoints.md, 2026-10-30); Stability's
+/// Search and Replace takes `search_prompt` "maxLength": 10000 beside a
+/// required prompt, for "5" credits (v2alpha openapi, pricing.md).
+#[test]
+fn recraft_v3_lays_out_single_words_and_stability_replaces_a_named_area() {
+    use litegen::capabilities::{LayoutKind, ParamSpec};
+    let reg = registry();
+    for m in reg.for_provider("recraft") {
+        let takes = matches!(m.params.get("layout"), Some(ParamSpec::Layout(_)));
+        assert_eq!(takes, ["recraft/recraftv3", "recraft/recraftv3_vector"].contains(&m.id.as_str()), "{}", m.id);
+        if let Some(ParamSpec::Layout(l)) = m.params.get("layout") {
+            assert_eq!((l.kinds.as_slice(), l.single_word_text), ([LayoutKind::Text].as_slice(), true), "{}", m.id);
+            assert!(!m.extra_allowlist.iter().any(|k| k == "text_layout"), "{}: litegen owns text_layout", m.id);
+        }
+    }
+    let s = reg.get("stability/search-and-replace").expect("the row");
+    match s.params.get("mask_prompt") {
+        Some(ParamSpec::String(p)) => assert_eq!(p.max_length, Some(10_000)),
+        other => panic!("{other:?}"),
+    }
+    assert!(s.prompt.required);
+    assert!((s.pricing.base_cost_usd - 0.05).abs() < 1e-9);
+}

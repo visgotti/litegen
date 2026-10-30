@@ -124,6 +124,9 @@ export type ImageResult = components["schemas"]["ImageResult"];
 export type Region = components["schemas"]["Region"];
 /** Pixels to add to each side of the init image's canvas; the source lands at (left, top). */
 export type Expand = components["schemas"]["Expand"];
+/** One box of a text-to-image layout, in canvas fractions: an object (`prompt`) or words (`text`). */
+export type LayoutItem = components["schemas"]["LayoutItem"];
+export type LayoutKind = components["schemas"]["LayoutKind"];
 /** `POST /v1/images/segmentations` (PixelGenie L7): an image and what to select in it. */
 export type ImageSegmentationRequest = components["schemas"]["ImageSegmentationRequest"];
 /** One mask per object selected, best first. */

@@ -77,6 +77,7 @@ fn img_extras() -> ImageExtras {
         extra: None,
         output_format: None, background: None,
         expand: None,
+        layout: None, mask_prompt: None,
     }
 }
 

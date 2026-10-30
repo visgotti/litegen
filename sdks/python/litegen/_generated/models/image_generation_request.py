@@ -1,4 +1,13 @@
-from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -10,6 +19,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.expand import Expand
+    from ..models.layout_item import LayoutItem
     from ..models.reference_image import ReferenceImage
     from ..models.region import Region
 
@@ -38,9 +48,13 @@ class ImageGenerationRequest:
         background (Union[ImageBackground, None, Unset]):
         expand (Union['Expand', None, Unset]):
         guidance_scale (Union[None, Unset, float]):
+        layout (Union[List['LayoutItem'], None, Unset]): Boxes for a text-to-image canvas (3D doc §4): objects and words
+            placed by fractions of the canvas.
         mask_grow_px (Union[None, Unset, int]): Grow the edit area outward by this many pixels: the vendor's own
             setting where it has one (sent explicitly, even as 0), else litegen
             dilates the mask itself. Default 0.
+        mask_prompt (Union[None, Unset, str]): The area an edit replaces, named in text rather than drawn as a mask
+            (3D doc §4).
         output_format (Union[ImageOutputFormat, None, Unset]):
         quality (Union[None, Unset, str]):
         region (Union['Region', None, Unset]):
@@ -66,7 +80,9 @@ class ImageGenerationRequest:
     background: Union[ImageBackground, None, Unset] = UNSET
     expand: Union["Expand", None, Unset] = UNSET
     guidance_scale: Union[None, Unset, float] = UNSET
+    layout: Union[List["LayoutItem"], None, Unset] = UNSET
     mask_grow_px: Union[None, Unset, int] = UNSET
+    mask_prompt: Union[None, Unset, str] = UNSET
     output_format: Union[ImageOutputFormat, None, Unset] = UNSET
     quality: Union[None, Unset, str] = UNSET
     region: Union["Region", None, Unset] = UNSET
@@ -141,11 +157,29 @@ class ImageGenerationRequest:
         else:
             guidance_scale = self.guidance_scale
 
+        layout: Union[List[Dict[str, Any]], None, Unset]
+        if isinstance(self.layout, Unset):
+            layout = UNSET
+        elif isinstance(self.layout, list):
+            layout = []
+            for layout_type_0_item_data in self.layout:
+                layout_type_0_item = layout_type_0_item_data.to_dict()
+                layout.append(layout_type_0_item)
+
+        else:
+            layout = self.layout
+
         mask_grow_px: Union[None, Unset, int]
         if isinstance(self.mask_grow_px, Unset):
             mask_grow_px = UNSET
         else:
             mask_grow_px = self.mask_grow_px
+
+        mask_prompt: Union[None, Unset, str]
+        if isinstance(self.mask_prompt, Unset):
+            mask_prompt = UNSET
+        else:
+            mask_prompt = self.mask_prompt
 
         output_format: Union[None, Unset, str]
         if isinstance(self.output_format, Unset):
@@ -238,8 +272,12 @@ class ImageGenerationRequest:
             field_dict["expand"] = expand
         if guidance_scale is not UNSET:
             field_dict["guidance_scale"] = guidance_scale
+        if layout is not UNSET:
+            field_dict["layout"] = layout
         if mask_grow_px is not UNSET:
             field_dict["mask_grow_px"] = mask_grow_px
+        if mask_prompt is not UNSET:
+            field_dict["mask_prompt"] = mask_prompt
         if output_format is not UNSET:
             field_dict["output_format"] = output_format
         if quality is not UNSET:
@@ -264,6 +302,7 @@ class ImageGenerationRequest:
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         from ..models.expand import Expand
+        from ..models.layout_item import LayoutItem
         from ..models.reference_image import ReferenceImage
         from ..models.region import Region
 
@@ -357,6 +396,28 @@ class ImageGenerationRequest:
 
         guidance_scale = _parse_guidance_scale(d.pop("guidance_scale", UNSET))
 
+        def _parse_layout(data: object) -> Union[List["LayoutItem"], None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                layout_type_0 = []
+                _layout_type_0 = data
+                for layout_type_0_item_data in _layout_type_0:
+                    layout_type_0_item = LayoutItem.from_dict(layout_type_0_item_data)
+
+                    layout_type_0.append(layout_type_0_item)
+
+                return layout_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[List["LayoutItem"], None, Unset], data)
+
+        layout = _parse_layout(d.pop("layout", UNSET))
+
         def _parse_mask_grow_px(data: object) -> Union[None, Unset, int]:
             if data is None:
                 return data
@@ -365,6 +426,15 @@ class ImageGenerationRequest:
             return cast(Union[None, Unset, int], data)
 
         mask_grow_px = _parse_mask_grow_px(d.pop("mask_grow_px", UNSET))
+
+        def _parse_mask_prompt(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        mask_prompt = _parse_mask_prompt(d.pop("mask_prompt", UNSET))
 
         def _parse_output_format(data: object) -> Union[ImageOutputFormat, None, Unset]:
             if data is None:
@@ -483,7 +553,9 @@ class ImageGenerationRequest:
             background=background,
             expand=expand,
             guidance_scale=guidance_scale,
+            layout=layout,
             mask_grow_px=mask_grow_px,
+            mask_prompt=mask_prompt,
             output_format=output_format,
             quality=quality,
             region=region,

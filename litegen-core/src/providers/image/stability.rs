@@ -85,6 +85,7 @@ impl StabilityProvider {
             "inpaint" => "inpaint".to_string(),
             "remove-background" => "remove-background".to_string(),
             "outpaint" => "outpaint".to_string(),
+            "search-and-replace" => "search-and-replace".to_string(),
             "sdxl" => "stable-diffusion-xl-1024-v1-0".to_string(),
             "sd-1.6" | "sd1.6" => "stable-diffusion-v1-6".to_string(),
             _ => native.to_string(),
@@ -96,7 +97,7 @@ impl StabilityProvider {
     ///
     /// @see <https://platform.stability.ai/docs/api-reference#tag/Generate> — V2beta Stable Image generate routes
     /// @see <https://platform.stability.ai/docs/api-reference#tag/Edit> — the edit routes (`edit/inpaint`,
-    ///   `edit/remove-background`, `edit/outpaint`)
+    ///   `edit/remove-background`, `edit/outpaint`, `edit/search-and-replace`)
     fn v2_endpoint(model: &str) -> Option<&'static str> {
         match model {
             "sd3.5-large" | "sd3.5-large-turbo" | "sd3.5-medium" => Some("generate/sd3"),
@@ -105,6 +106,7 @@ impl StabilityProvider {
             "inpaint" => Some("edit/inpaint"),
             "remove-background" => Some("edit/remove-background"),
             "outpaint" => Some("edit/outpaint"),
+            "search-and-replace" => Some("edit/search-and-replace"),
             _ => None,
         }
     }
@@ -212,6 +214,12 @@ impl ImageProvider for StabilityProvider {
             if !matting && !(outpaint && base.prompt.trim().is_empty()) {
                 form = form.text("prompt", base.prompt.clone());
             }
+            // Search and Replace (3D doc §4) finds the area `mask_prompt` names;
+            // `grow_mask` goes as 0, as for inpaint (its default 3 blurs it).
+            let search = route == "edit/search-and-replace";
+            if search {
+                form = form.text("search_prompt", extras.mask_prompt.clone().unwrap_or_default()).text("grow_mask", "0");
+            }
             if let (true, Some(e)) = (outpaint, extras.expand) {
                 form = form
                     .text("left", e.left.to_string())
@@ -290,7 +298,7 @@ impl ImageProvider for StabilityProvider {
             // requires the prompt, image, and strength parameters") and is
             // "only valid for image-to-image requests" — so default it when a
             // reference image is present, and never send it otherwise.
-            if has_image_ref && !inpaint && !matting && !outpaint {
+            if has_image_ref && !inpaint && !matting && !outpaint && !search {
                 form = form.text("strength", format!("{:.2}", extras.strength.unwrap_or(0.5)));
             }
 
@@ -687,6 +695,7 @@ impl Default for ModelCapabilities {
             supports_fixed_camera: false, supports_audio_toggle: false, supports_loop: false, duration_values: Vec::new(),
             supports_background_removal: false, supports_segmentation: false, segmentation_prompts: Vec::new(),
             texture_resolutions: Vec::new(), supports_keep_uvs: false, supports_placement: false, supports_expand: false,
+            supports_layout: false, layout_kinds: Vec::new(), supports_mask_prompt: false,
         }
     }
 }
@@ -757,6 +766,7 @@ mod tests {
             extra: None,
             output_format: None, background: None,
             expand: None,
+            layout: None, mask_prompt: None,
         }
     }
 
@@ -1121,6 +1131,46 @@ mod tests {
         }
         for absent in ["model", "mode", "strength", "aspect_ratio", "grow_mask"] {
             assert!(multipart_field(body, absent).is_none(), "{absent} is not an outpaint field");
+        }
+    }
+
+    /// Search and Replace takes the area as text (`search_prompt`) beside the
+    /// prompt, and `grow_mask` 0 (its default 3 would blur the edge).
+    /// @see <https://api.stability.ai/v2alpha/openapi> — `/v2beta/stable-image/edit/search-and-replace`
+    #[tokio::test]
+    async fn search_and_replace_sends_the_named_area_as_search_prompt() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2beta/stable-image/edit/search-and-replace"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"SWAPPED".to_vec()).insert_header("content-type", "image/png"))
+            .mount(&server)
+            .await;
+        let materialized = crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".to_string(),
+                form: crate::proxy::materializer::MaterializedRefForm::MultipartField {
+                    field_name: "image".to_string(),
+                    bytes: bytes::Bytes::from_static(b"src"),
+                    content_type: "image/png".to_string(),
+                },
+                time_s: None,
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+        let mut base = make_base("a red door", "stability/search-and-replace");
+        base.seed = None;
+        let extras = ImageExtras { aspect_ratio: None, size: None, style: None, strength: None, mask_prompt: Some("the door".into()), ..make_extras_sd3() };
+        let out = make_provider(&server.uri())
+            .generate(&ref_schema("stability/search-and-replace"), &base, &extras, &materialized)
+            .await
+            .expect("generate");
+        assert_eq!(out.data, b"SWAPPED");
+        let body = &server.received_requests().await.unwrap()[0].body;
+        for (field, want) in [("prompt", "a red door"), ("search_prompt", "the door"), ("grow_mask", "0"), ("output_format", "png")] {
+            assert_eq!(multipart_field(body, field).as_deref(), Some(want), "{field}");
+        }
+        for absent in ["model", "mode", "strength", "aspect_ratio"] {
+            assert!(multipart_field(body, absent).is_none(), "{absent} is not a search-and-replace field");
         }
     }
 }

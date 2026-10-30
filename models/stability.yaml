@@ -202,6 +202,40 @@ models:
     extra_allowlist: []
     tags: [image-to-image, inpainting]
 
+  # 3D doc §4 (P2), a mask named in text. Multipart: image (required), prompt
+  # (required), search_prompt (required, "Short description of what to
+  # inpaint", maxLength 10000), negative_prompt, grow_mask (0–20, default 3;
+  # litegen sends 0, as for inpaint), seed, output_format png | jpeg | webp,
+  # style_preset.
+  # @see https://api.stability.ai/v2alpha/openapi (read 2026-10-30)
+  - id: stability/search-and-replace
+    provider: stability
+    media_type: image
+    display_name: Stable Image Search and Replace
+    description: >-
+      Stability's Search and Replace: finds what `mask_prompt` names in the
+      init image and replaces it with what the prompt describes.
+    docs_url: https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1search-and-replace/post
+    # "Search and Replace | Use simple words to automatically find an object in
+    # image and replace it with the desired prompt | 5" credits; "1 credit =
+    # $0.01" → $0.05 (docs.stability.ai/pricing.md, read 2026-10-30).
+    pricing: { base_cost_usd: 0.05 }
+    capabilities: { image_to_image: true }
+    prompt: { required: true, max_length: 10000 }
+    params:
+      mask_prompt: { kind: string, max_length: 10000, label: Find, description: What to replace, named (Stability's search_prompt). }
+      negative_prompt: { kind: string, max_length: 10000 }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image } }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: []
+    tags: [image-to-image, inpainting]
+
   # 3D doc §4 (P2). Multipart: image (required; jpeg, png or webp, "Every side
   # must be at least 64 pixels", "Total pixel count must be between 4,096 and
   # 9,437,184 pixels", "aspect ratio must be between 1:2.5 and 2.5:1"), left,

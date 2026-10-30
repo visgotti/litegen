@@ -23,7 +23,7 @@ export const PROVIDER_MODELS: Record<string, ProviderModels> = {
   "recraft": {"image":["Recraft V2","Recraft V2 Vector","Recraft V3","Recraft V3 Vector","Recraft V4.1","Recraft V4.1 Pro","Recraft V4.1 Pro Vector","Recraft V4.1 Vector","Recraft Remove Background"],"video":[],"model3d":[]},
   "replicate": {"image":["Flux 1.1 Pro","Flux Dev","Flux Pro","Flux Schnell","SD3 on Replicate","SDXL on Replicate"],"video":["Replicate Video (generic)"],"model3d":[]},
   "runway": {"image":["Runway Gen-4 Image","Runway Gen-4 Image Turbo"],"video":["Runway Gen-4 Turbo","Runway Gen-4.5"],"model3d":[]},
-  "stability": {"image":["Stable Image Core","Stable Image Inpaint","Stable Image Outpaint","Stable Image Remove Background","Stable Diffusion 3 Large","Stable Diffusion 3 Turbo","Stable Diffusion 3.5 Medium","Stable Diffusion XL","Stable Image Ultra"],"video":[],"model3d":[]},
+  "stability": {"image":["Stable Image Core","Stable Image Inpaint","Stable Image Outpaint","Stable Image Remove Background","Stable Diffusion 3 Large","Stable Diffusion 3 Turbo","Stable Diffusion 3.5 Medium","Stable Diffusion XL","Stable Image Search and Replace","Stable Image Ultra"],"video":[],"model3d":[]},
   "tripo": {"image":["Tripo Image to Multiview"],"video":[],"model3d":["Tripo Animation Retarget","Tripo Auto Rig"]},
   "vidu": {"image":[],"video":["Vidu 2.0","Vidu Q1","Vidu Q2 Pro","Vidu Q2 Pro Fast","Vidu Q3 Pro","Vidu Q3 Turbo"],"model3d":[]},
 };

@@ -938,4 +938,31 @@ models:
         let err = row("        style: { required: false, min_count: 0, max_count: 1 }").unwrap_err().to_string();
         assert!(err.contains("expand") && err.contains("init"), "{err}");
     }
+
+    // ─── Layout (3D doc §4, P2) ───────────────────────────────────────────────
+
+    #[test]
+    fn a_layout_model_composes_text_to_image_boxes_of_kinds_it_names() {
+        let row = |caps: &str, spec: &str| yaml(&format!(r#"
+models:
+  - id: x/layout
+    provider: x
+    media_type: image
+    display_name: Layout
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {caps}
+    prompt: {{ required: true }}
+    params:
+      layout: {spec}
+"#));
+        assert!(row("{ text_to_image: true }", "{ kind: layout, kinds: [object], max_items: 4 }").is_ok());
+        for (caps, spec) in [
+            ("{ image_to_image: true }", "{ kind: layout, kinds: [object], max_items: 4 }"),
+            ("{ text_to_image: true }", "{ kind: layout, kinds: [], max_items: 4 }"),
+            ("{ text_to_image: true }", "{ kind: layout, kinds: [text], max_items: 0 }"),
+        ] {
+            let err = row(caps, spec).unwrap_err().to_string();
+            assert!(err.contains("layout"), "{caps} {spec}: {err}");
+        }
+    }
 }

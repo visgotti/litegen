@@ -218,6 +218,16 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
+    // 3D doc §4 (P2): a layout composes boxes on a new, text-to-image canvas.
+    if let Some(ParamSpec::Layout(l)) = m.params.get("layout") {
+        if m.media_type != MediaType::Image || !c.text_to_image {
+            return Err(bad(format!("model '{}' takes a layout but makes no image from text", m.id)));
+        }
+        if l.kinds.is_empty() || l.max_items == 0 {
+            return Err(bad(format!("model '{}' layout names no box kinds or no boxes", m.id)));
+        }
+    }
+
     // 3D doc §4 (P2): expand grows an init image's canvas.
     if matches!(m.params.get("expand"), Some(ParamSpec::Expand(_)))
         && !(m.media_type == MediaType::Image && m.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("init")))

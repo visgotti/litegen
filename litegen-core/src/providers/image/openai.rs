@@ -671,6 +671,7 @@ mod tests {
             extra: None,
             output_format: None, background: None,
             expand: None,
+            layout: None, mask_prompt: None,
         }
     }
 
@@ -873,6 +874,7 @@ mod tests {
             region: None, mask_grow_px: None, views: None,
             output_format: None, background: None,
             expand: None,
+            layout: None, mask_prompt: None,
         };
         provider
             .estimate_cost(&ref_schema(id), &request)

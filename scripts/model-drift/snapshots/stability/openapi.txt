@@ -200,6 +200,76 @@
     ],
     "type": "object"
   },
+  "POST /v2beta/stable-image/edit/search-and-replace (multipart/form-data)": {
+    "properties": {
+      "grow_mask": {
+        "default": 3,
+        "maximum": 20,
+        "minimum": 0,
+        "type": "number"
+      },
+      "image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "negative_prompt": {
+        "maxLength": 10000,
+        "type": "string"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "search_prompt": {
+        "maxLength": 10000,
+        "type": "string"
+      },
+      "seed": {
+        "default": 0,
+        "maximum": 4294967294,
+        "minimum": 0,
+        "type": "number"
+      },
+      "style_preset": {
+        "enum": [
+          "enhance",
+          "anime",
+          "photographic",
+          "digital-art",
+          "comic-book",
+          "fantasy-art",
+          "line-art",
+          "analog-film",
+          "neon-punk",
+          "isometric",
+          "low-poly",
+          "origami",
+          "modeling-compound",
+          "cinematic",
+          "3d-model",
+          "pixel-art",
+          "tile-texture"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "image",
+      "prompt",
+      "search_prompt"
+    ],
+    "type": "object"
+  },
   "POST /v2beta/stable-image/generate/core (multipart/form-data)": {
     "properties": {
       "aspect_ratio": {

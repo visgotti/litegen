@@ -588,6 +588,7 @@ impl ProxyRouter {
             region: None, mask_grow_px: None, views: None,
             output_format: None, background: None,
             expand: extras.expand,
+            layout: None, mask_prompt: None,
         };
         for d in deployments {
             let cost = if let Some(p) = self.registry.image_provider_for_request(&d.provider, app_creds.clone()).await {

@@ -337,6 +337,40 @@ pub enum ParamSpec {
     Region(ParamSpecRegion),
     SegmentationPrompts(ParamSpecSegmentationPrompts),
     Expand(ParamSpecExpand),
+    Layout(ParamSpecLayout),
+}
+
+/// `layout` on a text-to-image model (3D doc §4): the boxes it composes.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ParamSpecLayout {
+    /// What its boxes may hold, listed as `layout_kinds`.
+    pub kinds: Vec<LayoutKind>,
+    /// The most boxes one request may send.
+    pub max_items: usize,
+    /// Each text box holds one word (Recraft's `text_layout`).
+    #[serde(default)]
+    pub single_word_text: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
+}
+
+/// What a layout box holds (3D doc §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LayoutKind {
+    /// An object, described by the box's `prompt`.
+    Object,
+    /// Words, the box's `text`, rendered there.
+    Text,
+}
+
+impl LayoutKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            LayoutKind::Object => "object",
+            LayoutKind::Text => "text",
+        }
+    }
 }
 
 /// `expand` on a model (3D doc §4): how its vendor grows a canvas.
@@ -825,6 +859,9 @@ pub const KNOWN_PARAMS: &[&str] = &[
     "keep_uvs",
     // Expanded canvases (3D doc §4).
     "expand",
+    // Per-box prompts and masks named in text (3D doc §4).
+    "layout",
+    "mask_prompt",
 ];
 
 /// The `ParamSpec` kind(s) a canonical param may be declared with: exactly the
@@ -856,6 +893,8 @@ pub fn canonical_param_kinds(name: &str) -> &'static [&'static str] {
         "source_model" => &["source_model"],
         "prompts" => &["segmentation_prompts"],
         "expand" => &["expand"],
+        "layout" => &["layout"],
+        "mask_prompt" => &["string"],
         _ => &[],
     }
 }
@@ -877,6 +916,7 @@ impl ParamSpec {
             ParamSpec::Region(_) => "region",
             ParamSpec::SegmentationPrompts(_) => "segmentation_prompts",
             ParamSpec::Expand(_) => "expand",
+            ParamSpec::Layout(_) => "layout",
         }
     }
 }

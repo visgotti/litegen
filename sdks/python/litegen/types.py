@@ -217,6 +217,29 @@ class SegmentationMask(TypedDict):
     """The smallest box around the white pixels, measured by LiteGen."""
 
 
+LayoutKind = Literal["object", "text"]
+"""What a layout box holds: an object (its ``prompt``) or words (its ``text``)."""
+
+
+class LayoutBox(TypedDict):
+    """Where a layout box sits, as fractions of the canvas (0 to 1)."""
+
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+class LayoutItem(TypedDict):
+    """One box of ``images.generate(layout=[...])``, where the model's listing
+    says ``supports_layout``. Boxes guide the layout; no vendor clips to them."""
+
+    box: LayoutBox
+    kind: LayoutKind
+    prompt: NotRequired[str | None]
+    text: NotRequired[str | None]
+
+
 class Expand(TypedDict):
     """Pixels to add to each side of the init image's canvas (``expand=`` on
     ``images.generate``, where the model's listing says ``supports_expand``).

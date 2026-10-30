@@ -137,6 +137,8 @@ pub fn validate_image(
     check_image_edit(schema, &mut req, strict, &mut dropped)?;
     check_views(schema, &mut req, strict, &mut dropped)?;
     check_expand(schema, &mut req, strict, &mut dropped)?;
+    check_layout(schema, &mut req, strict, &mut dropped)?;
+    check_mask_prompt(schema, &mut req, strict, &mut dropped)?;
 
     macro_rules! check_param {
         ($field:expr, $key:literal, $variant:pat => $body:block) => {
@@ -1086,6 +1088,87 @@ fn check_expand(
             format!("'{}' only centres the source: left must equal right, and top bottom", schema.id),
             Some("expand"),
         ));
+    }
+    Ok(())
+}
+
+/// `layout` (3D doc §4, P2): boxes on a new canvas — the model's kinds, at
+/// most its count, each inside the canvas with an area, an object described
+/// and text given (one word where the vendor takes one), and no init image.
+fn check_layout(
+    schema: &ModelSchema,
+    req: &mut ImageGenerationRequest,
+    strict: bool,
+    dropped: &mut Vec<String>,
+) -> Result<(), ValidationError> {
+    let Some(items) = req.layout.as_ref() else { return Ok(()) };
+    let Some(ParamSpec::Layout(spec)) = schema.params.get("layout") else {
+        if strict {
+            return Err(ValidationError::new("param_unsupported", format!("layout not supported by '{}'", schema.id), Some("layout")));
+        }
+        dropped.push("layout".into());
+        req.layout = None;
+        return Ok(());
+    };
+    let bad = |code: &str, msg: String| Err(ValidationError::new(code, msg, Some("layout")));
+    if items.is_empty() || items.len() > spec.max_items {
+        return bad("param_out_of_range", format!("{} layout boxes; '{}' takes 1 to {}", items.len(), schema.id, spec.max_items));
+    }
+    if req.base.reference_images.iter().any(|r| r.role.as_deref() == Some("init") || r.role.is_none()) {
+        return bad("param_conflict", "layout composes a new image; it takes no init image".into());
+    }
+    for (i, item) in items.iter().enumerate() {
+        let b = item.bounds;
+        let inside = [b.x, b.y, b.w, b.h].iter().all(|v| v.is_finite())
+            && b.x >= 0.0 && b.y >= 0.0 && b.w > 0.0 && b.h > 0.0
+            && b.x + b.w <= 1.0 + 1e-9 && b.y + b.h <= 1.0 + 1e-9;
+        if !inside {
+            return bad("param_out_of_range", format!("layout box {i} is not inside the canvas (fractions 0 to 1, with an area)"));
+        }
+        if !spec.kinds.contains(&item.kind) {
+            let takes: Vec<&str> = spec.kinds.iter().map(|k| k.as_str()).collect();
+            return bad("capability_unsupported", format!("'{}' lays out {} boxes, not {}", schema.id, takes.join(" and "), item.kind.as_str()));
+        }
+        let given = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.trim().is_empty());
+        match item.kind {
+            LayoutKind::Object if !given(&item.prompt) => return bad("param_required", format!("layout box {i} is an object: describe it in prompt")),
+            LayoutKind::Text if !given(&item.text) => return bad("param_required", format!("layout box {i} is text: give its text")),
+            LayoutKind::Text if spec.single_word_text && item.text.as_deref().is_some_and(|t| t.trim().contains(char::is_whitespace)) => {
+                return bad("param_out_of_range", format!("'{}' places one word per text box; box {i} has several", schema.id));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// `mask_prompt` (3D doc §4, P2): a model that finds the area itself, an init
+/// image to edit, and neither a mask nor a region beside it.
+fn check_mask_prompt(
+    schema: &ModelSchema,
+    req: &mut ImageGenerationRequest,
+    strict: bool,
+    dropped: &mut Vec<String>,
+) -> Result<(), ValidationError> {
+    let Some(text) = req.mask_prompt.as_deref() else { return Ok(()) };
+    let Some(ParamSpec::String(spec)) = schema.params.get("mask_prompt") else {
+        if strict {
+            return Err(ValidationError::new("param_unsupported", format!("mask_prompt not supported by '{}'", schema.id), Some("mask_prompt")));
+        }
+        dropped.push("mask_prompt".into());
+        req.mask_prompt = None;
+        return Ok(());
+    };
+    if text.trim().is_empty() {
+        return Err(ValidationError::new("param_required", "mask_prompt names nothing", Some("mask_prompt")));
+    }
+    check_string(text, &spec.enum_values, spec.max_length, "mask_prompt")?;
+    let refs = &req.base.reference_images;
+    if !refs.iter().any(|r| r.role.as_deref() == Some("init") || r.role.is_none()) {
+        return Err(ValidationError::new("init_required", "mask_prompt names an area of an init image; send one with role init", Some("reference_images")));
+    }
+    if refs.iter().any(|r| r.role.as_deref() == Some("mask")) || req.region.is_some() {
+        return Err(ValidationError::new("param_conflict", "mask_prompt names the area itself; send it without a mask or a region", Some("mask_prompt")));
     }
     Ok(())
 }

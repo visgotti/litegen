@@ -237,6 +237,7 @@ mod tests {
             vendor_job: Default::default(),
             output_format: None, background: None,
             expand: None,
+            layout: None, mask_prompt: None,
         }
     }
 

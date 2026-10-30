@@ -66,6 +66,7 @@ mod tests {
             extra: None,
             output_format: None, background: None,
             expand: None,
+            layout: None, mask_prompt: None,
         }
     }
 

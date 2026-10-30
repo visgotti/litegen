@@ -84,6 +84,8 @@ MIRRORED = {
     "SegmentationMask": t.SegmentationMask,
     "ScenePart": t.ScenePart,
     "Expand": t.Expand,
+    "LayoutBox": t.LayoutBox,
+    "LayoutItem": t.LayoutItem,
     "ImageSegmentationResponse": t.ImageSegmentationResponse,
 }
 
@@ -161,6 +163,7 @@ def test_model3d_params_cover_the_request_schema() -> None:
         ("PreservesUnmasked", t.PreservesUnmasked),
         ("SourceKind", t.SourceKind),
         ("SegmentationPromptType", t.SegmentationPromptType),
+        ("LayoutKind", t.LayoutKind),
     ],
 )
 def test_literal_values_match_the_schema_enum(schema_name: str, alias: Any) -> None:

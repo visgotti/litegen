@@ -210,6 +210,24 @@ impl ImageProvider for RecraftProvider {
                 }
             }
         }
+        // 3D doc §4: the layout's text boxes as Recraft's `text_layout`, one
+        // word and four relative points each, clockwise from the top-left.
+        // Written after `extra`, which cannot replace it.
+        // @see <https://www.recraft.ai/docs/api-reference/endpoints.md> — Text Layout
+        if let Some(layout) = extras.layout.as_ref() {
+            let words: Vec<Value> = layout
+                .iter()
+                .filter(|item| item.kind == crate::capabilities::LayoutKind::Text)
+                .map(|item| {
+                    let b = item.bounds;
+                    json!({
+                        "text": item.text.clone().unwrap_or_default(),
+                        "bbox": [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]],
+                    })
+                })
+                .collect();
+            body["text_layout"] = Value::Array(words);
+        }
 
         let builder = crate::providers::auth::apply(
             &self.auth,
@@ -400,6 +418,7 @@ mod tests {
             extra: None,
             output_format: None, background: None,
             expand: None,
+            layout: None, mask_prompt: None,
         }
     }
 
@@ -521,6 +540,37 @@ mod tests {
         assert_eq!(multipart_field(body, "image_format").as_deref(), Some("png"));
         for absent in ["prompt", "model", "n", "size", "style"] {
             assert!(multipart_field(body, absent).is_none(), "{absent} is not a removeBackground field");
+        }
+    }
+
+    /// Text layout: one word per element, its bbox four relative points
+    /// clockwise from the top-left; "supported by Recraft V3 and Recraft V3
+    /// Vector models only".
+    /// @see <https://www.recraft.ai/docs/api-reference/endpoints.md> — Text Layout
+    #[tokio::test]
+    async fn a_text_layout_is_sent_as_recrafts_four_point_boxes() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/images/generations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [{ "b64_json": B64.encode(b"png") }] })))
+            .mount(&server)
+            .await;
+        let layout: Vec<crate::types::LayoutItem> = serde_json::from_value(json!([
+            { "box": { "x": 0.3, "y": 0.45, "w": 0.3, "h": 0.1 }, "kind": "text", "text": "Recraft" },
+        ]))
+        .unwrap();
+        let extras = ImageExtras { layout: Some(layout), extra: Some(json!({ "text_layout": [] })), ..make_extras() };
+        make_provider(&server.uri())
+            .generate(&ref_schema("recraft/recraftv3"), &make_base("a sign", "recraft/recraftv3"), &extras, &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() })
+            .await
+            .expect("generate");
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        let bbox = &body["text_layout"][0]["bbox"];
+        assert_eq!(body["text_layout"][0]["text"], "Recraft", "{body}");
+        let pts: Vec<(f64, f64)> = bbox.as_array().unwrap().iter().map(|p| (p[0].as_f64().unwrap(), p[1].as_f64().unwrap())).collect();
+        let close = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9;
+        for (got, want) in pts.iter().zip([(0.3, 0.45), (0.6, 0.45), (0.6, 0.55), (0.3, 0.55)]) {
+            assert!(close(*got, want), "{pts:?}");
         }
     }
 }

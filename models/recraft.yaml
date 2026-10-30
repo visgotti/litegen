@@ -23,7 +23,18 @@ models:
         mode: enum
         # V2/V3 sizes incl. 16:9 1820x1024 / 9:16 1024x1820: https://www.recraft.ai/docs/api-reference/appendix.md
         values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024],[1820,1024],[1024,1820]]
-    extra_allowlist: [style_id, controls, text_layout, substyle]
+      # Text layout (PixelGenie 3D doc §4): "supported by Recraft V3 and
+      # Recraft V3 Vector models only"; "Each text element consists of an
+      # individual word and its bounding box", 4 relative points.
+      # @see https://www.recraft.ai/docs/api-reference/endpoints.md (read 2026-10-30)
+      layout:
+        kind: layout
+        kinds: [text]
+        max_items: 32
+        single_word_text: true
+        label: Text layout
+        description: Words to render, one per box, as fractions of the canvas.
+    extra_allowlist: [style_id, controls, substyle]
     tags: [text-to-image]
 
   - id: recraft/recraftv3_vector
@@ -45,6 +56,17 @@ models:
         kind: size
         mode: enum
         values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024]]
+      # Text layout (PixelGenie 3D doc §4): "supported by Recraft V3 and
+      # Recraft V3 Vector models only"; "Each text element consists of an
+      # individual word and its bounding box", 4 relative points.
+      # @see https://www.recraft.ai/docs/api-reference/endpoints.md (read 2026-10-30)
+      layout:
+        kind: layout
+        kinds: [text]
+        max_items: 32
+        single_word_text: true
+        label: Text layout
+        description: Words to render, one per box, as fractions of the canvas.
     extra_allowlist: [style_id, controls, substyle]
     tags: [text-to-image, vector]
 

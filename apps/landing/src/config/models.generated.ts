@@ -5788,6 +5788,10 @@ export const MODELS: ModelEntry[] = [
           "any"
         ],
         "default": "realistic_image"
+      },
+      {
+        "name": "layout",
+        "kind": "layout"
       }
     ],
     "pricing": {
@@ -5856,6 +5860,10 @@ export const MODELS: ModelEntry[] = [
           "icon"
         ],
         "default": "vector_illustration"
+      },
+      {
+        "name": "layout",
+        "kind": "layout"
       }
     ],
     "pricing": {
@@ -7399,6 +7407,73 @@ export const MODELS: ModelEntry[] = [
       "inpainting"
     ],
     "referenceUrl": "https://platform.stability.ai/docs/api-reference"
+  },
+  {
+    "id": "stability/search-and-replace",
+    "provider": "stability",
+    "displayName": "Stable Image Search and Replace",
+    "description": "Stability's Search and Replace: finds what `mask_prompt` names in the init image and replaces it with what the prompt describes.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "mask_prompt",
+        "kind": "string"
+      },
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp",
+          "jpeg"
+        ],
+        "default": "png"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.05
+    },
+    "tags": [
+      "image-to-image",
+      "inpainting"
+    ],
+    "referenceUrl": "https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1search-and-replace/post"
   },
   {
     "id": "stability/ultra",

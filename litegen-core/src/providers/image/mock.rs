@@ -86,6 +86,63 @@ fn formatted_image(prompt: &str, format: Option<&str>, background: Option<&str>)
     Ok(out)
 }
 
+/// The layout mock (3D doc §4).
+const LAYOUT_MODEL: &str = "mock/layout-image";
+
+/// Distinct colours, one per layout box in order.
+const LAYOUT_PALETTE: [[u8; 4]; 8] = [
+    [0xe6, 0x19, 0x4b, 0xff], [0x3c, 0xb4, 0x4b, 0xff], [0xff, 0xe1, 0x19, 0xff], [0x43, 0x63, 0xd8, 0xff],
+    [0xf5, 0x82, 0x31, 0xff], [0x91, 0x1e, 0xb4, 0xff], [0x46, 0xf0, 0xf0, 0xff], [0xf0, 0x32, 0xe6, 0xff],
+];
+
+/// `mock/layout-image`'s answer: a 256 px grey square with box i painted
+/// `LAYOUT_PALETTE[i]` where its fractions put it.
+fn layout_canvas(extras: &ImageExtras) -> Result<Vec<u8>, ProviderError> {
+    const SIDE: u32 = 256;
+    let mut canvas = image::RgbaImage::from_pixel(SIDE, SIDE, image::Rgba([0x80, 0x80, 0x80, 0xff]));
+    for (i, item) in extras.layout.iter().flatten().enumerate() {
+        let b = item.bounds;
+        let px = |f: f64| ((f * f64::from(SIDE)).round() as u32).min(SIDE);
+        let colour = image::Rgba(LAYOUT_PALETTE[i % LAYOUT_PALETTE.len()]);
+        for y in px(b.y)..px(b.y + b.h) {
+            for x in px(b.x)..px(b.x + b.w) {
+                canvas.put_pixel(x, y, colour);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    canvas
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .map_err(|e| ProviderError::InvalidRequest(format!("mock/layout-image: {e}")))?;
+    Ok(out)
+}
+
+/// The text-mask mock (3D doc §4): whatever `mask_prompt` names, it "finds"
+/// the middle half of the init image and fills it `EDIT_FILL`.
+const MASK_PROMPT_MODEL: &str = "mock/mask-prompt-image";
+
+fn fill_named_area(materialized: &MaterializedRequest) -> Result<Vec<u8>, ProviderError> {
+    use crate::proxy::materializer::MaterializedRefForm;
+    use base64::Engine;
+    let init = materialized.refs.iter().find(|r| r.role == "init").and_then(|r| match &r.form {
+        MaterializedRefForm::Base64(b) => base64::engine::general_purpose::STANDARD.decode(b).ok(),
+        MaterializedRefForm::MultipartField { bytes, .. } => Some(bytes.to_vec()),
+        MaterializedRefForm::Url(_) => None,
+    });
+    let init = init.ok_or_else(|| ProviderError::InvalidRequest("mock/mask-prompt-image needs an init image".into()))?;
+    let unreadable = |e: image::ImageError| ProviderError::InvalidRequest(format!("mock/mask-prompt-image: {e}"));
+    let mut img = image::load_from_memory(&init).map_err(unreadable)?.to_rgba8();
+    let (w, h) = img.dimensions();
+    for y in h / 4..3 * h / 4 {
+        for x in w / 4..3 * w / 4 {
+            img.put_pixel(x, y, image::Rgba(EDIT_FILL));
+        }
+    }
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).map_err(unreadable)?;
+    Ok(out)
+}
+
 /// The expand mock (3D doc §4).
 const EXPAND_MODEL: &str = "mock/expand-image";
 
@@ -334,6 +391,10 @@ impl ImageProvider for MockProvider {
                 more: Vec::new(),
             });
         }
+        if model.id == LAYOUT_MODEL || model.id == MASK_PROMPT_MODEL {
+            let data = if model.id == LAYOUT_MODEL { layout_canvas(_extras)? } else { fill_named_area(_materialized)? };
+            return Ok(GenerationOutput { data, content_type: "image/png".to_string(), metadata, more: Vec::new() });
+        }
         if model.id == EXPAND_MODEL {
             return Ok(GenerationOutput {
                 data: expand_canvas(_extras, _materialized)?,
@@ -469,6 +530,7 @@ mod tests {
             extra: None,
             output_format: None, background: None,
             expand: None,
+            layout: None, mask_prompt: None,
         }
     }
 
@@ -559,6 +621,7 @@ mod tests {
             region: None, mask_grow_px: None, views: None,
             output_format: None, background: None,
             expand: None,
+            layout: None, mask_prompt: None,
         };
         let cost = provider.estimate_cost(&schema, &req).await.unwrap();
         // mock/test-model has base_cost_usd: 0.0

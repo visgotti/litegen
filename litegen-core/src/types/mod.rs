@@ -56,6 +56,14 @@ pub struct ImageGenerationRequest {
     /// the model's `expand` spec says how much and whether it only centres.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expand: Option<Expand>,
+    /// Boxes for a text-to-image canvas (3D doc §4): objects and words
+    /// placed by fractions of the canvas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Vec<LayoutItem>>,
+    /// The area an edit replaces, named in text rather than drawn as a mask
+    /// (3D doc §4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask_prompt: Option<String>,
     /// Grow the edit area outward by this many pixels: the vendor's own
     /// setting where it has one (sent explicitly, even as 0), else litegen
     /// dilates the mask itself. Default 0.
@@ -603,6 +611,31 @@ impl ImageView {
     pub fn parse(s: &str) -> Option<ImageView> {
         Self::ALL.into_iter().find(|v| v.as_str() == s)
     }
+}
+
+/// Where a layout box sits, as fractions of the canvas (0 to 1, top-left
+/// origin): the output's size may not be known yet.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct LayoutBox {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+/// One box of a text-to-image layout (3D doc §4). Boxes guide the layout;
+/// no vendor clips to them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct LayoutItem {
+    #[serde(rename = "box")]
+    pub bounds: LayoutBox,
+    pub kind: crate::capabilities::LayoutKind,
+    /// What goes there: required for an `object` box.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// The words to render: required for a `text` box.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// Pixels to add to each side of the init image's canvas (3D doc §4): the
@@ -1369,6 +1402,15 @@ pub struct ModelCapabilities {
     /// Takes `expand` (3D doc §4).
     #[serde(default)]
     pub supports_expand: bool,
+    /// Takes `layout` (3D doc §4).
+    #[serde(default)]
+    pub supports_layout: bool,
+    /// What its layout boxes may hold; empty when it takes no layout.
+    #[serde(default)]
+    pub layout_kinds: Vec<crate::capabilities::LayoutKind>,
+    /// Takes `mask_prompt` (3D doc §4).
+    #[serde(default)]
+    pub supports_mask_prompt: bool,
     /// Serves `POST /v1/images/segmentations` (PixelGenie L7).
     #[serde(default)]
     pub supports_segmentation: bool,

@@ -8439,6 +8439,16 @@
                                 ],
                                 "format": "double"
                             },
+                            "layout": {
+                                "type": [
+                                    "array",
+                                    "null"
+                                ],
+                                "items": {
+                                    "$ref": "#/components/schemas/LayoutItem"
+                                },
+                                "description": "Boxes for a text-to-image canvas (3D doc \u00a74): objects and words\nplaced by fractions of the canvas."
+                            },
                             "mask_grow_px": {
                                 "type": [
                                     "integer",
@@ -8447,6 +8457,13 @@
                                 "format": "int32",
                                 "description": "Grow the edit area outward by this many pixels: the vendor's own\nsetting where it has one (sent explicitly, even as 0), else litegen\ndilates the mask itself. Default 0.",
                                 "minimum": 0
+                            },
+                            "mask_prompt": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ],
+                                "description": "The area an edit replaces, named in text rather than drawn as a mask\n(3D doc \u00a74)."
                             },
                             "output_format": {
                                 "oneOf": [
@@ -8915,6 +8932,72 @@
                         "format": "int64"
                     }
                 }
+            },
+            "LayoutBox": {
+                "type": "object",
+                "description": "Where a layout box sits, as fractions of the canvas (0 to 1, top-left\norigin): the output's size may not be known yet.",
+                "required": [
+                    "x",
+                    "y",
+                    "w",
+                    "h"
+                ],
+                "properties": {
+                    "h": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "w": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "x": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "y": {
+                        "type": "number",
+                        "format": "double"
+                    }
+                }
+            },
+            "LayoutItem": {
+                "type": "object",
+                "description": "One box of a text-to-image layout (3D doc \u00a74). Boxes guide the layout;\nno vendor clips to them.",
+                "required": [
+                    "box",
+                    "kind"
+                ],
+                "properties": {
+                    "box": {
+                        "$ref": "#/components/schemas/LayoutBox"
+                    },
+                    "kind": {
+                        "$ref": "#/components/schemas/LayoutKind"
+                    },
+                    "prompt": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "What goes there: required for an `object` box."
+                    },
+                    "text": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The words to render: required for a `text` box."
+                    }
+                }
+            },
+            "LayoutKind": {
+                "type": "string",
+                "description": "What a layout box holds (3D doc \u00a74).",
+                "enum": [
+                    "object",
+                    "text"
+                ]
             },
             "LimitsInput": {
                 "type": "object",
@@ -9511,6 +9594,13 @@
                             }
                         ]
                     },
+                    "layout_kinds": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/LayoutKind"
+                        },
+                        "description": "What its layout boxes may hold; empty when it takes no layout."
+                    },
                     "lossy_only": {
                         "type": "boolean",
                         "description": "Returns only lossy containers (no PNG)."
@@ -9648,9 +9738,17 @@
                     "supports_last_frame": {
                         "type": "boolean"
                     },
+                    "supports_layout": {
+                        "type": "boolean",
+                        "description": "Takes `layout` (3D doc \u00a74)."
+                    },
                     "supports_loop": {
                         "type": "boolean",
                         "description": "Takes `loop: true`."
+                    },
+                    "supports_mask_prompt": {
+                        "type": "boolean",
+                        "description": "Takes `mask_prompt` (3D doc \u00a74)."
                     },
                     "supports_multiview_to_3d": {
                         "type": "boolean",
@@ -10945,6 +11043,27 @@
                                 }
                             }
                         ]
+                    },
+                    {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/ParamSpecLayout"
+                            },
+                            {
+                                "type": "object",
+                                "required": [
+                                    "kind"
+                                ],
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                            "layout"
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
                     }
                 ]
             },
@@ -11171,6 +11290,44 @@
                             "format": "int64"
                         },
                         "description": "The only values the vendor takes, when it takes a list rather than a\nrange (`duration_seconds`, PixelGenie L10)."
+                    }
+                }
+            },
+            "ParamSpecLayout": {
+                "type": "object",
+                "description": "`layout` on a text-to-image model (3D doc \u00a74): the boxes it composes.",
+                "required": [
+                    "kinds",
+                    "max_items"
+                ],
+                "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "kinds": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/LayoutKind"
+                        },
+                        "description": "What its boxes may hold, listed as `layout_kinds`."
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "max_items": {
+                        "type": "integer",
+                        "description": "The most boxes one request may send.",
+                        "minimum": 0
+                    },
+                    "single_word_text": {
+                        "type": "boolean",
+                        "description": "Each text box holds one word (Recraft's `text_layout`)."
                     }
                 }
             },

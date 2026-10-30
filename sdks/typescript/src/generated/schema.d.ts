@@ -2419,12 +2419,22 @@ export interface components {
             /** Format: double */
             guidance_scale?: number | null;
             /**
+             * @description Boxes for a text-to-image canvas (3D doc §4): objects and words
+             *     placed by fractions of the canvas.
+             */
+            layout?: components["schemas"]["LayoutItem"][] | null;
+            /**
              * Format: int32
              * @description Grow the edit area outward by this many pixels: the vendor's own
              *     setting where it has one (sent explicitly, even as 0), else litegen
              *     dilates the mask itself. Default 0.
              */
             mask_grow_px?: number | null;
+            /**
+             * @description The area an edit replaces, named in text rather than drawn as a mask
+             *     (3D doc §4).
+             */
+            mask_prompt?: string | null;
             output_format?: null | components["schemas"]["ImageOutputFormat"];
             quality?: string | null;
             region?: null | components["schemas"]["Region"];
@@ -2596,6 +2606,37 @@ export interface components {
             /** Format: int64 */
             window_minutes: number;
         };
+        /**
+         * @description Where a layout box sits, as fractions of the canvas (0 to 1, top-left
+         *     origin): the output's size may not be known yet.
+         */
+        LayoutBox: {
+            /** Format: double */
+            h: number;
+            /** Format: double */
+            w: number;
+            /** Format: double */
+            x: number;
+            /** Format: double */
+            y: number;
+        };
+        /**
+         * @description One box of a text-to-image layout (3D doc §4). Boxes guide the layout;
+         *     no vendor clips to them.
+         */
+        LayoutItem: {
+            box: components["schemas"]["LayoutBox"];
+            kind: components["schemas"]["LayoutKind"];
+            /** @description What goes there: required for an `object` box. */
+            prompt?: string | null;
+            /** @description The words to render: required for a `text` box. */
+            text?: string | null;
+        };
+        /**
+         * @description What a layout box holds (3D doc §4).
+         * @enum {string}
+         */
+        LayoutKind: "object" | "text";
         /**
          * @description Request body for `PUT …/limits`. A full replacement of the configurable
          *     fields: an omitted field is cleared. Accumulated spend is kept unless the
@@ -2886,6 +2927,8 @@ export interface components {
              */
             duration_values?: number[];
             keyframe_timing?: null | components["schemas"]["KeyframeTiming"];
+            /** @description What its layout boxes may hold; empty when it takes no layout. */
+            layout_kinds?: components["schemas"]["LayoutKind"][];
             /** @description Returns only lossy containers (no PNG). */
             lossy_only?: boolean;
             mask_convention?: null | components["schemas"]["MaskConvention"];
@@ -2949,8 +2992,12 @@ export interface components {
             /** @description Takes `keyframe` references, each pinned at its `time_s` (3D doc §5). */
             supports_keyframes?: boolean;
             supports_last_frame?: boolean;
+            /** @description Takes `layout` (3D doc §4). */
+            supports_layout?: boolean;
             /** @description Takes `loop: true`. */
             supports_loop?: boolean;
+            /** @description Takes `mask_prompt` (3D doc §4). */
+            supports_mask_prompt?: boolean;
             /** @description Accepts several `view-*` reference images (multiview-to-3D). */
             supports_multiview_to_3d?: boolean;
             /** @description Takes the `pbr` param. */
@@ -3369,6 +3416,9 @@ export interface components {
         }) | (components["schemas"]["ParamSpecExpand"] & {
             /** @enum {string} */
             kind: "expand";
+        }) | (components["schemas"]["ParamSpecLayout"] & {
+            /** @enum {string} */
+            kind: "layout";
         });
         /** @description The clips an `animate` model makes (`animations`, 3D doc §3C). */
         ParamSpecAnimationList: {
@@ -3444,6 +3494,17 @@ export interface components {
              *     range (`duration_seconds`, PixelGenie L10).
              */
             values?: number[];
+        };
+        /** @description `layout` on a text-to-image model (3D doc §4): the boxes it composes. */
+        ParamSpecLayout: {
+            description?: string | null;
+            /** @description What its boxes may hold, listed as `layout_kinds`. */
+            kinds: components["schemas"]["LayoutKind"][];
+            label?: string | null;
+            /** @description The most boxes one request may send. */
+            max_items: number;
+            /** @description Each text box holds one word (Recraft's `text_layout`). */
+            single_word_text?: boolean;
         };
         /** @description `region` on a model (3D doc §4). */
         ParamSpecRegion: {

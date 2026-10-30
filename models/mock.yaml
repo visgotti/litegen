@@ -710,6 +710,49 @@ models:
       background: { kind: string, enum_values: [transparent, opaque] }
     tags: [mock, test, formats]
 
+  # ─── Per-box prompts and masks named in text (PixelGenie 3D doc §4, P2) ────
+  - id: mock/layout-image
+    provider: mock
+    media_type: image
+    display_name: Mock Layout Image
+    description: >-
+      Paints a 256 px grey square with layout box i in palette colour i (#e6194b,
+      #3cb44b, #ffe119, #4363d8, …) where its fractions put it; object and text
+      boxes alike, at most eight.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      layout:
+        kind: layout
+        kinds: [object, text]
+        max_items: 8
+        label: Layout
+        description: Boxes for objects and words, as fractions of the canvas.
+    extra_allowlist: []
+    tags: [mock, test, layout]
+
+  - id: mock/mask-prompt-image
+    provider: mock
+    media_type: image
+    display_name: Mock Mask Prompt Image
+    description: >-
+      Whatever `mask_prompt` names, "finds" the middle half of the init image
+      and fills it #ffcd75, leaving every other pixel exactly as it came.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { image_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      mask_prompt: { kind: string, max_length: 1000, label: Mask prompt, description: The area to replace, named. }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: []
+    tags: [mock, test, mask-prompt]
+
   # ─── Expanded canvases (PixelGenie 3D doc §4, P2) ─────────────────────────
   - id: mock/expand-image
     provider: mock

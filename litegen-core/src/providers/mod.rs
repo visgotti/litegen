@@ -270,6 +270,12 @@ pub struct ImageExtras {
     /// Pixels to add a side (3D doc §4), checked against the model's spec.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expand: Option<crate::types::Expand>,
+    /// Layout boxes (3D doc §4), checked against the model's spec.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Vec<crate::types::LayoutItem>>,
+    /// The area an edit replaces, named in text (3D doc §4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mask_prompt: Option<String>,
     pub size: Option<String>,
     pub aspect_ratio: Option<String>,
     pub quality: Option<String>,

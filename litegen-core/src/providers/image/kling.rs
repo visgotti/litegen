@@ -340,6 +340,7 @@ mod tests {
             edit: None, views: Vec::new(),
             output_format: None, background: None,
             expand: None,
+            layout: None, mask_prompt: None,
         }
     }
 

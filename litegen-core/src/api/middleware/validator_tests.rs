@@ -62,6 +62,7 @@ models:
             region: None, mask_grow_px: None, views: None,
             output_format: None, background: None,
             expand: None,
+            layout: None, mask_prompt: None,
         }
     }
 
@@ -737,5 +738,42 @@ models:
         assert!(ask(10, 4, 10, 4).is_ok());
         let err = ask(10, 0, 0, 0).unwrap_err();
         assert_eq!((err.code.as_str(), err.param.as_deref()), ("expand_unsupported", Some("expand")));
+    }
+
+    // ─── Masks named in text (3D doc §4, P2) ──────────────────────────────────
+
+    #[test]
+    fn a_mask_named_in_text_cannot_ride_with_a_drawn_one() {
+        let r = CapabilityRegistry::from_yaml_strs(&[("t.yaml", r#"
+models:
+  - id: t/both
+    provider: t
+    media_type: image
+    display_name: Both
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { image_to_image: true, inpainting: true }
+    prompt: { required: true, max_length: 100 }
+    params:
+      mask_prompt: { kind: string, max_length: 50 }
+      region: { kind: region, input: mask }
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: white_edits }
+"#)]).unwrap();
+        let m = r.get("t/both").unwrap();
+        let mut req = with_images(1);
+        req.base.model = "t/both".into();
+        req.mask_prompt = Some("the door".into());
+        assert!(validate_image(m, req.clone()).is_ok());
+        req.region = Some(Region { x: 0, y: 0, w: 4, h: 4 });
+        let err = validate_image(m, req.clone()).unwrap_err();
+        assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_conflict", Some("mask_prompt")));
+        req.region = None;
+        req.mask_prompt = Some("x".repeat(51));
+        assert_eq!(validate_image(m, req).unwrap_err().param.as_deref(), Some("mask_prompt"), "the model's own length limit");
     }
 }

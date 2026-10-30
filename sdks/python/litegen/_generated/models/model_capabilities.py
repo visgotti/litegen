@@ -4,6 +4,7 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.keyframe_timing import KeyframeTiming
+from ..models.layout_kind import LayoutKind
 from ..models.mask_convention import MaskConvention
 from ..models.model_task import ModelTask
 from ..models.preserves_unmasked import PreservesUnmasked
@@ -23,6 +24,7 @@ class ModelCapabilities:
         duration_values (Union[Unset, List[float]]): The only `duration_seconds` values the model takes; empty when it
             takes its range.
         keyframe_timing (Union[KeyframeTiming, None, Unset]):
+        layout_kinds (Union[Unset, List[LayoutKind]]): What its layout boxes may hold; empty when it takes no layout.
         lossy_only (Union[Unset, bool]): Returns only lossy containers (no PNG).
         mask_convention (Union[MaskConvention, None, Unset]):
         max_duration_seconds (Union[None, Unset, float]): The longest clip the model makes, from its `duration_seconds`
@@ -54,7 +56,9 @@ class ModelCapabilities:
         supports_keep_uvs (Union[Unset, bool]): Takes `keep_uvs`.
         supports_keyframes (Union[Unset, bool]): Takes `keyframe` references, each pinned at its `time_s` (3D doc §5).
         supports_last_frame (Union[Unset, bool]):
+        supports_layout (Union[Unset, bool]): Takes `layout` (3D doc §4).
         supports_loop (Union[Unset, bool]): Takes `loop: true`.
+        supports_mask_prompt (Union[Unset, bool]): Takes `mask_prompt` (3D doc §4).
         supports_multiview_to_3d (Union[Unset, bool]): Accepts several `view-*` reference images (multiview-to-3D).
         supports_pbr (Union[Unset, bool]): Takes the `pbr` param.
         supports_placement (Union[Unset, bool]): Takes `ground`, `center` and `height_m`, which litegen applies to every
@@ -86,6 +90,7 @@ class ModelCapabilities:
     supports_text_to_image: bool
     duration_values: Union[Unset, List[float]] = UNSET
     keyframe_timing: Union[KeyframeTiming, None, Unset] = UNSET
+    layout_kinds: Union[Unset, List[LayoutKind]] = UNSET
     lossy_only: Union[Unset, bool] = UNSET
     mask_convention: Union[MaskConvention, None, Unset] = UNSET
     max_duration_seconds: Union[None, Unset, float] = UNSET
@@ -109,7 +114,9 @@ class ModelCapabilities:
     supports_keep_uvs: Union[Unset, bool] = UNSET
     supports_keyframes: Union[Unset, bool] = UNSET
     supports_last_frame: Union[Unset, bool] = UNSET
+    supports_layout: Union[Unset, bool] = UNSET
     supports_loop: Union[Unset, bool] = UNSET
+    supports_mask_prompt: Union[Unset, bool] = UNSET
     supports_multiview_to_3d: Union[Unset, bool] = UNSET
     supports_pbr: Union[Unset, bool] = UNSET
     supports_placement: Union[Unset, bool] = UNSET
@@ -141,6 +148,13 @@ class ModelCapabilities:
             keyframe_timing = self.keyframe_timing.value
         else:
             keyframe_timing = self.keyframe_timing
+
+        layout_kinds: Union[Unset, List[str]] = UNSET
+        if not isinstance(self.layout_kinds, Unset):
+            layout_kinds = []
+            for layout_kinds_item_data in self.layout_kinds:
+                layout_kinds_item = layout_kinds_item_data.value
+                layout_kinds.append(layout_kinds_item)
 
         lossy_only = self.lossy_only
 
@@ -227,7 +241,11 @@ class ModelCapabilities:
 
         supports_last_frame = self.supports_last_frame
 
+        supports_layout = self.supports_layout
+
         supports_loop = self.supports_loop
+
+        supports_mask_prompt = self.supports_mask_prompt
 
         supports_multiview_to_3d = self.supports_multiview_to_3d
 
@@ -271,6 +289,8 @@ class ModelCapabilities:
             field_dict["duration_values"] = duration_values
         if keyframe_timing is not UNSET:
             field_dict["keyframe_timing"] = keyframe_timing
+        if layout_kinds is not UNSET:
+            field_dict["layout_kinds"] = layout_kinds
         if lossy_only is not UNSET:
             field_dict["lossy_only"] = lossy_only
         if mask_convention is not UNSET:
@@ -317,8 +337,12 @@ class ModelCapabilities:
             field_dict["supports_keyframes"] = supports_keyframes
         if supports_last_frame is not UNSET:
             field_dict["supports_last_frame"] = supports_last_frame
+        if supports_layout is not UNSET:
+            field_dict["supports_layout"] = supports_layout
         if supports_loop is not UNSET:
             field_dict["supports_loop"] = supports_loop
+        if supports_mask_prompt is not UNSET:
+            field_dict["supports_mask_prompt"] = supports_mask_prompt
         if supports_multiview_to_3d is not UNSET:
             field_dict["supports_multiview_to_3d"] = supports_multiview_to_3d
         if supports_pbr is not UNSET:
@@ -375,6 +399,13 @@ class ModelCapabilities:
             return cast(Union[KeyframeTiming, None, Unset], data)
 
         keyframe_timing = _parse_keyframe_timing(d.pop("keyframe_timing", UNSET))
+
+        layout_kinds = []
+        _layout_kinds = d.pop("layout_kinds", UNSET)
+        for layout_kinds_item_data in _layout_kinds or []:
+            layout_kinds_item = LayoutKind(layout_kinds_item_data)
+
+            layout_kinds.append(layout_kinds_item)
 
         lossy_only = d.pop("lossy_only", UNSET)
 
@@ -501,7 +532,11 @@ class ModelCapabilities:
 
         supports_last_frame = d.pop("supports_last_frame", UNSET)
 
+        supports_layout = d.pop("supports_layout", UNSET)
+
         supports_loop = d.pop("supports_loop", UNSET)
+
+        supports_mask_prompt = d.pop("supports_mask_prompt", UNSET)
 
         supports_multiview_to_3d = d.pop("supports_multiview_to_3d", UNSET)
 
@@ -541,6 +576,7 @@ class ModelCapabilities:
             supports_text_to_image=supports_text_to_image,
             duration_values=duration_values,
             keyframe_timing=keyframe_timing,
+            layout_kinds=layout_kinds,
             lossy_only=lossy_only,
             mask_convention=mask_convention,
             max_duration_seconds=max_duration_seconds,
@@ -564,7 +600,9 @@ class ModelCapabilities:
             supports_keep_uvs=supports_keep_uvs,
             supports_keyframes=supports_keyframes,
             supports_last_frame=supports_last_frame,
+            supports_layout=supports_layout,
             supports_loop=supports_loop,
+            supports_mask_prompt=supports_mask_prompt,
             supports_multiview_to_3d=supports_multiview_to_3d,
             supports_pbr=supports_pbr,
             supports_placement=supports_placement,

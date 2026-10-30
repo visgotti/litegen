@@ -285,6 +285,37 @@ listing serves `mask_convention: white_edits` for every model that takes one.
 
 Not verified live: no OpenAI, Stability or Ideogram key is available here.
 
+### Per-box prompts and masks named in text (3D doc §4, P2)
+
+**`layout: [{box: {x, y, w, h}, kind, prompt?, text?}]`** places objects
+(`kind: object`, described by `prompt`) and words (`kind: text`, the `text`)
+on a text-to-image canvas; boxes are fractions of the canvas, 0 to 1, since
+the output size may not be known yet. Boxes guide the layout; no vendor clips
+to them. The row's `layout` spec (listed as `supports_layout` and
+`layout_kinds`) names the kinds, the most boxes, and whether a text box holds
+one word. **`mask_prompt`** names the area an edit replaces instead of a
+drawn mask (listed as `supports_mask_prompt`).
+
+| row | vendor call | proof | status |
+|---|---|---|---|
+| `mock/layout-image` | a 256 px grey square, box i painted palette colour i where its fractions put it; object and text, at most 8 | HTTP `each_layout_box_is_painted_where_its_fractions_put_it`, `the_listing_says_which_models_take_a_layout_or_a_text_mask` | ✅ mock |
+| `recraft/recraftv3`, `recraft/recraftv3_vector` | text boxes only, one word each, at most 32, as `text_layout: [{text, bbox: [[x,y],[x+w,y],[x+w,y+h],[x,y+h]]}]` (relative, clockwise from the top-left), written after `extra` (`text_layout` left the allowlist) | adapter `a_text_layout_is_sent_as_recrafts_four_point_boxes`; conformance `recraft_v3_lays_out_single_words_and_stability_replaces_a_named_area` | 🟡 wiremock |
+| `mock/mask-prompt-image` | "finds" the middle half of the init image and fills it #ffcd75, every other pixel kept | HTTP `a_mask_named_in_text_edits_what_it_names` | ✅ mock |
+| `stability/search-and-replace` | `POST /v2beta/stable-image/edit/search-and-replace` multipart `image`, `prompt` (required), `search_prompt` = `mask_prompt` (≤ 10,000), `grow_mask` 0 (its default 3 blurs the edge; `mask_grow_px` is not offered); $0.05 (5 credits) | adapter `search_and_replace_sends_the_named_area_as_search_prompt`; same conformance | 🟡 wiremock |
+
+Refused before billing (HTTP `layouts_and_text_masks_a_model_cannot_take_are_refused_before_billing`,
+no log; validator `a_mask_named_in_text_cannot_ride_with_a_drawn_one`): a box
+outside the canvas or with no area, none or more than the row's boxes
+(`param_out_of_range`); an object without a prompt or text without its text
+(`param_required`); a kind the row lacks (`capability_unsupported`); several
+words in a one-word text box (`param_out_of_range`); a layout beside an init
+image, or a `mask_prompt` beside a mask or region (`param_conflict`); a
+`mask_prompt` without an init image (`init_required`); either field on a row
+without it (`param_unsupported`). The loader holds a layout to a
+text-to-image row with kinds and a count (`a_layout_model_composes_text_to_image_boxes_of_kinds_it_names`).
+BFL FLUX 3, Ideogram 4.x JSON prompts and Bria Fibo are §4's other layout
+vendors, and Bria's by-text edits the other mask-prompt one; none is wired.
+
 ### Expanded canvases (3D doc §4, P2)
 
 `expand: {left, top, right, bottom}` (pixels, each 0 or more, at least one

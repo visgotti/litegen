@@ -166,6 +166,10 @@ use utoipa::OpenApi;
         crate::capabilities::SegmentationPromptType,
         crate::capabilities::ParamSpecSegmentationPrompts,
         crate::capabilities::ParamSpecExpand,
+        crate::capabilities::ParamSpecLayout,
+        crate::capabilities::LayoutKind,
+        crate::types::LayoutItem,
+        crate::types::LayoutBox,
         crate::types::Expand,
         crate::types::ImageResult,
         crate::types::VideoGenerationRequest,
@@ -455,6 +459,28 @@ mod tests {
             property(&s["ModelCapabilities"], f);
         }
         assert!(mentions(&s["ParamSpec"], "\"region\""), "the union names the region kind");
+    }
+
+    #[test]
+    fn layout_and_mask_prompt_document_their_boxes_and_the_catalog_flags() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        let req = &s["ImageGenerationRequest"];
+        assert!(mentions(property(req, "layout"), "#/components/schemas/LayoutItem"));
+        assert!(mentions(property(req, "mask_prompt"), "string"));
+        for f in ["box", "kind", "prompt", "text"] {
+            property(&s["LayoutItem"], f);
+        }
+        for f in ["x", "y", "w", "h"] {
+            assert!(mentions(property(&s["LayoutBox"], f), "number"), "{f}");
+        }
+        assert_eq!(s["LayoutKind"]["enum"], json!(["object", "text"]));
+        for f in ["supports_layout", "layout_kinds", "supports_mask_prompt"] {
+            property(&s["ModelCapabilities"], f);
+        }
+        for f in ["kinds", "max_items", "single_word_text"] {
+            property(&s["ParamSpecLayout"], f);
+        }
     }
 
     #[test]

@@ -179,6 +179,8 @@ pub async fn generate_image(
         },
         edit,
         expand: validated.request.expand,
+        layout: validated.request.layout.clone(),
+        mask_prompt: validated.request.mask_prompt.clone(),
         extra: validated.request.base.extra.clone(),
         output_format: validated.request.output_format.clone(),
         background: validated.request.background.clone(),
@@ -1991,6 +1993,12 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             supports_keep_uvs: declares_bool(s, "keep_uvs"),
             supports_placement: s.media_type == crate::capabilities::MediaType::Model3d,
             supports_expand: matches!(s.params.get("expand"), Some(crate::capabilities::ParamSpec::Expand(_))),
+            supports_layout: matches!(s.params.get("layout"), Some(crate::capabilities::ParamSpec::Layout(_))),
+            layout_kinds: match s.params.get("layout") {
+                Some(crate::capabilities::ParamSpec::Layout(l)) => l.kinds.clone(),
+                _ => Vec::new(),
+            },
+            supports_mask_prompt: matches!(s.params.get("mask_prompt"), Some(crate::capabilities::ParamSpec::String(_))),
             // PixelGenie L7, read the way the segmentation endpoint reads it.
             supports_segmentation: segmentation_prompts(s).is_some(),
             segmentation_prompts: segmentation_prompts(s).map(|p| p.types.clone()).unwrap_or_default(),
