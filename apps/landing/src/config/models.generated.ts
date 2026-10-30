@@ -1629,6 +1629,84 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://fal.ai/docs/documentation"
   },
   {
+    "id": "fal/sam-3",
+    "provider": "fal",
+    "displayName": "SAM 3 (Fal)",
+    "description": "Meta's Segment Anything Model 3 on Fal: a mask for the object points and boxes pick out, or one for every instance of a thing named.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "prompts",
+        "kind": "segmentation_prompts"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.005
+    },
+    "tags": [
+      "segmentation"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/sam-3/image/api"
+  },
+  {
+    "id": "fal/sam-3.1",
+    "provider": "fal",
+    "displayName": "SAM 3.1 (Fal)",
+    "description": "Meta's Segment Anything Model 3.1 on Fal: a mask for the object points and boxes pick out, or one for every instance of a thing named.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "prompts",
+        "kind": "segmentation_prompts"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.01
+    },
+    "tags": [
+      "segmentation"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/sam-3-1/image/api"
+  },
+  {
     "id": "fal/sd35-medium",
     "provider": "fal",
     "displayName": "SD 3.5 Medium (Fal)",

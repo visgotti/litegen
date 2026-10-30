@@ -325,6 +325,80 @@ impl ProxyRouter {
         Ok(response)
     }
 
+    /// Promptable segmentation (PixelGenie L7): the vendor's masks, each made
+    /// a black-and-white PNG the image's size with its measured box, best
+    /// first; billed once per call. Retried like an image generation.
+    #[tracing::instrument(skip(self, schema, input, app_creds), fields(model = %schema.id, provider = %schema.provider))]
+    pub async fn segment_image(
+        &self,
+        schema: &ModelSchema,
+        input: &crate::providers::SegmentationInput,
+        app_creds: Option<ProviderCredentials>,
+    ) -> Result<crate::types::ImageSegmentationResponse, ProxyError> {
+        let provider = self
+            .registry
+            .image_provider_for_request(&schema.provider, app_creds)
+            .await
+            .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
+        let mut last_error: Option<ProviderError> = None;
+        let mut vendor_masks = None;
+        for attempt in 0..=2u32 {
+            if attempt > 0 {
+                info!(provider = %schema.provider, attempt, "Retrying segmentation");
+            }
+            let attempt_start = Instant::now();
+            match tokio::time::timeout(self.config.server.vendor_timeout(), provider.segment(schema, input)).await {
+                Ok(Ok(m)) => {
+                    self.record_latency(&schema.provider, attempt_start.elapsed().as_millis() as u64).await;
+                    vendor_masks = Some(m);
+                    break;
+                }
+                Ok(Err(ProviderError::Timeout { .. })) | Err(_) => {
+                    return Err(ProxyError::VendorTimeout { model: schema.id.clone(), provider: schema.provider.clone(), vendor_job_id: None });
+                }
+                Ok(Err(e)) => {
+                    let resend = may_resend(&e, false);
+                    last_error = Some(e);
+                    if !resend {
+                        break;
+                    }
+                }
+            }
+        }
+        let vendor_masks = vendor_masks.ok_or_else(|| failure(&schema.id, &schema.provider, last_error, None))?;
+        let (width, height, max) = (input.width, input.height, input.max_masks);
+        let masks = tokio::task::spawn_blocking(move || super::segmentation::masks(vendor_masks, width, height, max))
+            .await
+            .map_err(|e| ProxyError::Internal(format!("mask normalisation stopped: {e}")))?
+            .map_err(|e| {
+                let unreadable = ProviderError::RequestFailed {
+                    message: format!("returned a mask litegen cannot read: {e}"),
+                    status_code: None,
+                    provider_error: None,
+                    retryable: false,
+                };
+                ProxyError::VendorFailed {
+                    model: schema.id.clone(),
+                    provider: schema.provider.clone(),
+                    vendor: VendorError::from_provider(&unreadable),
+                    vendor_job_id: None,
+                }
+            })?;
+        let (_, total) = apply_markup(crate::capabilities::pricing::row_price_usd(schema), self.cost_markup_percent());
+        Ok(crate::types::ImageSegmentationResponse {
+            id: format!("litegen-seg-{}", uuid::Uuid::new_v4()),
+            created: chrono::Utc::now().timestamp(),
+            model: schema.id.clone(),
+            provider: schema.provider.clone(),
+            masks,
+            usage: Some(UsageInfo {
+                cost_usd: total,
+                tokens: crate::providers::usd_to_tokens(total, USD_PER_TOKEN),
+                cost_source: CostSource::Estimated,
+            }),
+        })
+    }
+
     /// Dispatch an image request through a configured model route.
     async fn execute_route_image(
         &self,

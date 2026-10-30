@@ -1,3 +1,143 @@
+## fal-ai/hunyuan-3d/v3.1/pro/image-to-3d — active image-to-3d (spec written for fal-ai/hunyuan-3d-pro-image-to-3d/v3.1/pro/image-to-3d)
+{
+  "POST /fal-ai/hunyuan-3d-pro-image-to-3d/v3.1/pro/image-to-3d (application/json)": {
+    "properties": {
+      "back_image_url": {
+        "anyOf": [
+          {
+            "_fal_ui_field": "image",
+            "type": "string",
+            "ui": {
+              "field": "image"
+            }
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "max_file_size": 8388608
+      },
+      "bottom_image_url": {
+        "anyOf": [
+          {
+            "_fal_ui_field": "image",
+            "type": "string",
+            "ui": {
+              "field": "image"
+            }
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "max_file_size": 8388608
+      },
+      "enable_pbr": {
+        "default": false,
+        "type": "boolean"
+      },
+      "face_count": {
+        "default": 500000,
+        "maximum": 1500000,
+        "minimum": 40000,
+        "type": "integer"
+      },
+      "generate_type": {
+        "default": "Normal",
+        "enum": [
+          "Normal",
+          "Geometry"
+        ],
+        "type": "string"
+      },
+      "input_image_url": {
+        "_fal_ui_field": "image",
+        "max_file_size": 8388608,
+        "type": "string"
+      },
+      "left_front_image_url": {
+        "anyOf": [
+          {
+            "_fal_ui_field": "image",
+            "type": "string",
+            "ui": {
+              "field": "image"
+            }
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "max_file_size": 8388608
+      },
+      "left_image_url": {
+        "anyOf": [
+          {
+            "_fal_ui_field": "image",
+            "type": "string",
+            "ui": {
+              "field": "image"
+            }
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "max_file_size": 8388608
+      },
+      "right_front_image_url": {
+        "anyOf": [
+          {
+            "_fal_ui_field": "image",
+            "type": "string",
+            "ui": {
+              "field": "image"
+            }
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "max_file_size": 8388608
+      },
+      "right_image_url": {
+        "anyOf": [
+          {
+            "_fal_ui_field": "image",
+            "type": "string",
+            "ui": {
+              "field": "image"
+            }
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "max_file_size": 8388608
+      },
+      "top_image_url": {
+        "anyOf": [
+          {
+            "_fal_ui_field": "image",
+            "type": "string",
+            "ui": {
+              "field": "image"
+            }
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "max_file_size": 8388608
+      }
+    },
+    "required": [
+      "input_image_url"
+    ],
+    "type": "object"
+  }
+}
+
 ## fal-ai/hunyuan3d/v2 — active image-to-3d
 {
   "POST /fal-ai/hunyuan3d/v2 (application/json)": {
@@ -155,6 +295,39 @@
   }
 }
 
+## fal-ai/meshy/rigging — active 3d-to-3d
+{
+  "POST /fal-ai/meshy/rigging (application/json)": {
+    "properties": {
+      "animation_action_id": {
+        "default": 92,
+        "type": "integer"
+      },
+      "enable_animation": {
+        "default": false,
+        "type": "boolean"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "height_meters": {
+        "default": 1.7,
+        "exclusiveMinimum": 0,
+        "type": "number"
+      },
+      "model_url": {
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "model_url"
+    ],
+    "type": "object"
+  }
+}
+
 ## fal-ai/trellis — active image-to-3d
 {
   "POST /fal-ai/trellis (application/json)": {
@@ -214,6 +387,110 @@
     },
     "required": [
       "image_url"
+    ],
+    "type": "object"
+  }
+}
+
+## tripo3d/h3.1/multiview-to-3d — active image-to-3d (spec written for fal-ai/tripo3d/h3.1/multiview-to-3d)
+{
+  "POST /fal-ai/tripo3d/h3.1/multiview-to-3d (application/json)": {
+    "properties": {
+      "auto_size": {
+        "default": false,
+        "type": "boolean"
+      },
+      "enable_safety_checker": {
+        "default": true,
+        "type": "boolean"
+      },
+      "face_limit": {
+        "anyOf": [
+          {
+            "maximum": 2000000,
+            "minimum": 1000,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "geometry_quality": {
+        "default": "standard",
+        "enum": [
+          "standard",
+          "detailed"
+        ],
+        "type": "string"
+      },
+      "image_urls": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 4,
+        "minItems": 2,
+        "type": "array"
+      },
+      "model_seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "orientation": {
+        "default": "default",
+        "enum": [
+          "default",
+          "align_image"
+        ],
+        "type": "string"
+      },
+      "pbr": {
+        "default": true,
+        "type": "boolean"
+      },
+      "quad": {
+        "default": false,
+        "type": "boolean"
+      },
+      "texture": {
+        "default": true,
+        "type": "boolean"
+      },
+      "texture_alignment": {
+        "default": "original_image",
+        "enum": [
+          "original_image",
+          "geometry"
+        ],
+        "type": "string"
+      },
+      "texture_quality": {
+        "default": "standard",
+        "enum": [
+          "standard",
+          "detailed"
+        ],
+        "type": "string"
+      },
+      "texture_seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "image_urls"
     ],
     "type": "object"
   }

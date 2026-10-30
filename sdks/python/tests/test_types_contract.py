@@ -81,6 +81,8 @@ MIRRORED = {
     "AnimationRequest": t.AnimationRequest,
     "Region": t.Region,
     "PriceRule": t.PriceRule,
+    "SegmentationMask": t.SegmentationMask,
+    "ImageSegmentationResponse": t.ImageSegmentationResponse,
 }
 
 
@@ -156,6 +158,7 @@ def test_model3d_params_cover_the_request_schema() -> None:
         ("RegionInput", t.RegionInput),
         ("PreservesUnmasked", t.PreservesUnmasked),
         ("SourceKind", t.SourceKind),
+        ("SegmentationPromptType", t.SegmentationPromptType),
     ],
 )
 def test_literal_values_match_the_schema_enum(schema_name: str, alias: Any) -> None:

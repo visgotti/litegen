@@ -525,3 +525,34 @@ async def test_async_idempotency_key_is_sent_on_every_generate_submit() -> None:
     assert img.calls[0].request.headers["idempotency-key"] == "a-img"
     assert m3d.calls[0].request.headers["idempotency-key"] == "a-3d"
     assert vid.calls[0].request.headers["idempotency-key"] == "a-vid"
+
+
+_SEGMENTATION = {
+    "id": "litegen-seg-1",
+    "created": 1,
+    "model": "mock/segment-image",
+    "provider": "mock",
+    "masks": [{"png_base64": "iVBORw0KGgo=", "score": 0.9, "box": {"x": 1, "y": 2, "w": 3, "h": 4}}],
+}
+
+
+@respx.mock
+def test_images_segment_posts_the_prompts_and_returns_the_masks() -> None:
+    route = respx.post("http://localhost:4000/v1/images/segmentations").mock(return_value=Response(200, json=_SEGMENTATION))
+    prompts = [{"type": "point", "x": 4, "y": 5, "label": 1}, {"type": "box", "x": 1, "y": 2, "w": 3, "h": 4}]
+    resp = LiteGenClient().images.segment(model="mock/segment-image", image="iVBORw0KGgo=", prompts=prompts, idempotency_key="seg-1")
+    assert resp["masks"][0]["box"] == {"x": 1, "y": 2, "w": 3, "h": 4}
+    sent = route.calls[0].request
+    assert sent.headers["idempotency-key"] == "seg-1"
+    import json as _json
+    assert _json.loads(sent.content) == {"model": "mock/segment-image", "image": "iVBORw0KGgo=", "prompts": prompts}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_async_images_segment_posts_the_prompts() -> None:
+    route = respx.post("http://localhost:4000/v1/images/segmentations").mock(return_value=Response(200, json=_SEGMENTATION))
+    async with AsyncLiteGenClient() as client:
+        resp = await client.images.segment(model="mock/segment-image", image="x", prompts=[{"type": "text", "text": "visor"}])
+    assert resp["id"] == "litegen-seg-1"
+    assert "idempotency-key" not in route.calls[0].request.headers

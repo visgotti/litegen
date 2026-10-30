@@ -33,6 +33,7 @@ from .types import (
     Generation,
     GenerationAssetList,
     GenerationPage,
+    ImageSegmentationResponse,
     MediaType,
     Model3dConversion,
     Model3dConvertFormats,
@@ -139,6 +140,15 @@ class _AsyncImages:
 
     async def estimate_cost(self, **req: Any) -> Any:
         return await self._c._request("POST", "/v1/images/cost", json=_clean(req))
+
+    async def segment(self, *, idempotency_key: str | None = None, **req: Any) -> ImageSegmentationResponse:
+        """Masks for what ``prompts`` select in ``image`` (``POST
+        /v1/images/segmentations``); see :meth:`litegen.client._ImagesNamespace.segment`."""
+        return (
+            await self._c._request_with_headers(
+                "POST", "/v1/images/segmentations", json=_clean(req), headers=_idempotency(idempotency_key)
+            )
+        )[0]
 
 
 class AsyncVideoJob:

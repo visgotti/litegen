@@ -136,6 +136,25 @@ entry of `views` (`front`, `left`, `back`, `right`, …), each returned with its
 the camera's position around +Y from the subject's front (+Z) towards +X, so front 0, left 90,
 back 180 and right 270. The call is billed once, however many views come back.
 
+### Segment an Image
+```bash
+curl -X POST http://localhost:4000/v1/images/segmentations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "fal/sam-3",
+    "image": "<base64 PNG, JPEG, WebP or GIF>",
+    "prompts": [{ "type": "box", "x": 120, "y": 40, "w": 200, "h": 160 },
+                { "type": "point", "x": 210, "y": 90, "label": 0 }]
+  }'
+```
+
+Answered at once with `masks: [{ png_base64, score, box }]`: each a grayscale PNG the image's size,
+white where selected, with the box litegen measured around it, best score first. Point and box
+prompts together select one object (`label: 0` leaves a spot out); a text prompt
+(`{ "type": "text", "text": "visor" }`) selects every instance of what it names and is sent alone.
+Models whose `task` is `segment` (`fal/sam-3`, `fal/sam-3.1`) list `supports_segmentation` and the
+prompt types they take as `segmentation_prompts`; they are billed once per request.
+
 ### Generate Video
 ```bash
 curl -X POST http://localhost:4000/v1/videos/generations \
@@ -320,7 +339,7 @@ modality automatically.
 | Provider | Image | Video | 3D | Models |
 |----------|-------|-------|----|--------|
 | OpenAI | ✅ | — | — | GPT Image 2.5 / 2 / 1 · _(Sora 2 and the Videos API shut down 2026-09-24)_ |
-| Fal.ai | ✅ | ✅ | ✅ | Flux, SDXL, Recraft · Kling, MiniMax, SVD, LTX · Hyper3D Rodin, TRELLIS, Hunyuan3D v2 and 3.1 Pro, Tripo H3.1 multiview, Meshy rigging |
+| Fal.ai | ✅ | ✅ | ✅ | Flux, SDXL, Recraft, SAM 3 and 3.1 segmentation · Kling, MiniMax, SVD, LTX · Hyper3D Rodin, TRELLIS, Hunyuan3D v2 and 3.1 Pro, Tripo H3.1 multiview, Meshy rigging |
 | Tripo | ✅ | — | ✅ | Image to multiview (front, left, back, right) · auto rig (after Tripo's free rig-check) · animation retarget |
 | Meshy | — | — | ✅ | Auto rig · animation library (680 clips) |
 | Replicate | ✅ | ✅ | — | Flux, SDXL, SD3 · AnimateDiff, SVD, Zeroscope |

@@ -8,6 +8,7 @@ from ..models.mask_convention import MaskConvention
 from ..models.model_task import ModelTask
 from ..models.preserves_unmasked import PreservesUnmasked
 from ..models.region_input import RegionInput
+from ..models.segmentation_prompt_type import SegmentationPromptType
 from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="ModelCapabilities")
@@ -37,6 +38,9 @@ class ModelCapabilities:
             Empty for image and video models.
         preserves_unmasked (Union[None, PreservesUnmasked, Unset]):
         region_input (Union[None, RegionInput, Unset]):
+        segmentation_prompts (Union[Unset, List[SegmentationPromptType]]): The prompt types it segments by: `point`,
+            `box`, `text`. Empty when it
+            does not segment.
         supported_sizes (Union[Unset, List[str]]):
         supports_audio_toggle (Union[Unset, bool]): Takes `audio: false` (or `true`) to leave audio out (or in).
         supports_first_frame (Union[Unset, bool]):
@@ -51,6 +55,7 @@ class ModelCapabilities:
         supports_pbr (Union[Unset, bool]): Takes the `pbr` param.
         supports_region_edit (Union[Unset, bool]): Takes `region` (3D doc §4).
         supports_rig (Union[Unset, bool]): Takes the `rig` param.
+        supports_segmentation (Union[Unset, bool]): Serves `POST /v1/images/segmentations` (PixelGenie L7).
         supports_source_model (Union[Unset, bool]): Takes `source_model`: an operation on an existing mesh.
         supports_text_to_3d (Union[Unset, bool]): Accepts a prompt with no reference images (text-to-3D).
         supports_text_to_video (Union[Unset, bool]):
@@ -83,6 +88,7 @@ class ModelCapabilities:
     output_formats: Union[Unset, List[str]] = UNSET
     preserves_unmasked: Union[None, PreservesUnmasked, Unset] = UNSET
     region_input: Union[None, RegionInput, Unset] = UNSET
+    segmentation_prompts: Union[Unset, List[SegmentationPromptType]] = UNSET
     supported_sizes: Union[Unset, List[str]] = UNSET
     supports_audio_toggle: Union[Unset, bool] = UNSET
     supports_first_frame: Union[Unset, bool] = UNSET
@@ -97,6 +103,7 @@ class ModelCapabilities:
     supports_pbr: Union[Unset, bool] = UNSET
     supports_region_edit: Union[Unset, bool] = UNSET
     supports_rig: Union[Unset, bool] = UNSET
+    supports_segmentation: Union[Unset, bool] = UNSET
     supports_source_model: Union[Unset, bool] = UNSET
     supports_text_to_3d: Union[Unset, bool] = UNSET
     supports_text_to_video: Union[Unset, bool] = UNSET
@@ -174,6 +181,13 @@ class ModelCapabilities:
         else:
             region_input = self.region_input
 
+        segmentation_prompts: Union[Unset, List[str]] = UNSET
+        if not isinstance(self.segmentation_prompts, Unset):
+            segmentation_prompts = []
+            for segmentation_prompts_item_data in self.segmentation_prompts:
+                segmentation_prompts_item = segmentation_prompts_item_data.value
+                segmentation_prompts.append(segmentation_prompts_item)
+
         supported_sizes: Union[Unset, List[str]] = UNSET
         if not isinstance(self.supported_sizes, Unset):
             supported_sizes = self.supported_sizes
@@ -203,6 +217,8 @@ class ModelCapabilities:
         supports_region_edit = self.supports_region_edit
 
         supports_rig = self.supports_rig
+
+        supports_segmentation = self.supports_segmentation
 
         supports_source_model = self.supports_source_model
 
@@ -250,6 +266,8 @@ class ModelCapabilities:
             field_dict["preserves_unmasked"] = preserves_unmasked
         if region_input is not UNSET:
             field_dict["region_input"] = region_input
+        if segmentation_prompts is not UNSET:
+            field_dict["segmentation_prompts"] = segmentation_prompts
         if supported_sizes is not UNSET:
             field_dict["supported_sizes"] = supported_sizes
         if supports_audio_toggle is not UNSET:
@@ -278,6 +296,8 @@ class ModelCapabilities:
             field_dict["supports_region_edit"] = supports_region_edit
         if supports_rig is not UNSET:
             field_dict["supports_rig"] = supports_rig
+        if supports_segmentation is not UNSET:
+            field_dict["supports_segmentation"] = supports_segmentation
         if supports_source_model is not UNSET:
             field_dict["supports_source_model"] = supports_source_model
         if supports_text_to_3d is not UNSET:
@@ -413,6 +433,15 @@ class ModelCapabilities:
 
         region_input = _parse_region_input(d.pop("region_input", UNSET))
 
+        segmentation_prompts = []
+        _segmentation_prompts = d.pop("segmentation_prompts", UNSET)
+        for segmentation_prompts_item_data in _segmentation_prompts or []:
+            segmentation_prompts_item = SegmentationPromptType(
+                segmentation_prompts_item_data
+            )
+
+            segmentation_prompts.append(segmentation_prompts_item)
+
         supported_sizes = cast(List[str], d.pop("supported_sizes", UNSET))
 
         supports_audio_toggle = d.pop("supports_audio_toggle", UNSET)
@@ -440,6 +469,8 @@ class ModelCapabilities:
         supports_region_edit = d.pop("supports_region_edit", UNSET)
 
         supports_rig = d.pop("supports_rig", UNSET)
+
+        supports_segmentation = d.pop("supports_segmentation", UNSET)
 
         supports_source_model = d.pop("supports_source_model", UNSET)
 
@@ -475,6 +506,7 @@ class ModelCapabilities:
             output_formats=output_formats,
             preserves_unmasked=preserves_unmasked,
             region_input=region_input,
+            segmentation_prompts=segmentation_prompts,
             supported_sizes=supported_sizes,
             supports_audio_toggle=supports_audio_toggle,
             supports_first_frame=supports_first_frame,
@@ -489,6 +521,7 @@ class ModelCapabilities:
             supports_pbr=supports_pbr,
             supports_region_edit=supports_region_edit,
             supports_rig=supports_rig,
+            supports_segmentation=supports_segmentation,
             supports_source_model=supports_source_model,
             supports_text_to_3d=supports_text_to_3d,
             supports_text_to_video=supports_text_to_video,

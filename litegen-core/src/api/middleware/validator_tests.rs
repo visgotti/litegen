@@ -634,4 +634,72 @@ models:
         assert!(validate_image(m, img(&"é".repeat(100))).is_ok());
         assert_eq!(validate_image(m, img(&"é".repeat(101))).unwrap_err().code, "prompt_too_long");
     }
+
+    // ─── Segmentation (PixelGenie L7) ─────────────────────────────────────────
+
+    fn segmenter(types: &str) -> CapabilityRegistry {
+        CapabilityRegistry::from_yaml_strs(&[("t.yaml", &format!(r#"
+models:
+  - id: t/seg
+    provider: t
+    media_type: image
+    task: segment
+    display_name: Seg
+    pricing: {{ base_cost_usd: 0.005 }}
+    capabilities: {{}}
+    prompt: {{ required: false, max_length: 0 }}
+    params:
+      prompts: {{ kind: segmentation_prompts, types: {types}, max_items: 3, max_masks: 8 }}
+"#))]).unwrap()
+    }
+
+    fn seg(prompts: serde_json::Value) -> ImageSegmentationRequest {
+        serde_json::from_value(serde_json::json!({ "model": "t/seg", "image": "", "prompts": prompts })).unwrap()
+    }
+
+    #[test]
+    fn segmentation_prompts_are_checked_against_the_model_before_billing() {
+        use serde_json::json;
+        let visual = segmenter("[point, box]");
+        let all = segmenter("[point, box, text]");
+        let (visual, all) = (visual.get("t/seg").unwrap(), all.get("t/seg").unwrap());
+        assert!(validate_segmentation(visual, &seg(json!([{ "type": "box", "x": 0, "y": 0, "w": 4, "h": 4 }, { "type": "point", "x": 1, "y": 1, "label": 0 }]))).is_ok());
+        assert!(validate_segmentation(all, &seg(json!([{ "type": "text", "text": "visor" }]))).is_ok());
+        for (m, prompts, code) in [
+            (visual, json!([]), "param_required"),
+            (visual, json!([{ "type": "text", "text": "visor" }]), "capability_unsupported"),
+            (visual, json!([{ "type": "point", "x": 1, "y": 1 }, { "type": "point", "x": 2, "y": 1 }, { "type": "point", "x": 3, "y": 1 }, { "type": "point", "x": 4, "y": 1 }]), "param_out_of_range"),
+            (all, json!([{ "type": "text", "text": "visor" }, { "type": "box", "x": 0, "y": 0, "w": 4, "h": 4 }]), "param_conflict"),
+            (all, json!([{ "type": "text", "text": "a" }, { "type": "text", "text": "b" }]), "param_out_of_range"),
+            (all, json!([{ "type": "text", "text": "  " }]), "param_required"),
+            (all, json!([{ "type": "point", "x": 1, "y": 1, "label": 2 }]), "param_out_of_range"),
+            (all, json!([{ "type": "box", "x": 1, "y": 1, "w": 4, "h": 0 }]), "param_out_of_range"),
+            (all, json!([{ "type": "point", "x": 1, "y": 1, "label": 0 }]), "param_conflict"),
+        ] {
+            let err = validate_segmentation(m, &seg(prompts.clone())).unwrap_err();
+            assert_eq!((err.code.as_str(), err.param.as_deref()), (code, Some("prompts")), "{prompts}: {}", err.message);
+        }
+    }
+
+    #[test]
+    fn segmentation_prompts_must_fall_inside_the_image() {
+        use serde_json::json;
+        let inside = seg(json!([{ "type": "box", "x": 6, "y": 0, "w": 4, "h": 10 }, { "type": "point", "x": 9, "y": 9 }, { "type": "text", "text": "x" }])).prompts;
+        assert!(check_segmentation_bounds(&inside, 10, 10).is_ok());
+        for prompt in [json!({ "type": "box", "x": 7, "y": 0, "w": 4, "h": 10 }), json!({ "type": "point", "x": 0, "y": 10 })] {
+            let err = check_segmentation_bounds(&seg(json!([prompt])).prompts, 10, 10).unwrap_err();
+            assert_eq!((err.code.as_str(), err.param.as_deref()), ("prompt_out_of_bounds", Some("prompts")), "{prompt}");
+        }
+    }
+
+    #[test]
+    fn a_segmentation_model_is_served_only_where_segmentations_are() {
+        let r = segmenter("[point]");
+        let m = r.get("t/seg").unwrap();
+        assert_eq!(require_task(m, ModelTask::Generate).unwrap_err().code, "model_task_mismatch");
+        assert!(require_task(m, ModelTask::Segment).is_ok());
+        let plain = registry();
+        let err = require_task(plain.get("t/strict").unwrap(), ModelTask::Segment).unwrap_err();
+        assert!(err.message.contains("/v1/images/generations"), "{}", err.message);
+    }
 }

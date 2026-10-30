@@ -3273,3 +3273,30 @@ fn only_vendors_that_refuse_data_uris_get_published_references() {
         assert_eq!(!refs.data_uri, refuses, "{}: data_uri", m.id);
     }
 }
+
+// ─── Segmentation (PixelGenie L7) ───────────────────────────────────────────
+
+/// fal's SAM 3 and SAM 3.1 take a text `prompt`, `point_prompts` and
+/// `box_prompts`, and return at most `max_masks` "1 to 32" masks
+/// (<https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/sam-3/image>,
+/// `…=fal-ai/sam-3-1/image`, 2026-10-30). Price: "$0.005 per request" and
+/// "$0.01 per request" (`/llms.txt`, 2026-10-30).
+#[test]
+fn fal_sam_rows_take_all_three_prompt_types_and_at_most_32_masks() {
+    use litegen::capabilities::{MediaType, ModelTask, ParamSpec, SegmentationPromptType as T};
+    let reg = registry();
+    for (id, price) in [("fal/sam-3", 0.005), ("fal/sam-3.1", 0.01)] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id}"));
+        assert_eq!((m.media_type, m.task), (MediaType::Image, ModelTask::Segment), "{id}");
+        match m.params.get("prompts") {
+            Some(ParamSpec::SegmentationPrompts(p)) => {
+                assert_eq!(p.types, [T::Point, T::Box, T::Text], "{id}");
+                assert_eq!(p.max_masks, 32, "{id}");
+            }
+            other => panic!("{id}: {other:?}"),
+        }
+        assert!((m.pricing.base_cost_usd - price).abs() < 1e-9, "{id}");
+        assert!(m.pricing.variable_pricing.is_empty(), "{id}: one price per request");
+        assert!(m.docs_url.as_deref().is_some_and(|u| u.contains(&id.replace("fal/", "fal-ai/").replace("3.1", "3-1"))), "{id}");
+    }
+}

@@ -7,7 +7,7 @@ use crate::capabilities::ModelSchema;
 use crate::proxy::materializer::{MaterializedRequest, MaterializedRefForm};
 use crate::providers::{
     ApiKeyPool, BaseGenerationRequest, GenerationOutput, HealthCheckResult, ImageExtras,
-    ImageProvider, ProviderError, ProviderInstanceConfig, build_cost_estimate,
+    ImageProvider, ProviderError, ProviderInstanceConfig, SegmentationInput, VendorMask, build_cost_estimate,
 };
 use crate::types::*;
 
@@ -124,6 +124,16 @@ impl FalProvider {
         })?;
         Ok(bytes.to_vec())
     }
+}
+
+/// fal's segmentation endpoints (PixelGenie L7), by catalog id. SAM 3 and
+/// SAM 3.1 publish the same input.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/sam-3/image>
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/sam-3-1/image>
+pub(crate) const SEGMENT_MODELS: &[(&str, &str)] = &[("fal/sam-3", "fal-ai/sam-3/image"), ("fal/sam-3.1", "fal-ai/sam-3-1/image")];
+
+fn segment_endpoint(model_id: &str) -> Option<&'static str> {
+    SEGMENT_MODELS.iter().find(|(id, _)| *id == model_id).map(|(_, e)| *e)
 }
 
 impl Default for FalProvider {
@@ -335,6 +345,113 @@ impl ImageProvider for FalProvider {
         ))
     }
 
+    /// Promptable segmentation on SAM 3 and SAM 3.1 (PixelGenie L7), run
+    /// synchronously like `generate`. Points and boxes go as one object
+    /// (`object_id` 1), boxes as corners; a text prompt asks for every
+    /// instance. `sync_mode` returns masks as data URIs; one that comes as a
+    /// URL is downloaded without the key.
+    ///
+    /// @see <https://fal.ai/models/fal-ai/sam-3/image/api> — the endpoint and its examples
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/sam-3/image> — `prompt`
+    ///   (default "wheel"), `point_prompts`, `box_prompts` (`x_min`…`y_max`, "use object_id to group
+    ///   boxes for the same object"), `return_multiple_masks`, `max_masks` 1–32, `apply_mask`,
+    ///   `include_scores`, `sync_mode`; output `masks`, `scores`, `metadata[{index, score}]`
+    async fn segment(&self, model: &ModelSchema, input: &SegmentationInput) -> Result<Vec<VendorMask>, ProviderError> {
+        use base64::Engine;
+        let endpoint = segment_endpoint(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "fal".into() })?;
+        let api_key = self.api_key()?;
+        let (mut text, mut points, mut boxes) = (None, Vec::new(), Vec::new());
+        for p in &input.prompts {
+            match p {
+                SegmentationPrompt::Point { x, y, label } => points.push(json!({ "x": x, "y": y, "label": label, "object_id": 1 })),
+                SegmentationPrompt::Box { x, y, w, h } => {
+                    boxes.push(json!({ "x_min": x, "y_min": y, "x_max": x + w, "y_max": y + h, "object_id": 1 }))
+                }
+                SegmentationPrompt::Text { text: t } => text = Some(t.clone()),
+            }
+        }
+        let mut body = json!({
+            "image_url": format!("data:{};base64,{}", input.content_type, base64::engine::general_purpose::STANDARD.encode(&input.image)),
+            // The schema's default prompt is "wheel": a request without text sends none.
+            "prompt": text.clone().unwrap_or_default(),
+            "point_prompts": points,
+            "box_prompts": boxes,
+            "return_multiple_masks": text.is_some(),
+            "apply_mask": false,
+            "include_scores": true,
+            "sync_mode": true,
+            "output_format": "png",
+        });
+        if text.is_some() {
+            body["max_masks"] = json!(input.max_masks);
+        }
+        let url = format!("{}/{}", self.api_base(), endpoint);
+        let resp = crate::providers::inject_trace_headers(
+            self.client.post(&url).header("Authorization", format!("Key {api_key}")).json(&body),
+        )
+        .send()
+        .await
+        .map_err(|e| ProviderError::RequestFailed {
+            message: format!("Fal request failed: {e}"),
+            status_code: e.status().map(|s| s.as_u16()),
+            provider_error: None,
+            retryable: e.is_timeout() || e.is_connect(),
+        })?;
+        let status = resp.status();
+        let answer: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
+            message: format!("Failed to parse Fal response: {e}"),
+            status_code: Some(status.as_u16()),
+            provider_error: None,
+            retryable: false,
+        })?;
+        if !status.is_success() {
+            // A 422's `detail` is a list of `{msg}`; other errors a string.
+            let detail = answer["detail"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| answer["detail"][0]["msg"].as_str().map(str::to_string))
+                .or_else(|| answer["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "Unknown error".into());
+            return Err(ProviderError::RequestFailed {
+                message: format!("Fal API error: {detail}"),
+                status_code: Some(status.as_u16()),
+                provider_error: Some(answer),
+                retryable: status.as_u16() >= 500,
+            });
+        }
+        let masks = answer["masks"].as_array().ok_or_else(|| ProviderError::RequestFailed {
+            message: "Fal response missing masks".into(),
+            status_code: None,
+            provider_error: Some(answer.clone()),
+            retryable: false,
+        })?;
+        let mut out = Vec::with_capacity(masks.len());
+        for (i, m) in masks.iter().enumerate() {
+            let Some(at) = m["url"].as_str() else {
+                return Err(ProviderError::RequestFailed {
+                    message: format!("Fal mask {i} has no url"),
+                    status_code: None,
+                    provider_error: None,
+                    retryable: false,
+                });
+            };
+            let bytes = match at.strip_prefix("data:").and_then(|d| d.split_once(";base64,")) {
+                Some((_, b64)) => base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| ProviderError::RequestFailed {
+                    message: format!("Fal mask {i} is not base64: {e}"),
+                    status_code: None,
+                    provider_error: None,
+                    retryable: false,
+                })?,
+                None => self.fetch_image_bytes(at).await?,
+            };
+            let score = answer["scores"][i].as_f64().or_else(|| {
+                answer["metadata"].as_array()?.iter().find(|d| d["index"].as_u64() == Some(i as u64))?["score"].as_f64()
+            });
+            out.push(VendorMask { bytes, score });
+        }
+        Ok(out)
+    }
+
     /// Validate the API key via `GET https://rest.alpha.fal.ai/tokens/current`
     /// (Fal's token-introspection endpoint), authenticated with `Authorization: Key`.
     ///
@@ -399,10 +516,138 @@ mod tests {
         dir.pop();
         dir.push("models");
         let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        let segments = |m: &crate::capabilities::ModelSchema| m.task == crate::capabilities::ModelTask::Segment;
         for m in catalog.for_provider("fal").filter(|m| m.media_type == crate::capabilities::MediaType::Image) {
-            assert!(FalProvider::new().resolve_endpoint(&m.id).is_some(), "{} has no arm", m.id);
+            if segments(m) {
+                assert!(segment_endpoint(&m.id).is_some(), "{} has no segmentation arm", m.id);
+            } else {
+                assert!(FalProvider::new().resolve_endpoint(&m.id).is_some(), "{} has no arm", m.id);
+            }
+        }
+        for (id, _) in SEGMENT_MODELS {
+            assert!(catalog.get(id).is_some_and(segments), "{id} is not a catalog segmentation row");
         }
         assert!(FalProvider::new().resolve_endpoint("fal/not-a-model").is_none());
+        assert!(segment_endpoint("fal/flux-dev").is_none());
+    }
+
+    // ─── Segmentation (PixelGenie L7) ─────────────────────────────────────────
+
+    fn png_of(w: u32, h: u32, white: impl Fn(u32, u32) -> bool) -> Vec<u8> {
+        let img = image::GrayImage::from_fn(w, h, |x, y| image::Luma([if white(x, y) { 255 } else { 0 }]));
+        let mut out = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        out
+    }
+
+    fn data_uri(bytes: &[u8]) -> String {
+        use base64::Engine;
+        format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    fn seg_input(prompts: Value) -> SegmentationInput {
+        SegmentationInput {
+            image: png_of(32, 32, |_, _| false).into(),
+            content_type: "image/png".into(),
+            width: 32,
+            height: 32,
+            prompts: serde_json::from_value(prompts).unwrap(),
+            max_masks: 32,
+        }
+    }
+
+    /// Points and boxes select one object: SAM 3 groups prompts by
+    /// `object_id`, and takes boxes as `x_min, y_min, x_max, y_max`. Its
+    /// `prompt` defaults to "wheel", so a request without text sends "".
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/sam-3/image>
+    #[tokio::test]
+    async fn sam_3_gets_points_and_boxes_as_one_object_and_returns_its_masks() {
+        let server = MockServer::start().await;
+        let mask = png_of(32, 32, |x, _| x < 4);
+        Mock::given(method("POST"))
+            .and(path("/fal-ai/sam-3/image"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "masks": [{ "url": data_uri(&mask), "content_type": "image/png" }],
+                "scores": [0.93],
+            })))
+            .mount(&server)
+            .await;
+        let input = seg_input(json!([
+            { "type": "point", "x": 5, "y": 6 },
+            { "type": "point", "x": 7, "y": 8, "label": 0 },
+            { "type": "box", "x": 1, "y": 2, "w": 10, "h": 20 },
+        ]));
+        let masks = make_provider(&server.uri()).segment(&ref_schema("fal/sam-3"), &input).await.expect("segment");
+        assert_eq!(masks.len(), 1);
+        assert_eq!((masks[0].bytes.clone(), masks[0].score), (mask, Some(0.93)));
+
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].headers.get("authorization").unwrap(), "Key test-key");
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert!(body["image_url"].as_str().unwrap().starts_with("data:image/png;base64,"), "{body}");
+        assert_eq!(body["prompt"], "");
+        assert_eq!(
+            body["point_prompts"],
+            json!([{ "x": 5, "y": 6, "label": 1, "object_id": 1 }, { "x": 7, "y": 8, "label": 0, "object_id": 1 }])
+        );
+        assert_eq!(body["box_prompts"], json!([{ "x_min": 1, "y_min": 2, "x_max": 11, "y_max": 22, "object_id": 1 }]));
+        for (field, want) in [
+            ("return_multiple_masks", json!(false)),
+            ("apply_mask", json!(false)),
+            ("sync_mode", json!(true)),
+            ("include_scores", json!(true)),
+            ("output_format", json!("png")),
+        ] {
+            assert_eq!(body[field], want, "{field}: {body}");
+        }
+    }
+
+    /// A text prompt asks for every instance, at most `max_masks` of them
+    /// (SAM 3 takes 1–32); masks may come back as URLs, and scores in
+    /// `metadata` when `scores` is absent.
+    #[tokio::test]
+    async fn a_text_prompt_asks_sam_3_for_every_instance() {
+        let server = MockServer::start().await;
+        let cdn = MockServer::start().await;
+        let (first, second) = (png_of(32, 32, |x, _| x < 4), png_of(32, 32, |x, _| x > 20));
+        Mock::given(method("POST"))
+            .and(path("/fal-ai/sam-3/image"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "masks": [{ "url": format!("{}/m0.png", cdn.uri()) }, { "url": data_uri(&second) }],
+                "metadata": [{ "index": 0, "score": 0.8 }, { "index": 1, "score": 0.6 }],
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET")).and(path("/m0.png")).respond_with(ResponseTemplate::new(200).set_body_bytes(first.clone())).mount(&cdn).await;
+        let mut input = seg_input(json!([{ "type": "text", "text": "visor" }]));
+        input.max_masks = 5;
+        let masks = make_provider(&server.uri()).segment(&ref_schema("fal/sam-3"), &input).await.expect("segment");
+        assert_eq!(masks.iter().map(|m| (m.bytes.clone(), m.score)).collect::<Vec<_>>(), vec![(first, Some(0.8)), (second, Some(0.6))]);
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!((body["prompt"].clone(), body["return_multiple_masks"].clone(), body["max_masks"].clone()), (json!("visor"), json!(true), json!(5)));
+        assert_eq!((body["point_prompts"].clone(), body["box_prompts"].clone()), (json!([]), json!([])));
+        assert!(cdn.received_requests().await.unwrap()[0].headers.get("authorization").is_none(), "no key to the CDN");
+    }
+
+    #[tokio::test]
+    async fn sam_3_refusing_the_request_is_the_vendors_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/fal-ai/sam-3-1/image"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(json!({ "detail": [{ "msg": "image_url could not be read" }] })))
+            .mount(&server)
+            .await;
+        let err = make_provider(&server.uri())
+            .segment(&ref_schema("fal/sam-3.1"), &seg_input(json!([{ "type": "box", "x": 0, "y": 0, "w": 4, "h": 4 }])))
+            .await
+            .unwrap_err();
+        match err {
+            ProviderError::RequestFailed { status_code: Some(422), retryable: false, provider_error: Some(body), .. } => {
+                assert!(body.to_string().contains("could not be read"), "{body}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[cfg(test)]

@@ -9,7 +9,7 @@ export interface ProviderModels {
 export const PROVIDER_MODELS: Record<string, ProviderModels> = {
   "bfl": {"image":["FLUX.2 [klein] 9B","FLUX.2 [max]","FLUX.2 [pro]","FLUX.1 [dev]","FLUX.1 Kontext [max]","FLUX.1 Kontext [pro]","FLUX 1.1 [pro]","FLUX 1.1 [pro] Ultra"],"video":[],"model3d":[]},
   "bytedance": {"image":["Seedream 4.0","Seedream 4.5","Seedream 5.0 Lite"],"video":["Seedance 1.0 Pro","Seedance 2.0 Mini","Seedance 1.0 Pro Fast"],"model3d":[]},
-  "fal": {"image":["AuraFlow (Fal)","FLUX.2 [dev] (Fal)","Flux Dev (Fal)","Flux Pro (Fal)","Flux Schnell (Fal)","Recraft V3 (Fal)","SD 3.5 Medium (Fal)","SDXL (Fal)"],"video":["LTX-2.3 (Fal)","Fal Video (generic)"],"model3d":["Hunyuan3D v2 (Fal)","Hunyuan3D 3.1 Pro (Fal)","Hyper3D Rodin (Fal)","Meshy Auto Rig (Fal)","TRELLIS (Fal)","Tripo H3.1 Multiview to 3D (Fal)"]},
+  "fal": {"image":["AuraFlow (Fal)","FLUX.2 [dev] (Fal)","Flux Dev (Fal)","Flux Pro (Fal)","Flux Schnell (Fal)","Recraft V3 (Fal)","SAM 3 (Fal)","SAM 3.1 (Fal)","SD 3.5 Medium (Fal)","SDXL (Fal)"],"video":["LTX-2.3 (Fal)","Fal Video (generic)"],"model3d":["Hunyuan3D v2 (Fal)","Hunyuan3D 3.1 Pro (Fal)","Hyper3D Rodin (Fal)","Meshy Auto Rig (Fal)","TRELLIS (Fal)","Tripo H3.1 Multiview to 3D (Fal)"]},
   "google": {"image":["Gemini 2.5 Flash (image)","Gemini 3 Pro (image)","Gemini 3.1 Flash Image (Nano Banana 2)","Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite)","Gemini Nano Banana 2.1"],"video":[],"model3d":[]},
   "hunyuan": {"image":["Hunyuan Image","Hunyuan Image 3.0"],"video":["Hunyuan Video","Hunyuan Video I2V"],"model3d":[]},
   "ideogram": {"image":["Ideogram 4.5 Precise Edit","Ideogram 3.0","Ideogram 3.0 Quality","Ideogram 3.0 Turbo","Ideogram 4.0","Ideogram 4.0 Quality","Ideogram 4.0 Turbo"],"video":[],"model3d":[]},

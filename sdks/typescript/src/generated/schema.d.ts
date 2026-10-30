@@ -868,6 +868,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/images/segmentations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /v1/images/segmentations — Masks for what point, box or text prompts
+         *     select in an image, answered at once.
+         */
+        post: operations["segment_image"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/keys": {
         parameters: {
             query?: never;
@@ -2453,6 +2473,36 @@ export interface components {
              */
             yaw_deg?: number | null;
         };
+        /** @description `POST /v1/images/segmentations` (PixelGenie L7). Answered at once. */
+        ImageSegmentationRequest: {
+            /** @description The image: base64, or a `data:` URI. PNG, JPEG, WebP or GIF. */
+            image: string;
+            /** @description A model whose `task` is `segment`. */
+            model: string;
+            /**
+             * @description What to select. Point and box prompts together select one object;
+             *     a text prompt selects every instance of what it names.
+             */
+            prompts: components["schemas"]["SegmentationPrompt"][];
+        };
+        /** @description What the prompts selected. */
+        ImageSegmentationResponse: {
+            /**
+             * Format: int64
+             * @description Unix timestamp of when the request was created.
+             */
+            created: number;
+            /** @description Unique request ID for tracking. */
+            id: string;
+            /**
+             * @description One per object selected, best score first. Empty when nothing was
+             *     found.
+             */
+            masks: components["schemas"]["SegmentationMask"][];
+            model: string;
+            provider: string;
+            usage?: null | components["schemas"]["UsageInfo"];
+        };
         /**
          * @description A side of the subject a view shows (3D doc §3E). Its `yaw_deg` is the
          *     camera's position around +Y, measured from the subject's front (+Z)
@@ -2828,6 +2878,11 @@ export interface components {
             output_formats?: string[];
             preserves_unmasked?: null | components["schemas"]["PreservesUnmasked"];
             region_input?: null | components["schemas"]["RegionInput"];
+            /**
+             * @description The prompt types it segments by: `point`, `box`, `text`. Empty when it
+             *     does not segment.
+             */
+            segmentation_prompts?: components["schemas"]["SegmentationPromptType"][];
             supported_sizes?: string[];
             /** @description Takes `audio: false` (or `true`) to leave audio out (or in). */
             supports_audio_toggle?: boolean;
@@ -2852,6 +2907,8 @@ export interface components {
             supports_region_edit?: boolean;
             /** @description Takes the `rig` param. */
             supports_rig?: boolean;
+            /** @description Serves `POST /v1/images/segmentations` (PixelGenie L7). */
+            supports_segmentation?: boolean;
             /** @description Takes `source_model`: an operation on an existing mesh. */
             supports_source_model?: boolean;
             /** @description Accepts a prompt with no reference images (text-to-3D). */
@@ -3239,6 +3296,9 @@ export interface components {
         }) | (components["schemas"]["ParamSpecRegion"] & {
             /** @enum {string} */
             kind: "region";
+        }) | (components["schemas"]["ParamSpecSegmentationPrompts"] & {
+            /** @enum {string} */
+            kind: "segmentation_prompts";
         });
         /** @description The clips an `animate` model makes (`animations`, 3D doc §3C). */
         ParamSpecAnimationList: {
@@ -3324,6 +3384,23 @@ export interface components {
             max: number;
             /** Format: int64 */
             min: number;
+        };
+        /**
+         * @description `prompts` on a segmentation model (PixelGenie L7): what it can be asked
+         *     to select.
+         */
+        ParamSpecSegmentationPrompts: {
+            description?: string | null;
+            label?: string | null;
+            /** @description The most prompts one request may send. */
+            max_items: number;
+            /**
+             * @description The most masks one answer holds: a text prompt finds at most this
+             *     many instances.
+             */
+            max_masks: number;
+            /** @description The prompt types the model takes, listed as `segmentation_prompts`. */
+            types: components["schemas"]["SegmentationPromptType"][];
         };
         /**
          * @description What an operation on an existing mesh takes as its `source_model` (3D doc
@@ -3932,6 +4009,56 @@ export interface components {
              */
             skeleton?: string | null;
         };
+        /** @description One selected object. */
+        SegmentationMask: {
+            /** @description The smallest box around the white pixels, measured by litegen. */
+            box: components["schemas"]["Region"];
+            /**
+             * @description A grayscale PNG the size of the image: white (255) where selected,
+             *     black (0) elsewhere.
+             */
+            png_base64: string;
+            /**
+             * Format: double
+             * @description The vendor's confidence, 0–1; null when it gives none.
+             */
+            score: number | null;
+        };
+        /**
+         * @description One thing to select, in the image's pixels (top-left origin). Point and
+         *     box prompts together select ONE object; a text prompt selects every
+         *     instance of what it names and cannot be mixed with them.
+         */
+        SegmentationPrompt: {
+            /** Format: int32 */
+            label?: number;
+            /** @enum {string} */
+            type: "point";
+            /** Format: int32 */
+            x: number;
+            /** Format: int32 */
+            y: number;
+        } | {
+            /** Format: int32 */
+            h: number;
+            /** @enum {string} */
+            type: "box";
+            /** Format: int32 */
+            w: number;
+            /** Format: int32 */
+            x: number;
+            /** Format: int32 */
+            y: number;
+        } | {
+            text: string;
+            /** @enum {string} */
+            type: "text";
+        };
+        /**
+         * @description The kinds of segmentation prompt (PixelGenie L7).
+         * @enum {string}
+         */
+        SegmentationPromptType: "point" | "box" | "text";
         Session: {
             /** Format: date-time */
             created_at: string;
@@ -6724,6 +6851,80 @@ export interface operations {
                 };
             };
             /** @description `vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    segment_image: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 1–255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key. */
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImageSegmentationRequest"];
+            };
+        };
+        responses: {
+            /** @description What the prompts selected: one mask per object, best first, billed once per request at the row's price */
+            200: {
+                headers: {
+                    /** @description `true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise. */
+                    "Idempotent-Replayed"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageSegmentationResponse"];
+                };
+            };
+            /** @description Refused before anything is billed. `param_required`: no prompts, or an empty text prompt. `capability_unsupported`: a prompt type the model does not take (its `segmentation_prompts`). `param_out_of_range`: more prompts than the model takes, more than one text prompt, a point label other than 0 or 1, or a box with no area. `param_conflict`: a text prompt mixed with point or box prompts, or only label-0 points. `prompt_out_of_bounds`: a point or box outside the image. `image_unreadable`: not base64 of a PNG, JPEG, WebP or GIF. `model_task_mismatch`: not a segmentation model. `model_media_type_mismatch`: not an image model. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `model_not_found` */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Provider error */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `vendor_timeout`: the vendor did not answer in time. Never re-sent. */
             504: {
                 headers: {
                     [name: string]: unknown;

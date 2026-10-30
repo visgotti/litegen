@@ -359,6 +359,98 @@ pub async fn generate_image(
     }
 }
 
+// ─── Image Segmentation (PixelGenie L7) ──────────────────────────────────────
+
+/// POST /v1/images/segmentations — Masks for what point, box or text prompts
+/// select in an image, answered at once.
+#[utoipa::path(
+    post,
+    path = "/v1/images/segmentations",
+    request_body = ImageSegmentationRequest,
+    params(
+        ("Idempotency-Key" = Option<String>, Header, description = "1–255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key."),
+    ),
+    responses(
+        (status = 200, description = "What the prompts selected: one mask per object, best first, billed once per request at the row's price", body = ImageSegmentationResponse,
+            headers(
+                ("Idempotent-Replayed" = String, description = "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."),
+            )),
+        (status = 400, description = "Refused before anything is billed. `param_required`: no prompts, or an empty text prompt. `capability_unsupported`: a prompt type the model does not take (its `segmentation_prompts`). `param_out_of_range`: more prompts than the model takes, more than one text prompt, a point label other than 0 or 1, or a box with no area. `param_conflict`: a text prompt mixed with point or box prompts, or only label-0 points. `prompt_out_of_bounds`: a point or box outside the image. `image_unreadable`: not base64 of a PNG, JPEG, WebP or GIF. `model_task_mismatch`: not a segmentation model. `model_media_type_mismatch`: not an image model.", body = ErrorResponse),
+        (status = 404, description = "`model_not_found`", body = ErrorResponse),
+        (status = 409, description = "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).", body = ErrorResponse),
+        (status = 502, description = "Provider error", body = ErrorResponse),
+        (status = 504, description = "`vendor_timeout`: the vendor did not answer in time. Never re-sent.", body = ErrorResponse),
+    ),
+    tag = "Images"
+)]
+pub async fn segment_image(
+    State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
+    attribution: crate::management::enforce::RequestAttribution,
+    validated: crate::api::middleware::validator::ValidatedSegmentation,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let schema = &validated.schema;
+    let app_creds = match resolve_org_provider_credential(&state, &key_ctx, &schema.provider).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if app_creds.is_none() && !state.router.has_image_provider(&schema.provider).await {
+        return provider_not_configured_response(&schema.provider);
+    }
+    // Reserved at the row's price before the vendor is called; settled to the
+    // charge, or released when nothing came back (as generate_image does).
+    let charge_key = key_ctx.as_ref().and_then(|c| c.key_id);
+    let price = crate::capabilities::pricing::row_price_usd(schema);
+    let reserved = match reserve_quota(&state, charge_key, price).await {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let mut limits = match crate::management::enforce::begin(&state, key_ctx.as_ref(), &attribution, &schema.id, price).await {
+        Ok(g) => g,
+        Err(resp) => {
+            settle_quota(&state, charge_key, reserved, 0.0).await;
+            return resp;
+        }
+    };
+    let attributed = limits.attribution();
+    let result = state.router.segment_image(schema, &validated.input, app_creds).await;
+    let latency = start.elapsed().as_millis() as i64;
+    let (org_id, app_id) = (key_ctx.as_ref().and_then(|c| c.org_id.clone()), key_ctx.as_ref().and_then(|c| c.app_id.clone()));
+    let db = state.db.clone();
+    match result {
+        Ok(response) => {
+            let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
+            settle_quota(&state, charge_key, reserved, cost).await;
+            limits.settle(&state, cost).await;
+            let (id, model, provider) = (response.id.clone(), response.model.clone(), response.provider.clone());
+            tokio::spawn(async move {
+                let _ = db
+                    .log_request(&id, &model, &provider, "completed", "image", cost, latency, None, None, org_id.as_deref(), app_id.as_deref())
+                    .await;
+                crate::management::enforce::attribute(&db, &id, &attributed).await;
+            });
+            let mut resp = (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response();
+            resp.extensions_mut().insert(crate::api::middleware::idempotency::VendorAttempted);
+            resp
+        }
+        Err(e) => {
+            settle_quota(&state, charge_key, reserved, 0.0).await;
+            limits.settle(&state, 0.0).await;
+            error!(error = %e, "Image segmentation failed");
+            let (model, err_msg) = (schema.id.clone(), e.to_string());
+            tokio::spawn(async move {
+                let id = format!("litegen-seg-{}", Uuid::new_v4());
+                let _ = db
+                    .log_request(&id, &model, "unknown", "failed", "image", 0.0, latency, Some(&err_msg), None, org_id.as_deref(), app_id.as_deref())
+                    .await;
+                crate::management::enforce::attribute(&db, &id, &attributed).await;
+            });
+            generation_error_response(&e)
+        }
+    }
+}
+
 /// POST /v1/images/cost — Estimate cost for image generation.
 #[utoipa::path(
     post,
@@ -1886,12 +1978,24 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
                 Some(crate::capabilities::ParamSpec::Int(i)) => i.values.iter().map(|v| *v as f64).collect(),
                 _ => Vec::new(),
             },
+            // PixelGenie L7, read the way the segmentation endpoint reads it.
+            supports_segmentation: segmentation_prompts(s).is_some(),
+            segmentation_prompts: segmentation_prompts(s).map(|p| p.types.clone()).unwrap_or_default(),
         },
         pricing: Some(ModelPricing {
             base_cost_usd: s.pricing.base_cost_usd,
             variable_pricing: s.pricing.variable_pricing.clone(),
         }),
         tags: s.tags.clone(),
+    }
+}
+
+/// A segmentation model's prompt spec (PixelGenie L7): `None` for any other
+/// model.
+fn segmentation_prompts(s: &crate::capabilities::ModelSchema) -> Option<&crate::capabilities::ParamSpecSegmentationPrompts> {
+    match s.params.get("prompts") {
+        Some(crate::capabilities::ParamSpec::SegmentationPrompts(p)) if s.task == crate::capabilities::ModelTask::Segment => Some(p),
+        _ => None,
     }
 }
 
@@ -3328,6 +3432,7 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
     let idempotent = || middleware::from_fn_with_state(state.clone(), super::middleware::idempotency::idempotency_middleware);
     let generate_routes = axum::Router::new()
         .route("/v1/images/generations", post(generate_image).route_layer(idempotent()))
+        .route("/v1/images/segmentations", post(segment_image).route_layer(idempotent()))
         .route("/v1/images/cost", post(estimate_image_cost))
         .route("/v1/videos/generations", post(generate_video).route_layer(idempotent()))
         .route("/v1/videos/cost", post(estimate_video_cost))

@@ -23,11 +23,14 @@ status with an inline comment explaining why — assertions are never weakened.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib
 import io
 import pkgutil
+import struct
 import uuid
+import zlib
 
 import httpx
 import pytest
@@ -44,6 +47,7 @@ from litegen._generated.models import (
     CreateOrgRequest,
     CreateProviderCredentialRequest,
     ImageGenerationRequest,
+    ImageSegmentationRequest,
     InviteRequest,
     LoginRequest,
     Model3DFormat,
@@ -129,7 +133,7 @@ from litegen._generated.api.generations import (
     list_generation_assets,
     list_generations,
 )
-from litegen._generated.api.images import estimate_image_cost, generate_image
+from litegen._generated.api.images import estimate_image_cost, generate_image, segment_image
 from litegen._generated.api.models import get_model_schema, list_models
 from litegen._generated.api.models_3d import (
     estimate_3d_cost,
@@ -351,6 +355,19 @@ def test_auth_oauth_unconfigured(base_url):
 # =============================================================================
 # images / videos / generations  (owner.bearer = API key)
 # =============================================================================
+def _png(w: int, h: int) -> bytes:
+    """A black RGB PNG, from the standard library."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    rows = b"".join(b"\x00" + b"\x00\x00\x00" * w for _ in range(h))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+
+
 def test_images(owner):
     body = ImageGenerationRequest(model=IMG_MODEL, prompt="a red cube")
     _ok(generate_image.sync_detailed(client=owner.bearer, body=body), 200)
@@ -358,6 +375,16 @@ def test_images(owner):
 
     _ok(estimate_image_cost.sync_detailed(client=owner.bearer, body=body), 200)
     EXERCISED.add("estimate_image_cost")
+
+    # The mock's mask for a box is the box itself.
+    seg = ImageSegmentationRequest.from_dict({
+        "model": "mock/segment-image",
+        "image": base64.b64encode(_png(4, 4)).decode(),
+        "prompts": [{"type": "box", "x": 0, "y": 0, "w": 1, "h": 1}],
+    })
+    masks = _ok(segment_image.sync_detailed(client=owner.bearer, body=seg), 200).parsed.masks
+    assert [(m.box.x, m.box.y, m.box.w, m.box.h) for m in masks] == [(0, 0, 1, 1)]
+    EXERCISED.add("segment_image")
 
 
 def test_videos(owner):
@@ -1281,9 +1308,9 @@ def test_every_generated_endpoint_is_covered(base_url):
 
     Compares EXERCISED (populated by every other test) against the discovered
     universe of endpoint module names, and independently asserts the raw module
-    file count is 131. Both `transfer_owner` modules are exercised
+    file count is 132. Both `transfer_owner` modules are exercised
     (organizations + users); they share a bare name, so the deduped name set has
-    130 entries while the file count is 131.
+    131 entries while the file count is 132.
 
     Takes `base_url` only so it skips with the rest of the suite when the binary
     isn't built: without the binary nothing populates EXERCISED, and this would
@@ -1297,6 +1324,6 @@ def test_every_generated_endpoint_is_covered(base_url):
     unexpected = EXERCISED - discovered
     assert not missing, f"{len(missing)} endpoint(s) never exercised: {sorted(missing)}"
     assert not unexpected, f"recorded names not found in generated API: {sorted(unexpected)}"
-    # 131 endpoint module files in total (130 unique names + duplicate transfer_owner).
-    assert file_count == 131, f"expected 131 endpoint module files, found {file_count}"
-    assert len(discovered) == 130, f"expected 130 unique names, found {len(discovered)}"
+    # 132 endpoint module files in total (131 unique names + duplicate transfer_owner).
+    assert file_count == 132, f"expected 132 endpoint module files, found {file_count}"
+    assert len(discovered) == 131, f"expected 131 unique names, found {len(discovered)}"

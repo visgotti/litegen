@@ -170,6 +170,53 @@ class Region(TypedDict):
     h: int
 
 
+SegmentationPromptType = Literal["point", "box", "text"]
+"""A prompt type a model segments by: its ``capabilities.segmentation_prompts``."""
+
+
+class SegmentationPoint(TypedDict):
+    """A spot on the object (``label`` 1, the default) or one to leave out of
+    it (``label`` 0), in the image's pixels."""
+
+    type: Literal["point"]
+    x: int
+    y: int
+    label: NotRequired[int]
+
+
+class SegmentationBox(TypedDict):
+    """A box around the object: pixels, top-left origin, ends exclusive."""
+
+    type: Literal["box"]
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+class SegmentationText(TypedDict):
+    """What to select, named: every instance of it. Sent alone."""
+
+    type: Literal["text"]
+    text: str
+
+
+SegmentationPrompt = SegmentationPoint | SegmentationBox | SegmentationText
+"""One entry of ``images.segment(prompts=…)``. Points and boxes together select
+one object; a text prompt selects every instance of what it names."""
+
+
+class SegmentationMask(TypedDict):
+    """One selected object from ``images.segment``."""
+
+    png_base64: str
+    """A grayscale PNG the image's size: white (255) where selected, black elsewhere."""
+    score: float | None
+    """The vendor's confidence, 0–1; ``None`` when it gives none."""
+    box: Region
+    """The smallest box around the white pixels, measured by LiteGen."""
+
+
 class ReferenceImage(TypedDict):
     """An input image. On a 3D model its ``role`` selects the mode; there is no
     separate mode switch:
@@ -309,6 +356,18 @@ class UsageInfo(TypedDict):
     tokens: int
     """The same cost in LiteGen's internal token units."""
     cost_source: CostSource
+
+
+class ImageSegmentationResponse(TypedDict):
+    """What ``images.segment`` returns (``POST /v1/images/segmentations``)."""
+
+    id: str
+    created: int
+    model: str
+    provider: str
+    masks: list[SegmentationMask]
+    """One per object selected, best score first; empty when nothing was found."""
+    usage: NotRequired[UsageInfo | None]
 
 
 class CostEstimate(TypedDict):

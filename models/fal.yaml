@@ -294,6 +294,74 @@ models:
     extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
+  # ─── Promptable segmentation (PixelGenie L7) ──────────────────────────────
+  # Input: image_url (a URL or data: URI), prompt (text, default "wheel"),
+  # point_prompts [{x, y, label 0|1, object_id, frame_index}], box_prompts
+  # [{x_min, y_min, x_max, y_max, object_id, frame_index}] ("use object_id to
+  # group boxes for the same object"), apply_mask (default true),
+  # return_multiple_masks, max_masks (1-32, default 3), include_scores,
+  # include_boxes, sync_mode, output_format jpeg|png|webp. Output: masks
+  # [Image], scores, boxes (normalized cx, cy, w, h), metadata [{index, score,
+  # box}]. litegen measures its own boxes from the masks.
+  # No documented cap on points or boxes: max_items is litegen's.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/sam-3/image (read 2026-10-30)
+  - id: fal/sam-3
+    provider: fal
+    media_type: image
+    task: segment
+    display_name: SAM 3 (Fal)
+    description: >-
+      Meta's Segment Anything Model 3 on Fal: a mask for the object points
+      and boxes pick out, or one for every instance of a thing named.
+    docs_url: https://fal.ai/models/fal-ai/sam-3/image/api
+    # "Your request will cost **$0.005** per request." (read 2026-10-30)
+    # @see https://fal.ai/models/fal-ai/sam-3/image/llms.txt
+    pricing: { base_cost_usd: 0.005 }
+    capabilities: {}
+    prompt: { required: false, max_length: 0 }
+    params:
+      prompts:
+        kind: segmentation_prompts
+        types: [point, box, text]
+        max_items: 64
+        max_masks: 32
+        label: Prompts
+        description: >-
+          What to select. Points and boxes together select one object; a text
+          prompt selects every instance of what it names, up to 32.
+    extra_allowlist: []
+    tags: [segmentation]
+
+  # SAM 3.1 publishes the same input and output as SAM 3 (without the
+  # deprecated text_prompt field).
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/sam-3-1/image (read 2026-10-30)
+  - id: fal/sam-3.1
+    provider: fal
+    media_type: image
+    task: segment
+    display_name: SAM 3.1 (Fal)
+    description: >-
+      Meta's Segment Anything Model 3.1 on Fal: a mask for the object points
+      and boxes pick out, or one for every instance of a thing named.
+    docs_url: https://fal.ai/models/fal-ai/sam-3-1/image/api
+    # "Your request will cost **$0.01** per request." (read 2026-10-30)
+    # @see https://fal.ai/models/fal-ai/sam-3-1/image/llms.txt
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: {}
+    prompt: { required: false, max_length: 0 }
+    params:
+      prompts:
+        kind: segmentation_prompts
+        types: [point, box, text]
+        max_items: 64
+        max_masks: 32
+        label: Prompts
+        description: >-
+          What to select. Points and boxes together select one object; a text
+          prompt selects every instance of what it names, up to 32.
+    extra_allowlist: []
+    tags: [segmentation]
+
   # ─── 3D (mesh) ──────────────────────────────────────────────────────────────
   #
   # Every field below was read from that endpoint's own OpenAPI document,

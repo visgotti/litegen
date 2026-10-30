@@ -31,6 +31,100 @@ pub struct VideoValidationOutput {
     pub dropped: Vec<String>,
 }
 
+/// Segmentation models answer at `/v1/images/segmentations` and nowhere
+/// else; every other image model at `/v1/images/generations` (PixelGenie
+/// L7). `served` is `Segment` for the segmentation endpoint and `Generate`
+/// for the generations one.
+pub fn require_task(schema: &ModelSchema, served: ModelTask) -> Result<(), ValidationError> {
+    let segments = schema.task == ModelTask::Segment;
+    if segments == (served == ModelTask::Segment) {
+        return Ok(());
+    }
+    let (what, endpoint) = if segments {
+        ("a segmentation model", "/v1/images/segmentations")
+    } else {
+        ("not a segmentation model", "/v1/images/generations")
+    };
+    Err(ValidationError::new(
+        "model_task_mismatch",
+        format!("model '{}' is {what}; use {endpoint}", schema.id),
+        Some("model"),
+    ))
+}
+
+/// A segmentation request's prompts against the model (PixelGenie L7): its
+/// prompt types and count, one text prompt alone, labels 0 or 1, boxes with
+/// an area, and something to select.
+pub fn validate_segmentation(schema: &ModelSchema, req: &ImageSegmentationRequest) -> Result<(), ValidationError> {
+    let bad = |code: &str, msg: String| Err(ValidationError::new(code, msg, Some("prompts")));
+    let Some(ParamSpec::SegmentationPrompts(spec)) = schema.params.get("prompts") else {
+        return bad("capability_unsupported", format!("model '{}' takes no segmentation prompts", schema.id));
+    };
+    if req.prompts.is_empty() {
+        return bad("param_required", "prompts is empty: send a point, box or text prompt".into());
+    }
+    if let Some(p) = req.prompts.iter().find(|p| !spec.types.contains(&p.kind())) {
+        let takes: Vec<&str> = spec.types.iter().map(|t| t.as_str()).collect();
+        return bad(
+            "capability_unsupported",
+            format!("model '{}' takes {} prompts, not {}", schema.id, takes.join(", "), p.kind().as_str()),
+        );
+    }
+    if req.prompts.len() > spec.max_items {
+        return bad("param_out_of_range", format!("{} prompts; model '{}' takes at most {}", req.prompts.len(), schema.id, spec.max_items));
+    }
+    let texts = req.prompts.iter().filter(|p| matches!(p, SegmentationPrompt::Text { .. })).count();
+    if texts > 1 {
+        return bad("param_out_of_range", format!("{texts} text prompts; send one per request"));
+    }
+    if texts == 1 && req.prompts.len() > 1 {
+        return bad(
+            "param_conflict",
+            "a text prompt selects every instance of what it names and cannot be mixed with point or box prompts".into(),
+        );
+    }
+    for p in &req.prompts {
+        match p {
+            SegmentationPrompt::Point { label, .. } if *label > 1 => {
+                return bad("param_out_of_range", format!("point label {label}: 1 selects the spot, 0 leaves it out"));
+            }
+            SegmentationPrompt::Box { w, h, .. } if *w == 0 || *h == 0 => {
+                return bad("param_out_of_range", format!("a {w}×{h} box selects nothing"));
+            }
+            SegmentationPrompt::Text { text } if text.trim().is_empty() => {
+                return bad("param_required", "a text prompt names nothing".into());
+            }
+            _ => {}
+        }
+    }
+    let selects = req.prompts.iter().any(|p| !matches!(p, SegmentationPrompt::Point { label: 0, .. }));
+    if !selects {
+        return bad("param_conflict", "every point is label 0, which only leaves spots out: add a label-1 point or a box".into());
+    }
+    Ok(())
+}
+
+/// Every point and box lies inside a `width` × `height` image.
+pub fn check_segmentation_bounds(prompts: &[SegmentationPrompt], width: u32, height: u32) -> Result<(), ValidationError> {
+    for p in prompts {
+        let inside = match *p {
+            SegmentationPrompt::Point { x, y, .. } => x < width && y < height,
+            SegmentationPrompt::Box { x, y, w, h } => {
+                u64::from(x) + u64::from(w) <= u64::from(width) && u64::from(y) + u64::from(h) <= u64::from(height)
+            }
+            SegmentationPrompt::Text { .. } => true,
+        };
+        if !inside {
+            return Err(ValidationError::new(
+                "prompt_out_of_bounds",
+                format!("{p:?} is not inside the {width}×{height} image"),
+                Some("prompts"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[tracing::instrument(skip(schema, req), fields(model = %schema.id))]
 pub fn validate_image(
     schema: &ModelSchema,
@@ -1598,6 +1692,9 @@ impl FromRequest<Arc<AppState>> for ValidatedImage {
             .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.base.model), None, &req.base.model)))?;
         let schema = Arc::new(schema);
         require_media_type(&schema, MediaType::Image)?;
+        require_task(&schema, ModelTask::Generate).map_err(|e| {
+            ValidationRejection(StatusCode::BAD_REQUEST, err_body(&e.code, &e.message, e.param.as_deref(), &schema.id))
+        })?;
         match validate_image(&schema, req) {
             Ok(out) => Ok(ValidatedImage { schema, request: out.request, dropped: out.dropped, ctx, _permit: permit }),
             Err(e) => Err(ValidationRejection(
@@ -1669,6 +1766,54 @@ impl FromRequest<Arc<AppState>> for ValidatedModel3d {
                 err_body(&e.code, &e.message, e.param.as_deref(), &schema.id),
             )),
         }
+    }
+}
+
+/// A segmentation request checked against its model and its image
+/// (PixelGenie L7), ready for the vendor.
+pub struct ValidatedSegmentation {
+    pub schema: Arc<ModelSchema>,
+    pub input: crate::providers::SegmentationInput,
+    pub _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl FromRequest<Arc<AppState>> for ValidatedSegmentation {
+    type Rejection = ValidationRejection;
+    async fn from_request(req: Request, state: &Arc<AppState>) -> Result<Self, Self::Rejection> {
+        // Acquire the in-flight slot BEFORE buffering the body (see ValidatedImage).
+        let permit = acquire_in_flight(state)?;
+        let bytes = axum::body::to_bytes(req.into_body(), 25 * 1024 * 1024).await.map_err(|e| {
+            ValidationRejection(StatusCode::PAYLOAD_TOO_LARGE, err_body("body_too_large", &e.to_string(), None, ""))
+        })?;
+        let req: ImageSegmentationRequest = serde_json::from_slice(&bytes).map_err(|e| {
+            ValidationRejection(StatusCode::BAD_REQUEST, err_body("malformed_request", &e.to_string(), None, ""))
+        })?;
+        let schema = state.registry.resolve(&req.model)
+            .ok_or_else(|| ValidationRejection(StatusCode::NOT_FOUND, err_body("model_not_found", &format!("model '{}' not found", req.model), None, &req.model)))?;
+        let schema = Arc::new(schema);
+        require_media_type(&schema, MediaType::Image)?;
+        let refuse = |e: ValidationError| ValidationRejection(StatusCode::BAD_REQUEST, err_body(&e.code, &e.message, e.param.as_deref(), &schema.id));
+        require_task(&schema, ModelTask::Segment).map_err(refuse)?;
+        validate_segmentation(&schema, &req).map_err(refuse)?;
+        let image = req.image;
+        let (image, content_type, width, height) = tokio::task::spawn_blocking(move || crate::proxy::segmentation::read_image(&image))
+            .await
+            .map_err(|e| ValidationRejection(StatusCode::INTERNAL_SERVER_ERROR, err_body("internal_error", &e.to_string(), None, &schema.id)))?
+            .map_err(|msg| refuse(ValidationError::new("image_unreadable", msg, Some("image"))))?;
+        check_segmentation_bounds(&req.prompts, width, height).map_err(refuse)?;
+        let max_masks = match schema.params.get("prompts") {
+            Some(ParamSpec::SegmentationPrompts(p)) => p.max_masks,
+            _ => 1,
+        };
+        let input = crate::providers::SegmentationInput {
+            image,
+            content_type: content_type.to_string(),
+            width,
+            height,
+            prompts: req.prompts,
+            max_masks,
+        };
+        Ok(ValidatedSegmentation { schema, input, _permit: permit })
     }
 }
 

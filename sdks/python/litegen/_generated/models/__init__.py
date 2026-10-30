@@ -57,6 +57,8 @@ from .image_generation_request import ImageGenerationRequest
 from .image_generation_response import ImageGenerationResponse
 from .image_output_format import ImageOutputFormat
 from .image_result import ImageResult
+from .image_segmentation_request import ImageSegmentationRequest
+from .image_segmentation_response import ImageSegmentationResponse
 from .image_view import ImageView
 from .in_place_mode import InPlaceMode
 from .invitation import Invitation
@@ -127,6 +129,7 @@ from .param_spec_float import ParamSpecFloat
 from .param_spec_int import ParamSpecInt
 from .param_spec_region import ParamSpecRegion
 from .param_spec_seed import ParamSpecSeed
+from .param_spec_segmentation_prompts import ParamSpecSegmentationPrompts
 from .param_spec_source_model import ParamSpecSourceModel
 from .param_spec_string import ParamSpecString
 from .param_spec_string_array import ParamSpecStringArray
@@ -183,6 +186,14 @@ from .scene_manifest import SceneManifest
 from .scene_material import SceneMaterial
 from .scene_skin import SceneSkin
 from .scene_skin_humanoid_type_0 import SceneSkinHumanoidType0
+from .segmentation_mask import SegmentationMask
+from .segmentation_prompt_type import SegmentationPromptType
+from .segmentation_prompt_type_0 import SegmentationPromptType0
+from .segmentation_prompt_type_0_type import SegmentationPromptType0Type
+from .segmentation_prompt_type_1 import SegmentationPromptType1
+from .segmentation_prompt_type_1_type import SegmentationPromptType1Type
+from .segmentation_prompt_type_2 import SegmentationPromptType2
+from .segmentation_prompt_type_2_type import SegmentationPromptType2Type
 from .session import Session
 from .session_info import SessionInfo
 from .set_app_model_access_request import SetAppModelAccessRequest
@@ -272,6 +283,8 @@ __all__ = (
     "ImageGenerationResponse",
     "ImageOutputFormat",
     "ImageResult",
+    "ImageSegmentationRequest",
+    "ImageSegmentationResponse",
     "ImageView",
     "InPlaceMode",
     "Invitation",
@@ -334,6 +347,7 @@ __all__ = (
     "ParamSpecInt",
     "ParamSpecRegion",
     "ParamSpecSeed",
+    "ParamSpecSegmentationPrompts",
     "ParamSpecSourceModel",
     "ParamSpecString",
     "ParamSpecStringArray",
@@ -390,6 +404,14 @@ __all__ = (
     "SceneMaterial",
     "SceneSkin",
     "SceneSkinHumanoidType0",
+    "SegmentationMask",
+    "SegmentationPromptType",
+    "SegmentationPromptType0",
+    "SegmentationPromptType0Type",
+    "SegmentationPromptType1",
+    "SegmentationPromptType1Type",
+    "SegmentationPromptType2",
+    "SegmentationPromptType2Type",
     "Session",
     "SessionInfo",
     "SetAppModelAccessRequest",

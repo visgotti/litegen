@@ -11,6 +11,8 @@ import {
 type Schemas = components["schemas"];
 type ImageRequest = Schemas["ImageGenerationRequest"];
 type ImageResponse = Schemas["ImageGenerationResponse"];
+type SegmentRequest = Schemas["ImageSegmentationRequest"];
+type SegmentResponse = Schemas["ImageSegmentationResponse"];
 type VideoRequest = Schemas["VideoGenerationRequest"];
 type VideoResponse = Schemas["VideoGenerationResponse"];
 type Model3dRequest = Schemas["Model3dGenerationRequest"];
@@ -701,6 +703,10 @@ class ImagesNamespace {
   }
   estimateCost(req: ImageRequest, signal?: AbortSignal): Promise<CostEstimate> {
     return this.client.request("POST", "/v1/images/cost", req, signal);
+  }
+  /** Masks for what point, box or text prompts select (PixelGenie L7), answered at once. */
+  segment(req: SegmentRequest, opts: ImageGenerateOptions = {}): Promise<SegmentResponse> {
+    return this.client.request("POST", "/v1/images/segmentations", req, opts.signal, idempotencyHeaders(opts));
   }
 }
 

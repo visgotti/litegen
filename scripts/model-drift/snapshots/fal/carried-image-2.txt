@@ -1,0 +1,382 @@
+## fal-ai/sam-3-1/image — active image-to-image
+{
+  "POST /fal-ai/sam-3-1/image (application/json)": {
+    "properties": {
+      "apply_mask": {
+        "default": true,
+        "type": "boolean"
+      },
+      "box_prompts": {
+        "default": [],
+        "items": {
+          "properties": {
+            "frame_index": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "object_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "x_max": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "x_min": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "y_max": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "y_min": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "image_url": {
+        "type": "string"
+      },
+      "include_boxes": {
+        "default": false,
+        "type": "boolean"
+      },
+      "include_scores": {
+        "default": false,
+        "type": "boolean"
+      },
+      "max_masks": {
+        "default": 3,
+        "maximum": 32,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "point_prompts": {
+        "default": [],
+        "items": {
+          "properties": {
+            "frame_index": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "label": {
+              "anyOf": [
+                {
+                  "enum": [
+                    0,
+                    1
+                  ],
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "object_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "x": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "y": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "prompt": {
+        "default": "wheel",
+        "type": "string"
+      },
+      "return_multiple_masks": {
+        "default": false,
+        "type": "boolean"
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "image_url"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/sam-3/image — active image-to-image
+{
+  "POST /fal-ai/sam-3/image (application/json)": {
+    "properties": {
+      "apply_mask": {
+        "default": true,
+        "type": "boolean"
+      },
+      "box_prompts": {
+        "default": [],
+        "items": {
+          "properties": {
+            "frame_index": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "object_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "x_max": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "x_min": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "y_max": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "y_min": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "image_url": {
+        "type": "string"
+      },
+      "include_boxes": {
+        "default": false,
+        "type": "boolean"
+      },
+      "include_scores": {
+        "default": false,
+        "type": "boolean"
+      },
+      "max_masks": {
+        "default": 3,
+        "maximum": 32,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "point_prompts": {
+        "default": [],
+        "items": {
+          "properties": {
+            "frame_index": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "label": {
+              "anyOf": [
+                {
+                  "enum": [
+                    0,
+                    1
+                  ],
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "object_id": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "x": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "y": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "prompt": {
+        "default": "wheel",
+        "type": "string"
+      },
+      "return_multiple_masks": {
+        "default": false,
+        "type": "boolean"
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      },
+      "text_prompt": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "deprecated": true
+      }
+    },
+    "required": [
+      "image_url"
+    ],
+    "type": "object"
+  }
+}

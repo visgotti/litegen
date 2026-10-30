@@ -186,6 +186,37 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
     {
         return Err(bad(format!("model '{}' is a multiview model: it declares the views it makes and takes an init image", m.id)));
     }
+
+    // PixelGenie L7: a segmentation model says which prompts it takes, only
+    // it takes prompts, and it makes no images.
+    let segments = m.media_type == MediaType::Image && m.task == ModelTask::Segment;
+    match (segments, m.params.get("prompts")) {
+        (true, None) => {
+            return Err(bad(format!(
+                "model '{}' is a segmentation model but declares no params.prompts: say which prompt types it takes", m.id
+            )));
+        }
+        (false, Some(_)) => {
+            return Err(bad(format!("model '{}' declares prompts, which only image models whose task is segment take", m.id)));
+        }
+        (true, Some(ParamSpec::SegmentationPrompts(p))) => {
+            if p.types.is_empty() {
+                return Err(bad(format!("model '{}' prompts.types is empty", m.id)));
+            }
+            if p.max_items == 0 || p.max_masks == 0 {
+                return Err(bad(format!("model '{}' prompts.max_items and prompts.max_masks must be at least 1", m.id)));
+            }
+        }
+        _ => {}
+    }
+    if segments {
+        if let Some((flag, _)) = [("text_to_image", c.text_to_image), ("image_to_image", c.image_to_image), ("inpainting", c.inpainting)]
+            .into_iter()
+            .find(|(_, set)| *set)
+        {
+            return Err(bad(format!("model '{}' sets {} but a segmentation model makes no images", m.id, flag)));
+        }
+    }
     if let Some(refs) = &m.ref_inputs {
         if let Some(r) = refs.roles.keys().filter_map(|r| r.strip_prefix("view-")).find(|v| !views.contains(v)) {
             return Err(bad(format!("model '{}' role 'view-{}' names no view of {:?}", m.id, r, views)));

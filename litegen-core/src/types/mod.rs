@@ -607,6 +607,85 @@ pub struct Region {
     pub h: u32,
 }
 
+// ─── Segmentation (PixelGenie L7) ─────────────────────────────────────────
+
+/// One thing to select, in the image's pixels (top-left origin). Point and
+/// box prompts together select ONE object; a text prompt selects every
+/// instance of what it names and cannot be mixed with them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SegmentationPrompt {
+    /// A spot on the object (`label: 1`, the default) or one to leave out
+    /// of it (`label: 0`).
+    Point {
+        x: u32,
+        y: u32,
+        #[serde(default = "point_on")]
+        label: u8,
+    },
+    /// A box around the object; ends exclusive, as `Region`.
+    Box { x: u32, y: u32, w: u32, h: u32 },
+    /// What to select, named.
+    Text { text: String },
+}
+
+fn point_on() -> u8 {
+    1
+}
+
+impl SegmentationPrompt {
+    pub fn kind(&self) -> crate::capabilities::SegmentationPromptType {
+        use crate::capabilities::SegmentationPromptType as T;
+        match self {
+            SegmentationPrompt::Point { .. } => T::Point,
+            SegmentationPrompt::Box { .. } => T::Box,
+            SegmentationPrompt::Text { .. } => T::Text,
+        }
+    }
+}
+
+/// `POST /v1/images/segmentations` (PixelGenie L7). Answered at once.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ImageSegmentationRequest {
+    /// A model whose `task` is `segment`.
+    pub model: String,
+    /// The image: base64, or a `data:` URI. PNG, JPEG, WebP or GIF.
+    pub image: String,
+    /// What to select. Point and box prompts together select one object;
+    /// a text prompt selects every instance of what it names.
+    pub prompts: Vec<SegmentationPrompt>,
+}
+
+/// What the prompts selected.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ImageSegmentationResponse {
+    /// Unique request ID for tracking.
+    pub id: String,
+    /// Unix timestamp of when the request was created.
+    pub created: i64,
+    pub model: String,
+    pub provider: String,
+    /// One per object selected, best score first. Empty when nothing was
+    /// found.
+    pub masks: Vec<SegmentationMask>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageInfo>,
+}
+
+/// One selected object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct SegmentationMask {
+    /// A grayscale PNG the size of the image: white (255) where selected,
+    /// black (0) elsewhere.
+    pub png_base64: String,
+    /// The vendor's confidence, 0–1; null when it gives none.
+    #[schema(required = true)]
+    pub score: Option<f64>,
+    /// The smallest box around the white pixels, measured by litegen.
+    #[serde(rename = "box")]
+    pub bounds: Region,
+}
+
 /// One clip an `animate` request asks for (3D doc §3C).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct AnimationRequest {
@@ -1215,6 +1294,13 @@ pub struct ModelCapabilities {
     /// Returns only lossy containers (no PNG).
     #[serde(default)]
     pub lossy_only: bool,
+    /// Serves `POST /v1/images/segmentations` (PixelGenie L7).
+    #[serde(default)]
+    pub supports_segmentation: bool,
+    /// The prompt types it segments by: `point`, `box`, `text`. Empty when it
+    /// does not segment.
+    #[serde(default)]
+    pub segmentation_prompts: Vec<crate::capabilities::SegmentationPromptType>,
 }
 
 fn default_max_images() -> u32 {

@@ -42,7 +42,9 @@ pub enum ModelTask {
     Texture,
     /// 3D: retopologise `source_model`.
     Remesh,
-    /// 3D: split `source_model` into named parts.
+    /// 3D: split `source_model` into named parts. Image: masks for what
+    /// point, box or text prompts select in an image (PixelGenie L7), served
+    /// by `POST /v1/images/segmentations`.
     Segment,
     /// Image: views of the `init` image's subject from other sides.
     Multiview,
@@ -93,7 +95,7 @@ impl ModelTask {
         use ModelTask::*;
         match media {
             MediaType::Model3d => matches!(self, Generate | Rig | Animate | Texture | Remesh | Segment),
-            MediaType::Image => matches!(self, Generate | Multiview | BackgroundSwap),
+            MediaType::Image => matches!(self, Generate | Multiview | BackgroundSwap | Segment),
             MediaType::Video => matches!(self, Generate | Extend | Retake | VideoEdit),
         }
     }
@@ -330,6 +332,45 @@ pub enum ParamSpec {
     SourceModel(ParamSpecSourceModel),
     AnimationList(ParamSpecAnimationList),
     Region(ParamSpecRegion),
+    SegmentationPrompts(ParamSpecSegmentationPrompts),
+}
+
+/// `prompts` on a segmentation model (PixelGenie L7): what it can be asked
+/// to select.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ParamSpecSegmentationPrompts {
+    /// The prompt types the model takes, listed as `segmentation_prompts`.
+    pub types: Vec<SegmentationPromptType>,
+    /// The most prompts one request may send.
+    pub max_items: usize,
+    /// The most masks one answer holds: a text prompt finds at most this
+    /// many instances.
+    pub max_masks: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
+}
+
+/// The kinds of segmentation prompt (PixelGenie L7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SegmentationPromptType {
+    /// A spot on (label 1) or off (label 0) the object.
+    Point,
+    /// A box around the object.
+    Box,
+    /// The object named: every instance of it.
+    Text,
+}
+
+impl SegmentationPromptType {
+    /// The wire spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SegmentationPromptType::Point => "point",
+            SegmentationPromptType::Box => "box",
+            SegmentationPromptType::Text => "text",
+        }
+    }
 }
 
 /// The clips an `animate` model makes (`animations`, 3D doc §3C).
@@ -759,6 +800,8 @@ pub const KNOWN_PARAMS: &[&str] = &[
     "region",
     // Multiview images (3D doc §3E).
     "views",
+    // Promptable segmentation (PixelGenie L7).
+    "prompts",
 ];
 
 /// The `ParamSpec` kind(s) a canonical param may be declared with: exactly the
@@ -787,6 +830,7 @@ pub fn canonical_param_kinds(name: &str) -> &'static [&'static str] {
         "camera" => &["string"],
         "target_polycount" => &["int"],
         "source_model" => &["source_model"],
+        "prompts" => &["segmentation_prompts"],
         _ => &[],
     }
 }
@@ -806,6 +850,7 @@ impl ParamSpec {
             ParamSpec::SourceModel(_) => "source_model",
             ParamSpec::AnimationList(_) => "animation_list",
             ParamSpec::Region(_) => "region",
+            ParamSpec::SegmentationPrompts(_) => "segmentation_prompts",
         }
     }
 }

@@ -814,4 +814,50 @@ models:
             assert!(err.contains(needle), "{fields}: {err}");
         }
     }
+
+    // ─── Segmentation (PixelGenie L7) ─────────────────────────────────────────
+
+    fn segment_image(task: &str, caps: &str, params: &str) -> Result<CapabilityRegistry, LoadError> {
+        yaml(&format!(r#"
+models:
+  - id: x/seg
+    provider: x
+    media_type: image
+{task}
+    display_name: Seg
+    pricing: {{ base_cost_usd: 0.005 }}
+    capabilities: {caps}
+    prompt: {{ required: false, max_length: 0 }}
+    params:
+{params}
+"#))
+    }
+
+    const PROMPTS: &str = "      prompts: { kind: segmentation_prompts, types: [point, box, text], max_items: 16, max_masks: 32 }";
+
+    #[test]
+    fn a_segmentation_model_says_which_prompts_it_takes_and_makes_nothing_else() {
+        let r = segment_image("    task: segment", "{}", PROMPTS).unwrap();
+        let m = r.get("x/seg").unwrap();
+        assert_eq!(m.task, ModelTask::Segment);
+        match m.params.get("prompts") {
+            Some(ParamSpec::SegmentationPrompts(p)) => assert_eq!(
+                (p.types.clone(), p.max_items, p.max_masks),
+                (vec![SegmentationPromptType::Point, SegmentationPromptType::Box, SegmentationPromptType::Text], 16, 32)
+            ),
+            other => panic!("{other:?}"),
+        }
+        for (task, caps, params, needle) in [
+            ("    task: segment", "{}", "      seed: { kind: seed, min: 0, max: 10 }", "prompts"),
+            ("", "{ text_to_image: true }", PROMPTS, "segment"),
+            ("    task: segment", "{ text_to_image: true }", PROMPTS, "text_to_image"),
+            ("    task: segment", "{}", "      prompts: { kind: segmentation_prompts, types: [], max_items: 16, max_masks: 32 }", "types"),
+            ("    task: segment", "{}", "      prompts: { kind: segmentation_prompts, types: [point], max_items: 0, max_masks: 32 }", "max_items"),
+            ("    task: segment", "{}", "      prompts: { kind: segmentation_prompts, types: [point], max_items: 4, max_masks: 0 }", "max_masks"),
+            ("    task: segment", "{}", "      prompts: { kind: segmentation_prompts, types: [point, lasso], max_items: 4, max_masks: 1 }", "lasso"),
+        ] {
+            let err = segment_image(task, caps, params).unwrap_err().to_string();
+            assert!(err.contains(needle), "{task} {caps} {params}: {err}");
+        }
+    }
 }

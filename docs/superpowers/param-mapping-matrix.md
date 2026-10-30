@@ -76,12 +76,13 @@ the wire shape both SDKs type.
 
 | field | where | rule | proof | status |
 |---|---|---|---|---|
-| `task` | `ModelSchema.task`, `ModelCapabilities.task` (`ModelTask`) | One per model, from its modality's list (3D: `generate` \| `rig` \| `animate` \| `texture` \| `remesh` \| `segment`; image: `generate` \| `multiview` \| `background_swap`; video: `generate` \| `extend` \| `retake` \| `video_edit`). Omitted in yaml means `generate`. The `*_to_3d` flags are refused on anything but a 3D `generate` model. | loader: `task_defaults_to_generate`, `loads_a_3d_operation_task`, `rejects_a_task_from_another_modality`, `rejects_to_3d_flags_on_a_non_generate_task`, `rejects_an_unknown_task`. conformance: `every_model_declares_a_task_its_modality_has`. wire: `model_task_is_a_named_enum_on_the_schema_and_the_capabilities`, `the_listing_carries_each_models_task`. SDKs: `test_literal_values_match_the_schema_enum[ModelTask]` (Python), `names every catalog task` (TS type test). | ✅ |
+| `task` | `ModelSchema.task`, `ModelCapabilities.task` (`ModelTask`) | One per model, from its modality's list (3D: `generate` \| `rig` \| `animate` \| `texture` \| `remesh` \| `segment`; image: `generate` \| `multiview` \| `background_swap` \| `segment`; video: `generate` \| `extend` \| `retake` \| `video_edit`). Omitted in yaml means `generate`. The `*_to_3d` flags are refused on anything but a 3D `generate` model. | loader: `task_defaults_to_generate`, `loads_a_3d_operation_task`, `rejects_a_task_from_another_modality`, `rejects_to_3d_flags_on_a_non_generate_task`, `rejects_an_unknown_task`. conformance: `every_model_declares_a_task_its_modality_has`. wire: `model_task_is_a_named_enum_on_the_schema_and_the_capabilities`, `the_listing_carries_each_models_task`. SDKs: `test_literal_values_match_the_schema_enum[ModelTask]` (Python), `names every catalog task` (TS type test). | ✅ |
 | `native_orientation` | `ModelSchema.native_orientation` (`NativeOrientation {up, front, evidence}`) | 3D only. The axes the vendor builds along, each one of `+x` `-x` `+y` `-y` `+z` `-z` spelled exactly so, at right angles, with the evidence that showed them. Absent means unproven: the mesh is never turned and its manifest says `front: "unverified"`. Declared today only by `mock/rig-3d` (+y/+z) and `mock/turned-3d` (+y/+x); every vendor row stays unproven until a live run shows its axes (no vendor keys here). | loader: `a_3d_model_declares_its_proven_orientation`, `native_orientation_axes_are_signed_axes_at_right_angles`, `native_orientation_names_its_evidence`, `native_orientation_is_a_3d_field`. wire: `a_3d_asset_documents_its_manifest_and_the_original_kind`, `the_catalog_says_which_models_have_a_proven_orientation`. SDKs: TS `types a mesh's manifest and a model's proven orientation`. | ✅ (mock); vendor rows 🟡 unproven |
 | `is_available` | `ModelInfo.is_available` on `GET /v1/models` | True when the model's provider can serve the caller: their org stored its own credential for it, or litegen holds a platform default for the model's medium — the test a generation makes before answering `provider_not_configured` (L14). | HTTP `a_model_is_available_only_where_its_provider_can_serve_the_caller` (an org's own key flips its provider's models, and only those). | ✅ |
 | `status`, `deprecated_at`, `retires_at`, `replaced_by` | `ModelSchema` (yaml dates, `YYYY-MM-DD`), `ModelInfo` | `status` is derived: `retired` strictly after `retires_at` (the vendor still serves it that day), `deprecated` once dated, else `active`. A retired model is neither listed nor resolved for a request; `replaced_by` names a catalog model that itself does not retire; a scheduled shutdown is its row's own `retires_at` (L14). | registry `a_model_past_its_retirement_is_no_longer_served`; loader `lifecycle_dates_are_calendar_days_and_a_model_is_not_its_own_replacement`; HTTP `the_listing_says_each_models_lifecycle`; conformance `every_scheduled_shutdown_is_its_rows_retires_at`, `every_replacement_is_a_catalog_model`; OpenAPI `the_listing_documents_lifecycle_limits_and_its_version` | ✅ |
 | `max_reference_images` (`max_images` kept) | `ModelCapabilities` | The reference limit (`ref_inputs.max_total`); `max_images` carries the same number for old clients (L14). | HTTP `the_listing_reports_real_limits_and_a_catalog_version` | ✅ |
 | `max_duration_seconds` | `ModelCapabilities` | The `duration_seconds` param's max (float or int); none where the model has no duration param. | same test | ✅ |
+| `supports_segmentation`, `segmentation_prompts` | `ModelCapabilities` | True, and the row's `params.prompts.types` (`point` \| `box` \| `text`), exactly when the model is an image `segment` model with a `segmentation_prompts` spec — which the loader requires of those and refuses on any other (L7). | loader `a_segmentation_model_says_which_prompts_it_takes_and_makes_nothing_else`; HTTP `the_listing_says_which_models_segment_and_with_which_prompts`; SDKs TS `types prompts, masks and the catalog fields`, Python `test_literal_values_match_the_schema_enum[SegmentationPromptType]` | ✅ |
 | `catalog_version` | `ModelListResponse` | The first 16 hex of SHA-256 over every served model (sorted by id): changes whenever any served field does. | registry `the_catalog_version_changes_with_any_field`; same HTTP test | ✅ |
 
 ## Request-time checks (L13)
@@ -305,6 +306,35 @@ call is billed once, however many views come back.
 Which side Tripo calls "left" is not documented **(unverified)**; litegen
 names Tripo's `left_view_url` its `left` (yaw 90). Not verified live: no Tripo
 key is available here.
+
+### Promptable segmentation (L7)
+
+`POST /v1/images/segmentations` answers at once (no job, no stored row) with
+masks for what `prompts` select in `image` (base64 or a `data:` URI; PNG,
+JPEG, WebP or GIF). It serves image models whose `task` is `segment`, and
+only those: either endpoint refuses the other's models with
+`model_task_mismatch`. Point and box prompts together select **one** object
+(a box around it, label-1 points on it, label-0 points left out); a text
+prompt selects every instance of what it names, at most `max_masks`, and is
+sent alone. Each mask comes back as litegen makes it from the vendor's file:
+a grayscale PNG the image's size, white where selected (a vendor pixel is
+selected when it is opaque and bright in any channel), with the box litegen
+measured around the white and the vendor's score (null when it gives none).
+Empty masks are left out; the rest are sorted best score first. Billed once
+per request at the row's price.
+
+| behaviour | rule | `fal/sam-3`, `fal/sam-3.1` | `mock/segment-image` | proof | status |
+|---|---|---|---|---|---|
+| request | `image` + `prompts` (`point {x, y, label 1\|0}`, `box {x, y, w, h}`, `text {text}`); prompt types ⊆ the row's `segmentation_prompts` | `image_url` data URI; points → `point_prompts [{x, y, label, object_id: 1}]`, boxes → `box_prompts [{x_min, y_min, x_max: x+w, y_max: y+h, object_id: 1}]`; text → `prompt` (else `""`: the schema's default is `"wheel"`), `return_multiple_masks` and `max_masks` 32; always `apply_mask: false`, `include_scores: true`, `sync_mode: true`, `output_format: png`; `POST https://fal.run/fal-ai/sam-3/image` (`…/sam-3-1/image`) | boxes exactly; the 32×32 square around each label-1 point, less those around label-0 points; text → two instances (the middles of the left and right halves) | adapter `sam_3_gets_points_and_boxes_as_one_object_and_returns_its_masks`, `a_text_prompt_asks_sam_3_for_every_instance`; HTTP `a_box_selects_exactly_the_box`, `points_together_select_one_object_a_square_around_each`, `a_text_prompt_finds_every_instance_best_first` | 🟡 wiremock / ✅ mock |
+| response | `masks[{png_base64, score, box}]`, best first, empty masks left out, at most `max_masks`; boxes measured by litegen | masks as data URIs (or URLs, fetched with no key); `scores[i]`, else `metadata[{index, score}]`; fal's own `[cx, cy, w, h]` boxes are not used | scores 0.95 (points/boxes), 0.9 and 0.8 (text, sent worst first) | core `a_coloured_mask_on_transparency_becomes_white_on_black_with_its_box`, `a_mask_of_another_size_is_scaled_to_the_image`, `empty_masks_are_left_out_and_the_rest_come_best_first`; OpenAPI `segmentation_documents_its_prompts_its_masks_and_the_catalog_fields` | 🟡 wiremock / ✅ mock |
+| refusals, before billing | 400: `param_required` (no prompts, empty text), `capability_unsupported` (a prompt type the row lacks), `param_out_of_range` (over `max_items`, two text prompts, label not 0/1, a box with no area), `param_conflict` (text mixed with points or boxes; only label-0 points), `prompt_out_of_bounds`, `image_unreadable`, `model_task_mismatch`, `model_media_type_mismatch`; 404 `model_not_found` | `max_items` 64 is litegen's (fal documents no cap) | `max_items` 16 | validator `segmentation_prompts_are_checked_against_the_model_before_billing`, `segmentation_prompts_must_fall_inside_the_image`, `a_segmentation_model_is_served_only_where_segmentations_are`; HTTP `a_request_the_model_cannot_serve_is_refused_before_anything_is_billed` (no request log) | ✅ |
+| vendor errors | a vendor 4xx is `vendor_rejected` with fal's `detail[0].msg`; 5xx retried like an image | 422 → `RequestFailed {422, not retryable}` | — | adapter `sam_3_refusing_the_request_is_the_vendors_error` | 🟡 wiremock |
+| billing | once per request | $0.005 (SAM 3), $0.01 (SAM 3.1) per request | $0.005 | HTTP `a_segmentation_is_charged_the_rows_price`; conformance `fal_sam_rows_take_all_three_prompt_types_and_at_most_32_masks` | ✅ |
+
+Not verified live: no fal key is available here. Two choices rest on reading
+fal's schema rather than a run **(unverified)**: that `prompt: ""` turns the
+`"wheel"` default off for point/box requests, and that `apply_mask: false`
+returns plain masks.
 
 ### Video
 

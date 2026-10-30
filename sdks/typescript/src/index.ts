@@ -122,6 +122,16 @@ export type ImageResult = components["schemas"]["ImageResult"];
  * drawn as its mask; with a `mask` too, the edit area is where they overlap.
  */
 export type Region = components["schemas"]["Region"];
+/** `POST /v1/images/segmentations` (PixelGenie L7): an image and what to select in it. */
+export type ImageSegmentationRequest = components["schemas"]["ImageSegmentationRequest"];
+/** One mask per object selected, best first. */
+export type ImageSegmentationResponse = components["schemas"]["ImageSegmentationResponse"];
+/** A point (`label` 1 selects, 0 leaves out), a box, or text naming what to select. */
+export type SegmentationPrompt = components["schemas"]["SegmentationPrompt"];
+/** A grayscale PNG the image's size (white = selected), its score and its box. */
+export type SegmentationMask = components["schemas"]["SegmentationMask"];
+/** The prompt types a model segments by: its `capabilities.segmentation_prompts`. */
+export type SegmentationPromptType = components["schemas"]["SegmentationPromptType"];
 /**
  * A view of a subject, named for the side the camera sees. Its yaw
  * (`ImageResult.yaw_deg`) is the camera's position around +Y from the

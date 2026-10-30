@@ -10,6 +10,7 @@ use utoipa::OpenApi;
     ),
     paths(
         crate::api::handlers::generate_image,
+        crate::api::handlers::segment_image,
         crate::api::handlers::estimate_image_cost,
         crate::api::handlers::generate_video,
         crate::api::handlers::estimate_video_cost,
@@ -158,6 +159,12 @@ use utoipa::OpenApi;
         crate::types::BaseGenerationRequest,
         crate::types::ImageGenerationRequest,
         crate::types::ImageGenerationResponse,
+        crate::types::ImageSegmentationRequest,
+        crate::types::ImageSegmentationResponse,
+        crate::types::SegmentationPrompt,
+        crate::types::SegmentationMask,
+        crate::capabilities::SegmentationPromptType,
+        crate::capabilities::ParamSpecSegmentationPrompts,
         crate::types::ImageResult,
         crate::types::VideoGenerationRequest,
         crate::types::VideoGenerationResponse,
@@ -446,6 +453,37 @@ mod tests {
             property(&s["ModelCapabilities"], f);
         }
         assert!(mentions(&s["ParamSpec"], "\"region\""), "the union names the region kind");
+    }
+
+    #[test]
+    fn segmentation_documents_its_prompts_its_masks_and_the_catalog_fields() {
+        let d = doc();
+        let op = &d["paths"]["/v1/images/segmentations"]["post"];
+        assert!(mentions(&op["requestBody"], "#/components/schemas/ImageSegmentationRequest"), "{op}");
+        assert!(mentions(&op["responses"]["200"], "#/components/schemas/ImageSegmentationResponse"), "{op}");
+        for code in ["prompt_out_of_bounds", "image_unreadable", "model_task_mismatch", "param_conflict"] {
+            assert!(mentions(&op["responses"]["400"], code), "{code}");
+        }
+        let s = &d["components"]["schemas"];
+        assert_eq!(s["ImageSegmentationRequest"]["required"], json!(["model", "image", "prompts"]));
+        assert!(mentions(property(&s["ImageSegmentationRequest"], "prompts"), "#/components/schemas/SegmentationPrompt"));
+        for kind in ["\"point\"", "\"box\"", "\"text\"", "label"] {
+            assert!(mentions(&s["SegmentationPrompt"], kind), "{kind}: {}", s["SegmentationPrompt"]);
+        }
+        for f in ["png_base64", "score", "box"] {
+            property(&s["SegmentationMask"], f);
+        }
+        // Always present; a score is null when the vendor gives none.
+        assert_eq!(s["SegmentationMask"]["required"], json!(["png_base64", "score", "box"]));
+        assert!(mentions(property(&s["ImageSegmentationResponse"], "masks"), "#/components/schemas/SegmentationMask"));
+        assert_eq!(s["SegmentationPromptType"]["enum"], json!(["point", "box", "text"]));
+        for f in ["supports_segmentation", "segmentation_prompts"] {
+            property(&s["ModelCapabilities"], f);
+        }
+        for f in ["types", "max_items", "max_masks"] {
+            property(&s["ParamSpecSegmentationPrompts"], f);
+        }
+        assert!(mentions(&s["ParamSpec"], "segmentation_prompts"), "the union names the new kind");
     }
 
     #[test]

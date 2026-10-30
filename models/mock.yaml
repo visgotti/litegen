@@ -610,6 +610,32 @@ models:
       background: { kind: string, enum_values: [transparent, opaque] }
     tags: [mock, test, formats]
 
+  # ─── Promptable segmentation (PixelGenie L7) ──────────────────────────────
+  - id: mock/segment-image
+    provider: mock
+    media_type: image
+    task: segment
+    display_name: Mock Segment Image
+    description: >-
+      Masks for point, box and text prompts. Points and boxes select one
+      object: each box exactly, the 32×32 square around each label-1 point,
+      less the square around each label-0 one. A text prompt finds two
+      instances, the middles of the image's left and right halves.
+    pricing: { base_cost_usd: 0.005 }  # nonzero, so the charge is observable
+    capabilities: {}
+    prompt: { required: false, max_length: 0 }
+    params:
+      prompts:
+        kind: segmentation_prompts
+        types: [point, box, text]
+        max_items: 16
+        max_masks: 8
+        label: Prompts
+        description: >-
+          What to select. Points and boxes together select one object; a text
+          prompt selects every instance of what it names.
+    tags: [mock, test, segmentation]
+
   # ─── Prices that follow the request (PixelGenie 3D doc §3G, L14) ───────────
   - id: mock/priced-image
     provider: mock

@@ -360,6 +360,35 @@ pub trait ImageProvider: Send + Sync {
     fn map_model_id(&self, model: &str, mapping: &HashMap<String, String>) -> String {
         mapping.get(model).cloned().unwrap_or_else(|| model.to_string())
     }
+
+    /// Promptable segmentation (PixelGenie L7): the vendor's masks for what
+    /// the prompts select, best first. Core makes each a black-and-white PNG
+    /// the image's size and measures its box, so return them as they came.
+    async fn segment(&self, model: &ModelSchema, input: &SegmentationInput) -> Result<Vec<VendorMask>, ProviderError> {
+        let _ = input;
+        Err(ProviderError::ModelNotSupported { model: model.id.clone(), provider: self.name().to_string() })
+    }
+}
+
+/// A segmentation request, checked against the model and the image.
+#[derive(Debug, Clone)]
+pub struct SegmentationInput {
+    /// The image as sent, and its type read from the bytes.
+    pub image: bytes::Bytes,
+    pub content_type: String,
+    pub width: u32,
+    pub height: u32,
+    pub prompts: Vec<crate::types::SegmentationPrompt>,
+    /// The most masks to return.
+    pub max_masks: usize,
+}
+
+/// One mask as the vendor returned it.
+#[derive(Debug, Clone)]
+pub struct VendorMask {
+    /// Any image container the `image` crate reads; white or opaque means selected.
+    pub bytes: Vec<u8>,
+    pub score: Option<f64>,
 }
 
 /// The core trait for video generation providers.

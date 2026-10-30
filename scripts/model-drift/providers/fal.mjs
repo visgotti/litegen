@@ -1,6 +1,7 @@
 // fal.ai — an aggregator (~1,500 endpoints), so "new" is scoped to the model
-// families we carry: FLUX, Stable Diffusion / SDXL, Recraft, AuraFlow, LTX
-// Video, and the 3D families Hyper3D Rodin, TRELLIS, Hunyuan3D, Meshy and Tripo, matched on
+// families we carry: FLUX, Stable Diffusion / SDXL, Recraft, AuraFlow, SAM
+// (segmentation), LTX Video, and the 3D families Hyper3D Rodin, TRELLIS,
+// Hunyuan3D, Meshy and Tripo, matched on
 // the endpoint id, minus training endpoints (LoRA trainers are not generation
 // models). Sources are fal's public Platform API (api.fal.ai/v1/models — no
 // key needed, but unauthenticated calls are rate-limited, so this stays at five
@@ -18,7 +19,8 @@
 //    (byte-identical for the three 3D endpoints, 2026-10-12), so per-endpoint
 //    fetches of it would add calls without adding typings.
 // Vendor id = the endpoint id in the URL path. Mapping mirrors
-// litegen-core/src/providers/image/fal.rs `resolve_endpoint`, video/fal.rs
+// litegen-core/src/providers/image/fal.rs `resolve_endpoint` and
+// `SEGMENT_MODELS`, video/fal.rs
 // `resolve_spec` (fal/video is its LTX Video default arm; fal/ltx-2.3 has its
 // own arm) and model3d/fal.rs `resolve_spec` (text_to_3d, image_to_3d and
 // multiview_to_3d).
@@ -37,6 +39,9 @@ const IMAGE = {
   // Renamed from fal-ai/recraft-v3 (no longer in the model registry; its page 308-redirects here).
   'fal/recraft-v3': 'fal-ai/recraft/v3/text-to-image',
   'fal/auraflow': 'fal-ai/aura-flow',
+  // Segmentation (image/fal.rs `SEGMENT_MODELS`), appended so the chunks above keep their ids.
+  'fal/sam-3': 'fal-ai/sam-3/image',
+  'fal/sam-3.1': 'fal-ai/sam-3-1/image',
 };
 const VIDEO = {
   'fal/video': ['fal-ai/ltx-video', 'fal-ai/ltx-video/image-to-video'],
@@ -59,7 +64,7 @@ const GROUPS = { image: IMAGE, video: VIDEO, '3d': MODEL3D };
 const MODELS = { ...IMAGE, ...VIDEO, ...MODEL3D };
 
 const API = 'https://api.fal.ai/v1/models';
-const FAMILIES = /(?:^|[/-])(?:flux|stable-diffusion|sdxl|sd3|recraft|aura-?flow|ltx|hyper3d|rodin|trellis|hunyuan-?3d|meshy|tripo)/;
+const FAMILIES = /(?:^|[/-])(?:flux|stable-diffusion|sdxl|sd3|recraft|aura-?flow|ltx|hyper3d|rodin|trellis|hunyuan-?3d|meshy|tripo|sam)/;
 
 const isTraining = (m) => m.metadata?.category === 'training' || m.metadata?.kind === 'training';
 

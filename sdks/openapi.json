@@ -3186,6 +3186,109 @@
                 }
             }
         },
+        "/v1/images/segmentations": {
+            "post": {
+                "tags": [
+                    "Images"
+                ],
+                "summary": "POST /v1/images/segmentations \u2014 Masks for what point, box or text prompts\nselect in an image, answered at once.",
+                "operationId": "segment_image",
+                "parameters": [
+                    {
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "description": "1\u2013255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key.",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ImageSegmentationRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "What the prompts selected: one mask per object, best first, billed once per request at the row's price",
+                        "headers": {
+                            "Idempotent-Replayed": {
+                                "schema": {
+                                    "type": "string"
+                                },
+                                "description": "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ImageSegmentationResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Refused before anything is billed. `param_required`: no prompts, or an empty text prompt. `capability_unsupported`: a prompt type the model does not take (its `segmentation_prompts`). `param_out_of_range`: more prompts than the model takes, more than one text prompt, a point label other than 0 or 1, or a box with no area. `param_conflict`: a text prompt mixed with point or box prompts, or only label-0 points. `prompt_out_of_bounds`: a point or box outside the image. `image_unreadable`: not base64 of a PNG, JPEG, WebP or GIF. `model_task_mismatch`: not a segmentation model. `model_media_type_mismatch`: not an image model.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "`model_not_found`",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Provider error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "504": {
+                        "description": "`vendor_timeout`: the vendor did not answer in time. Never re-sent.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v1/keys": {
             "get": {
                 "tags": [
@@ -8496,6 +8599,77 @@
                     }
                 }
             },
+            "ImageSegmentationRequest": {
+                "type": "object",
+                "description": "`POST /v1/images/segmentations` (PixelGenie L7). Answered at once.",
+                "required": [
+                    "model",
+                    "image",
+                    "prompts"
+                ],
+                "properties": {
+                    "image": {
+                        "type": "string",
+                        "description": "The image: base64, or a `data:` URI. PNG, JPEG, WebP or GIF."
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "A model whose `task` is `segment`."
+                    },
+                    "prompts": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SegmentationPrompt"
+                        },
+                        "description": "What to select. Point and box prompts together select one object;\na text prompt selects every instance of what it names."
+                    }
+                }
+            },
+            "ImageSegmentationResponse": {
+                "type": "object",
+                "description": "What the prompts selected.",
+                "required": [
+                    "id",
+                    "created",
+                    "model",
+                    "provider",
+                    "masks"
+                ],
+                "properties": {
+                    "created": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Unix timestamp of when the request was created."
+                    },
+                    "id": {
+                        "type": "string",
+                        "description": "Unique request ID for tracking."
+                    },
+                    "masks": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SegmentationMask"
+                        },
+                        "description": "One per object selected, best score first. Empty when nothing was\nfound."
+                    },
+                    "model": {
+                        "type": "string"
+                    },
+                    "provider": {
+                        "type": "string"
+                    },
+                    "usage": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/UsageInfo"
+                            }
+                        ]
+                    }
+                }
+            },
             "ImageView": {
                 "type": "string",
                 "description": "A side of the subject a view shows (3D doc \u00a73E). Its `yaw_deg` is the\ncamera's position around +Y, measured from the subject's front (+Z)\ntowards +X \u2014 and glTF puts the subject's left at +X \u2014 so `front` is 0,\n`left` 90, `back` 180 and `right` 270. `top` and `bottom` have no yaw.",
@@ -9334,6 +9508,13 @@
                             }
                         ]
                     },
+                    "segmentation_prompts": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SegmentationPromptType"
+                        },
+                        "description": "The prompt types it segments by: `point`, `box`, `text`. Empty when it\ndoes not segment."
+                    },
                     "supported_sizes": {
                         "type": "array",
                         "items": {
@@ -9390,6 +9571,10 @@
                     "supports_rig": {
                         "type": "boolean",
                         "description": "Takes the `rig` param."
+                    },
+                    "supports_segmentation": {
+                        "type": "boolean",
+                        "description": "Serves `POST /v1/images/segmentations` (PixelGenie L7)."
                     },
                     "supports_source_model": {
                         "type": "boolean",
@@ -10605,6 +10790,27 @@
                                 }
                             }
                         ]
+                    },
+                    {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/ParamSpecSegmentationPrompts"
+                            },
+                            {
+                                "type": "object",
+                                "required": [
+                                    "kind"
+                                ],
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                            "segmentation_prompts"
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
                     }
                 ]
             },
@@ -10870,6 +11076,46 @@
                     "min": {
                         "type": "integer",
                         "format": "int64"
+                    }
+                }
+            },
+            "ParamSpecSegmentationPrompts": {
+                "type": "object",
+                "description": "`prompts` on a segmentation model (PixelGenie L7): what it can be asked\nto select.",
+                "required": [
+                    "types",
+                    "max_items",
+                    "max_masks"
+                ],
+                "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "max_items": {
+                        "type": "integer",
+                        "description": "The most prompts one request may send.",
+                        "minimum": 0
+                    },
+                    "max_masks": {
+                        "type": "integer",
+                        "description": "The most masks one answer holds: a text prompt finds at most this\nmany instances.",
+                        "minimum": 0
+                    },
+                    "types": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SegmentationPromptType"
+                        },
+                        "description": "The prompt types the model takes, listed as `segmentation_prompts`."
                     }
                 }
             },
@@ -12565,6 +12811,137 @@
                         "description": "`humanoid` when a known naming scheme matched, else what the request\nasked the rig to be, else absent."
                     }
                 }
+            },
+            "SegmentationMask": {
+                "type": "object",
+                "description": "One selected object.",
+                "required": [
+                    "png_base64",
+                    "score",
+                    "box"
+                ],
+                "properties": {
+                    "box": {
+                        "$ref": "#/components/schemas/Region",
+                        "description": "The smallest box around the white pixels, measured by litegen."
+                    },
+                    "png_base64": {
+                        "type": "string",
+                        "description": "A grayscale PNG the size of the image: white (255) where selected,\nblack (0) elsewhere."
+                    },
+                    "score": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "The vendor's confidence, 0\u20131; null when it gives none."
+                    }
+                }
+            },
+            "SegmentationPrompt": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "description": "A spot on the object (`label: 1`, the default) or one to leave out\nof it (`label: 0`).",
+                        "required": [
+                            "x",
+                            "y",
+                            "type"
+                        ],
+                        "properties": {
+                            "label": {
+                                "type": "integer",
+                                "format": "int32",
+                                "minimum": 0
+                            },
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "point"
+                                ]
+                            },
+                            "x": {
+                                "type": "integer",
+                                "format": "int32",
+                                "minimum": 0
+                            },
+                            "y": {
+                                "type": "integer",
+                                "format": "int32",
+                                "minimum": 0
+                            }
+                        }
+                    },
+                    {
+                        "type": "object",
+                        "description": "A box around the object; ends exclusive, as `Region`.",
+                        "required": [
+                            "x",
+                            "y",
+                            "w",
+                            "h",
+                            "type"
+                        ],
+                        "properties": {
+                            "h": {
+                                "type": "integer",
+                                "format": "int32",
+                                "minimum": 0
+                            },
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "box"
+                                ]
+                            },
+                            "w": {
+                                "type": "integer",
+                                "format": "int32",
+                                "minimum": 0
+                            },
+                            "x": {
+                                "type": "integer",
+                                "format": "int32",
+                                "minimum": 0
+                            },
+                            "y": {
+                                "type": "integer",
+                                "format": "int32",
+                                "minimum": 0
+                            }
+                        }
+                    },
+                    {
+                        "type": "object",
+                        "description": "What to select, named.",
+                        "required": [
+                            "text",
+                            "type"
+                        ],
+                        "properties": {
+                            "text": {
+                                "type": "string"
+                            },
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "text"
+                                ]
+                            }
+                        }
+                    }
+                ],
+                "description": "One thing to select, in the image's pixels (top-left origin). Point and\nbox prompts together select ONE object; a text prompt selects every\ninstance of what it names and cannot be mixed with them."
+            },
+            "SegmentationPromptType": {
+                "type": "string",
+                "description": "The kinds of segmentation prompt (PixelGenie L7).",
+                "enum": [
+                    "point",
+                    "box",
+                    "text"
+                ]
             },
             "Session": {
                 "type": "object",

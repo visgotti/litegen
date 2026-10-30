@@ -29,6 +29,7 @@ from .types import (
     Generation,
     GenerationAssetList,
     GenerationPage,
+    ImageSegmentationResponse,
     MediaType,
     Model3dConversion,
     Model3dConvertFormats,
@@ -233,6 +234,15 @@ class _ImagesNamespace:
 
     def estimate_cost(self, **req: Any) -> Any:
         return self._c._request("POST", "/v1/images/cost", json=_clean(req))
+
+    def segment(self, *, idempotency_key: str | None = None, **req: Any) -> ImageSegmentationResponse:
+        """Masks for what ``prompts`` select in ``image`` (``POST
+        /v1/images/segmentations``), answered at once. Points and boxes
+        together select one object; a text prompt every instance of what it
+        names. ``idempotency_key`` is sent as the ``Idempotency-Key`` header."""
+        return self._c._request_with_headers(
+            "POST", "/v1/images/segmentations", json=_clean(req), headers=_idempotency(idempotency_key)
+        )[0]
 
 
 class VideoJob:

@@ -665,6 +665,7 @@ impl Default for ModelCapabilities {
             supports_keyframes: false, max_keyframes: None, keyframe_timing: None,
             supports_transparent_background: false, lossy_only: false,
             supports_fixed_camera: false, supports_audio_toggle: false, supports_loop: false, duration_values: Vec::new(),
+            supports_segmentation: false, segmentation_prompts: Vec::new(),
         }
     }
 }

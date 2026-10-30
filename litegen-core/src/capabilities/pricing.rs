@@ -148,6 +148,15 @@ pub fn request_price_usd(schema: &ModelSchema, base: &BaseGenerationRequest, par
     unit_price_usd(schema, &PriceFacts::new(schema, base, params)) * units
 }
 
+/// A request with no params of its own — a segmentation (PixelGenie L7) —
+/// priced by its row alone: the quote, the reservation and the charge.
+pub fn row_price_usd(schema: &ModelSchema) -> f64 {
+    match serde_json::from_value::<BaseGenerationRequest>(serde_json::json!({ "model": schema.id })) {
+        Ok(base) => unit_price_usd(schema, &PriceFacts::new(schema, &base, &Value::Null)),
+        Err(_) => schema.pricing.base_cost_usd,
+    }
+}
+
 /// The vendor's price for one output of this request.
 pub fn unit_price_usd(schema: &ModelSchema, facts: &PriceFacts) -> f64 {
     schema

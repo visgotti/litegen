@@ -5,7 +5,7 @@ use crate::capabilities::ModelSchema;
 use crate::proxy::materializer::MaterializedRequest;
 use crate::providers::{
     BaseGenerationRequest, GenerationOutput, HealthCheckResult, ImageExtras, ImageProvider,
-    ProviderError, ProviderInstanceConfig, build_cost_estimate,
+    ProviderError, ProviderInstanceConfig, SegmentationInput, VendorMask, build_cost_estimate,
 };
 use crate::types::*;
 use super::visual_mock::generate_visual_image_png;
@@ -84,6 +84,42 @@ fn formatted_image(prompt: &str, format: Option<&str>, background: Option<&str>)
         _ => img.write_to(&mut cursor, image::ImageFormat::Png).map_err(fail)?,
     }
     Ok(out)
+}
+
+/// The segmentation mock (PixelGenie L7).
+const SEGMENT_MODEL: &str = "mock/segment-image";
+
+/// What `mock/segment-image` selects. Points and boxes make one object: each
+/// box exactly, the 32×32 square around each label-1 point, less the square
+/// around each label-0 one. A text prompt finds two instances, the middles of
+/// the image's left and right halves, returned worst first so a test sees
+/// litegen order them.
+fn segment_masks(input: &SegmentationInput) -> Result<Vec<VendorMask>, ProviderError> {
+    let (w, h) = (input.width, input.height);
+    let rect = |x0: u32, y0: u32, rw: u32, rh: u32| move |x: u32, y: u32| x >= x0 && x < x0 + rw && y >= y0 && y < y0 + rh;
+    let square = |px: u32, py: u32| move |x: u32, y: u32| x + 16 >= px && x < px + 16 && y + 16 >= py && y < py + 16;
+    let encode = |inside: &dyn Fn(u32, u32) -> bool| -> Result<Vec<u8>, ProviderError> {
+        let img = image::GrayImage::from_fn(w, h, |x, y| image::Luma([if inside(x, y) { 255 } else { 0 }]));
+        let mut out = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .map_err(|e| ProviderError::InvalidRequest(format!("the mock could not encode its mask: {e}")))?;
+        Ok(out)
+    };
+    if input.prompts.iter().any(|p| matches!(p, SegmentationPrompt::Text { .. })) {
+        return Ok(vec![
+            VendorMask { bytes: encode(&rect(5 * w / 8, h / 4, w / 4, h / 2))?, score: Some(0.8) },
+            VendorMask { bytes: encode(&rect(w / 8, h / 4, w / 4, h / 2))?, score: Some(0.9) },
+        ]);
+    }
+    let selected = |x: u32, y: u32| {
+        let on = input.prompts.iter().any(|p| match *p {
+            SegmentationPrompt::Box { x: bx, y: by, w: bw, h: bh } => rect(bx, by, bw, bh)(x, y),
+            SegmentationPrompt::Point { x: px, y: py, label: 1 } => square(px, py)(x, y),
+            _ => false,
+        });
+        on && !input.prompts.iter().any(|p| matches!(*p, SegmentationPrompt::Point { x: px, y: py, label: 0 } if square(px, py)(x, y)))
+    };
+    Ok(vec![VendorMask { bytes: encode(&selected)?, score: Some(0.95) }])
 }
 
 /// The model that takes references only as URLs it can fetch (L4).
@@ -293,6 +329,13 @@ impl ImageProvider for MockProvider {
             CostSource::Estimated,
             None,
         ))
+    }
+
+    async fn segment(&self, model: &ModelSchema, input: &SegmentationInput) -> Result<Vec<VendorMask>, ProviderError> {
+        if model.id != SEGMENT_MODEL {
+            return Err(ProviderError::ModelNotSupported { model: model.id.clone(), provider: "mock".into() });
+        }
+        segment_masks(input)
     }
 
     async fn health_check(&self) -> HealthCheckResult {
