@@ -80,6 +80,18 @@ the wire shape both SDKs type.
 | `native_orientation` | `ModelSchema.native_orientation` (`NativeOrientation {up, front, evidence}`) | 3D only. The axes the vendor builds along, each one of `+x` `-x` `+y` `-y` `+z` `-z` spelled exactly so, at right angles, with the evidence that showed them. Absent means unproven: the mesh is never turned and its manifest says `front: "unverified"`. Declared today only by `mock/rig-3d` (+y/+z) and `mock/turned-3d` (+y/+x); every vendor row stays unproven until a live run shows its axes (no vendor keys here). | loader: `a_3d_model_declares_its_proven_orientation`, `native_orientation_axes_are_signed_axes_at_right_angles`, `native_orientation_names_its_evidence`, `native_orientation_is_a_3d_field`. wire: `a_3d_asset_documents_its_manifest_and_the_original_kind`, `the_catalog_says_which_models_have_a_proven_orientation`. SDKs: TS `types a mesh's manifest and a model's proven orientation`. | ✅ (mock); vendor rows 🟡 unproven |
 | `is_available` | `ModelInfo.is_available` on `GET /v1/models` | True when the model's provider can serve the caller: their org stored its own credential for it, or litegen holds a platform default for the model's medium — the test a generation makes before answering `provider_not_configured` (L14). | HTTP `a_model_is_available_only_where_its_provider_can_serve_the_caller` (an org's own key flips its provider's models, and only those). | ✅ |
 
+## Request-time checks (L13)
+
+What a model cannot do is refused before anything is billed, with a code that
+says so, instead of failing (or being swapped) at the vendor.
+
+| check | rule | proof | status |
+|---|---|---|---|
+| capability | 400 `capability_unsupported`: text alone on an image model without `text_to_image` or a video model without `text_to_video`; an `init` image on an image model with neither `image_to_image` nor `inpainting`; a frame (`first_frame`, `last_frame`, `init`, `keyframe`) on a video model without `image_to_video`; no reference on a 3D model without `text_to_3d` (a required `init` role still answers `ref_role_required` first) | validator `a_capability_the_model_lacks_is_refused_by_name` | ✅ |
+| `n` | litegen returns one image per request, and a vendor asked for more bills them all, so `n > 1` is 400 `param_out_of_range` (param `n`) | validator `more_than_one_image_per_request_is_refused` | ✅ |
+| model ids | an id an adapter has no arm for is `ModelNotSupported`, never billed as another model: Runway (image, video), Leonardo (image, video), Luma (image, video), fal (image, video — `fal/video` is now an arm of its own) and Google image; Google video passes its id through | each adapter's `every_catalog_row_resolves_and_an_unknown_id_does_not` (every row has its own arm) | ✅ |
+| sizes | refused, never snapped: a freeform size spec now carries `min_pixels`, `max_pixels` and `max_aspect`, and the GPT Image 2 rows declare OpenAI's (655,360–8,294,400 pixels, 3:1); the OpenAI adapter refuses anything else instead of snapping it | validator `a_size_the_vendor_cannot_make_is_refused_not_snapped`; adapter `gpt_image_2_sizes_follow_the_documented_constraints`; conformance `gpt_image_sizes_carry_every_openai_limit`; OpenAPI `a_freeform_size_documents_the_vendors_pixel_and_aspect_limits` | ✅ |
+
 ## Prices that match the bill (3D doc §3G, L14)
 
 A row's `pricing.base_cost_usd` is the vendor's price for its default request;

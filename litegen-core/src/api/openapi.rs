@@ -492,6 +492,14 @@ mod tests {
     }
 
     #[test]
+    fn a_freeform_size_documents_the_vendors_pixel_and_aspect_limits() {
+        let d = doc();
+        for f in ["min_pixels", "max_pixels", "max_aspect"] {
+            property(&d["components"]["schemas"]["SizeSpecFreeform"], f);
+        }
+    }
+
+    #[test]
     fn a_models_reference_spec_says_whether_its_vendor_takes_data_uris() {
         let d = doc();
         let p = property(&d["components"]["schemas"]["RefInputSpec"], "data_uri");

@@ -60,7 +60,10 @@ impl OpenAiProvider {
             .ok_or_else(|| ProviderError::NotConfigured("openai".into()))
     }
 
-    /// Clamp a requested size to something the target model accepts.
+    /// The size to send, or a refusal: a size the model cannot make is
+    /// refused, never snapped to one the caller did not ask for (L13). The
+    /// catalog's size spec refuses these before billing; this is the
+    /// adapter's own guard.
     ///
     /// @see <https://developers.openai.com/api/docs/deprecations> and the
     ///   `CreateImageRequest.size` description: the GPT image models take
@@ -74,63 +77,37 @@ impl OpenAiProvider {
     ///   2026-05-12.
     /// @see <https://developers.openai.com/api/docs/guides/image-generation>
     ///   ("GPT Image 2 settings", re-read 2026-09-11) — the edge and pixel limits.
-    fn normalize_size(size: &str, model: &str) -> String {
-        let parts: Vec<&str> = size.split('x').collect();
-        let (w, h) = if parts.len() == 2 {
-            (
-                parts[0].parse::<u32>().unwrap_or(1024),
-                parts[1].parse::<u32>().unwrap_or(1024),
-            )
+    fn vendor_size(size: &str, model: &str) -> Result<String, ProviderError> {
+        let refuse = || ProviderError::InvalidRequest(format!("{model} cannot make a {size} image"));
+        let (w, h) = size
+            .split_once('x')
+            .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
+            .ok_or_else(refuse)?;
+        let listed: &[(u32, u32)] = if Self::is_dalle3(model) {
+            &[(1024, 1024), (1792, 1024), (1024, 1792)]
+        } else if model.starts_with("dall-e-2") {
+            &[(256, 256), (512, 512), (1024, 1024)]
         } else {
-            (1024, 1024)
+            &[(1024, 1024), (1536, 1024), (1024, 1536)]
         };
-
-        if Self::is_dalle3(model) {
-            return if w > h && w >= 1792 {
-                "1792x1024"
-            } else if h > w && h >= 1792 {
-                "1024x1792"
-            } else {
-                "1024x1024"
-            }
-            .to_string();
+        if listed.contains(&(w, h)) {
+            return Ok(format!("{w}x{h}"));
         }
-        if model.starts_with("dall-e-2") {
-            return if w <= 256 || h <= 256 {
-                "256x256"
-            } else if w <= 512 || h <= 512 {
-                "512x512"
-            } else {
-                "1024x1024"
-            }
-            .to_string();
-        }
-
-        // gpt-image-2 accepts arbitrary 16-aligned sizes within its edge and
-        // total-pixel limits. The old `h <= 2160` cap rejected documented
-        // portrait sizes such as 2160x3840, and the old 256 floor let sizes
-        // below the 655,360-pixel minimum through.
+        // gpt-image-2 accepts arbitrary 16-aligned sizes within its edge,
+        // total-pixel and aspect limits.
         let pixels = u64::from(w) * u64::from(h);
-        if model.starts_with("gpt-image-2")
+        let ratio = f64::from(w) / f64::from(h.max(1));
+        let custom = model.starts_with("gpt-image-2")
             && w % 16 == 0
             && h % 16 == 0
             && w <= 3840
             && h <= 3840
             && (655_360..=8_294_400).contains(&pixels)
-        {
-            let ratio = w as f64 / h as f64;
-            if (1.0 / 3.0..=3.0).contains(&ratio) {
-                return format!("{w}x{h}");
-            }
-        }
-
-        // Every other GPT image model takes one of the three standard sizes.
-        if w > h {
-            "1536x1024".to_string()
-        } else if h > w {
-            "1024x1536".to_string()
+            && (1.0 / 3.0..=3.0).contains(&ratio);
+        if custom {
+            Ok(format!("{w}x{h}"))
         } else {
-            "1024x1024".to_string()
+            Err(refuse())
         }
     }
 
@@ -454,7 +431,7 @@ impl ImageProvider for OpenAiProvider {
 
         // Determine size
         let size = extras.size.as_deref().unwrap_or("1024x1024");
-        let size = Self::normalize_size(size, &model_name);
+        let size = Self::vendor_size(size, &model_name)?;
 
         // `response_format` applies to `dall-e-2`/`dall-e-3` only: "This
         // parameter isn't supported for the GPT image models, which always
@@ -526,10 +503,7 @@ impl ImageProvider for OpenAiProvider {
         request: &ImageGenerationRequest,
     ) -> Result<CostEstimate, ProviderError> {
         let model_name = self.resolve_model_name(&model.id);
-        let size = Self::normalize_size(
-            request.size.as_deref().unwrap_or("1024x1024"),
-            &model_name,
-        );
+        let size = Self::vendor_size(request.size.as_deref().unwrap_or("1024x1024"), &model_name)?;
         let quality = request.quality.as_deref().unwrap_or("auto");
 
         // GPT image pricing scales with quality and output resolution; use the
@@ -847,19 +821,21 @@ mod tests {
                 "2160x3840",
             ] {
                 assert_eq!(
-                    OpenAiProvider::normalize_size(listed, model),
+                    OpenAiProvider::vendor_size(listed, model).unwrap(),
                     listed,
                     "{listed} is a listed {model} size and must pass through"
                 );
             }
-            for out_of_range in ["512x512", "3840x3840"] {
-                assert_ne!(
-                    OpenAiProvider::normalize_size(out_of_range, model),
-                    out_of_range,
-                    "{out_of_range} breaks {model}'s pixel limits and must not be forwarded verbatim"
+            // L13: refused, never snapped to a size the caller did not ask for.
+            for out_of_range in ["512x512", "3840x3840", "3840x1024", "1000x1000"] {
+                assert!(
+                    matches!(OpenAiProvider::vendor_size(out_of_range, model), Err(ProviderError::InvalidRequest(_))),
+                    "{out_of_range} breaks {model}'s limits and must be refused"
                 );
             }
         }
+        assert!(OpenAiProvider::vendor_size("1792x1024", "dall-e-3").is_ok());
+        assert!(OpenAiProvider::vendor_size("1800x1024", "dall-e-3").is_err(), "not snapped to 1792x1024");
     }
 
     async fn estimated_cost(provider: &OpenAiProvider, id: &str, quality: &str) -> f64 {

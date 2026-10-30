@@ -60,11 +60,12 @@ impl RunwayProvider {
     /// the `/v1/image_to_video` model union. `gen4_turbo` is the fast tier,
     /// `gen4.5` the quality tier.
     /// @see <https://docs.dev.runwayml.com/api-details/api_changelog/>
-    fn resolve_model(model: &str) -> &'static str {
+    fn resolve_model(model: &str) -> Option<&'static str> {
         match model {
-            "runway/gen4.5" | "runway-gen4.5" | "gen4.5" => "gen4.5",
-            "runway/gen4-turbo" | "runway-gen4-turbo" | "gen4_turbo" => "gen4_turbo",
-            _ => "gen4_turbo",
+            "runway/gen4.5" | "runway-gen4.5" | "gen4.5" => Some("gen4.5"),
+            "runway/gen4-turbo" | "runway-gen4-turbo" | "gen4_turbo" => Some("gen4_turbo"),
+            // An id with no arm is refused, not billed as gen4_turbo (L13).
+            _ => None,
         }
     }
 }
@@ -107,7 +108,7 @@ impl VideoProvider for RunwayProvider {
         materialized: &MaterializedRequest,
     ) -> Result<VideoGenerationHandle, ProviderError> {
         let api_key = self.api_key()?;
-        let model_name = Self::resolve_model(&model.id);
+        let model_name = Self::resolve_model(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "runway".into() })?;
 
         // Find init-role image ref (URL form)
         let prompt_image: Option<String> = materialized.refs.iter().find_map(|r| {
@@ -341,6 +342,20 @@ mod tests {
     use super::*;
     use wiremock::{MockServer, Mock, ResponseTemplate};
     use wiremock::matchers::{method, path};
+
+    /// L13: every catalog row has its own arm, and an id with none is refused
+    /// rather than billed as another model.
+    #[test]
+    fn every_catalog_row_resolves_and_an_unknown_id_does_not() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        for m in catalog.for_provider("runway").filter(|m| m.media_type == crate::capabilities::MediaType::Video) {
+            assert!(RunwayProvider::resolve_model(&m.id).is_some(), "{} has no arm", m.id);
+        }
+        assert!(RunwayProvider::resolve_model("runway/not-a-model").is_none());
+    }
 
     fn ref_schema(id: &str) -> crate::capabilities::ModelSchema {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

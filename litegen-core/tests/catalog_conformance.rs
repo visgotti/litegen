@@ -3165,6 +3165,32 @@ fn every_multiview_to_3d_model_takes_a_front_view_and_names_any_positional_order
     assert!(!refs.roles.contains_key("init"), "multiview only");
 }
 
+// ─── Request-time checks (PixelGenie L13) ──────────────────────────────────
+
+/// @see <https://developers.openai.com/api/docs/guides/image-generation>
+/// ("GPT Image 2 settings"): both edges divisible by 16, neither above 3840,
+/// 655,360–8,294,400 total pixels, and a long-to-short ratio of at most 3:1.
+/// The size spec carries every limit, so a size OpenAI cannot make is
+/// refused before billing instead of being snapped.
+#[test]
+fn gpt_image_sizes_carry_every_openai_limit() {
+    use litegen::capabilities::{ParamSpec, SizeSpec};
+    let reg = registry();
+    let rows: Vec<_> = reg.all().filter(|m| m.id.starts_with("openai/gpt-image-2")).collect();
+    assert!(!rows.is_empty());
+    for m in rows {
+        match m.params.get("size") {
+            Some(ParamSpec::Size(SizeSpec::Freeform(f))) => assert_eq!(
+                (f.multiple_of, f.max_width, f.max_height, f.min_pixels, f.max_pixels, f.max_aspect),
+                (Some(16), 3840, 3840, Some(655_360), Some(8_294_400), Some(3.0)),
+                "{}",
+                m.id
+            ),
+            other => panic!("{}: {other:?}", m.id),
+        }
+    }
+}
+
 // ─── Prices that match the bill (PixelGenie 3D doc §3G, L14) ────────────────
 
 /// A row's base price is what its own rules charge for its default request —

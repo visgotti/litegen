@@ -93,7 +93,9 @@ impl GoogleProvider {
     }
 
     /// Map internal litegen model IDs to actual Gemini/Imagen API model names.
-    fn resolve_model(model_id: &str) -> &'static str {
+    /// `None` for an id with no arm: refused rather than billed as another
+    /// model (L13).
+    fn resolve_model(model_id: &str) -> Option<&'static str> {
         // Strip provider prefix first
         let native = if let Some(rest) = model_id.strip_prefix("google/") {
             rest
@@ -101,7 +103,7 @@ impl GoogleProvider {
             model_id
         };
 
-        match native {
+        Some(match native {
             "gemini-2.5-flash-image" | "gemini-2.5-flash" => "gemini-2.5-flash-image",
             // GA since 2026-05-28. The `-preview` alias we used to append was
             // shut down on 2026-06-25.
@@ -109,10 +111,8 @@ impl GoogleProvider {
             "gemini-3-pro-image" | "gemini-3-pro" => "gemini-3-pro-image",
             "gemini-3.1-flash-image" => "gemini-3.1-flash-image",
             "gemini-3.1-flash-lite-image" => "gemini-3.1-flash-lite-image",
-            // Google's migration target for both gemini-2.5-flash-image
-            // (shutdown 2026-10-02) and the retired Imagen line.
-            _ => "gemini-3.1-flash-image",
-        }
+            _ => return None,
+        })
     }
 
     /// Map pixel dimensions to a Google-supported aspect ratio.
@@ -195,7 +195,7 @@ impl ImageProvider for GoogleProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let api_key = self.api_key()?;
-        let gemini_model = Self::resolve_model(&model.id);
+        let gemini_model = Self::resolve_model(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "google".into() })?;
         let url = self.api_url(gemini_model);
         let is_imagen = Self::is_imagen_model(gemini_model);
 
@@ -567,6 +567,20 @@ mod tests {
     use wiremock::{MockServer, Mock, ResponseTemplate};
     use wiremock::matchers::{method, path_regex};
 
+    /// L13: every catalog row has its own arm, and an id with none is refused
+    /// rather than billed as another model.
+    #[test]
+    fn every_catalog_row_resolves_and_an_unknown_id_does_not() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        for m in catalog.for_provider("google").filter(|m| m.media_type == crate::capabilities::MediaType::Image) {
+            assert!(GoogleProvider::resolve_model(&m.id).is_some(), "{} has no arm", m.id);
+        }
+        assert!(GoogleProvider::resolve_model("google/not-a-model").is_none());
+    }
+
     #[cfg(test)]
     fn ref_schema(id: &str) -> crate::capabilities::ModelSchema {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -752,7 +766,7 @@ mod tests {
     #[test]
     fn gemini_3_pro_image_is_not_rewritten_to_the_retired_preview_id() {
         let resolved = GoogleProvider::resolve_model("google/gemini-3-pro-image");
-        assert_eq!(resolved, "gemini-3-pro-image");
+        assert_eq!(resolved, Some("gemini-3-pro-image"));
     }
 
     /// Imagen 3 was shut down 2025-11-10; the whole Imagen surface (Imagen 4)

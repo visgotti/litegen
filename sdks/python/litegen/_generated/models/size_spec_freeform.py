@@ -18,6 +18,10 @@ class SizeSpecFreeform:
         min_width (int):
         description (Union[None, Unset, str]):
         label (Union[None, Unset, str]):
+        max_aspect (Union[None, Unset, float]): The widest long-to-short side ratio the vendor makes.
+        max_pixels (Union[None, Unset, int]):
+        min_pixels (Union[None, Unset, int]): The fewest and most pixels (width × height) the vendor makes (L13: a
+            size it cannot make is refused, never snapped).
         multiple_of (Union[None, Unset, int]):
     """
 
@@ -27,6 +31,9 @@ class SizeSpecFreeform:
     min_width: int
     description: Union[None, Unset, str] = UNSET
     label: Union[None, Unset, str] = UNSET
+    max_aspect: Union[None, Unset, float] = UNSET
+    max_pixels: Union[None, Unset, int] = UNSET
+    min_pixels: Union[None, Unset, int] = UNSET
     multiple_of: Union[None, Unset, int] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -51,6 +58,24 @@ class SizeSpecFreeform:
         else:
             label = self.label
 
+        max_aspect: Union[None, Unset, float]
+        if isinstance(self.max_aspect, Unset):
+            max_aspect = UNSET
+        else:
+            max_aspect = self.max_aspect
+
+        max_pixels: Union[None, Unset, int]
+        if isinstance(self.max_pixels, Unset):
+            max_pixels = UNSET
+        else:
+            max_pixels = self.max_pixels
+
+        min_pixels: Union[None, Unset, int]
+        if isinstance(self.min_pixels, Unset):
+            min_pixels = UNSET
+        else:
+            min_pixels = self.min_pixels
+
         multiple_of: Union[None, Unset, int]
         if isinstance(self.multiple_of, Unset):
             multiple_of = UNSET
@@ -71,6 +96,12 @@ class SizeSpecFreeform:
             field_dict["description"] = description
         if label is not UNSET:
             field_dict["label"] = label
+        if max_aspect is not UNSET:
+            field_dict["max_aspect"] = max_aspect
+        if max_pixels is not UNSET:
+            field_dict["max_pixels"] = max_pixels
+        if min_pixels is not UNSET:
+            field_dict["min_pixels"] = min_pixels
         if multiple_of is not UNSET:
             field_dict["multiple_of"] = multiple_of
 
@@ -105,6 +136,33 @@ class SizeSpecFreeform:
 
         label = _parse_label(d.pop("label", UNSET))
 
+        def _parse_max_aspect(data: object) -> Union[None, Unset, float]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, float], data)
+
+        max_aspect = _parse_max_aspect(d.pop("max_aspect", UNSET))
+
+        def _parse_max_pixels(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        max_pixels = _parse_max_pixels(d.pop("max_pixels", UNSET))
+
+        def _parse_min_pixels(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        min_pixels = _parse_min_pixels(d.pop("min_pixels", UNSET))
+
         def _parse_multiple_of(data: object) -> Union[None, Unset, int]:
             if data is None:
                 return data
@@ -121,6 +179,9 @@ class SizeSpecFreeform:
             min_width=min_width,
             description=description,
             label=label,
+            max_aspect=max_aspect,
+            max_pixels=max_pixels,
+            min_pixels=min_pixels,
             multiple_of=multiple_of,
         )
 

@@ -96,8 +96,9 @@ impl FalVideoProvider {
     }
 
     /// Resolve internal model ID to its fal endpoints and field support.
-    fn resolve_spec(model: &str) -> EndpointSpec {
-        match model {
+    /// `None` for an id with no arm: refused, not sent to LTX Video (L13).
+    fn resolve_spec(model: &str) -> Option<EndpointSpec> {
+        Some(match model {
             // Kling Video v1 standard — image-to-video only; takes `duration`.
             "fal/kling" | "fal-kling" => EndpointSpec {
                 text_to_video: "fal-ai/kling-video/v1/standard/image-to-video",
@@ -192,7 +193,7 @@ impl FalVideoProvider {
             },
             // LTX Video — the base endpoint is text-to-video only and has no
             // `image_url`; image-to-video is a separate endpoint.
-            _ => EndpointSpec {
+            "fal/video" => EndpointSpec {
                 text_to_video: "fal-ai/ltx-video",
                 image_to_video: "fal-ai/ltx-video/image-to-video",
                 supports_prompt: true,
@@ -203,7 +204,8 @@ impl FalVideoProvider {
                 fps_values: &[],
                 strict_completion: false,
             },
-        }
+            _ => return None,
+        })
     }
 
     /// `value` as one of an endpoint's discrete integer values, or an
@@ -260,7 +262,8 @@ impl VideoProvider for FalVideoProvider {
         materialized: &MaterializedRequest,
     ) -> Result<VideoGenerationHandle, ProviderError> {
         let api_key = self.api_key()?;
-        let spec = Self::resolve_spec(&model.id);
+        let spec = Self::resolve_spec(&model.id)
+            .ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "fal".into() })?;
 
         // Reference image (init role, URL form preferred by Fal).
         let image_url: Option<String> = materialized.refs.iter().find_map(|r| match &r.form {
@@ -442,7 +445,8 @@ impl VideoProvider for FalVideoProvider {
             _ => GenerationStatus::Pending,
         };
 
-        let strict = Self::resolve_spec(&handle.model).strict_completion;
+        // A row whose arm is gone keeps the strict reading of completion.
+        let strict = Self::resolve_spec(&handle.model).map_or(true, |s| s.strict_completion);
         if strict && status == GenerationStatus::Completed {
             if let Some(err) = data["error"].as_str() {
                 return Ok(VideoGenerationPollResult {
@@ -615,6 +619,20 @@ mod tests {
     use super::*;
     use wiremock::{MockServer, Mock, ResponseTemplate};
     use wiremock::matchers::{method, path};
+
+    /// L13: every catalog row has its own arm, and an id with none is refused
+    /// rather than billed as another model.
+    #[test]
+    fn every_catalog_row_resolves_and_an_unknown_id_does_not() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        for m in catalog.for_provider("fal").filter(|m| m.media_type == crate::capabilities::MediaType::Video) {
+            assert!(FalVideoProvider::resolve_spec(&m.id).map(|s| s.text_to_video).is_some(), "{} has no arm", m.id);
+        }
+        assert!(FalVideoProvider::resolve_spec("fal/not-a-model").map(|s| s.text_to_video).is_none());
+    }
 
     fn ref_schema(id: &str) -> crate::capabilities::ModelSchema {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

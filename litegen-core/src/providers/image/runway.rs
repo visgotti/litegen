@@ -64,10 +64,13 @@ impl RunwayImageProvider {
         Ok(base)
     }
 
-    fn resolve_model(model_id: &str) -> &str {
+    /// The Runway model for a litegen id; `None` for an id with no arm, which
+    /// is refused rather than billed as another model (L13).
+    fn resolve_model(model_id: &str) -> Option<&'static str> {
         match model_id.strip_prefix("runway/").unwrap_or(model_id) {
-            "gen4_image_turbo" | "gen4-image-turbo" => "gen4_image_turbo",
-            _ => "gen4_image",
+            "gen4_image_turbo" | "gen4-image-turbo" => Some("gen4_image_turbo"),
+            "gen4_image" | "gen4-image" => Some("gen4_image"),
+            _ => None,
         }
     }
 
@@ -238,7 +241,7 @@ impl ImageProvider for RunwayImageProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let creds = self.creds()?;
-        let native = Self::resolve_model(&model.id);
+        let native = Self::resolve_model(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "runway".into() })?;
         let url = format!("{}/text_to_image", self.api_base());
 
         let mut body = json!({
@@ -381,6 +384,20 @@ mod tests {
     use crate::proxy::materializer::Cleanup;
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// L13: every catalog row has its own arm, and an id with none is refused
+    /// rather than billed as another model.
+    #[test]
+    fn every_catalog_row_resolves_and_an_unknown_id_does_not() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        for m in catalog.for_provider("runway").filter(|m| m.media_type == crate::capabilities::MediaType::Image) {
+            assert!(RunwayImageProvider::resolve_model(&m.id).is_some(), "{} has no arm", m.id);
+        }
+        assert!(RunwayImageProvider::resolve_model("runway/not-a-model").is_none());
+    }
 
     fn ref_schema(id: &str) -> crate::capabilities::ModelSchema {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

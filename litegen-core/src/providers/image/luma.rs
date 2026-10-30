@@ -66,10 +66,12 @@ impl LumaImageProvider {
         Ok(base)
     }
 
-    fn resolve_model(model_id: &str) -> &str {
+    /// `None` for an id with no arm: refused, not billed as photon-1 (L13).
+    fn resolve_model(model_id: &str) -> Option<&'static str> {
         match model_id.strip_prefix("luma/").unwrap_or(model_id) {
-            "photon-flash-1" => "photon-flash-1",
-            _ => "photon-1",
+            "photon-flash-1" => Some("photon-flash-1"),
+            "photon-1" => Some("photon-1"),
+            _ => None,
         }
     }
 
@@ -178,7 +180,7 @@ impl ImageProvider for LumaImageProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let creds = self.creds()?;
-        let native = Self::resolve_model(&model.id);
+        let native = Self::resolve_model(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "luma".into() })?;
         let url = format!("{}/generations/image", self.api_base());
 
         let mut body = json!({
@@ -346,6 +348,20 @@ mod tests {
     use crate::proxy::materializer::{Cleanup, MaterializedRef};
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// L13: every catalog row has its own arm, and an id with none is refused
+    /// rather than billed as another model.
+    #[test]
+    fn every_catalog_row_resolves_and_an_unknown_id_does_not() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        for m in catalog.for_provider("luma").filter(|m| m.media_type == crate::capabilities::MediaType::Image) {
+            assert!(LumaImageProvider::resolve_model(&m.id).is_some(), "{} has no arm", m.id);
+        }
+        assert!(LumaImageProvider::resolve_model("luma/not-a-model").is_none());
+    }
 
     fn ref_schema(id: &str) -> crate::capabilities::ModelSchema {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

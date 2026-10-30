@@ -51,6 +51,11 @@ models:
         min_height: 480
         max_height: 3840
         multiple_of: 16
+        # "655,360 to 8,294,400 total pixels" and "Long edge to short edge
+        # ratio must not exceed 3:1" — refused before billing, not snapped.
+        min_pixels: 655360
+        max_pixels: 8294400
+        max_aspect: 3.0
       # "It supports low, medium, high, xhigh, max, and auto quality settings";
       # default auto.
       quality:
@@ -93,6 +98,11 @@ models:
         min_height: 480
         max_height: 3840
         multiple_of: 16
+        # "655,360 to 8,294,400 total pixels" and "Long edge to short edge
+        # ratio must not exceed 3:1" — refused before billing, not snapped.
+        min_pixels: 655360
+        max_pixels: 8294400
+        max_aspect: 3.0
       quality:
         kind: string
         enum_values: [auto, low, medium, high, xhigh, max]
@@ -138,6 +148,11 @@ models:
         min_height: 480
         max_height: 3840
         multiple_of: 16
+        # "655,360 to 8,294,400 total pixels" and "Long edge to short edge
+        # ratio must not exceed 3:1" — refused before billing, not snapped.
+        min_pixels: 655360
+        max_pixels: 8294400
+        max_aspect: 3.0
       quality:
         kind: string
         enum_values: [auto, low, medium, high]

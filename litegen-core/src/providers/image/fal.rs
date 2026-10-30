@@ -55,20 +55,15 @@ impl FalProvider {
     }
 
     /// Resolve litegen model ID to the Fal endpoint path (e.g. "fal-ai/flux/dev").
-    fn resolve_endpoint(&self, model_id: &str) -> &'static str {
-        if let Some(cfg) = &self.config {
-            if cfg.model_mapping.contains_key(model_id) {
-                // Can't return from model_mapping as static str; use the static default below
-            }
-        }
-
+    /// `None` for an id with no arm: refused, not billed as FLUX.1 [dev] (L13).
+    fn resolve_endpoint(&self, model_id: &str) -> Option<&'static str> {
         let native = if let Some(rest) = model_id.strip_prefix("fal/") {
             rest
         } else {
             model_id
         };
 
-        match native {
+        Some(match native {
             "flux-schnell" => "fal-ai/flux/schnell",
             "flux-dev" => "fal-ai/flux/dev",
             // FLUX.2 [dev] text-to-image. Without this arm the id fell back to
@@ -84,8 +79,8 @@ impl FalProvider {
             // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v3/text-to-image>
             "recraft-v3" => "fal-ai/recraft/v3/text-to-image",
             "auraflow" | "aura-flow" => "fal-ai/aura-flow",
-            _ => "fal-ai/flux/dev", // fallback
-        }
+            _ => return None,
+        })
     }
 
     /// Parse a size string "WxH" into {width, height}.
@@ -170,7 +165,7 @@ impl ImageProvider for FalProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let api_key = self.api_key()?;
-        let endpoint = self.resolve_endpoint(&model.id);
+        let endpoint = self.resolve_endpoint(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "fal".into() })?;
         let url = format!("{}/{}", self.api_base(), endpoint);
 
         // Build request body
@@ -391,6 +386,20 @@ mod tests {
     use super::*;
     use wiremock::{MockServer, Mock, ResponseTemplate};
     use wiremock::matchers::{method, path};
+
+    /// L13: every catalog row has its own arm, and an id with none is refused
+    /// rather than billed as another model.
+    #[test]
+    fn every_catalog_row_resolves_and_an_unknown_id_does_not() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        for m in catalog.for_provider("fal").filter(|m| m.media_type == crate::capabilities::MediaType::Image) {
+            assert!(FalProvider::new().resolve_endpoint(&m.id).is_some(), "{} has no arm", m.id);
+        }
+        assert!(FalProvider::new().resolve_endpoint("fal/not-a-model").is_none());
+    }
 
     #[cfg(test)]
     fn ref_schema(id: &str) -> crate::capabilities::ModelSchema {

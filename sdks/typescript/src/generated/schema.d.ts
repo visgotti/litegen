@@ -3905,12 +3905,25 @@ export interface components {
         SizeSpecFreeform: {
             description?: string | null;
             label?: string | null;
+            /**
+             * Format: double
+             * @description The widest long-to-short side ratio the vendor makes.
+             */
+            max_aspect?: number | null;
             /** Format: int32 */
             max_height: number;
+            /** Format: int64 */
+            max_pixels?: number | null;
             /** Format: int32 */
             max_width: number;
             /** Format: int32 */
             min_height: number;
+            /**
+             * Format: int64
+             * @description The fewest and most pixels (width × height) the vendor makes (L13: a
+             *     size it cannot make is refused, never snapped).
+             */
+            min_pixels?: number | null;
             /** Format: int32 */
             min_width: number;
             /** Format: int32 */

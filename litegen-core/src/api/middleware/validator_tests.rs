@@ -392,6 +392,105 @@ models:
         assert_eq!(err.param.as_deref(), Some("duration_seconds"));
     }
 
+    // ─── Request-time checks (L13) ───────────────────────────────────────────
+
+    fn l13_registry() -> CapabilityRegistry {
+        CapabilityRegistry::from_yaml_strs(&[("l13.yaml", r#"
+models:
+  - id: c/edit-only
+    provider: c
+    media_type: image
+    display_name: EditOnly
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_image: false, image_to_image: true }
+    prompt: { required: true }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+  - id: c/text-only
+    provider: c
+    media_type: image
+    display_name: TextOnly
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true }
+    params:
+      size: { kind: size, mode: freeform, min_width: 480, max_width: 3840, min_height: 480, max_height: 3840, multiple_of: 16, min_pixels: 655360, max_pixels: 8294400, max_aspect: 3.0 }
+  - id: c/i2v-only
+    provider: c
+    media_type: video
+    display_name: I2VOnly
+    pricing: { base_cost_usd: 0.1 }
+    capabilities: { image_to_video: true }
+    prompt: { required: true }
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+  - id: c/t2v-only
+    provider: c
+    media_type: video
+    display_name: T2VOnly
+    pricing: { base_cost_usd: 0.1 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true }
+    ref_inputs:
+      max_total: 1
+      default_role: first_frame
+      provider_format: { form: url }
+      roles:
+        first_frame: { required: false, min_count: 0, max_count: 1 }
+"#)]).unwrap()
+    }
+
+    fn img_req(model: &str, refs: serde_json::Value, extra: serde_json::Value) -> ImageGenerationRequest {
+        let mut body = serde_json::json!({ "model": model, "prompt": "a fox", "reference_images": refs });
+        for (k, v) in extra.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        serde_json::from_value(body).unwrap()
+    }
+
+    #[test]
+    fn a_capability_the_model_lacks_is_refused_by_name() {
+        let r = l13_registry();
+        let err = validate_image(r.get("c/edit-only").unwrap(), img_req("c/edit-only", serde_json::json!([]), serde_json::json!({}))).unwrap_err();
+        assert_eq!(err.code, "capability_unsupported", "{}", err.message);
+        let frame = serde_json::json!([{ "type": "url", "value": "https://x/a.png", "role": "first_frame" }]);
+        let video = |model: &str, refs: serde_json::Value| -> VideoGenerationRequest {
+            serde_json::from_value(serde_json::json!({ "model": model, "prompt": "a fox", "reference_images": refs })).unwrap()
+        };
+        let err = validate_video(r.get("c/i2v-only").unwrap(), video("c/i2v-only", serde_json::json!([]))).unwrap_err();
+        assert_eq!(err.code, "capability_unsupported", "{}", err.message);
+        let err = validate_video(r.get("c/t2v-only").unwrap(), video("c/t2v-only", frame.clone())).unwrap_err();
+        assert_eq!(err.code, "capability_unsupported", "{}", err.message);
+        assert!(validate_video(r.get("c/i2v-only").unwrap(), video("c/i2v-only", frame)).is_ok());
+    }
+
+    #[test]
+    fn more_than_one_image_per_request_is_refused() {
+        let r = l13_registry();
+        let err = validate_image(r.get("c/text-only").unwrap(), img_req("c/text-only", serde_json::json!([]), serde_json::json!({ "n": 2 }))).unwrap_err();
+        assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_out_of_range", Some("n")), "{}", err.message);
+        assert!(validate_image(r.get("c/text-only").unwrap(), img_req("c/text-only", serde_json::json!([]), serde_json::json!({ "n": 1 }))).is_ok());
+    }
+
+    #[test]
+    fn a_size_the_vendor_cannot_make_is_refused_not_snapped() {
+        let r = l13_registry();
+        let m = r.get("c/text-only").unwrap();
+        for size in ["480x480", "3840x3840", "3840x1024"] {
+            let err = validate_image(m, img_req("c/text-only", serde_json::json!([]), serde_json::json!({ "size": size }))).unwrap_err();
+            assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_out_of_range", Some("size")), "{size}: {}", err.message);
+        }
+        assert!(validate_image(m, img_req("c/text-only", serde_json::json!([]), serde_json::json!({ "size": "2160x3840" }))).is_ok());
+    }
+
     // ─── Timed keyframes (3D doc §5) ─────────────────────────────────────────
 
     fn keyframe_model(timing: &str, step: &str, duration: &str) -> CapabilityRegistry {

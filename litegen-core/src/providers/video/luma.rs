@@ -57,8 +57,8 @@ impl LumaProvider {
     /// Map internal model IDs to the actual Luma API model name.
     ///
     /// @see <https://docs.lumalabs.ai/reference/creategeneration> — `model` field accepted values
-    fn resolve_model(model: &str) -> &'static str {
-        match model {
+    fn resolve_model(model: &str) -> Option<&'static str> {
+        Some(match model {
             "luma/dream-machine" | "luma-dream-machine" => "ray-2",
             "luma/dream-machine-1.5" | "luma-dream-machine-1.5" => "ray-1-6",
             "luma/ray-2" | "ray-2" => "ray-2",
@@ -68,8 +68,9 @@ impl LumaProvider {
             "luma/ray-3-14" | "ray-3-14" => "ray-3-14",
             "luma/ray-hdr-3-14" | "ray-hdr-3-14" => "ray-hdr-3-14",
             "luma/ray-1-6" | "ray-1-6" => "ray-1-6",
-            _ => "ray-2",
-        }
+            // An id with no arm is refused, not billed as ray-2 (L13).
+            _ => return None,
+        })
     }
 
     /// Map camera motion values to Luma API format.
@@ -127,7 +128,7 @@ impl VideoProvider for LumaProvider {
         materialized: &MaterializedRequest,
     ) -> Result<VideoGenerationHandle, ProviderError> {
         let api_key = self.api_key()?;
-        let model_name = Self::resolve_model(&model.id);
+        let model_name = Self::resolve_model(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "luma".into() })?;
         let url = format!("{}/generations", self.api_base());
 
         let mut body = json!({
@@ -372,6 +373,20 @@ mod tests {
     use wiremock::{MockServer, Mock, ResponseTemplate};
     use wiremock::matchers::{method, path};
     use crate::proxy::materializer::{MaterializedRef, MaterializedRefForm};
+
+    /// L13: every catalog row has its own arm, and an id with none is refused
+    /// rather than billed as another model.
+    #[test]
+    fn every_catalog_row_resolves_and_an_unknown_id_does_not() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        for m in catalog.for_provider("luma").filter(|m| m.media_type == crate::capabilities::MediaType::Video) {
+            assert!(LumaProvider::resolve_model(&m.id).is_some(), "{} has no arm", m.id);
+        }
+        assert!(LumaProvider::resolve_model("luma/not-a-model").is_none());
+    }
 
     fn ref_schema(id: &str) -> crate::capabilities::ModelSchema {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

@@ -156,6 +156,7 @@ pub fn validate_image(
     });
 
     check_refs(schema, &mut req.base.reference_images, strict, &mut dropped)?;
+    check_image_request(schema, &req)?;
     check_extra(schema, &mut req.base.extra, strict, &mut dropped)?;
 
     Ok(ImageValidationOutput { request: req, dropped })
@@ -341,6 +342,7 @@ pub fn validate_video(
     }
 
     check_refs(schema, &mut req.base.reference_images, strict, &mut dropped)?;
+    check_video_request(schema, &req)?;
     check_keyframes(schema, &mut req)?;
     check_extra(schema, &mut req.base.extra, strict, &mut dropped)?;
 
@@ -722,7 +724,7 @@ pub fn validate_model3d(
     if req.base.reference_images.is_empty() && schema.task == ModelTask::Generate {
         if !schema.capabilities.text_to_3d {
             return Err(ValidationError::new(
-                "ref_role_required",
+                "capability_unsupported",
                 format!("'{}' has no text-to-3D mode; send a reference image", schema.id),
                 Some("reference_images"),
             ));
@@ -1017,6 +1019,26 @@ fn check_size(v: &str, spec: &SizeSpec, param: &str) -> Result<(), ValidationErr
                     ));
                 }
             }
+            let pixels = u64::from(w) * u64::from(h);
+            if f.min_pixels.is_some_and(|min| pixels < min) || f.max_pixels.is_some_and(|max| pixels > max) {
+                return Err(ValidationError::new(
+                    "param_out_of_range",
+                    format!(
+                        "{param} '{v}' is {pixels} pixels; the model makes {}–{}",
+                        f.min_pixels.unwrap_or(0),
+                        f.max_pixels.map_or("any".to_string(), |m| m.to_string())
+                    ),
+                    Some(param),
+                ));
+            }
+            let aspect = f64::from(w.max(h)) / f64::from(w.min(h).max(1));
+            if let Some(max) = f.max_aspect.filter(|max| aspect > max + 1e-9) {
+                return Err(ValidationError::new(
+                    "param_out_of_range",
+                    format!("{param} '{v}' is wider than the model's {max}:1"),
+                    Some(param),
+                ));
+            }
         }
     }
     Ok(())
@@ -1025,6 +1047,66 @@ fn check_size(v: &str, spec: &SizeSpec, param: &str) -> Result<(), ValidationErr
 fn parse_size(s: &str) -> Option<(u32, u32)> {
     let (w, h) = s.split_once('x').or_else(|| s.split_once('X'))?;
     Some((w.parse().ok()?, h.parse().ok()?))
+}
+
+/// L13: what an image model cannot do is refused here, not at the vendor —
+/// text alone on a model that only edits, an init image on one that takes
+/// none — and so is `n` above one: litegen returns one image per request,
+/// and a vendor asked for more bills them all.
+fn check_image_request(schema: &ModelSchema, req: &ImageGenerationRequest) -> Result<(), ValidationError> {
+    if req.base.n > 1 {
+        return Err(ValidationError::new(
+            "param_out_of_range",
+            format!("n {} > 1: litegen returns one image per request; send n: 1 or leave it out", req.base.n),
+            Some("n"),
+        ));
+    }
+    if schema.task != crate::capabilities::ModelTask::Generate {
+        return Ok(());
+    }
+    let c = &schema.capabilities;
+    let refs = &req.base.reference_images;
+    if refs.is_empty() && !c.text_to_image {
+        return Err(ValidationError::new(
+            "capability_unsupported",
+            format!("'{}' does not make an image from text alone; send an init image", schema.id),
+            Some("reference_images"),
+        ));
+    }
+    if refs.iter().any(|r| r.role.as_deref() == Some("init")) && !(c.image_to_image || c.inpainting) {
+        return Err(ValidationError::new(
+            "capability_unsupported",
+            format!("'{}' does not take an init image", schema.id),
+            Some("reference_images"),
+        ));
+    }
+    Ok(())
+}
+
+/// L13: a video model without a text mode needs a frame, and one without an
+/// image mode takes no frame — refused here, not at the vendor.
+fn check_video_request(schema: &ModelSchema, req: &VideoGenerationRequest) -> Result<(), ValidationError> {
+    if schema.task != crate::capabilities::ModelTask::Generate {
+        return Ok(());
+    }
+    let c = &schema.capabilities;
+    let refs = &req.base.reference_images;
+    if refs.is_empty() && !c.text_to_video {
+        return Err(ValidationError::new(
+            "capability_unsupported",
+            format!("'{}' does not make a video from text alone; send a first_frame image", schema.id),
+            Some("reference_images"),
+        ));
+    }
+    let frames = ["first_frame", "last_frame", "init", "keyframe"];
+    if refs.iter().any(|r| r.role.as_deref().is_some_and(|role| frames.contains(&role))) && !c.image_to_video {
+        return Err(ValidationError::new(
+            "capability_unsupported",
+            format!("'{}' makes video from text only; it takes no frame image", schema.id),
+            Some("reference_images"),
+        ));
+    }
+    Ok(())
 }
 
 /// Timed keyframes (3D doc §5). Only `keyframe` references carry a `time_s`,

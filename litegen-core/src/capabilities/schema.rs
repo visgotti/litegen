@@ -388,6 +388,12 @@ pub struct SizeSpecFreeform {
     pub min_height: u32,
     pub max_height: u32,
     #[serde(default)] pub multiple_of: Option<u32>,
+    /// The fewest and most pixels (width × height) the vendor makes (L13: a
+    /// size it cannot make is refused, never snapped).
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub min_pixels: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub max_pixels: Option<u64>,
+    /// The widest long-to-short side ratio the vendor makes.
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub max_aspect: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }

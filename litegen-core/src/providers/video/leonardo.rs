@@ -70,8 +70,8 @@ impl LeonardoVideoProvider {
     /// fall back to MOTION2, so every catalog id needs its own arm.
     ///
     /// @see <https://docs.leonardo.ai/v1.0/docs/commonly-used-api-values> — Video Model IDs
-    fn resolve_model(model_id: &str) -> &'static str {
-        match model_id.strip_prefix("leonardo/").unwrap_or(model_id) {
+    fn resolve_model(model_id: &str) -> Option<&'static str> {
+        Some(match model_id.strip_prefix("leonardo/").unwrap_or(model_id) {
             "motion2" | "motion-2" => "MOTION2",
             "motion2-fast" => "MOTION2FAST",
             "veo3.1" | "veo3-1" => "VEO3_1",
@@ -82,8 +82,9 @@ impl LeonardoVideoProvider {
             "veo3-fast" => "VEO3FAST",
             "kling2.1" | "kling-2.1" => "KLING2_1",
             "kling2.5" | "kling-2.5" => "KLING2_5",
-            _ => "MOTION2",
-        }
+            // An id with no arm is refused, not billed as MOTION2 (L13).
+            _ => return None,
+        })
     }
 
     /// Map a requested resolution to Leonardo's preset. With none requested,
@@ -136,7 +137,7 @@ impl VideoProvider for LeonardoVideoProvider {
         materialized: &MaterializedRequest,
     ) -> Result<VideoGenerationHandle, ProviderError> {
         let creds = self.creds()?;
-        let leo_model = Self::resolve_model(&model.id);
+        let leo_model = Self::resolve_model(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "leonardo".into() })?;
 
         // A start-frame image is required for image-to-video.
         let mut image_id: Option<String> = None;
@@ -303,6 +304,20 @@ mod tests {
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    /// L13: every catalog row has its own arm, and an id with none is refused
+    /// rather than billed as another model.
+    #[test]
+    fn every_catalog_row_resolves_and_an_unknown_id_does_not() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        for m in catalog.for_provider("leonardo").filter(|m| m.media_type == crate::capabilities::MediaType::Video) {
+            assert!(LeonardoVideoProvider::resolve_model(&m.id).is_some(), "{} has no arm", m.id);
+        }
+        assert!(LeonardoVideoProvider::resolve_model("leonardo/not-a-model").is_none());
+    }
+
     fn ref_schema(id: &str) -> crate::capabilities::ModelSchema {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         p.pop();
@@ -342,10 +357,10 @@ mod tests {
     /// @see <https://docs.leonardo.ai/v1.0/docs/veo-31> (2026-09-11)
     #[test]
     fn catalog_video_ids_resolve_to_their_own_leonardo_model() {
-        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/veo3.1"), "VEO3_1");
-        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/kling2.5"), "KLING2_5");
-        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/kling2.1"), "KLING2_1");
-        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/motion2"), "MOTION2");
+        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/veo3.1"), Some("VEO3_1"));
+        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/kling2.5"), Some("KLING2_5"));
+        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/kling2.1"), Some("KLING2_1"));
+        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/motion2"), Some("MOTION2"));
     }
 
     /// Veo 3.1 Fast is `VEO3_1FAST` ("model ... Set to VEO3_1, VEO3_1FAST");
@@ -354,7 +369,7 @@ mod tests {
     /// @see <https://docs.leonardo.ai/v1.0/docs/veo-31> (2026-09-11)
     #[test]
     fn veo3_1_fast_resolves_to_veo3_1fast() {
-        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/veo3.1-fast"), "VEO3_1FAST");
+        assert_eq!(LeonardoVideoProvider::resolve_model("leonardo/veo3.1-fast"), Some("VEO3_1FAST"));
     }
 
     /// The Veo 3.1 Fast submit carries its own model and a duration (Motion

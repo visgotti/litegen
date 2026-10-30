@@ -156,19 +156,21 @@ impl LeonardoImageProvider {
         Ok(base)
     }
 
-    /// Resolve the Leonardo modelId (UUID). Honors config.model_mapping; falls
-    /// back to a known alias or the documented default.
-    fn resolve_model_id(&self, model_id: &str) -> String {
+    /// Resolve the Leonardo modelId (UUID). Honors config.model_mapping, a
+    /// known alias, or an id that already is a UUID; anything else is `None`
+    /// and refused rather than billed as another model (L13).
+    fn resolve_model_id(&self, model_id: &str) -> Option<String> {
         if let Some(cfg) = &self.config {
             if let Some(m) = cfg.model_mapping.get(model_id) {
-                return m.clone();
+                return Some(m.clone());
             }
         }
         match model_id.strip_prefix("leonardo/").unwrap_or(model_id) {
-            "diffusion-xl" => DIFFUSION_XL_MODEL_ID.to_string(),
+            "diffusion-xl" => Some(DIFFUSION_XL_MODEL_ID.to_string()),
+            "lightning-xl" => Some(DEFAULT_MODEL_ID.to_string()),
             // Anything that already looks like a UUID is passed through.
-            other if other.contains('-') && other.len() >= 32 => other.to_string(),
-            _ => DEFAULT_MODEL_ID.to_string(),
+            other if other.contains('-') && other.len() >= 32 => Some(other.to_string()),
+            _ => None,
         }
     }
 
@@ -271,7 +273,7 @@ impl ImageProvider for LeonardoImageProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let creds = self.creds()?;
-        let model_id = self.resolve_model_id(&model.id);
+        let model_id = self.resolve_model_id(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "leonardo".into() })?;
 
         // Upload the first reference image (if any) -> init_image_id.
         let mut init_image_id: Option<String> = None;
@@ -403,6 +405,20 @@ mod tests {
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    /// L13: every catalog row has its own arm, and an id with none is refused
+    /// rather than billed as another model.
+    #[test]
+    fn every_catalog_row_resolves_and_an_unknown_id_does_not() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        for m in catalog.for_provider("leonardo").filter(|m| m.media_type == crate::capabilities::MediaType::Image) {
+            assert!(LeonardoImageProvider::new().resolve_model_id(&m.id).is_some(), "{} has no arm", m.id);
+        }
+        assert!(LeonardoImageProvider::new().resolve_model_id("leonardo/not-a-model").is_none());
+    }
+
     fn ref_schema(id: &str) -> crate::capabilities::ModelSchema {
         let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         p.pop();
@@ -513,8 +529,8 @@ mod tests {
     fn diffusion_xl_resolves_to_the_diffusion_xl_uuid() {
         let p = make_provider("http://unused.invalid");
         assert_eq!(
-            p.resolve_model_id("leonardo/diffusion-xl"),
-            "1e60896f-3c26-4296-8ecc-53e2afecc132"
+            p.resolve_model_id("leonardo/diffusion-xl").as_deref(),
+            Some("1e60896f-3c26-4296-8ecc-53e2afecc132")
         );
     }
 }

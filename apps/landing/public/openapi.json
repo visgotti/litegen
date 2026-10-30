@@ -12617,9 +12617,25 @@
                             "null"
                         ]
                     },
+                    "max_aspect": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "The widest long-to-short side ratio the vendor makes."
+                    },
                     "max_height": {
                         "type": "integer",
                         "format": "int32",
+                        "minimum": 0
+                    },
+                    "max_pixels": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
                         "minimum": 0
                     },
                     "max_width": {
@@ -12630,6 +12646,15 @@
                     "min_height": {
                         "type": "integer",
                         "format": "int32",
+                        "minimum": 0
+                    },
+                    "min_pixels": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "The fewest and most pixels (width \u00d7 height) the vendor makes (L13: a\nsize it cannot make is refused, never snapped).",
                         "minimum": 0
                     },
                     "min_width": {
