@@ -7,8 +7,12 @@
 // code-formatted values opening the `### model` section's list items. The
 // retarget's are the preset ids the catalog row offers, read from the
 // `### animation` section's bullets for v2.5/v3.0 rigs (the v1.0 rig's
-// `preset:biped:*` list is acknowledged). The price page is server-rendered
-// HTML; its credit lines are snapshotted.
+// `preset:biped:*` list is acknowledged). Image-to-multiview
+// (POST /generation/image-to-multiview, the image adapter
+// litegen-core/src/providers/image/tripo.rs) has no model versions: its
+// vendor id is the endpoint's name, and its snapshot the request field and the
+// view URLs the result names. The price page is server-rendered HTML; its
+// credit lines are snapshotted.
 
 const DOCS = 'https://developers.tripo3d.ai/en/docs';
 const VERSION = /^v\d+\.\d+-\d{8}$/;
@@ -48,6 +52,7 @@ export default {
       'preset:quadruped:walk', 'preset:hexapod:walk', 'preset:octopod:walk',
       'preset:serpentine:march', 'preset:aquatic:march',
     ],
+    'tripo/multiview': 'image-to-multiview',
   },
   sources: [
     {
@@ -83,18 +88,32 @@ export default {
       },
     },
     {
+      key: 'image-to-multiview',
+      url: `${DOCS}/generation-image-to-multiview.md`,
+      expect: 'text',
+      extract: (md) => [...md.matchAll(/^\*\*Endpoint:\*\* `POST \/generation\/([\w-]+)`/gm)].map((m) => m[1]),
+      snapshot: (md) => {
+        // Request and response fields: the `###` headings before the examples.
+        const fields = [...md.split(/^## Request Example/m)[0].matchAll(/^### (\S+)$/gm)].map((m) => m[1]);
+        const views = [...new Set([...md.matchAll(/\b(\w+_view_url)\b/g)].map((m) => m[1]))];
+        if (!views.length) throw new Error('multiview page names no *_view_url');
+        const endpoints = [...md.matchAll(/^\*\*Endpoint:\*\* `POST \/generation\/([\w-]+)`/gm)].map((m) => m[1]);
+        return `endpoint: ${endpoints.join(', ')}\nfields: ${fields.join(', ')}\nviews: ${views.join(', ')}\n`;
+      },
+    },
+    {
       key: 'pricing',
       url: 'https://developers.tripo3d.ai/en/pricing',
       expect: 'html',
       index: true,
-      extract: (html) => ['Rig Check', 'Auto Rig', 'Animation Retarget'].filter((name) => priceCells(html).includes(name)),
+      extract: (html) => ['Rig Check', 'Auto Rig', 'Animation Retarget', 'Image to Multiview'].filter((name) => priceCells(html).includes(name)),
       snapshot: (html) => {
         const cells = priceCells(html);
         const lines = [];
         const rate = cells.find((c) => /^1 credit = \$/.test(c));
         if (!rate) throw new Error('price page has no "1 credit = $…" line');
         lines.push(rate);
-        for (const name of ['Rig Check', 'Auto Rig', 'Animation Retarget']) {
+        for (const name of ['Rig Check', 'Auto Rig', 'Animation Retarget', 'Image to Multiview']) {
           const i = cells.indexOf(name);
           if (i < 0) throw new Error(`price page has no "${name}" row`);
           lines.push(`${name}: ${cells[i + 1]}`);

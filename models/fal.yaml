@@ -392,6 +392,138 @@ models:
     extra_allowlist: [num_inference_steps, guidance_scale, octree_resolution]
     tags: [3d, mesh, hunyuan]
 
+  # ─── Multiview-to-3D (PixelGenie 3D doc §3E) ───────────────────────────────
+  # Views arrive as `view-<name>` references, named for the side of the
+  # subject the camera sees (front 0°, left 90°, back 180°, right 270°).
+  - id: fal/tripo-h3.1-multiview
+    provider: fal
+    media_type: model3d
+    display_name: Tripo H3.1 Multiview to 3D (Fal)
+    description: >-
+      Tripo H3.1 via Fal: two to four views of one subject make one mesh.
+      Tripo reads its views by position — front, left, back, right — so
+      view-front and view-left are required and view-right needs view-back.
+      litegen sends them in Tripo's order whatever order they arrive in.
+    docs_url: https://fal.ai/models/tripo3d/h3.1/multiview-to-3d/api
+    # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=tripo3d/h3.1/multiview-to-3d
+    #   (H31MultiviewTo3dInput / H31MultiviewTo3dOutput, read 2026-10-30):
+    #   image_urls "2 to 4 image URLs of the same object from different
+    #   angles. Order: [front, left, back, right]. Front view is required.";
+    #   texture (default true), pbr (default true), face_limit 1000–2000000,
+    #   model_seed, texture_seed, texture_quality / geometry_quality
+    #   (standard | detailed), quad, orientation, auto_size,
+    #   texture_alignment. No prompt. model_mesh "May be GLB or FBX
+    #   depending on Tripo output" (FBX only for quad, which is not offered).
+    #   Which side Tripo calls "left" is not documented (unverified): litegen
+    #   sends the subject's left side, yaw 90.
+    # @see https://fal.ai/models/tripo3d/h3.1/multiview-to-3d/llms.txt (2026-10-30)
+    #   "Your request will cost **$0.20** (without textures), **$0.30** (with
+    #   standard textures), or **$0.40** (with HD textures), plus an
+    #   additional **$0.20** for detailed geometry and **$0.05** for quad mesh
+    #   if selected." The default request is textured at standard quality.
+    pricing:
+      base_cost_usd: 0.30
+      variable_pricing: { untextured_usd: 0.20 }
+    capabilities: { multiview_to_3d: true }
+    prompt: { required: false, max_length: 0 }
+    params:
+      output_formats:
+        kind: string_array
+        enum_values: [glb]
+        max_items: 1
+        default: [glb]
+        label: Output formats
+        description: Tripo emits glb here; litegen derives the other containers.
+      texture: { kind: bool, default: true, label: Textures, description: Sends `texture`. An untextured mesh costs $0.20 at fal. }
+      pbr: { kind: bool, default: true, label: PBR materials, description: Sends `pbr`; PBR also turns textures on. }
+      target_polycount:
+        kind: int
+        min: 1000
+        max: 2000000
+        label: Target polycount
+        description: Sends `face_limit`. Left out, Tripo picks the count.
+      # model_seed is an integer with no stated bounds; u32 is the range fal
+      # documents elsewhere.
+      seed: { kind: seed, min: 0, max: 4294967295 }
+    ref_inputs:
+      max_total: 4
+      provider_format: { form: url }
+      view_order: [front, left, back, right]
+      roles:
+        view-front: { required: true, min_count: 1, max_count: 1 }
+        view-left: { required: true, min_count: 1, max_count: 1 }
+        view-back: { required: false, min_count: 0, max_count: 1 }
+        view-right: { required: false, min_count: 0, max_count: 1 }
+    # texture_quality, geometry_quality and quad change the price (and quad
+    # the container), so they wait for variable pricing (Task 17).
+    extra_allowlist: [texture_alignment, texture_seed, orientation, auto_size]
+    tags: [3d, mesh, tripo, multiview]
+
+  - id: fal/hunyuan3d-v3.1-pro
+    provider: fal
+    media_type: model3d
+    display_name: Hunyuan3D 3.1 Pro (Fal)
+    description: >-
+      Tencent Hunyuan3D 3.1 Pro via Fal, from one image or from up to eight
+      views of one subject (front required; back, left, right, top, bottom,
+      front-left and front-right optional). GLB out; litegen derives the
+      other containers.
+    docs_url: https://fal.ai/models/fal-ai/hunyuan-3d/v3.1/pro/image-to-3d/api
+    # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/hunyuan-3d/v3.1/pro/image-to-3d
+    #   (Hunyuan3dV31ProImageTo3dInput / …Output, read 2026-10-30):
+    #   input_image_url (REQUIRED) "Front view image URL", back_image_url,
+    #   left_image_url, right_image_url, top_image_url, bottom_image_url,
+    #   left_front_image_url and right_front_image_url ("left-front 45
+    #   degree angle view"), enable_pbr (default false), face_count
+    #   40000–1500000 (default 500000), generate_type Normal | Geometry
+    #   ("Geometry: geometry-only white model (no textures)"). No prompt, no
+    #   seed. Output: model_glb, model_urls, thumbnail.
+    # Tencent names a view for the side of the subject it shows, as litegen
+    # does: in its own multiview example
+    # (github.com/Tencent-Hunyuan/Hunyuan3D-2, assets/example_mv_images/1),
+    # left.png shows the arm the front view puts on the subject's left.
+    # @see https://fal.ai/models/fal-ai/hunyuan-3d/v3.1/pro/image-to-3d/llms.txt (2026-10-30)
+    #   "Your request will cost **$0.375** per generation." "Enabling PBR
+    #   materials adds **$0.15**. Using multi-view images adds **$0.15**.
+    #   Custom face count adds **$0.15**."
+    pricing:
+      base_cost_usd: 0.375
+      variable_pricing: { pbr_addon_usd: 0.15, multiview_addon_usd: 0.15, face_count_addon_usd: 0.15 }
+    capabilities: { image_to_3d: true, multiview_to_3d: true }
+    prompt: { required: false, max_length: 0 }
+    params:
+      output_formats:
+        kind: string_array
+        enum_values: [glb]
+        max_items: 1
+        default: [glb]
+        label: Output formats
+        description: Hunyuan3D emits glb; litegen derives the other containers.
+      texture: { kind: bool, default: true, label: Textures, description: "Sends generate_type: Normal (textured) or Geometry (white model)." }
+      pbr: { kind: bool, default: false, label: PBR materials, description: Sends `enable_pbr`. fal adds $0.15. }
+      target_polycount:
+        kind: int
+        min: 40000
+        max: 1500000
+        label: Target polycount
+        description: Sends `face_count` (Hunyuan's default is 500,000). fal adds $0.15.
+    ref_inputs:
+      max_total: 8
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+        view-front: { required: false, min_count: 0, max_count: 1 }
+        view-back: { required: false, min_count: 0, max_count: 1 }
+        view-left: { required: false, min_count: 0, max_count: 1 }
+        view-right: { required: false, min_count: 0, max_count: 1 }
+        view-top: { required: false, min_count: 0, max_count: 1 }
+        view-bottom: { required: false, min_count: 0, max_count: 1 }
+        view-front-left: { required: false, min_count: 0, max_count: 1 }
+        view-front-right: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [3d, mesh, hunyuan, multiview]
+
   # ─── 3D operations (PixelGenie 3D doc §3A, §3B) ────────────────────────────
   - id: fal/meshy-rig
     provider: fal

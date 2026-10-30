@@ -233,7 +233,7 @@ impl ImageProvider for BedrockImageProvider {
         let mut metadata = HashMap::new();
         metadata.insert("model".to_string(), Value::String(native.to_string()));
 
-        Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata })
+        Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata, more: Vec::new() })
     }
 
     async fn estimate_cost(
@@ -322,7 +322,7 @@ mod tests {
             vendor_job: Default::default(),
             size: Some("1024x1024".to_string()), aspect_ratio: None, quality: Some("standard".to_string()), style: None,
             steps: None, guidance_scale: Some(6.5), strength: None, response_format: "url".to_string(), extra: None,
-            edit: None,
+            edit: None, views: Vec::new(),
         }
     }
 

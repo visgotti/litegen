@@ -261,7 +261,7 @@ impl HunyuanImageProvider {
                     let bytes = self.fetch_image_bytes(image_url).await?;
                     let mut metadata = HashMap::new();
                     metadata.insert("job_id".to_string(), Value::String(job_id.to_string()));
-                    return Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata });
+                    return Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata, more: Vec::new() });
                 }
                 Some("4") => {
                     let why = non_empty("JobErrorMsg")
@@ -375,7 +375,7 @@ impl ImageProvider for HunyuanImageProvider {
                     let bytes = self.fetch_image_bytes(image_url).await?;
                     let mut metadata = HashMap::new();
                     metadata.insert("job_id".to_string(), Value::String(job_id.to_string()));
-                    return Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata });
+                    return Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata, more: Vec::new() });
                 }
                 Some("4") => {
                     return Err(ProviderError::RequestFailed {
@@ -477,7 +477,7 @@ mod tests {
             vendor_job: Default::default(),
             size: Some("1024x1024".to_string()), aspect_ratio: None, quality: None, style: None,
             steps: None, guidance_scale: None, strength: None, response_format: "url".to_string(), extra: None,
-            edit: None,
+            edit: None, views: Vec::new(),
         }
     }
 

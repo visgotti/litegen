@@ -449,6 +449,21 @@ mod tests {
     }
 
     #[test]
+    fn multiview_documents_its_views_and_the_view_each_image_shows() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        assert_eq!(
+            s["ImageView"]["enum"],
+            json!(["front", "front-left", "left", "back-left", "back", "back-right", "right", "front-right", "top", "bottom"]),
+        );
+        let view = "#/components/schemas/ImageView";
+        assert!(mentions(property(&s["ImageGenerationRequest"], "views"), view), "{}", property(&s["ImageGenerationRequest"], "views"));
+        assert!(mentions(property(&s["ImageResult"], "view"), view), "{}", property(&s["ImageResult"], "view"));
+        assert!(mentions(property(&s["ImageResult"], "yaw_deg"), "number"), "{}", property(&s["ImageResult"], "yaw_deg"));
+        assert!(mentions(property(&s["RefInputSpec"], "view_order"), view), "{}", property(&s["RefInputSpec"], "view_order"));
+    }
+
+    #[test]
     fn a_models_reference_spec_says_whether_its_vendor_takes_data_uris() {
         let d = doc();
         let p = property(&d["components"]["schemas"]["RefInputSpec"], "data_uri");

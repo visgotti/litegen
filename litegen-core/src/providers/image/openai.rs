@@ -373,6 +373,7 @@ impl OpenAiProvider {
             data: image_bytes,
             content_type,
             metadata,
+            more: Vec::new(),
         })
     }
 
@@ -677,7 +678,7 @@ mod tests {
             guidance_scale: None,
             strength: None,
             response_format: "b64_json".to_string(),
-            edit: None,
+            edit: None, views: Vec::new(),
             extra: None,
         }
     }
@@ -872,7 +873,7 @@ mod tests {
             guidance_scale: None,
             strength: None,
             response_format: "b64_json".to_string(),
-            region: None, mask_grow_px: None,
+            region: None, mask_grow_px: None, views: None,
         };
         provider
             .estimate_cost(&ref_schema(id), &request)

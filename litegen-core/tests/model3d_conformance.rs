@@ -118,7 +118,9 @@ fn a_model_without_a_prompt_field_never_requires_one() {
 fn image_only_models_require_the_image_they_cannot_work_without() {
     let reg = catalog();
     for m in model3d(&reg) {
-        if m.capabilities.text_to_3d || !m.capabilities.image_to_3d {
+        // Views drive a multiview model without `init` (validator: no
+        // references at all is still refused, there being no text arm).
+        if m.capabilities.text_to_3d || m.capabilities.multiview_to_3d || !m.capabilities.image_to_3d {
             continue;
         }
         let init = m

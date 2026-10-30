@@ -47,6 +47,11 @@ pub struct ImageGenerationRequest {
     /// the mask. With a `mask` too, the edit area is where they overlap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<Region>,
+    /// The views a `multiview` model makes, one image each, in this order.
+    /// Omitted means the model's default set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<ImageView>>)]
+    pub views: Option<Vec<String>>,
     /// Grow the edit area outward by this many pixels: the vendor's own
     /// setting where it has one (sent explicitly, even as 0), else litegen
     /// dilates the mask itself. Default 0.
@@ -114,6 +119,13 @@ pub struct ImageResult {
     /// Revised prompt (if provider modified the prompt, e.g. DALL-E 3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revised_prompt: Option<String>,
+    /// The view this image shows, from a `multiview` model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<ImageView>)]
+    pub view: Option<String>,
+    /// The camera's yaw for `view`, in degrees (see `ImageView`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yaw_deg: Option<f64>,
     /// Content type of the image (e.g. "image/png").
     #[serde(default = "default_content_type")]
     pub content_type: String,
@@ -427,6 +439,74 @@ impl Model3dAnimationPreset {
             Model3dAnimationPreset::Climb => "climb",
             Model3dAnimationPreset::Turn => "turn",
         }
+    }
+}
+
+/// A side of the subject a view shows (3D doc §3E). Its `yaw_deg` is the
+/// camera's position around +Y, measured from the subject's front (+Z)
+/// towards +X — and glTF puts the subject's left at +X — so `front` is 0,
+/// `left` 90, `back` 180 and `right` 270. `top` and `bottom` have no yaw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImageView {
+    Front,
+    FrontLeft,
+    Left,
+    BackLeft,
+    Back,
+    BackRight,
+    Right,
+    FrontRight,
+    Top,
+    Bottom,
+}
+
+impl ImageView {
+    pub const ALL: [ImageView; 10] = [
+        ImageView::Front,
+        ImageView::FrontLeft,
+        ImageView::Left,
+        ImageView::BackLeft,
+        ImageView::Back,
+        ImageView::BackRight,
+        ImageView::Right,
+        ImageView::FrontRight,
+        ImageView::Top,
+        ImageView::Bottom,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ImageView::Front => "front",
+            ImageView::FrontLeft => "front-left",
+            ImageView::Left => "left",
+            ImageView::BackLeft => "back-left",
+            ImageView::Back => "back",
+            ImageView::BackRight => "back-right",
+            ImageView::Right => "right",
+            ImageView::FrontRight => "front-right",
+            ImageView::Top => "top",
+            ImageView::Bottom => "bottom",
+        }
+    }
+
+    /// The camera's yaw for this view; `None` for `top` and `bottom`.
+    pub const fn yaw_deg(self) -> Option<f64> {
+        match self {
+            ImageView::Front => Some(0.0),
+            ImageView::FrontLeft => Some(45.0),
+            ImageView::Left => Some(90.0),
+            ImageView::BackLeft => Some(135.0),
+            ImageView::Back => Some(180.0),
+            ImageView::BackRight => Some(225.0),
+            ImageView::Right => Some(270.0),
+            ImageView::FrontRight => Some(315.0),
+            ImageView::Top | ImageView::Bottom => None,
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<ImageView> {
+        Self::ALL.into_iter().find(|v| v.as_str() == s)
     }
 }
 

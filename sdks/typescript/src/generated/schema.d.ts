@@ -2378,6 +2378,11 @@ export interface components {
             /** Format: double */
             strength?: number | null;
             style?: string | null;
+            /**
+             * @description The views a `multiview` model makes, one image each, in this order.
+             *     Omitted means the model's default set.
+             */
+            views?: components["schemas"]["ImageView"][] | null;
         };
         /**
          * @description Response for an image generation request.
@@ -2414,7 +2419,21 @@ export interface components {
             revised_prompt?: string | null;
             /** @description URL of the generated image (if response_format=url). */
             url?: string | null;
+            view?: null | components["schemas"]["ImageView"];
+            /**
+             * Format: double
+             * @description The camera's yaw for `view`, in degrees (see `ImageView`).
+             */
+            yaw_deg?: number | null;
         };
+        /**
+         * @description A side of the subject a view shows (3D doc §3E). Its `yaw_deg` is the
+         *     camera's position around +Y, measured from the subject's front (+Z)
+         *     towards +X — and glTF puts the subject's left at +X — so `front` is 0,
+         *     `left` 90, `back` 180 and `right` 270. `top` and `bottom` have no yaw.
+         * @enum {string}
+         */
+        ImageView: "front" | "front-left" | "left" | "back-left" | "back" | "back-right" | "right" | "front-right" | "top" | "bottom";
         /**
          * @description Who keeps a clip in place.
          * @enum {string}
@@ -3527,6 +3546,13 @@ export interface components {
             roles: {
                 [key: string]: components["schemas"]["RefRoleSpec"];
             };
+            /**
+             * @description For a multiview-to-3D vendor that takes its views as ONE ordered list
+             *     (3D doc §3E): the views in that list's order. A view needs every view
+             *     before it, since the vendor reads them by position. Empty when the
+             *     vendor takes each view by name and any may be omitted.
+             */
+            view_order?: components["schemas"]["ImageView"][];
         };
         RefProviderFormat: {
             /** @enum {string} */

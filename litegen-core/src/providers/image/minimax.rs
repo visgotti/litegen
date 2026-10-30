@@ -188,7 +188,7 @@ impl ImageProvider for MiniMaxImageProvider {
         let mut metadata = HashMap::new();
         metadata.insert("model".to_string(), Value::String(native.to_string()));
 
-        Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata })
+        Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata, more: Vec::new() })
     }
 
     async fn estimate_cost(
@@ -251,7 +251,7 @@ mod tests {
             vendor_job: Default::default(),
             size: None, aspect_ratio: Some("16:9".to_string()), quality: None, style: None,
             steps: None, guidance_scale: None, strength: None, response_format: "url".to_string(), extra: None,
-            edit: None,
+            edit: None, views: Vec::new(),
         }
     }
 

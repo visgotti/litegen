@@ -319,6 +319,7 @@ impl ImageProvider for FalProvider {
             data: image_bytes,
             content_type,
             metadata,
+            more: Vec::new(),
         })
     }
 
@@ -447,7 +448,7 @@ mod tests {
             guidance_scale: Some(3.5),
             strength: None,
             response_format: "url".to_string(),
-            edit: None,
+            edit: None, views: Vec::new(),
             extra: None,
         }
     }

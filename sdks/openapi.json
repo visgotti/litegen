@@ -8304,6 +8304,16 @@
                                     "string",
                                     "null"
                                 ]
+                            },
+                            "views": {
+                                "type": [
+                                    "array",
+                                    "null"
+                                ],
+                                "items": {
+                                    "$ref": "#/components/schemas/ImageView"
+                                },
+                                "description": "The views a `multiview` model makes, one image each, in this order.\nOmitted means the model's default set."
                             }
                         }
                     }
@@ -8394,8 +8404,43 @@
                             "null"
                         ],
                         "description": "URL of the generated image (if response_format=url)."
+                    },
+                    "view": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/ImageView",
+                                "description": "The view this image shows, from a `multiview` model."
+                            }
+                        ]
+                    },
+                    "yaw_deg": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "The camera's yaw for `view`, in degrees (see `ImageView`)."
                     }
                 }
+            },
+            "ImageView": {
+                "type": "string",
+                "description": "A side of the subject a view shows (3D doc \u00a73E). Its `yaw_deg` is the\ncamera's position around +Y, measured from the subject's front (+Z)\ntowards +X \u2014 and glTF puts the subject's left at +X \u2014 so `front` is 0,\n`left` 90, `back` 180 and `right` 270. `top` and `bottom` have no yaw.",
+                "enum": [
+                    "front",
+                    "front-left",
+                    "left",
+                    "back-left",
+                    "back",
+                    "back-right",
+                    "right",
+                    "front-right",
+                    "top",
+                    "bottom"
+                ]
             },
             "InPlaceMode": {
                 "type": "string",
@@ -11487,6 +11532,13 @@
                         "propertyNames": {
                             "type": "string"
                         }
+                    },
+                    "view_order": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/ImageView"
+                        },
+                        "description": "For a multiview-to-3D vendor that takes its views as ONE ordered list\n(3D doc \u00a73E): the views in that list's order. A view needs every view\nbefore it, since the vendor reads them by position. Empty when the\nvendor takes each view by name and any may be omitted."
                     }
                 }
             },

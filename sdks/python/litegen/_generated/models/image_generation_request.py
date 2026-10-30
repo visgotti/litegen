@@ -1,17 +1,9 @@
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Type,
-    TypeVar,
-    Union,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.image_view import ImageView
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -51,6 +43,8 @@ class ImageGenerationRequest:
         steps (Union[None, Unset, int]):
         strength (Union[None, Unset, float]):
         style (Union[None, Unset, str]):
+        views (Union[List[ImageView], None, Unset]): The views a `multiview` model makes, one image each, in this order.
+            Omitted means the model's default set.
     """
 
     model: str
@@ -72,6 +66,7 @@ class ImageGenerationRequest:
     steps: Union[None, Unset, int] = UNSET
     strength: Union[None, Unset, float] = UNSET
     style: Union[None, Unset, str] = UNSET
+    views: Union[List[ImageView], None, Unset] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -166,6 +161,18 @@ class ImageGenerationRequest:
         else:
             style = self.style
 
+        views: Union[List[str], None, Unset]
+        if isinstance(self.views, Unset):
+            views = UNSET
+        elif isinstance(self.views, list):
+            views = []
+            for views_type_0_item_data in self.views:
+                views_type_0_item = views_type_0_item_data.value
+                views.append(views_type_0_item)
+
+        else:
+            views = self.views
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -209,6 +216,8 @@ class ImageGenerationRequest:
             field_dict["strength"] = strength
         if style is not UNSET:
             field_dict["style"] = style
+        if views is not UNSET:
+            field_dict["views"] = views
 
         return field_dict
 
@@ -346,6 +355,28 @@ class ImageGenerationRequest:
 
         style = _parse_style(d.pop("style", UNSET))
 
+        def _parse_views(data: object) -> Union[List[ImageView], None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                views_type_0 = []
+                _views_type_0 = data
+                for views_type_0_item_data in _views_type_0:
+                    views_type_0_item = ImageView(views_type_0_item_data)
+
+                    views_type_0.append(views_type_0_item)
+
+                return views_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[List[ImageView], None, Unset], data)
+
+        views = _parse_views(d.pop("views", UNSET))
+
         image_generation_request = cls(
             model=model,
             extra=extra,
@@ -366,6 +397,7 @@ class ImageGenerationRequest:
             steps=steps,
             strength=strength,
             style=style,
+            views=views,
         )
 
         image_generation_request.additional_properties = d

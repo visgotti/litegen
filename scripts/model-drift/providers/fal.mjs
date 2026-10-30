@@ -1,6 +1,6 @@
 // fal.ai — an aggregator (~1,500 endpoints), so "new" is scoped to the model
 // families we carry: FLUX, Stable Diffusion / SDXL, Recraft, AuraFlow, LTX
-// Video, and the 3D families Hyper3D Rodin, TRELLIS, Hunyuan3D and Meshy, matched on
+// Video, and the 3D families Hyper3D Rodin, TRELLIS, Hunyuan3D, Meshy and Tripo, matched on
 // the endpoint id, minus training endpoints (LoRA trainers are not generation
 // models). Sources are fal's public Platform API (api.fal.ai/v1/models — no
 // key needed, but unauthenticated calls are rate-limited, so this stays at five
@@ -20,7 +20,8 @@
 // Vendor id = the endpoint id in the URL path. Mapping mirrors
 // litegen-core/src/providers/image/fal.rs `resolve_endpoint`, video/fal.rs
 // `resolve_spec` (fal/video is its LTX Video default arm; fal/ltx-2.3 has its
-// own arm) and model3d/fal.rs `resolve_spec` (text_to_3d and image_to_3d).
+// own arm) and model3d/fal.rs `resolve_spec` (text_to_3d, image_to_3d and
+// multiview_to_3d).
 import { openapiExcerpt } from '../extract.mjs';
 
 // Grouped by the adapter that calls them; each group is its own typings
@@ -47,6 +48,10 @@ const MODEL3D = {
   // Image-to-3D only (text_to_3d is empty): image_url / input_image_url is required.
   'fal/trellis': 'fal-ai/trellis',
   'fal/hunyuan3d-v2': 'fal-ai/hunyuan3d/v2',
+  // Multiview only (multiview_to_3d): image_urls, in Tripo's view order.
+  'fal/tripo-h3.1-multiview': 'tripo3d/h3.1/multiview-to-3d',
+  // One endpoint for both image_to_3d and multiview_to_3d: a field per view.
+  'fal/hunyuan3d-v3.1-pro': 'fal-ai/hunyuan-3d/v3.1/pro/image-to-3d',
   // An operation on a mesh (model3d/fal.rs `resolve_operation`): model_url in.
   'fal/meshy-rig': 'fal-ai/meshy/rigging',
 };
@@ -54,7 +59,7 @@ const GROUPS = { image: IMAGE, video: VIDEO, '3d': MODEL3D };
 const MODELS = { ...IMAGE, ...VIDEO, ...MODEL3D };
 
 const API = 'https://api.fal.ai/v1/models';
-const FAMILIES = /(?:^|[/-])(?:flux|stable-diffusion|sdxl|sd3|recraft|aura-?flow|ltx|hyper3d|rodin|trellis|hunyuan-?3d|meshy)/;
+const FAMILIES = /(?:^|[/-])(?:flux|stable-diffusion|sdxl|sd3|recraft|aura-?flow|ltx|hyper3d|rodin|trellis|hunyuan-?3d|meshy|tripo)/;
 
 const isTraining = (m) => m.metadata?.category === 'training' || m.metadata?.kind === 'training';
 
@@ -86,7 +91,13 @@ const carriedChunks = Object.entries(GROUPS).flatMap(([group, models]) => {
 // /fal-ai/flux-2), but the expand=openapi-3.0 spec it returns is titled for
 // fal-ai/flux-2-dev, with paths under /fal-ai/flux-2-dev (seen 2026-09-11). The
 // alias is listed explicitly so any other spec/path mismatch still fails.
-const SPEC_ALIAS = { 'fal-ai/flux-2': 'fal-ai/flux-2-dev' };
+const SPEC_ALIAS = {
+  'fal-ai/flux-2': 'fal-ai/flux-2-dev',
+  // Seen 2026-10-30: the queue specs fal.ai serves per endpoint use the ids
+  // themselves; the Platform API's are written for these paths.
+  'fal-ai/hunyuan-3d/v3.1/pro/image-to-3d': 'fal-ai/hunyuan-3d-pro-image-to-3d/v3.1/pro/image-to-3d',
+  'tripo3d/h3.1/multiview-to-3d': 'fal-ai/tripo3d/h3.1/multiview-to-3d',
+};
 
 // Registry status and input schema of each carried endpoint, sorted by id.
 function carriedSnapshot(res, ours) {

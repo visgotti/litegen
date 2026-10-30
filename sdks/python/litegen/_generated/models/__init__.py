@@ -55,6 +55,7 @@ from .health_response import HealthResponse
 from .image_generation_request import ImageGenerationRequest
 from .image_generation_response import ImageGenerationResponse
 from .image_result import ImageResult
+from .image_view import ImageView
 from .in_place_mode import InPlaceMode
 from .invitation import Invitation
 from .invitation_view import InvitationView
@@ -260,6 +261,7 @@ __all__ = (
     "ImageGenerationRequest",
     "ImageGenerationResponse",
     "ImageResult",
+    "ImageView",
     "InPlaceMode",
     "Invitation",
     "InvitationView",

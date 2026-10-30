@@ -62,7 +62,7 @@ mod tests {
             guidance_scale: None,
             strength: None,
             response_format: "url".to_string(),
-            edit: None,
+            edit: None, views: Vec::new(),
             extra: None,
         }
     }
@@ -166,6 +166,7 @@ mod tests {
                 data: vec![0u8; 4],
                 content_type: "image/png".to_string(),
                 metadata: HashMap::new(),
+                more: Vec::new(),
             })
         }
 
@@ -225,6 +226,7 @@ mod tests {
                     data: vec![0u8; 4],
                     content_type: "image/png".to_string(),
                     metadata: HashMap::new(),
+                    more: Vec::new(),
                 })
             }
         }

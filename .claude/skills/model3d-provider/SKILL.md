@@ -36,8 +36,10 @@ parsed as untrusted input. Read this whole skill before writing code.
     Mesh|Texture|Preview, format, content_type, bytes, polycount, width,
     height }`.
 - **The mode comes from the refs**, never from a param: no refs means
-  text-to-3D, an `init` ref means image-to-3D, and `view-front|back|left|
-  right|top` refs mean multiview.
+  text-to-3D, an `init` ref means image-to-3D, and `view-<name>` refs (any
+  `ImageView`: front, left, back, right, the diagonals, top, bottom) mean
+  multiview. The validator refuses `init` beside views, views without
+  `view-front`, and a gap in a row's `ref_inputs.view_order`.
 - **`generate()` only submits.** It runs under the router's 120 s attempt
   timeout and up to two retries, and each retry is a new billed vendor job.
 - **`stage_context` is your polling state.** Put the endpoint, the vendor's
@@ -242,6 +244,13 @@ SF3D and SPAR3D use the `stability` key, for example), and you're adding
   the adapter answers it with `InvalidRequest` before any vendor call.
   TRELLIS and Hunyuan3D require an image, so a text-only request is refused,
   and the YAML marks `init` as `required`.
+- **Place each view where the endpoint takes it** (fal: `Views` in the
+  endpoint spec). A field per view (Hunyuan 3.1's `left_image_url`, …) is
+  `Views::Named`. One list read by position (Tripo's `image_urls`, `[front,
+  left, back, right]`) is `Views::Ordered`, and the row declares the same
+  order as `ref_inputs.view_order` so the validator refuses a gap before
+  billing. Whose "left" a vendor means is rarely documented: prove it with
+  an asymmetric fixture, or mark the mapping unverified.
 - **Image refs** go in the vendor's form: a URL, a base64 data URI (Meshy
   accepts one), a vendor file token after an upload (Tripo), or multipart
   (Stability, Rodin direct). If a ref can't be sent, refuse the request

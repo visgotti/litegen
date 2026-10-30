@@ -145,6 +145,7 @@ def test_model3d_params_cover_the_request_schema() -> None:
         ("Model3dSkeleton", t.Model3dSkeleton),
         ("Model3dJointNaming", t.Model3dJointNaming),
         ("Model3dAnimationPreset", t.Model3dAnimationPreset),
+        ("ImageView", t.ImageView),
         ("MaskConvention", t.MaskConvention),
         ("RegionInput", t.RegionInput),
         ("PreservesUnmasked", t.PreservesUnmasked),

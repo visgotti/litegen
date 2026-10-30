@@ -393,6 +393,13 @@ pub struct RefInputSpec {
     /// unguessable URL of its own for the vendor to fetch (L4).
     #[serde(default = "default_true")]
     pub data_uri: bool,
+    /// For a multiview-to-3D vendor that takes its views as ONE ordered list
+    /// (3D doc §3E): the views in that list's order. A view needs every view
+    /// before it, since the vendor reads them by position. Empty when the
+    /// vendor takes each view by name and any may be omitted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(value_type = Vec<crate::types::ImageView>)]
+    pub view_order: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -630,6 +637,8 @@ pub const KNOWN_PARAMS: &[&str] = &[
     "animations",
     // Partial image edits (3D doc §4).
     "region",
+    // Multiview images (3D doc §3E).
+    "views",
 ];
 
 /// The `ParamSpec` kind(s) a canonical param may be declared with: exactly the
@@ -649,7 +658,7 @@ pub fn canonical_param_kinds(name: &str) -> &'static [&'static str] {
         "duration_seconds" => &["float", "int"],
         "size" => &["size"],
         "aspect_ratio" => &["aspect_ratio"],
-        "output_formats" => &["string_array"],
+        "output_formats" | "views" => &["string_array"],
         "output_format" | "symmetry" | "topology" | "skeleton" | "joint_naming" => &["string"],
         "height_m" => &["float"],
         "animations" => &["animation_list"],

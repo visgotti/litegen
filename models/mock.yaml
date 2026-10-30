@@ -537,6 +537,35 @@ models:
     extra_allowlist: []
     tags: [mock, test]
 
+  - id: mock/multiview-image
+    provider: mock
+    media_type: image
+    task: multiview
+    display_name: Mock Multiview Image
+    description: >-
+      Turns one init image into one image per requested view — a different
+      tint for each — named by `view` with its `yaw_deg` (front 0, left 90,
+      back 180, right 270, diagonals between). Billed once per call however
+      many views it makes.
+    pricing: { base_cost_usd: 0.01 }  # nonzero, so billing once per call is observable
+    capabilities: { text_to_image: false, image_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      views:
+        kind: string_array
+        enum_values: [front, front-left, left, back-left, back, back-right, right, front-right]
+        default: [front, left, back, right]
+        label: Views
+        description: The sides of the subject to show, one image each, in this order.
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: []
+    tags: [mock, test, multiview]
+
   - id: mock/region-image
     provider: mock
     media_type: image

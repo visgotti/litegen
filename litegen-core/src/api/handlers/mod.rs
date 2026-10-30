@@ -171,6 +171,12 @@ pub async fn generate_image(
         guidance_scale: validated.request.guidance_scale,
         strength: validated.request.strength,
         response_format: validated.request.response_format.clone(),
+        views: match (&validated.request.views, validated.schema.params.get("views")) {
+            (Some(v), _) => v.clone(),
+            (None, Some(crate::capabilities::ParamSpec::StringArray(spec))) if !spec.default.is_empty() => spec.default.clone(),
+            (None, Some(crate::capabilities::ParamSpec::StringArray(spec))) => spec.enum_values.clone(),
+            _ => Vec::new(),
+        },
         edit,
         extra: validated.request.base.extra.clone(),
     };

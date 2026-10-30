@@ -148,3 +148,45 @@ models:
         description: Mesh containers. Tripo emits glb or fbx; litegen derives the rest.
     extra_allowlist: []
     tags: [animation, 3d-operation]
+
+  # ─── Multiview images (PixelGenie 3D doc §3E) ──────────────────────────────
+  # @see https://developers.tripo3d.ai/en/docs/generation-image-to-multiview (2026-10-30)
+  #   POST /generation/image-to-multiview with one field, `input`: "Source
+  #   image for multiview generation." — a file_token or a URL ("Choose
+  #   exactly one"); "Formats: `PNG`, `JPEG`, `WebP`". No prompt field. The
+  #   finished task's output.generate_multiview_image "contains URLs for
+  #   available views, such as front_view_url, left_view_url, back_view_url
+  #   and right_view_url."
+  - id: tripo/multiview
+    provider: tripo
+    media_type: image
+    task: multiview
+    display_name: Tripo Image to Multiview
+    description: >-
+      Turns one image of a subject into its front, left, back and right
+      views, one image each, named by `view` with its `yaw_deg`. Takes no
+      prompt. Tripo makes all four every time; `views` picks which come back
+      and in what order, and the call is billed once either way.
+    docs_url: https://developers.tripo3d.ai/en/docs/generation-image-to-multiview
+    # @see https://developers.tripo3d.ai/en/pricing (2026-10-30)
+    #   "Image to Multiview" / "10"; "1 credit = $0.01 USD".
+    #   10 credits × $0.01 = $0.10 a call.
+    pricing: { base_cost_usd: 0.10 }
+    capabilities: { text_to_image: false, image_to_image: true }
+    prompt: { required: false, max_length: 0 }
+    params:
+      views:
+        kind: string_array
+        enum_values: [front, left, back, right]
+        default: [front, left, back, right]
+        label: Views
+        description: The sides of the subject to return, one image each, in this order.
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      # Uploaded to Tripo, so Tripo never fetches from the caller's host.
+      provider_format: { form: base64 }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: []
+    tags: [multiview]

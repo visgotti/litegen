@@ -92,6 +92,16 @@ submitted to their modality's usual generation endpoint."""
 # ─── Requests ────────────────────────────────────────────────────────────────
 
 
+ImageView = Literal[
+    "front", "front-left", "left", "back-left", "back", "back-right", "right", "front-right", "top", "bottom",
+]
+"""A view of a subject, named for the side the camera sees. Its yaw
+(``yaw_deg`` on a multiview image) is the camera's position around +Y from the
+subject's front (+Z) towards +X: front 0, front-left 45, left 90, back-left 135,
+back 180, back-right 225, right 270, front-right 315; top and bottom have none.
+A multiview image model takes ``views=`` from this list; a multiview-to-3D model
+takes ``view-<name>`` references."""
+
 MaskConvention = Literal["white_edits", "black_edits", "transparent_edits"]
 """Which pixels of a mask edit. Callers always send ``white_edits`` (white,
 128 or more, edits); a model's catalog row names its vendor's own, and
@@ -120,8 +130,11 @@ class ReferenceImage(TypedDict):
     separate mode switch:
 
     * ``"init"``: image-to-3D from a single picture.
-    * ``"view-front"``, ``"view-back"``, ``"view-left"``, ``"view-right"``,
-      ``"view-top"``: multiview-to-3D, one image per view.
+    * ``"view-<name>"`` for an :data:`ImageView` (``"view-front"``,
+      ``"view-left"``, …): multiview-to-3D, one image per view. The front is
+      always needed, and an ``init`` image cannot ride along. A model whose
+      ``ref_inputs.view_order`` is set reads its views by position, so a view
+      needs every view before it in that order.
 
     Which roles a model takes is in its ``ref_inputs`` (``GET /v1/models/{id}``).
     Leaving ``role`` out uses the model's default role.

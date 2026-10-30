@@ -344,6 +344,7 @@ impl ImageProvider for StabilityProvider {
                 data: bytes.to_vec(),
                 content_type,
                 metadata,
+                more: Vec::new(),
             })
         } else {
             // V1 engine API. Plain text-to-image POSTs a JSON body. When init/mask
@@ -576,6 +577,7 @@ impl ImageProvider for StabilityProvider {
                 data: bytes,
                 content_type: "image/png".to_string(),
                 metadata,
+                more: Vec::new(),
             })
         }
     }
@@ -725,7 +727,7 @@ mod tests {
             guidance_scale: None,
             strength: None,
             response_format: "url".to_string(),
-            edit: None,
+            edit: None, views: Vec::new(),
             extra: None,
         }
     }

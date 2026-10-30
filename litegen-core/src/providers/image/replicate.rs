@@ -409,6 +409,7 @@ impl ImageProvider for ReplicateProvider {
             data: image_bytes,
             content_type: "image/png".to_string(),
             metadata,
+            more: Vec::new(),
         })
     }
 
@@ -526,7 +527,7 @@ mod tests {
             guidance_scale: Some(3.5),
             strength: None,
             response_format: "url".to_string(),
-            edit: None,
+            edit: None, views: Vec::new(),
             extra: None,
         }
     }

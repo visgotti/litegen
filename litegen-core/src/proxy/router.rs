@@ -296,7 +296,8 @@ impl ProxyRouter {
             app_store.as_ref().unwrap_or(&self.image_store),
         )
         .await;
-        let produced = data.len().max(1) as f64;
+        // A multiview model's views come from one billed vendor call.
+        let produced = if schema.task == crate::capabilities::ModelTask::Multiview { 1.0 } else { data.len().max(1) as f64 };
         let base_cost = schema.pricing.base_cost_usd * produced;
         let (markup, total) = apply_markup(base_cost, self.cost_markup_percent());
         let _ = markup;
@@ -522,7 +523,7 @@ impl ProxyRouter {
             guidance_scale: extras.guidance_scale,
             strength: extras.strength,
             response_format: extras.response_format.clone(),
-            region: None, mask_grow_px: None,
+            region: None, mask_grow_px: None, views: None,
         };
         for d in deployments {
             let cost = if let Some(p) = self.registry.image_provider_for_request(&d.provider, app_creds.clone()).await {
@@ -1435,41 +1436,34 @@ async fn build_image_results(
         .and_then(|v| v.as_str())
         .map(String::from);
 
-    let generation_id = uuid::Uuid::new_v4().to_string();
-
-    // Try to upload to configured storage backend (S3, etc.)
-    let stored_url = image_store
-        .store(&output.data, &output.content_type, &generation_id)
-        .await
-        .ok();
-
-    let (url, b64_json) = if let Some(url) = stored_url {
-        // Image was uploaded to object storage — return URL
-        if extras.response_format == "b64_json" {
-            let b64 = base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                &output.data,
-            );
-            (Some(url), Some(b64))
-        } else {
-            (Some(url), None)
-        }
-    } else {
-        // No storage configured — return base64 inline
-        let b64 = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            &output.data,
-        );
-        (None, Some(b64))
-    };
-
-    vec![ImageResult {
-        url,
-        b64_json,
-        revised_prompt,
-        content_type: output.content_type.clone(),
-        index: 0,
-    }]
+    // The call's first image, then any more it made (a multiview model's
+    // views), each stored and returned as its own result.
+    let mut results = Vec::with_capacity(1 + output.more.len());
+    for (index, image) in std::iter::once(output).chain(output.more.iter()).enumerate() {
+        let generation_id = uuid::Uuid::new_v4().to_string();
+        // Try to upload to configured storage backend (S3, etc.)
+        let stored_url = image_store.store(&image.data, &image.content_type, &generation_id).await.ok();
+        let encode = || base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image.data);
+        let (url, b64_json) = match stored_url {
+            // Image was uploaded to object storage — return URL
+            Some(url) if extras.response_format == "b64_json" => (Some(url), Some(encode())),
+            Some(url) => (Some(url), None),
+            // No storage configured — return base64 inline
+            None => (None, Some(encode())),
+        };
+        let view = image.metadata.get("view").and_then(|v| v.as_str()).map(String::from);
+        let yaw_deg = image.metadata.get("yaw_deg").and_then(|v| v.as_f64());
+        results.push(ImageResult {
+            url,
+            b64_json,
+            revised_prompt: revised_prompt.clone(),
+            view,
+            yaw_deg,
+            content_type: image.content_type.clone(),
+            index: index as u32,
+        });
+    }
+    results
 }
 
 /// Upload every file a 3D provider returned to litegen storage and describe them

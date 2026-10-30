@@ -21,6 +21,7 @@ use crate::providers::image::runway::RunwayImageProvider;
 use crate::providers::image::openai::OpenAiProvider;
 use crate::providers::image::replicate::ReplicateProvider;
 use crate::providers::image::stability::StabilityProvider;
+use crate::providers::image::tripo::TripoImageProvider;
 use crate::providers::video::bedrock::BedrockVideoProvider;
 use crate::providers::video::bytedance::ByteDanceVideoProvider;
 use crate::providers::video::fal::FalVideoProvider;
@@ -416,7 +417,8 @@ fn build_image_provider(
 ) -> Option<Box<dyn ImageProvider>> {
     // OpenAI/Replicate/Google/Fal/Runway/Luma/MiniMax/Hunyuan/Bedrock/Kling/
     // Leonardo/ByteDance/Mock serve images (some also video — see
-    // build_video_provider). Stability/Bfl/Ideogram/Recraft are image-only.
+    // build_video_provider). Stability/Bfl/Ideogram/Recraft are image-only;
+    // Tripo's images are its multiview views (its 3D is build_model3d_provider).
     macro_rules! configured {
         ($ty:ty) => {{
             let mut p = <$ty>::new();
@@ -441,6 +443,7 @@ fn build_image_provider(
         "kling" => configured!(KlingImageProvider),
         "leonardo" => configured!(LeonardoImageProvider),
         "bytedance" => configured!(ByteDanceImageProvider),
+        "tripo" => configured!(TripoImageProvider),
         "mock" => configured!(MockProvider),
         _ => None,
     }
@@ -509,7 +512,7 @@ fn build_model3d_provider(
 pub const IMAGE_PROVIDERS: &[&str] = &[
     "openai", "stability", "replicate", "google", "fal", "runway", "luma", "bfl",
     "ideogram", "recraft", "minimax", "hunyuan", "bedrock", "kling", "leonardo",
-    "bytedance", "mock",
+    "bytedance", "tripo", "mock",
 ];
 
 /// Canonical list of providers with a video implementation. Mirrors
@@ -940,11 +943,13 @@ mod tests {
         // The dashboard stores `{"api_keys":[…]}` with no single api_key.
         let reg = ProviderRegistry::new();
         let creds = ProviderCredentials::from_json(&serde_json::json!({ "api_keys": [{ "key": "tsk_1", "weight": 1 }] }));
-        let p = reg.model3d_provider_for_request("tripo", Some(creds)).await.expect("tripo builds");
+        let p = reg.model3d_provider_for_request("tripo", Some(creds.clone())).await.expect("tripo builds");
         assert_eq!(p.name(), "tripo");
         assert!(p.is_configured(), "a pooled key is enough");
+        let images = reg.image_provider_for_request("tripo", Some(creds)).await.expect("tripo's multiview images build");
+        assert!(images.is_configured(), "the same key serves Tripo's images");
         let tripo = provider_catalog().into_iter().find(|e| e.name == "tripo").expect("tripo is in the credential form");
-        assert_eq!(tripo.modalities, vec!["model3d".to_string()]);
+        assert_eq!(tripo.modalities, vec!["image".to_string(), "model3d".to_string()]);
     }
 
     #[tokio::test]

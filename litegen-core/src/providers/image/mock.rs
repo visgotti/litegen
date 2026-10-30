@@ -35,6 +35,30 @@ const EDIT_FILL: [u8; 4] = [0xff, 0xcd, 0x75, 0xff];
 
 static LAST_REGION_WINDOW: std::sync::Mutex<Option<Region>> = std::sync::Mutex::new(None);
 
+/// The multiview model (3D doc §3E): one tinted image per requested view.
+const MULTIVIEW_MODEL: &str = "mock/multiview-image";
+
+/// One image per view the request named, each a different tint and labelled
+/// with its `view` and `yaw_deg`; the first is the output, the rest `more`.
+fn multiview_images(prompt: &str, views: &[String]) -> Option<GenerationOutput> {
+    let mut images = views.iter().map(|v| {
+        let mut metadata = HashMap::new();
+        metadata.insert("view".to_string(), serde_json::json!(v));
+        if let Some(yaw) = ImageView::parse(v).and_then(|v| v.yaw_deg()) {
+            metadata.insert("yaw_deg".to_string(), serde_json::json!(yaw));
+        }
+        GenerationOutput {
+            data: generate_visual_image_png(&format!("{prompt} seen from the {v}")),
+            content_type: "image/png".to_string(),
+            metadata,
+            more: Vec::new(),
+        }
+    });
+    let mut first = images.next()?;
+    first.more = images.collect();
+    Some(first)
+}
+
 /// The model that takes references only as URLs it can fetch (L4).
 const URL_ONLY_MODEL: &str = "mock/url-only-image";
 
@@ -188,6 +212,10 @@ impl ImageProvider for MockProvider {
         metadata.insert("prompt".to_string(), serde_json::Value::String(base.prompt.clone()));
         metadata.insert("provider".to_string(), serde_json::Value::String("mock".to_string()));
 
+        if model.id == MULTIVIEW_MODEL {
+            return multiview_images(&base.prompt, &_extras.views)
+                .ok_or_else(|| ProviderError::InvalidRequest("mock/multiview-image needs at least one view".into()));
+        }
         if model.id == URL_ONLY_MODEL {
             let url = _materialized.refs.iter().find_map(|r| match &r.form {
                 crate::proxy::materializer::MaterializedRefForm::Url(u) => Some(u.clone()),
@@ -215,6 +243,7 @@ impl ImageProvider for MockProvider {
             data,
             content_type: "image/png".to_string(),
             metadata,
+            more: Vec::new(),
         })
     }
 
@@ -291,7 +320,7 @@ mod tests {
             guidance_scale: None,
             strength: None,
             response_format: "url".to_string(),
-            edit: None,
+            edit: None, views: Vec::new(),
             extra: None,
         }
     }
@@ -380,7 +409,7 @@ mod tests {
             guidance_scale: None,
             strength: None,
             response_format: "url".to_string(),
-            region: None, mask_grow_px: None,
+            region: None, mask_grow_px: None, views: None,
         };
         let cost = provider.estimate_cost(&schema, &req).await.unwrap();
         // mock/test-model has base_cost_usd: 0.0

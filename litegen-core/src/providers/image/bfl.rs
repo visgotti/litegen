@@ -262,6 +262,7 @@ impl ImageProvider for BflProvider {
             data: bytes,
             content_type: "image/png".to_string(),
             metadata,
+            more: Vec::new(),
         })
     }
 
@@ -346,7 +347,7 @@ mod tests {
             guidance_scale: None,
             strength: None,
             response_format: "url".to_string(),
-            edit: None,
+            edit: None, views: Vec::new(),
             extra: None,
         }
     }

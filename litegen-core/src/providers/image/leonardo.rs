@@ -367,7 +367,7 @@ impl ImageProvider for LeonardoImageProvider {
         metadata.insert("generation_id".to_string(), Value::String(gen_id.to_string()));
         metadata.insert("url".to_string(), Value::String(image_url.to_string()));
 
-        Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata })
+        Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata, more: Vec::new() })
     }
 
     async fn estimate_cost(
@@ -455,7 +455,7 @@ mod tests {
             vendor_job: Default::default(),
             size: Some("1024x768".to_string()), aspect_ratio: None, quality: None, style: None,
             steps: None, guidance_scale: None, strength: None, response_format: "url".to_string(), extra: None,
-            edit: None,
+            edit: None, views: Vec::new(),
         }
     }
 

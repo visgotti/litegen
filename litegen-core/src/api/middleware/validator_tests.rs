@@ -59,7 +59,7 @@ models:
             size: None, aspect_ratio: None, quality: None, style: None,
             steps: None, guidance_scale: None, strength: None,
             response_format: "url".into(),
-            region: None, mask_grow_px: None,
+            region: None, mask_grow_px: None, views: None,
         }
     }
 

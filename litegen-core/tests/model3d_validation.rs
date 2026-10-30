@@ -378,6 +378,7 @@ fn multiview_roles_are_accepted_when_the_model_declares_them() {
         default_role: Some("init".into()),
         provider_format: RefProviderFormat::Base64,
         data_uri: true,
+        view_order: Vec::new(),
         roles: HashMap::from([
             ("init".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
             ("view-front".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
@@ -392,6 +393,62 @@ fn multiview_roles_are_accepted_when_the_model_declares_them() {
     let out = validate_model3d(&schema, r).unwrap();
     assert_eq!(out.request.base.reference_images.len(), 2);
     assert!(out.dropped.is_empty());
+}
+
+/// A model taking an init image or any of four views; `view_order` non-empty
+/// means its vendor takes the views as one ordered list.
+fn multiview_schema(view_order: &[&str]) -> ModelSchema {
+    let role = || RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false };
+    let mut schema = schema_with(HashMap::new());
+    schema.ref_inputs = Some(RefInputSpec {
+        max_total: 5,
+        default_role: Some("init".into()),
+        provider_format: RefProviderFormat::Base64,
+        data_uri: true,
+        view_order: view_order.iter().map(|v| v.to_string()).collect(),
+        roles: ["init", "view-front", "view-left", "view-back", "view-right"].iter().map(|r| (r.to_string(), role())).collect(),
+    });
+    schema
+}
+
+fn refs(roles: &[&str]) -> Vec<ReferenceImage> {
+    roles
+        .iter()
+        .map(|r| ReferenceImage { kind: RefImageKind::Url, value: format!("https://x/{r}.png"), role: Some(r.to_string()) })
+        .collect()
+}
+
+#[test]
+fn multiview_to_3d_needs_a_front_view() {
+    let mut r = req(true);
+    r.base.reference_images = refs(&["view-back", "view-left"]);
+    let err = validate_model3d(&multiview_schema(&[]), r).unwrap_err();
+    assert_eq!((err.code.as_str(), err.message.contains("view-front")), ("ref_role_required", true), "{}", err.message);
+}
+
+#[test]
+fn an_init_image_and_views_together_are_refused() {
+    // The mode comes from the roles: an init image means image-to-3D and
+    // views mean multiview — both at once is neither.
+    let mut r = req(true);
+    r.base.reference_images = refs(&["init", "view-front", "view-back"]);
+    let err = validate_model3d(&multiview_schema(&[]), r).unwrap_err();
+    assert_eq!(err.code, "ref_role_conflict", "{}", err.message);
+}
+
+#[test]
+fn views_a_vendor_takes_as_one_ordered_list_cannot_skip_one() {
+    let order = ["front", "left", "back", "right"];
+    let mut r = req(true);
+    r.base.reference_images = refs(&["view-front", "view-left", "view-right"]);
+    let err = validate_model3d(&multiview_schema(&order), r).unwrap_err();
+    assert_eq!((err.code.as_str(), err.message.contains("view-back")), ("ref_role_required", true), "{}", err.message);
+    let mut r = req(true);
+    r.base.reference_images = refs(&["view-back", "view-front", "view-left"]);
+    assert!(validate_model3d(&multiview_schema(&order), r).is_ok(), "sent in any order; none skipped");
+    let mut r = req(true);
+    r.base.reference_images = refs(&["view-front", "view-back"]);
+    assert!(validate_model3d(&multiview_schema(&[]), r).is_ok(), "a model taking views by name may skip any");
 }
 
 #[test]

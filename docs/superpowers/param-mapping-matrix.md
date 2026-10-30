@@ -194,6 +194,28 @@ listing serves `mask_convention: white_edits` for every model that takes one.
 
 Not verified live: no OpenAI, Stability or Ideogram key is available here.
 
+### Multiview images (3D doc §3E)
+
+An image model with `task: multiview` turns its one `init` image into one
+image per entry of `views` (the request's, in its order, or the row's
+`default`), each a `data[]` entry carrying `view` and `yaw_deg`. Views come
+from one vocabulary, `ImageView`, named for the side of the subject the camera
+sees; `yaw_deg` is the camera's position around +Y from the subject's front
+(+Z) towards +X: front 0, front-left 45, left 90, back-left 135, back 180,
+back-right 225, right 270, front-right 315 (top and bottom have none). The
+call is billed once, however many views come back.
+
+| behaviour | rule | `tripo/multiview` | `mock/multiview-image` | proof | status |
+|---|---|---|---|---|---|
+| request | `init` (required) + `views` ⊆ the row's `enum_values`, unique, ≥ 1; no prompt where `max_length: 0` | `POST /v3/files` upload → `input: file_token` on `POST /v3/generation/image-to-multiview` (the only field); PNG, JPEG or WebP, anything else refused before any call | `init` + `views` from all eight yaw views | adapter `one_upload_one_task_and_one_image_per_asked_view_in_order`, `an_image_tripo_cannot_read_is_refused_before_any_call`; HTTP `views_the_model_does_not_make_or_repeat_are_refused`, `omitted_views_are_the_models_default_set` | 🟡 wiremock / ✅ mock |
+| response | one image per view, in the asked order, `view` + `yaw_deg` | `output.generate_multiview_image.{front,left,back,right}_view_url`, polled every 2 s within 100 s, downloaded with no key | one tinted image per view | adapter test above; HTTP `one_image_comes_back_per_view_named_and_placed_by_yaw`; OpenAPI `multiview_documents_its_views_and_the_view_each_image_shows` | 🟡 wiremock / ✅ mock |
+| failure | a failed or expired task is the vendor's reason, never resubmitted | `failed`/`cancelled`/`banned`/`expired` → non-retryable error | — | adapter `a_failed_task_reports_tripos_reason_and_is_never_resent` | 🟡 wiremock |
+| billing | once per call | $0.10 (10 credits) | $0.01 | HTTP `a_multiview_call_is_billed_once_whatever_the_number_of_views` | ✅ mock |
+
+Which side Tripo calls "left" is not documented **(unverified)**; litegen
+names Tripo's `left_view_url` its `left` (yaw 90). Not verified live: no Tripo
+key is available here.
+
 ### Video
 
 Every row here is capped at 🟡 by the family-wide validator gap noted above,
@@ -211,7 +233,9 @@ even where provider evidence is strong.
 ## 3D (`model3d`)
 
 **fal is the implemented 3D vendor** — `fal/hyper3d-rodin`, `fal/trellis` and
-`fal/hunyuan3d-v2`, mapped by `litegen-core/src/providers/model3d/fal.rs`.
+`fal/hunyuan3d-v2`, mapped by `litegen-core/src/providers/model3d/fal.rs`
+(its multiview rows, `fal/tripo-h3.1-multiview` and `fal/hunyuan3d-v3.1-pro`,
+are under [Multiview-to-3D](#multiview-to-3d-3d-doc-3e)).
 Every cell below was read from that endpoint's own schema,
 `https://fal.ai/api/openapi/queue/openapi.json?endpoint_id={endpoint}`
 (re-read 2026-10-12), and is proven by name: a wiremock test asserting the
@@ -440,6 +464,30 @@ consequences for this matrix:
   matters, as the higher-fidelity export `prefers_vendor_native` asks for: a cell
   claiming one must be proven by a live call before it is ticked.
 
+### Multiview-to-3D (3D doc §3E)
+
+A 3D generate model's mode comes from its references: `view-<name>` roles
+(any `ImageView`) mean multiview. Before anything is reserved the validator
+refuses an `init` image beside views (`ref_role_conflict`), views without
+`view-front` (`ref_role_required`), and — for a vendor that reads its views by
+position, whose row declares `ref_inputs.view_order` — a view sent without
+every view before it (`ref_role_required`, naming the missing view). The fal
+adapter then places each view where its endpoint takes it.
+
+| litegen | `tripo3d/h3.1/multiview-to-3d` (`fal/tripo-h3.1-multiview`) | `fal-ai/hunyuan-3d/v3.1/pro/image-to-3d` (`fal/hunyuan3d-v3.1-pro`) | proof | status |
+|---|---|---|---|---|
+| views | `image_urls`, 2–4 in the order `[front, left, back, right]` (`view_order`); front and left required | `input_image_url` (front), `back_`, `left_`, `right_`, `top_`, `bottom_`, `left_front_` (front-left), `right_front_image_url` (front-right) | adapter `tripo_multiview_receives_its_views_as_one_list_in_its_own_order`, `hunyuan_3_1_takes_each_view_in_its_own_field`; HTTP `views_reach_tripo_on_fal_in_tripos_order_whatever_order_they_were_sent_in`; validator `multiview_to_3d_needs_a_front_view`, `an_init_image_and_views_together_are_refused`, `views_a_vendor_takes_as_one_ordered_list_cannot_skip_one`; HTTP `views_a_multiview_model_cannot_take_are_refused_before_billing`; loader `a_view_order_names_only_views_the_model_takes_once_each`; tie `each_catalog_row_declares_exactly_what_its_endpoint_takes` | 🟡 wiremock |
+| "left" | **(unverified)**: Tripo does not say whose left | the subject's left: Tencent's own multiview example (Hunyuan3D-2, `assets/example_mv_images/1`) shows in `left.png` the arm its front view puts on the subject's left | — | 🟡 docs / ⬜ live |
+| `init` | — (multiview only; a lone image is refused) | `input_image_url` | `tripo_multiview_refuses_a_lone_image_before_submitting`, `hunyuan_3_1_takes_an_init_image_as_its_front_and_sends_no_add_on_unasked` | 🟡 wiremock |
+| `texture` | `texture` (default true) | `generate_type`: `Normal` / `Geometry` | adapter tests above | 🟡 wiremock |
+| `pbr` | `pbr` (default true) | `enable_pbr` (+$0.15) | adapter tests above | 🟡 wiremock |
+| `target_polycount` | `face_limit`, 1000–2000000 | `face_count`, 40000–1500000 (+$0.15; sent only when asked) | adapter tests above; tie test (range) | 🟡 wiremock |
+| `seed` | `model_seed` | — (no seed field) | `tripo_multiview_receives_its_views_as_one_list_in_its_own_order` | 🟡 wiremock |
+| price | $0.30 textured (default); $0.20 untextured, recorded in `variable_pricing` | $0.375; +$0.15 each for views, PBR and a face count, recorded in `variable_pricing` | — (Task 17 applies `variable_pricing`) | 🟡 |
+
+Not verified live: no fal key is available here, so neither vendor's "left"
+has been proven with an asymmetric fixture yet.
+
 ### Not yet implemented: first-party vendors
 
 Design notes for the vendors the design spec names, transcribed from its §9
@@ -459,7 +507,7 @@ at all — guesses to verify against vendor docs, not spec-sourced field names.
 | `rig` | (separate endpoint — unconfirmed) | `rig` (unconfirmed) | — | — | ⬜ |
 | `seed` | — | `model_seed` | `seed` | — | ⬜ |
 | ref role `init` | `image_url` (b64 ok) | `file_token`\|url | multipart `image` | multipart `images` | ⬜ |
-| ref roles `view-*` | multi-image-to-3d | multiview-to-model | — | `condition_mode` | ⬜ |
+| ref roles `view-*` | multi-image-to-3d | multiview-to-model (on fal: `fal/tripo-h3.1-multiview`, above) | — | `condition_mode` | ⬜ |
 
 ### Contract coverage that is not vendor mapping
 

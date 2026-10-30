@@ -169,6 +169,38 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
+    // 3D doc §3E: views come from one vocabulary, whether a multiview image
+    // model makes them or a multiview-to-3D model takes them as `view-*`
+    // roles; a multiview image model says which it makes, from an init image.
+    let views: Vec<&str> = crate::types::ImageView::ALL.iter().map(|v| v.as_str()).collect();
+    if let Some(spec) = m.params.get("views") {
+        let ParamSpec::StringArray(s) = spec else {
+            return Err(bad(format!("model '{}' views must be kind: string_array", m.id)));
+        };
+        if let Some(v) = s.enum_values.iter().chain(&s.default).find(|v| !views.contains(&v.as_str())) {
+            return Err(bad(format!("model '{}' views value '{}' is not one of {:?}", m.id, v, views)));
+        }
+    }
+    if m.task == ModelTask::Multiview
+        && !(m.params.contains_key("views") && m.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("init")))
+    {
+        return Err(bad(format!("model '{}' is a multiview model: it declares the views it makes and takes an init image", m.id)));
+    }
+    if let Some(refs) = &m.ref_inputs {
+        if let Some(r) = refs.roles.keys().filter_map(|r| r.strip_prefix("view-")).find(|v| !views.contains(v)) {
+            return Err(bad(format!("model '{}' role 'view-{}' names no view of {:?}", m.id, r, views)));
+        }
+        // An ordered view list names views the model takes, each once.
+        for (i, v) in refs.view_order.iter().enumerate() {
+            if !refs.roles.contains_key(&format!("view-{v}")) || refs.view_order[..i].contains(v) {
+                return Err(bad(format!(
+                    "model '{}' view_order {:?}: each entry must be a view-<name> role the model declares, once",
+                    m.id, refs.view_order
+                )));
+            }
+        }
+    }
+
     // 3D doc §3C: the clips an animate model makes.
     if let Some(spec) = m.params.get("animations") {
         let ParamSpec::AnimationList(a) = spec else {

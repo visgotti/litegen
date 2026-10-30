@@ -127,6 +127,11 @@ curl -X POST http://localhost:4000/v1/images/generations \
   }'
 ```
 
+A model whose `task` is `multiview` (`tripo/multiview`) turns one `init` image into one image per
+entry of `views` (`front`, `left`, `back`, `right`, …), each returned with its `view` and `yaw_deg`:
+the camera's position around +Y from the subject's front (+Z) towards +X, so front 0, left 90,
+back 180 and right 270. The call is billed once, however many views come back.
+
 ### Generate Video
 ```bash
 curl -X POST http://localhost:4000/v1/videos/generations \
@@ -163,13 +168,14 @@ curl -X POST http://localhost:4000/v1/models3d/cost \
   -d '{"prompt": "a low-poly fox", "model": "mock/mesh-3d"}'
 ```
 
-> **No vendor 3D adapter ships yet.** The family is wired end to end — schema validation, the async
-> job + background poller, asset re-hosting into the calling app's own bucket when it has storage
-> credentials (falling back to litegen's storage), the dashboard's mesh viewer, and the
-> TypeScript SDK's `client.models3d` — but the only 3D providers today are the built-in mocks:
-> `mock/mesh-3d` and `mock/all-params-3d` emit a real glTF 2.0 binary cube, while `mock/fail-3d`
-> emits no mesh at all — it terminates `failed`, by design, to exercise the error path.
-> Meshy, Tripo3D, Stability 3D and Rodin are deliberately deferred.
+The mode comes from the reference images' roles: none is text-to-3D, `init` is image-to-3D, and
+`view-<name>` roles (`view-front`, `view-left`, `view-back`, `view-right`, …) are multiview-to-3D.
+A multiview request always needs `view-front`; a model whose `ref_inputs.view_order` is set reads
+its views by position, so each view needs every view before it in that order.
+
+> The built-in mocks need no key: `mock/mesh-3d` and `mock/all-params-3d` emit a real glTF 2.0
+> binary cube, while `mock/fail-3d` emits no mesh at all — it terminates `failed`, by design, to
+> exercise the error path. Vendor 3D models are listed under [Supported Providers](#supported-providers).
 
 ### List Models
 ```bash
@@ -296,8 +302,8 @@ modality automatically.
 | Provider | Image | Video | 3D | Models |
 |----------|-------|-------|----|--------|
 | OpenAI | ✅ | — | — | GPT Image 2.5 / 2 / 1 · _(Sora 2 and the Videos API shut down 2026-09-24)_ |
-| Fal.ai | ✅ | ✅ | ✅ | Flux, SDXL, Recraft · Kling, MiniMax, SVD, LTX · Hyper3D Rodin, TRELLIS, Hunyuan3D v2, Meshy rigging |
-| Tripo | — | — | ✅ | Auto rig (after Tripo's free rig-check) · animation retarget |
+| Fal.ai | ✅ | ✅ | ✅ | Flux, SDXL, Recraft · Kling, MiniMax, SVD, LTX · Hyper3D Rodin, TRELLIS, Hunyuan3D v2 and 3.1 Pro, Tripo H3.1 multiview, Meshy rigging |
+| Tripo | ✅ | — | ✅ | Image to multiview (front, left, back, right) · auto rig (after Tripo's free rig-check) · animation retarget |
 | Meshy | — | — | ✅ | Auto rig · animation library (680 clips) |
 | Replicate | ✅ | ✅ | — | Flux, SDXL, SD3 · AnimateDiff, SVD, Zeroscope |
 | Google | ✅ | 🔜 | — | Imagen 3, Gemini 2.5/3 image · _Veo 3 video — public API, not yet wired_ |
@@ -308,7 +314,8 @@ modality automatically.
 **Legend:** ✅ supported in litegen · 🔜 vendor offers a public API for this modality but litegen
 hasn't wired it yet (see [Roadmap: missing providers](#roadmap--missing-providers)) · — no public API.
 
-**3D (`model3d`):** generation through fal (Rodin, TRELLIS, Hunyuan3D v2); rigging through Tripo,
+**3D (`model3d`):** generation through fal (Rodin, TRELLIS, Hunyuan3D v2 and 3.1 Pro; multiview through
+Tripo H3.1 and Hunyuan3D 3.1 Pro); rigging through Tripo,
 Meshy and fal's Meshy endpoint; animation through Tripo and Meshy (see
 [Generate 3D Model](#generate-3d-model)). Every delivered mesh is normalised and carries a measured
 manifest. Meshy and Tripo generation, Stability 3D and Rodin direct are deferred.

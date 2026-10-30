@@ -14,5 +14,6 @@ pub mod luma;
 pub mod minimax;
 pub mod recraft;
 pub mod runway;
+pub mod tripo;
 pub mod mock;
 pub mod visual_mock;

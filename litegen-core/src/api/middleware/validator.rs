@@ -41,6 +41,7 @@ pub fn validate_image(
 
     check_prompt(schema, &mut req.base.prompt, strict, &mut dropped)?;
     check_image_edit(schema, &mut req, strict, &mut dropped)?;
+    check_views(schema, &mut req, strict, &mut dropped)?;
 
     macro_rules! check_param {
         ($field:expr, $key:literal, $variant:pat => $body:block) => {
@@ -709,6 +710,7 @@ pub fn validate_model3d(
     }
 
     check_refs(schema, &mut req.base.reference_images, strict, &mut dropped)?;
+    check_multiview_refs(schema, &req.base.reference_images)?;
 
     // The mode is inferred from the images that survived `check_refs`: none
     // means text-to-3D. That needs a model with a text arm, and a prompt to
@@ -854,6 +856,45 @@ fn check_image_edit(
     Ok(())
 }
 
+/// `views` (3D doc §3E): views the model makes, each once, at least one.
+fn check_views(
+    schema: &ModelSchema,
+    req: &mut ImageGenerationRequest,
+    strict: bool,
+    dropped: &mut Vec<String>,
+) -> Result<(), ValidationError> {
+    let Some(views) = req.views.as_ref() else { return Ok(()) };
+    let Some(ParamSpec::StringArray(spec)) = schema.params.get("views") else {
+        if strict {
+            return Err(ValidationError::new("param_unsupported", format!("views not supported by '{}'", schema.id), Some("views")));
+        }
+        dropped.push("views".into());
+        req.views = None;
+        return Ok(());
+    };
+    if views.is_empty() {
+        return Err(ValidationError::new("param_out_of_range", "views must name at least one view", Some("views")));
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    for v in views {
+        if !spec.enum_values.iter().any(|e| e == v) {
+            return Err(ValidationError::new(
+                "param_enum_mismatch",
+                format!("'{}' makes no view '{v}'; it makes {:?}", schema.id, spec.enum_values),
+                Some("views"),
+            ));
+        }
+        if seen.contains(&v.as_str()) {
+            return Err(ValidationError::new("param_enum_mismatch", format!("view '{v}' is listed twice"), Some("views")));
+        }
+        seen.push(v);
+    }
+    if spec.max_items.is_some_and(|max| views.len() > max) {
+        return Err(ValidationError::new("param_too_many", format!("'{}' makes at most {:?} views", schema.id, spec.max_items), Some("views")));
+    }
+    Ok(())
+}
+
 /// The most a mask may grow: Stability's own `grow_mask` ceiling.
 pub const MAX_MASK_GROW_PX: u32 = 100;
 
@@ -983,6 +1024,48 @@ fn check_size(v: &str, spec: &SizeSpec, param: &str) -> Result<(), ValidationErr
 fn parse_size(s: &str) -> Option<(u32, u32)> {
     let (w, h) = s.split_once('x').or_else(|| s.split_once('X'))?;
     Some((w.parse().ok()?, h.parse().ok()?))
+}
+
+/// Multiview-to-3D (3D doc §3E). `view-*` references mean multiview, so they
+/// cannot ride with an `init` image, which means image-to-3D; every vendor
+/// needs the front; and a vendor that reads its views as one ordered list
+/// (`ref_inputs.view_order`) cannot be sent a gap, because it would read the
+/// next view in the missing one's place.
+fn check_multiview_refs(schema: &ModelSchema, refs: &[ReferenceImage]) -> Result<(), ValidationError> {
+    let roles: Vec<&str> = refs.iter().filter_map(|r| r.role.as_deref()).collect();
+    let views: Vec<&str> = roles.iter().filter_map(|r| r.strip_prefix("view-")).collect();
+    if views.is_empty() {
+        return Ok(());
+    }
+    if roles.contains(&"init") {
+        return Err(ValidationError::new(
+            "ref_role_conflict",
+            "send an init image (image-to-3D) or view-* images (multiview-to-3D), not both",
+            Some("reference_images"),
+        ));
+    }
+    if !views.contains(&"front") {
+        return Err(ValidationError::new(
+            "ref_role_required",
+            "multiview-to-3D needs a view-front image",
+            Some("reference_images"),
+        ));
+    }
+    let order = schema.ref_inputs.as_ref().map(|r| r.view_order.as_slice()).unwrap_or_default();
+    if let Some(last) = order.iter().rposition(|v| views.contains(&v.as_str())) {
+        if let Some(missing) = order[..last].iter().find(|v| !views.contains(&v.as_str())) {
+            return Err(ValidationError::new(
+                "ref_role_required",
+                format!(
+                    "'{}' reads its views by position ({}): send view-{missing} too, or leave out the views after it",
+                    schema.id,
+                    order.join(", ")
+                ),
+                Some("reference_images"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn check_refs(

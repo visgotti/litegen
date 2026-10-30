@@ -3117,6 +3117,54 @@ fn stability_inpaint_takes_a_white_mask_and_grows_it_itself() {
     }
 }
 
+// ─── Multiview (PixelGenie 3D doc §3E) ──────────────────────────────────────
+
+/// @see <https://developers.tripo3d.ai/en/docs/generation-image-to-multiview>
+/// (2026-10-30): one field, `input`; the result "contains URLs for available
+/// views, such as front_view_url, left_view_url, back_view_url and
+/// right_view_url". Price: "Image to Multiview" 10 credits, "1 credit = $0.01
+/// USD".
+#[test]
+fn tripo_multiview_offers_the_four_views_tripo_returns_from_one_image() {
+    use litegen::capabilities::{ModelTask, ParamSpec};
+    let reg = registry();
+    let m = reg.get("tripo/multiview").expect("the row");
+    assert_eq!(m.task, ModelTask::Multiview);
+    match m.params.get("views") {
+        Some(ParamSpec::StringArray(v)) => {
+            assert_eq!(v.enum_values, ["front", "left", "back", "right"]);
+            assert_eq!(v.default, ["front", "left", "back", "right"]);
+        }
+        other => panic!("{other:?}"),
+    }
+    let refs = m.ref_inputs.as_ref().unwrap();
+    assert_eq!((refs.max_total, refs.roles["init"].required), (1, true));
+    assert_eq!(m.prompt.max_length, Some(0), "the endpoint has no prompt field");
+    assert!((m.pricing.base_cost_usd - 0.10).abs() < 1e-9);
+}
+
+/// Every multiview-to-3D vendor needs the front view, and one that reads its
+/// views by position declares that order: fal's Tripo H3.1 takes `image_urls`
+/// "2 to 4 … Order: [front, left, back, right]. Front view is required."
+/// (<https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=tripo3d/h3.1/multiview-to-3d>,
+/// 2026-10-30).
+#[test]
+fn every_multiview_to_3d_model_takes_a_front_view_and_names_any_positional_order() {
+    let reg = registry();
+    for m in model3d_models(&reg).into_iter().filter(|m| m.capabilities.multiview_to_3d) {
+        let refs = m.ref_inputs.as_ref().unwrap();
+        assert!(refs.roles.contains_key("view-front"), "{}: every vendor needs the front", m.id);
+        if let Some(first) = refs.view_order.first() {
+            assert_eq!(first, "front", "{}", m.id);
+        }
+    }
+    let tripo = reg.get("fal/tripo-h3.1-multiview").expect("the row");
+    let refs = tripo.ref_inputs.as_ref().unwrap();
+    assert_eq!(refs.view_order, ["front", "left", "back", "right"]);
+    assert!(refs.roles["view-front"].required && refs.roles["view-left"].required, "two images at least, read as front and left");
+    assert!(!refs.roles.contains_key("init"), "multiview only");
+}
+
 // ─── References for URL-only vendors (PixelGenie L4) ────────────────────────
 
 /// @see <https://docs.lumalabs.ai/docs/image-generation.md> (2026-10-30): "You

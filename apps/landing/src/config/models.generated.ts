@@ -1123,6 +1123,125 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://fal.ai/models/fal-ai/hunyuan3d/v2/api"
   },
   {
+    "id": "fal/hunyuan3d-v3.1-pro",
+    "provider": "fal",
+    "displayName": "Hunyuan3D 3.1 Pro (Fal)",
+    "description": "Tencent Hunyuan3D 3.1 Pro via Fal, from one image or from up to eight views of one subject (front required; back, left, right, top, bottom, front-left and front-right optional). GLB out; litegen derives the other containers.",
+    "mediaType": "model3d",
+    "output": "model3d",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": true,
+      "multiviewTo3d": true
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 8,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-front",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-back",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-left",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-right",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-top",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-bottom",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-front-left",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-front-right",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "output_formats",
+        "kind": "string_array",
+        "enum": [
+          "glb"
+        ],
+        "default": [
+          "glb"
+        ]
+      },
+      {
+        "name": "texture",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "pbr",
+        "kind": "bool",
+        "default": false
+      },
+      {
+        "name": "target_polycount",
+        "kind": "int",
+        "min": 40000,
+        "max": 1500000
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.375
+    },
+    "tags": [
+      "3d",
+      "mesh",
+      "hunyuan",
+      "multiview"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/hunyuan-3d/v3.1/pro/image-to-3d/api"
+  },
+  {
     "id": "fal/hyper3d-rodin",
     "provider": "fal",
     "displayName": "Hyper3D Rodin (Fal)",
@@ -1541,6 +1660,101 @@ export const MODELS: ModelEntry[] = [
       "trellis"
     ],
     "referenceUrl": "https://fal.ai/models/fal-ai/trellis/api"
+  },
+  {
+    "id": "fal/tripo-h3.1-multiview",
+    "provider": "fal",
+    "displayName": "Tripo H3.1 Multiview to 3D (Fal)",
+    "description": "Tripo H3.1 via Fal: two to four views of one subject make one mesh. Tripo reads its views by position — front, left, back, right — so view-front and view-left are required and view-right needs view-back. litegen sends them in Tripo's order whatever order they arrive in.",
+    "mediaType": "model3d",
+    "output": "model3d",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": true
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 4,
+    "refRoles": [
+      {
+        "name": "view-front",
+        "required": true,
+        "min": 1,
+        "max": 1
+      },
+      {
+        "name": "view-left",
+        "required": true,
+        "min": 1,
+        "max": 1
+      },
+      {
+        "name": "view-back",
+        "required": false,
+        "min": 0,
+        "max": 1
+      },
+      {
+        "name": "view-right",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "output_formats",
+        "kind": "string_array",
+        "enum": [
+          "glb"
+        ],
+        "default": [
+          "glb"
+        ]
+      },
+      {
+        "name": "texture",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "pbr",
+        "kind": "bool",
+        "default": true
+      },
+      {
+        "name": "target_polycount",
+        "kind": "int",
+        "min": 1000,
+        "max": 2000000
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967295
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.3
+    },
+    "tags": [
+      "3d",
+      "mesh",
+      "tripo",
+      "multiview"
+    ],
+    "referenceUrl": "https://fal.ai/models/tripo3d/h3.1/multiview-to-3d/api"
   },
   {
     "id": "fal/video",
@@ -6491,6 +6705,64 @@ export const MODELS: ModelEntry[] = [
       "3d-operation"
     ],
     "referenceUrl": "https://developers.tripo3d.ai/en/docs/animations-retarget"
+  },
+  {
+    "id": "tripo/multiview",
+    "provider": "tripo",
+    "displayName": "Tripo Image to Multiview",
+    "description": "Turns one image of a subject into its front, left, back and right views, one image each, named by `view` with its `yaw_deg`. Takes no prompt. Tripo makes all four every time; `views` picks which come back and in what order, and the call is billed once either way.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "views",
+        "kind": "string_array",
+        "enum": [
+          "front",
+          "left",
+          "back",
+          "right"
+        ],
+        "default": [
+          "front",
+          "left",
+          "back",
+          "right"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.1
+    },
+    "tags": [
+      "multiview"
+    ],
+    "referenceUrl": "https://developers.tripo3d.ai/en/docs/generation-image-to-multiview"
   },
   {
     "id": "tripo/rig",

@@ -84,7 +84,7 @@ const PROGRESS_RUNNING: u8 = 50;
 /// Every litegen model id this adapter serves — the arms of `resolve_spec`. A
 /// test ties it to the catalog in both directions, so a fal 3D row cannot
 /// reach `models/fal.yaml` without an endpoint here, or the reverse.
-pub const MODELS: &[&str] = &["fal/hyper3d-rodin", "fal/trellis", "fal/hunyuan3d-v2"];
+pub const MODELS: &[&str] = &["fal/hyper3d-rodin", "fal/trellis", "fal/hunyuan3d-v2", "fal/tripo-h3.1-multiview", "fal/hunyuan3d-v3.1-pro"];
 
 /// What one fal 3D endpoint's input schema accepts.
 ///
@@ -102,22 +102,68 @@ struct EndpointSpec {
     /// Queue endpoint for a request with reference images; `None` when the
     /// model has no image arm.
     image_to_3d: Option<&'static str>,
+    /// Queue endpoint for a request with `view-*` references; `None` when the
+    /// model takes no views.
+    multiview_to_3d: Option<&'static str>,
     /// Whether the input schema defines `prompt` at all.
     prompt: bool,
     /// The field carrying the reference image(s).
     image_field: &'static str,
     /// Whether `image_field` takes every image (an array) or one.
     image_is_array: bool,
+    /// Where each view goes, on a model with a multiview arm.
+    views: Views,
     /// The endpoint's own name for the output container, when it lets you pick.
     format_field: Option<&'static str>,
     /// The containers `format_field` accepts.
     format_values: &'static [&'static str],
+    /// Where canonical `seed` goes.
+    seed_field: &'static str,
     /// The largest seed the endpoint accepts.
     seed_max: Option<i64>,
-    /// Boolean texture toggle — where canonical `texture` goes.
-    texture_field: Option<&'static str>,
+    /// Where canonical `texture` goes.
+    texture: Option<Toggle>,
     /// `PBR | Shaded` field — where canonical `pbr` goes.
     material_field: Option<&'static str>,
+    /// A boolean PBR field — where canonical `pbr` goes on an endpoint
+    /// without `material_field`.
+    pbr_field: Option<&'static str>,
+    /// Where canonical `target_polycount` goes, and the range it takes.
+    polycount: Option<(&'static str, u32, u32)>,
+}
+
+/// How an endpoint takes the views of a multiview request (3D doc §3E).
+#[derive(Debug, Clone, Copy)]
+enum Views {
+    None,
+    /// One array in this order, read by position: a view needs every view
+    /// before it, or the next one would be read in its place.
+    Ordered { field: &'static str, order: &'static [&'static str] },
+    /// One field per view: `(view, field)`.
+    Named(&'static [(&'static str, &'static str)]),
+}
+
+/// A canonical boolean as an endpoint spells it.
+#[derive(Debug, Clone, Copy)]
+enum Toggle {
+    Bool(&'static str),
+    /// One of two values of a choice field.
+    Choice { field: &'static str, on: &'static str, off: &'static str },
+}
+
+impl Toggle {
+    fn field(self) -> &'static str {
+        match self {
+            Toggle::Bool(field) | Toggle::Choice { field, .. } => field,
+        }
+    }
+
+    fn value(self, set: bool) -> Value {
+        match self {
+            Toggle::Bool(_) => json!(set),
+            Toggle::Choice { on, off, .. } => json!(if set { on } else { off }),
+        }
+    }
 }
 
 impl EndpointSpec {
@@ -127,10 +173,17 @@ impl EndpointSpec {
     /// would make fal return something other than what the completion guard
     /// enforces — failing the generation after it was billed.
     fn mapped_fields(&self) -> Vec<&'static str> {
-        let mut out = vec!["prompt", "seed", self.image_field];
+        let mut out = vec!["prompt", self.seed_field, self.image_field];
         out.extend(self.format_field);
-        out.extend(self.texture_field);
+        out.extend(self.texture.map(Toggle::field));
         out.extend(self.material_field);
+        out.extend(self.pbr_field);
+        out.extend(self.polycount.map(|(field, ..)| field));
+        match self.views {
+            Views::None => {}
+            Views::Ordered { field, .. } => out.push(field),
+            Views::Named(fields) => out.extend(fields.iter().map(|(_, field)| *field)),
+        }
         out
     }
 
@@ -138,10 +191,10 @@ impl EndpointSpec {
     /// for a row whose `stage_context` never landed. Unambiguous when the model
     /// has one endpoint for both arms, or only one arm.
     fn sole_endpoint(&self) -> Option<&'static str> {
-        match (self.text_to_3d, self.image_to_3d) {
-            (Some(t), Some(i)) if t == i => Some(t),
-            (Some(t), None) => Some(t),
-            (None, Some(i)) => Some(i),
+        let mut arms: Vec<&'static str> = [self.text_to_3d, self.image_to_3d, self.multiview_to_3d].into_iter().flatten().collect();
+        arms.dedup();
+        match arms.as_slice() {
+            [only] => Some(only),
             _ => None,
         }
     }
@@ -166,14 +219,19 @@ fn resolve_spec(model: &str) -> Option<EndpointSpec> {
         "fal/hyper3d-rodin" => Some(EndpointSpec {
             text_to_3d: Some("fal-ai/hyper3d/rodin"),
             image_to_3d: Some("fal-ai/hyper3d/rodin"),
+            multiview_to_3d: None,
             prompt: true,
             image_field: "input_image_urls",
             image_is_array: true,
+            views: Views::None,
             format_field: Some("geometry_file_format"),
             format_values: &["glb", "usdz", "fbx", "obj", "stl"],
+            seed_field: "seed",
             seed_max: Some(65_535),
-            texture_field: None,
+            texture: None,
             material_field: Some("material"),
+            pbr_field: None,
+            polycount: None,
         }),
         // Microsoft TRELLIS. Image-to-3D only, GLB only.
         //
@@ -188,16 +246,21 @@ fn resolve_spec(model: &str) -> Option<EndpointSpec> {
         "fal/trellis" => Some(EndpointSpec {
             text_to_3d: None,
             image_to_3d: Some("fal-ai/trellis"),
+            multiview_to_3d: None,
             prompt: false,
             image_field: "image_url",
             image_is_array: false,
+            views: Views::None,
             format_field: None,
             format_values: &[],
+            seed_field: "seed",
             // An unbounded integer in the schema; u32 is what fal documents
             // everywhere else.
             seed_max: Some(i64::from(u32::MAX)),
-            texture_field: None,
+            texture: None,
             material_field: None,
+            pbr_field: None,
+            polycount: None,
         }),
         // Tencent Hunyuan3D v2. Image-to-3D only, GLB only.
         //
@@ -213,14 +276,96 @@ fn resolve_spec(model: &str) -> Option<EndpointSpec> {
         "fal/hunyuan3d-v2" => Some(EndpointSpec {
             text_to_3d: None,
             image_to_3d: Some("fal-ai/hunyuan3d/v2"),
+            multiview_to_3d: None,
             prompt: false,
             image_field: "input_image_url",
             image_is_array: false,
+            views: Views::None,
             format_field: None,
             format_values: &[],
+            seed_field: "seed",
             seed_max: Some(i64::from(u32::MAX)),
-            texture_field: Some("textured_mesh"),
+            texture: Some(Toggle::Bool("textured_mesh")),
             material_field: None,
+            pbr_field: None,
+            polycount: None,
+        }),
+        // Tripo H3.1, multiview only: two to four views in ONE ordered list.
+        //
+        // H31MultiviewTo3dInput: image_urls (REQUIRED; "2 to 4 image URLs of
+        //   the same object from different angles. Order: [front, left, back,
+        //   right]. Front view is required."), texture (default true), pbr
+        //   (default true; "If true, texture is also enabled."), face_limit
+        //   (1000..=2000000), model_seed, texture_seed, texture_quality,
+        //   geometry_quality, quad, orientation, auto_size,
+        //   texture_alignment, enable_safety_checker. No prompt.
+        // H31MultiviewTo3dOutput: model_mesh (File; GLB unless quad), task_id,
+        //   model_urls, rendered_image.
+        //
+        // @see <https://fal.ai/models/tripo3d/h3.1/multiview-to-3d/api>
+        // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=tripo3d/h3.1/multiview-to-3d>
+        // @see <https://fal.ai/models/tripo3d/h3.1/multiview-to-3d/llms.txt> — "**$0.20** (without
+        //   textures), **$0.30** (with standard textures), or **$0.40** (with HD textures)"
+        "fal/tripo-h3.1-multiview" => Some(EndpointSpec {
+            text_to_3d: None,
+            image_to_3d: None,
+            multiview_to_3d: Some("tripo3d/h3.1/multiview-to-3d"),
+            prompt: false,
+            image_field: "image_urls",
+            image_is_array: true,
+            views: Views::Ordered { field: "image_urls", order: &["front", "left", "back", "right"] },
+            format_field: None,
+            format_values: &[],
+            seed_field: "model_seed",
+            seed_max: Some(i64::from(u32::MAX)),
+            texture: Some(Toggle::Bool("texture")),
+            material_field: None,
+            pbr_field: Some("pbr"),
+            polycount: Some(("face_limit", 1_000, 2_000_000)),
+        }),
+        // Tencent Hunyuan3D 3.1 Pro: one image, or a front view with up to
+        // seven more, each in its own field. One endpoint serves both arms.
+        //
+        // Hunyuan3dV31ProImageTo3dInput: input_image_url (REQUIRED, "Front
+        //   view image URL"), back_image_url, left_image_url,
+        //   right_image_url, top_image_url, bottom_image_url,
+        //   left_front_image_url and right_front_image_url ("left-front 45
+        //   degree angle view"), enable_pbr (default false), face_count
+        //   (40000..=1500000, default 500000), generate_type (Normal |
+        //   Geometry: "geometry-only white model (no textures)"). No prompt,
+        //   no seed.
+        // Hunyuan3dV31ProImageTo3dOutput: model_glb (File), model_urls,
+        //   thumbnail, seed.
+        //
+        // @see <https://fal.ai/models/fal-ai/hunyuan-3d/v3.1/pro/image-to-3d/api>
+        // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/hunyuan-3d/v3.1/pro/image-to-3d>
+        // @see <https://fal.ai/models/fal-ai/hunyuan-3d/v3.1/pro/image-to-3d/llms.txt> — "**$0.375**
+        //   per generation", plus $0.15 each for PBR, multi-view images and a custom face count
+        "fal/hunyuan3d-v3.1-pro" => Some(EndpointSpec {
+            text_to_3d: None,
+            image_to_3d: Some("fal-ai/hunyuan-3d/v3.1/pro/image-to-3d"),
+            multiview_to_3d: Some("fal-ai/hunyuan-3d/v3.1/pro/image-to-3d"),
+            prompt: false,
+            image_field: "input_image_url",
+            image_is_array: false,
+            views: Views::Named(&[
+                ("front", "input_image_url"),
+                ("back", "back_image_url"),
+                ("left", "left_image_url"),
+                ("right", "right_image_url"),
+                ("top", "top_image_url"),
+                ("bottom", "bottom_image_url"),
+                ("front-left", "left_front_image_url"),
+                ("front-right", "right_front_image_url"),
+            ]),
+            format_field: None,
+            format_values: &[],
+            seed_field: "seed",
+            seed_max: None,
+            texture: Some(Toggle::Choice { field: "generate_type", on: "Normal", off: "Geometry" }),
+            material_field: None,
+            pbr_field: Some("enable_pbr"),
+            polycount: Some(("face_count", 40_000, 1_500_000)),
         }),
         _ => None,
     }
@@ -905,13 +1050,13 @@ impl Model3dProvider for FalModel3dProvider {
         // fal takes both as a file input. A catalog saying `base64` still works,
         // as a data URI; multipart has no form in a JSON body at all.
         // @see <https://fal.ai/docs/documentation/model-apis/fal-cdn>
-        let images = materialized
+        let refs = materialized
             .refs
             .iter()
             .map(|r| match &r.form {
-                MaterializedRefForm::Url(u) => Ok(u.clone()),
+                MaterializedRefForm::Url(u) => Ok((r.role.as_str(), u.clone())),
                 MaterializedRefForm::Base64(b64) => {
-                    Ok(crate::proxy::materializer::base64_data_uri(b64, None))
+                    Ok((r.role.as_str(), crate::proxy::materializer::base64_data_uri(b64, None)))
                 }
                 MaterializedRefForm::MultipartField { .. } => Err(ProviderError::InvalidRequest(format!(
                     "'{}' takes reference images as URLs; its catalog entry must not declare multipart",
@@ -919,12 +1064,24 @@ impl Model3dProvider for FalModel3dProvider {
                 ))),
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let views: Vec<(&str, &str)> = refs.iter().filter_map(|(role, u)| Some((role.strip_prefix("view-")?, u.as_str()))).collect();
+        let images: Vec<&str> = refs.iter().map(|(_, u)| u.as_str()).collect();
 
-        // Mode is inferred from the images, exactly as the trait documents. The
-        // validator refuses both of these first; checking again here means a
-        // caller that skipped it still cannot submit a request fal would only
+        // Mode is inferred from the references, exactly as the trait documents:
+        // views mean multiview, other images mean image-to-3D, none means text.
+        // The validator refuses all of these first; checking again here means
+        // a caller that skipped it still cannot submit a request fal would only
         // reject — or, worse, accept and silently answer from the wrong arm.
-        let endpoint = if images.is_empty() {
+        let endpoint = if !views.is_empty() {
+            if views.len() != refs.len() {
+                return Err(ProviderError::InvalidRequest(
+                    "send an init image (image-to-3D) or view-* images (multiview-to-3D), not both".into(),
+                ));
+            }
+            spec.multiview_to_3d.ok_or_else(|| {
+                ProviderError::InvalidRequest(format!("'{}' takes no views; send one init image", model.id))
+            })?
+        } else if images.is_empty() {
             let endpoint = spec.text_to_3d.ok_or_else(|| {
                 ProviderError::InvalidRequest(format!(
                     "'{}' has no text-to-3D mode; send a reference image",
@@ -938,8 +1095,12 @@ impl Model3dProvider for FalModel3dProvider {
             }
             endpoint
         } else {
-            spec.image_to_3d.ok_or_else(|| {
-                ProviderError::InvalidRequest(format!("'{}' does not take reference images", model.id))
+            spec.image_to_3d.ok_or_else(|| match spec.multiview_to_3d {
+                Some(_) => ProviderError::InvalidRequest(format!(
+                    "'{}' makes a mesh from views: send them as view-<name> references",
+                    model.id
+                )),
+                None => ProviderError::InvalidRequest(format!("'{}' does not take reference images", model.id)),
             })?
         };
 
@@ -947,7 +1108,39 @@ impl Model3dProvider for FalModel3dProvider {
         if spec.prompt && !base.prompt.trim().is_empty() {
             body.insert("prompt".into(), json!(base.prompt));
         }
-        if !images.is_empty() {
+        if !views.is_empty() {
+            let url = |view: &str| views.iter().find(|(v, _)| *v == view).map(|(_, u)| *u);
+            if url("front").is_none() {
+                return Err(ProviderError::InvalidRequest("multiview-to-3D needs a view-front image".into()));
+            }
+            let placed: Vec<&str> = match spec.views {
+                Views::None => Vec::new(),
+                Views::Ordered { field, order } => {
+                    // Read by position: a gap would put the next view in the
+                    // missing one's place.
+                    let sent: Vec<&str> = order.iter().map_while(|v| url(v)).collect();
+                    if let Some(skipped) = order.get(sent.len()).filter(|_| order[sent.len()..].iter().any(|v| url(v).is_some())) {
+                        return Err(ProviderError::InvalidRequest(format!(
+                            "'{}' reads its views by position ({}): send view-{skipped} too",
+                            model.id,
+                            order.join(", ")
+                        )));
+                    }
+                    body.insert(field.into(), json!(sent));
+                    order[..sent.len()].to_vec()
+                }
+                Views::Named(fields) => fields
+                    .iter()
+                    .filter_map(|(view, field)| {
+                        body.insert((*field).into(), json!(url(view)?));
+                        Some(*view)
+                    })
+                    .collect(),
+            };
+            if let Some((view, _)) = views.iter().find(|(v, _)| !placed.contains(v)) {
+                return Err(ProviderError::InvalidRequest(format!("'{}' takes no view-{view} image", model.id)));
+            }
+        } else if !images.is_empty() {
             let value = if spec.image_is_array { json!(images) } else { json!(images[0]) };
             body.insert(spec.image_field.into(), value);
         }
@@ -965,18 +1158,31 @@ impl Model3dProvider for FalModel3dProvider {
                     )));
                 }
                 Some(_) => {
-                    body.insert("seed".into(), json!(seed));
+                    body.insert(spec.seed_field.into(), json!(seed));
                 }
                 None => {}
             }
         }
-        if let (Some(field), Some(texture)) = (spec.texture_field, extras.texture) {
-            body.insert(field.into(), json!(texture));
+        if let (Some(toggle), Some(texture)) = (spec.texture, extras.texture) {
+            body.insert(toggle.field().into(), toggle.value(texture));
         }
         if let (Some(field), Some(pbr)) = (spec.material_field, extras.pbr) {
             // `pbr: false` is flat shading, not "no material": Shaded is the
             // endpoint's own word for it.
             body.insert(field.into(), json!(if pbr { "PBR" } else { "Shaded" }));
+        }
+        if let (Some(field), Some(pbr)) = (spec.pbr_field, extras.pbr) {
+            body.insert(field.into(), json!(pbr));
+        }
+        // Sent only when asked for: on Hunyuan any face count is a paid add-on.
+        if let (Some((field, min, max)), Some(polycount)) = (spec.polycount, extras.target_polycount) {
+            if !(min..=max).contains(&polycount) {
+                return Err(ProviderError::InvalidRequest(format!(
+                    "'{}' takes a target_polycount in {min}..={max}; got {polycount}",
+                    model.id
+                )));
+            }
+            body.insert(field.into(), json!(polycount));
         }
         if let Some(Value::Object(extra)) = &extras.extra {
             let reserved = spec.mapped_fields();
@@ -1518,6 +1724,100 @@ mod tests {
         assert_eq!(body["textured_mesh"], true);
         assert_eq!(body["octree_resolution"], 256);
         assert!(body.get("prompt").is_none(), "Hunyuan3dV2Input defines no prompt: {body}");
+    }
+
+    // ─── Multiview-to-3D (3D doc §3E) ───────────────────────────────────────
+    // Each view is a distinct URL, so a view that lands in another view's
+    // field shows up as the wrong URL there.
+
+    const TRIPO_MV: &str = "fal/tripo-h3.1-multiview";
+    const HUNYUAN_31: &str = "fal/hunyuan3d-v3.1-pro";
+
+    fn views(roles: &[&str]) -> MaterializedRequest {
+        MaterializedRequest {
+            refs: roles
+                .iter()
+                .map(|r| MaterializedRef { role: r.to_string(), form: MaterializedRefForm::Url(format!("https://example.com/{r}.png")) })
+                .collect(),
+            cleanup: Cleanup::empty(),
+        }
+    }
+
+    // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=tripo3d/h3.1/multiview-to-3d>
+    #[tokio::test]
+    async fn tripo_multiview_receives_its_views_as_one_list_in_its_own_order() {
+        let server = MockServer::start().await;
+        mount_submit(&server, "tripo3d/h3.1/multiview-to-3d", "t-1").await;
+        let mut x = extras(&["glb"]);
+        x.texture = Some(false);
+        x.pbr = Some(false);
+        x.target_polycount = Some(20_000);
+        let mut b = base("", TRIPO_MV);
+        b.seed = Some(7);
+        provider(&server)
+            .generate(&schema(TRIPO_MV), &b, &x, &views(&["view-back", "view-front", "view-left"]))
+            .await
+            .expect("submit");
+        let body = submitted_body(&server).await;
+        assert_eq!(
+            body["image_urls"],
+            json!(["https://example.com/view-front.png", "https://example.com/view-left.png", "https://example.com/view-back.png"]),
+            "[front, left, back, right]"
+        );
+        assert_eq!((&body["texture"], &body["pbr"], &body["face_limit"], &body["model_seed"]), (&json!(false), &json!(false), &json!(20000), &json!(7)));
+        assert!(body.get("prompt").is_none() && body.get("seed").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn tripo_multiview_refuses_a_lone_image_before_submitting() {
+        let server = MockServer::start().await;
+        let err = provider(&server)
+            .generate(&schema(TRIPO_MV), &base("", TRIPO_MV), &extras(&["glb"]), &images(&["https://example.com/a.png"]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err}");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/hunyuan-3d/v3.1/pro/image-to-3d>
+    #[tokio::test]
+    async fn hunyuan_3_1_takes_each_view_in_its_own_field() {
+        let server = MockServer::start().await;
+        mount_submit(&server, "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d", "h-1").await;
+        let mut x = extras(&["glb"]);
+        x.texture = Some(false);
+        x.pbr = Some(true);
+        x.target_polycount = Some(100_000);
+        let roles = ["view-top", "view-front-left", "view-front", "view-back", "view-left", "view-front-right", "view-right", "view-bottom"];
+        provider(&server).generate(&schema(HUNYUAN_31), &base("", HUNYUAN_31), &x, &views(&roles)).await.expect("submit");
+        let body = submitted_body(&server).await;
+        for (field, view) in [
+            ("input_image_url", "front"),
+            ("back_image_url", "back"),
+            ("left_image_url", "left"),
+            ("right_image_url", "right"),
+            ("top_image_url", "top"),
+            ("bottom_image_url", "bottom"),
+            ("left_front_image_url", "front-left"),
+            ("right_front_image_url", "front-right"),
+        ] {
+            assert_eq!(body[field], format!("https://example.com/view-{view}.png"), "{field}");
+        }
+        assert_eq!((&body["generate_type"], &body["enable_pbr"], &body["face_count"]), (&json!("Geometry"), &json!(true), &json!(100000)));
+    }
+
+    #[tokio::test]
+    async fn hunyuan_3_1_takes_an_init_image_as_its_front_and_sends_no_add_on_unasked() {
+        let server = MockServer::start().await;
+        mount_submit(&server, "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d", "h-2").await;
+        let mut x = extras(&["glb"]);
+        x.texture = Some(true);
+        provider(&server)
+            .generate(&schema(HUNYUAN_31), &base("", HUNYUAN_31), &x, &images(&["https://example.com/robot.png"]))
+            .await
+            .expect("submit");
+        let body = submitted_body(&server).await;
+        assert_eq!(body, json!({ "input_image_url": "https://example.com/robot.png", "generate_type": "Normal" }), "PBR, views and a face count each cost $0.15");
     }
 
     #[tokio::test]
@@ -2188,6 +2488,8 @@ mod tests {
 
             assert_eq!(m.capabilities.text_to_3d, s.text_to_3d.is_some(), "{id}: text_to_3d");
             assert_eq!(m.capabilities.image_to_3d, s.image_to_3d.is_some(), "{id}: image_to_3d");
+            assert_eq!(m.capabilities.multiview_to_3d, s.multiview_to_3d.is_some(), "{id}: multiview_to_3d");
+            assert_eq!(s.multiview_to_3d.is_some(), !matches!(s.views, Views::None), "{id}: a multiview arm says where its views go");
             assert_eq!(m.prompt.max_length == Some(0), !s.prompt, "{id}: prompt is declared iff the endpoint has one");
 
             let formats = m.output_formats_spec().expect("every fal 3D row declares output_formats");
@@ -2200,9 +2502,16 @@ mod tests {
                 (None, None) => {}
                 other => panic!("{id}: seed declared {:?} but endpoint max is {:?}", other.0.is_some(), other.1),
             }
-            assert_eq!(m.params.contains_key("texture"), s.texture_field.is_some(), "{id}: texture");
-            assert_eq!(m.params.contains_key("pbr"), s.material_field.is_some(), "{id}: pbr");
-            for unmapped in ["target_polycount", "topology", "symmetry", "rig", "negative_prompt"] {
+            assert_eq!(m.params.contains_key("texture"), s.texture.is_some(), "{id}: texture");
+            assert_eq!(m.params.contains_key("pbr"), s.material_field.is_some() || s.pbr_field.is_some(), "{id}: pbr");
+            match (m.params.get("target_polycount"), s.polycount) {
+                (Some(ParamSpec::Int(p)), Some((_, min, max))) => {
+                    assert_eq!((p.min, p.max), (Some(i64::from(min)), Some(i64::from(max))), "{id}: target_polycount range")
+                }
+                (None, None) => {}
+                other => panic!("{id}: target_polycount declared {:?} but the endpoint's is {:?}", other.0.is_some(), other.1),
+            }
+            for unmapped in ["topology", "symmetry", "rig", "negative_prompt"] {
                 assert!(!m.params.contains_key(unmapped), "{id} declares {unmapped}, which no fal 3D endpoint takes");
             }
 
@@ -2213,12 +2522,27 @@ mod tests {
 
             let refs = m.ref_inputs.as_ref().expect("every fal 3D row takes images");
             assert!(matches!(refs.provider_format, RefProviderFormat::Url), "{id}: fal takes images as URLs");
-            let init = refs.roles.get("init").expect("an init role");
-            if !s.image_is_array {
-                assert_eq!(init.max_count, 1, "{id}: {} takes one image", s.image_field);
+            assert_eq!(refs.roles.contains_key("init"), s.image_to_3d.is_some(), "{id}: an init role iff an image arm");
+            if let Some(init) = refs.roles.get("init") {
+                if !s.image_is_array {
+                    assert_eq!(init.max_count, 1, "{id}: {} takes one image", s.image_field);
+                }
+                assert_eq!(
+                    init.required,
+                    s.text_to_3d.is_none() && s.multiview_to_3d.is_none(),
+                    "{id}: the image is required iff nothing else can drive the model"
+                );
             }
-            assert_eq!(init.required, s.text_to_3d.is_none(), "{id}: the image is required iff there is no text arm");
-            assert!(m.docs_url.as_deref().is_some_and(|u| u.contains(s.image_to_3d.unwrap_or_default())), "{id}: docs_url");
+            let declared: std::collections::BTreeSet<&str> = refs.roles.keys().filter_map(|r| r.strip_prefix("view-")).collect();
+            let (taken, order): (std::collections::BTreeSet<&str>, &[&str]) = match s.views {
+                Views::None => (Default::default(), &[]),
+                Views::Ordered { order, .. } => (order.iter().copied().collect(), order),
+                Views::Named(fields) => (fields.iter().map(|(v, _)| *v).collect(), &[]),
+            };
+            assert_eq!(declared, taken, "{id}: a view-* role for exactly the views the endpoint takes");
+            assert_eq!(refs.view_order, order, "{id}: view_order is the endpoint's list order");
+            let endpoint = s.image_to_3d.or(s.multiview_to_3d).unwrap_or_default();
+            assert!(m.docs_url.as_deref().is_some_and(|u| u.contains(endpoint)), "{id}: docs_url");
         }
     }
 

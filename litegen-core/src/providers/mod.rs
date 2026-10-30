@@ -136,8 +136,12 @@ pub struct GenerationOutput {
     pub data: Vec<u8>,
     /// MIME content type (e.g. "image/png", "video/mp4").
     pub content_type: String,
-    /// Provider-specific metadata (revised_prompt, model version, etc.).
+    /// Provider-specific metadata (revised_prompt, model version, etc.). A
+    /// multiview image carries its `view` and `yaw_deg` here.
     pub metadata: HashMap<String, serde_json::Value>,
+    /// The call's other images, in order, when one call makes several (a
+    /// multiview model's views). Each is returned as its own result.
+    pub more: Vec<GenerationOutput>,
 }
 
 /// Configuration passed to a provider instance.
@@ -272,6 +276,10 @@ pub struct ImageExtras {
     pub strength: Option<f64>,
     pub response_format: String,
     pub extra: Option<serde_json::Value>,
+    /// The views a `multiview` model makes, in order — the request's, or the
+    /// model's default set (3D doc §3E). Empty for other models.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<String>,
     /// A partial edit (3D doc §4) after litegen checked and converted it: the
     /// mask itself travels as the `mask` reference, in the vendor's
     /// convention.

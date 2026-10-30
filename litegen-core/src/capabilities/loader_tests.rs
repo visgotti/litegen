@@ -626,4 +626,84 @@ models:
 "#).unwrap_err().to_string();
         assert!(err.contains("preserves_unmasked"), "{err}");
     }
+
+    // ─── Views (3D doc §3E) ──────────────────────────────────────────────────
+
+    fn multiview_3d(roles: &str, view_order: &str) -> Result<CapabilityRegistry, LoadError> {
+        yaml(&format!(r#"
+models:
+  - id: x/mv
+    provider: x
+    media_type: model3d
+    display_name: MV
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ multiview_to_3d: true }}
+    prompt: {{ required: false, max_length: 0 }}
+    ref_inputs:
+      max_total: 4
+      provider_format: {{ form: url }}
+{view_order}
+      roles:
+{roles}
+"#))
+    }
+
+    const FRONT_LEFT: &str = "        view-front: { required: true, min_count: 1, max_count: 1 }\n        view-left: { required: false, min_count: 0, max_count: 1 }";
+
+    #[test]
+    fn view_roles_come_from_the_one_view_vocabulary() {
+        assert!(multiview_3d(FRONT_LEFT, "").is_ok());
+        let err = multiview_3d("        view-front: { required: true, min_count: 1, max_count: 1 }\n        view-sideways: { required: false, min_count: 0, max_count: 1 }", "")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("view-sideways"), "{err}");
+    }
+
+    #[test]
+    fn a_view_order_names_only_views_the_model_takes_once_each() {
+        let r = multiview_3d(FRONT_LEFT, "      view_order: [front, left]").unwrap();
+        assert_eq!(r.get("x/mv").unwrap().ref_inputs.as_ref().unwrap().view_order, ["front", "left"]);
+        for order in ["      view_order: [front, back]", "      view_order: [front, left, front]", "      view_order: [front, sideways]"] {
+            let err = multiview_3d(FRONT_LEFT, order).unwrap_err().to_string();
+            assert!(err.contains("view_order"), "{order}: {err}");
+        }
+    }
+
+    fn multiview_image(params: &str, roles: &str) -> Result<CapabilityRegistry, LoadError> {
+        yaml(&format!(r#"
+models:
+  - id: x/views
+    provider: x
+    media_type: image
+    task: multiview
+    display_name: Views
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ image_to_image: true }}
+    prompt: {{ required: false, max_length: 0 }}
+    params:
+{params}
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: {{ form: base64 }}
+      roles:
+{roles}
+"#))
+    }
+
+    const INIT: &str = "        init: { required: true, min_count: 1, max_count: 1 }";
+
+    #[test]
+    fn a_multiview_image_model_names_the_views_it_makes_and_takes_an_init_image() {
+        let views = "      views: { kind: string_array, enum_values: [front, back], default: [front, back] }";
+        assert!(multiview_image(views, INIT).is_ok());
+        let err = multiview_image("      views: { kind: string_array, enum_values: [front, upside-down] }", INIT).unwrap_err().to_string();
+        assert!(err.contains("upside-down"), "{err}");
+        let err = multiview_image("      views: { kind: string, enum_values: [front] }", INIT).unwrap_err().to_string();
+        assert!(err.contains("string_array"), "{err}");
+        let err = multiview_image("      seed: { kind: seed, min: 0, max: 10 }", INIT).unwrap_err().to_string();
+        assert!(err.contains("multiview"), "no views: {err}");
+        let err = multiview_image(views, "        style: { required: true, min_count: 1, max_count: 1 }").unwrap_err().to_string();
+        assert!(err.contains("multiview"), "no init role: {err}");
+    }
 }

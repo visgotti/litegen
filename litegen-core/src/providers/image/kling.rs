@@ -248,7 +248,7 @@ impl ImageProvider for KlingImageProvider {
         metadata.insert("task_id".to_string(), Value::String(task_id.to_string()));
         metadata.insert("url".to_string(), Value::String(image_url.to_string()));
 
-        Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata })
+        Ok(GenerationOutput { data: bytes, content_type: "image/png".to_string(), metadata, more: Vec::new() })
     }
 
     async fn estimate_cost(
@@ -337,7 +337,7 @@ mod tests {
             vendor_job: Default::default(),
             size: None, aspect_ratio: Some("16:9".to_string()), quality: None, style: None,
             steps: None, guidance_scale: None, strength: None, response_format: "url".to_string(), extra: None,
-            edit: None,
+            edit: None, views: Vec::new(),
         }
     }
 

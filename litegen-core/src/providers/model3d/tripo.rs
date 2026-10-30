@@ -220,7 +220,7 @@ impl TripoModel3dProvider {
         Ok(base)
     }
 
-    fn request(&self, method: Method, path: &str) -> Result<RequestBuilder, ProviderError> {
+    pub(crate) fn request(&self, method: Method, path: &str) -> Result<RequestBuilder, ProviderError> {
         let builder = self.client.request(method, format!("{}/{path}", self.api_base()));
         let builder = crate::providers::auth::apply(&self.auth, &self.creds()?, builder)?;
         Ok(crate::providers::inject_trace_headers(builder))
@@ -232,7 +232,7 @@ impl TripoModel3dProvider {
     /// Tripo: "A task-creation request may have succeeded even if its response
     /// was lost". A connection that never opened, a 429 and a 5xx are answers
     /// that it did not.
-    async fn call(&self, req: RequestBuilder, what: &str, creates_task: bool) -> Result<Value, ProviderError> {
+    pub(crate) async fn call(&self, req: RequestBuilder, what: &str, creates_task: bool) -> Result<Value, ProviderError> {
         let resp = req.send().await.map_err(|e| ProviderError::RequestFailed {
             message: format!("tripo {what} failed: {e}"),
             status_code: None,
@@ -282,7 +282,7 @@ impl TripoModel3dProvider {
     }
 
     /// A created task's id out of `data`.
-    fn task_id(data: &Value, what: &str) -> Result<String, ProviderError> {
+    pub(crate) fn task_id(data: &Value, what: &str) -> Result<String, ProviderError> {
         data["task_id"]
             .as_str()
             .filter(|t| !t.is_empty())
@@ -297,8 +297,14 @@ impl TripoModel3dProvider {
 
     /// Upload a source litegen holds: `POST /v3/files`, multipart `file`.
     async fn upload(&self, source: &SourceInput) -> Result<String, ProviderError> {
-        let part = reqwest::multipart::Part::bytes(source.bytes.clone())
-            .file_name(format!("source.{}", source.format))
+        self.upload_bytes(&source.bytes, &source.format).await
+    }
+
+    /// Upload any file Tripo takes (an image, a mesh) and answer its
+    /// `file_token`.
+    pub(crate) async fn upload_bytes(&self, bytes: &[u8], ext: &str) -> Result<String, ProviderError> {
+        let part = reqwest::multipart::Part::bytes(bytes.to_vec())
+            .file_name(format!("source.{ext}"))
             .mime_str("application/octet-stream")
             .map_err(|e| ProviderError::InvalidRequest(format!("tripo upload: {e}")))?;
         let form = reqwest::multipart::Form::new().part("file", part);
@@ -376,6 +382,24 @@ impl TripoModel3dProvider {
             model: model.id.clone(),
             stage_context: Some(json!({ "task_id": task })),
         })
+    }
+
+    /// Download a result file Tripo names, with no key, SSRF-checked and capped.
+    pub(crate) async fn fetch(&self, url: &str) -> Result<(Vec<u8>, String), AssetError> {
+        super::download::fetch_asset(&self.asset_client, url, self.max_asset_bytes, self.public_assets_only, "tripo").await
+    }
+
+    /// How often a task is polled while a call waits on it.
+    pub(crate) fn poll_interval(&self) -> Duration {
+        self.check_interval
+    }
+
+    /// For tests whose stand-in Tripo runs on loopback: downloads allowed
+    /// there, and polls without a real wait.
+    #[cfg(test)]
+    pub(crate) fn on_loopback_for_tests(&mut self) {
+        self.public_assets_only = false;
+        self.check_interval = Duration::from_millis(5);
     }
 
     fn served(model: &ModelSchema) -> Result<(), ProviderError> {

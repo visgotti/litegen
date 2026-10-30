@@ -94,7 +94,7 @@ export const FALLBACK_CAPABILITIES = {
   recraft:   { provider: 'recraft',   inputs: { text: true,  image: false, multi: false }, outputs: { image: true,  video: false, model3d: false } },
   leonardo:  { provider: 'leonardo',  inputs: { text: true,  image: true,  multi: false }, outputs: { image: true,  video: true,  model3d: false } },
   google:    { provider: 'google',    inputs: { text: true,  image: true,  multi: true  }, outputs: { image: true,  video: true,  model3d: false } },
-  fal:       { provider: 'fal',       inputs: { text: true,  image: true,  multi: false }, outputs: { image: true,  video: true,  model3d: true  } },
+  fal:       { provider: 'fal',       inputs: { text: true,  image: true,  multi: true  }, outputs: { image: true,  video: true,  model3d: true  } },
   // video hemisphere
   runway:    { provider: 'runway',    inputs: { text: true,  image: true,  multi: true  }, outputs: { image: true,  video: true,  model3d: false } },
   luma:      { provider: 'luma',      inputs: { text: true,  image: true,  multi: true  }, outputs: { image: true,  video: true,  model3d: false } },
@@ -105,7 +105,8 @@ export const FALLBACK_CAPABILITIES = {
   hunyuan:   { provider: 'hunyuan',   inputs: { text: true,  image: true,  multi: false }, outputs: { image: true,  video: true,  model3d: false } },
   vidu:      { provider: 'vidu',      inputs: { text: true,  image: true,  multi: true  }, outputs: { image: false, video: true,  model3d: false } },
   pixverse:  { provider: 'pixverse',  inputs: { text: true,  image: true,  multi: true  }, outputs: { image: false, video: true,  model3d: false } },
+  // Tripo's multiview images take one image; its rig and animation take a mesh.
+  tripo:     { provider: 'tripo',     inputs: { text: false, image: true,  multi: false }, outputs: { image: true,  video: false, model3d: true  } },
   // 3D only: its rig takes a mesh, none of the text/image inputs above.
-  tripo:     { provider: 'tripo',     inputs: { text: false, image: false, multi: false }, outputs: { image: false, video: false, model3d: true  } },
   meshy:     { provider: 'meshy',     inputs: { text: false, image: false, multi: false }, outputs: { image: false, video: false, model3d: true  } },
 };

@@ -122,6 +122,14 @@ export type ImageResult = components["schemas"]["ImageResult"];
  * drawn as its mask; with a `mask` too, the edit area is where they overlap.
  */
 export type Region = components["schemas"]["Region"];
+/**
+ * A view of a subject, named for the side the camera sees. Its yaw
+ * (`ImageResult.yaw_deg`) is the camera's position around +Y from the
+ * subject's front (+Z) towards +X: front 0, left 90, back 180, right 270, the
+ * diagonals between; top and bottom have none. A multiview image model takes
+ * `views` from this list; a multiview-to-3D model takes `view-<name>` references.
+ */
+export type ImageView = components["schemas"]["ImageView"];
 /** Which pixels of a mask edit. Callers always send `white_edits`; litegen converts. */
 export type MaskConvention = components["schemas"]["MaskConvention"];
 /** How a model receives a `region`: its own `box`, or drawn as its `mask`. */

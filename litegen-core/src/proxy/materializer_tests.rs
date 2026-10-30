@@ -30,6 +30,7 @@ mod tests {
                 default_role: Some("init".into()),
                 provider_format: form,
                 data_uri: true,
+                view_order: Vec::new(),
                 roles: HashMap::from([
                     ("init".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
                     ("mask".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
