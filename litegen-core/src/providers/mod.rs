@@ -407,13 +407,12 @@ pub struct Model3dGenerationHandle {
     /// Opaque per-provider continuation state, written by `generate` and
     /// persisted on the row (`metadata.stage_context`) so the poller can
     /// rebuild the handle after a restart — fal keeps its queue URLs here.
-    /// Only that provider's own `poll_status` / `cancel` ever read it.
+    /// Only that provider's own `poll_status` / `start_stage` / `cancel` read it.
     ///
-    /// Write-once: nothing persists a change made after submit. A vendor that
-    /// must record a SECOND stage (Meshy's preview → refine) needs more than
-    /// this field — a poll result carrying the new state, both observers of
-    /// completion persisting it, and an atomic claim so the client's poll and
-    /// the poller cannot both start stage two (and bill it twice).
+    /// Updated after submit through [`Model3dGenerationPollResult::stage_context`]
+    /// and [`Model3dProvider::start_stage`]; both observers of a job persist
+    /// the new value (see `proxy::model3d_stages`). By convention it records
+    /// the current stage's name under `"stage"`.
     pub stage_context: Option<serde_json::Value>,
 }
 
@@ -436,6 +435,15 @@ pub struct Model3dGenerationPollResult {
     pub files: Vec<Model3dFile>,
     pub error: Option<String>,
     pub metadata: HashMap<String, serde_json::Value>,
+    /// New continuation state, when this poll changed it (a vendor flow that
+    /// moved to its next free stage, say). The observer persists it on the row
+    /// and polls with it from then on.
+    pub stage_context: Option<serde_json::Value>,
+    /// The previous stage finished and this one, a BILLED vendor call, must
+    /// start next. The observer does not start it directly: it claims the
+    /// stage on the row first, and only the claimant calls
+    /// [`Model3dProvider::start_stage`], so two observers never bill it twice.
+    pub next_stage: Option<String>,
 }
 
 /// The core trait for 3D model (mesh) generation providers.
@@ -474,6 +482,23 @@ pub trait Model3dProvider: Send + Sync {
     ) -> Result<CostEstimate, ProviderError>;
 
     async fn health_check(&self) -> HealthCheckResult;
+
+    /// Start `stage` of a vendor flow whose previous stage finished — the
+    /// call a poll asked for with `next_stage`. Called only by the observer
+    /// that won the stage's claim. Returns the new stage context, which
+    /// replaces the handle's from then on.
+    ///
+    /// An `Err` fails the generation: litegen never re-sends a billed call it
+    /// cannot prove did not land. Providers without stages keep the default.
+    async fn start_stage(
+        &self,
+        _handle: &Model3dGenerationHandle,
+        stage: &str,
+    ) -> Result<serde_json::Value, ProviderError> {
+        Err(ProviderError::InvalidRequest(format!(
+            "{} has no stage '{stage}' to start", self.name()
+        )))
+    }
 
     /// Ask the vendor to stop a job the caller cancelled. Best-effort: the row
     /// is already `cancelled` and nothing reads the job again, so this only

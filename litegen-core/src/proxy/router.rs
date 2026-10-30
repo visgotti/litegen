@@ -813,26 +813,38 @@ impl ProxyRouter {
     /// observe completion, and the poller already re-hosts into the app's
     /// bucket. Passing `None` here when the app has one would put that tenant's
     /// mesh in the operator's bucket depending only on which observer won.
-    #[tracing::instrument(skip(self, app_store), fields(id = %id))]
+    #[tracing::instrument(skip(self, app_store, db), fields(id = %id))]
     pub async fn get_model3d_status(
         &self,
         id: &str,
         app_store: Option<Arc<dyn crate::proxy::storage::ImageStorage>>,
         app_prefix: Option<&str>,
+        db: &Arc<dyn crate::db::DatabaseStore>,
     ) -> Result<Model3dGenerationResponse, ProxyError> {
         let job = {
             let jobs = self.model3d_jobs.read().await;
             jobs.get(id).cloned()
         };
-        let Model3dJob { handle, usage, requested_formats, provider, created } =
+        let Model3dJob { mut handle, usage, requested_formats, provider, created } =
             job.ok_or_else(|| ProxyError::NotFound(format!("3d job '{}' not found", id)))?;
 
         // The instance that submitted the job — see `Model3dJob`.
-        let poll = provider.poll_status(&handle).await.map_err(|e| ProxyError::ProviderError {
+        let mut poll = provider.poll_status(&handle).await.map_err(|e| ProxyError::ProviderError {
             provider: handle.provider.clone(),
             error: e.to_string(),
             retryable: e.is_retryable(),
         })?;
+
+        // A vendor flow's next billed stage, or its new continuation state:
+        // the same bookkeeping the poller applies, so whichever observer sees
+        // a stage boundary first handles it — once.
+        let before = handle.stage_context.clone();
+        crate::proxy::model3d_stages::advance(db, provider.as_ref(), id, &mut handle, &mut poll, "client").await;
+        if handle.stage_context != before {
+            if let Some(job) = self.model3d_jobs.write().await.get_mut(id) {
+                job.handle.stage_context = handle.stage_context.clone();
+            }
+        }
 
         let is_terminal = matches!(
             poll.status,
@@ -1611,6 +1623,10 @@ mod model3d_router_tests {
 
     // ─── The instance that submitted a job is the one that polls it ─────────
 
+    async fn test_db() -> Arc<dyn crate::db::DatabaseStore> {
+        Arc::new(crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap())
+    }
+
     async fn router_with_operator_fal(server: &wiremock::MockServer) -> ProxyRouter {
         let mut config = crate::config::AppConfig::default();
         config.providers.insert(
@@ -1685,7 +1701,7 @@ mod model3d_router_tests {
 
         let router = router_with_operator_fal(&server).await;
         let submitted = submit_byo(&router).await;
-        let polled = router.get_model3d_status(&submitted.id, None, None).await.expect("polled with the org key");
+        let polled = router.get_model3d_status(&submitted.id, None, None, &test_db().await).await.expect("polled with the org key");
         assert_eq!(polled.status, GenerationStatus::Processing);
         assert_eq!(polled.created, submitted.created, "`created` is the submit time on every poll");
 
@@ -1711,7 +1727,7 @@ mod model3d_router_tests {
         let (handle, provider) = router.forget_model3d_job(&submitted.id).await.expect("tracked");
         assert_eq!(provider.cancel(&handle).await.unwrap(), crate::providers::CancelOutcome::Requested);
         assert!(router.forget_model3d_job(&submitted.id).await.is_none(), "forgotten once");
-        assert!(matches!(router.get_model3d_status(&submitted.id, None, None).await, Err(ProxyError::NotFound(_))));
+        assert!(matches!(router.get_model3d_status(&submitted.id, None, None, &test_db().await).await, Err(ProxyError::NotFound(_))));
     }
 
     // ─── A submit that times out is never sent again ─────────────────────────

@@ -643,7 +643,7 @@ impl FalModel3dProvider {
 }
 
 fn finished(status: GenerationStatus, error: Option<String>, files: Vec<Model3dFile>, meta: HashMap<String, Value>) -> Model3dGenerationPollResult {
-    Model3dGenerationPollResult { status, progress: 100, files, error, metadata: meta }
+    Model3dGenerationPollResult { status, progress: 100, files, error, metadata: meta, stage_context: None, next_stage: None }
 }
 
 #[async_trait]
@@ -891,6 +891,8 @@ impl Model3dProvider for FalModel3dProvider {
         match status["status"].as_str() {
             Some("IN_QUEUE") => {
                 return Ok(Model3dGenerationPollResult {
+                    stage_context: None,
+                    next_stage: None,
                     status: GenerationStatus::Pending,
                     progress: PROGRESS_QUEUED,
                     files: Vec::new(),
@@ -900,6 +902,8 @@ impl Model3dProvider for FalModel3dProvider {
             }
             Some("IN_PROGRESS") => {
                 return Ok(Model3dGenerationPollResult {
+                    stage_context: None,
+                    next_stage: None,
                     status: GenerationStatus::Processing,
                     progress: PROGRESS_RUNNING,
                     files: Vec::new(),

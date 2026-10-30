@@ -201,7 +201,7 @@ pub(crate) async fn poll_once(
                         continue;
                     }
                 };
-                let handle = crate::providers::Model3dGenerationHandle {
+                let mut handle = crate::providers::Model3dGenerationHandle {
                     provider_job_id,
                     provider: gen.provider.clone(),
                     model: gen.model.clone(),
@@ -210,13 +210,16 @@ pub(crate) async fn poll_once(
                         .as_ref()
                         .and_then(|m| m.get("stage_context").cloned()),
                 };
-                let poll = match provider.poll_status(&handle).await {
+                let mut poll = match provider.poll_status(&handle).await {
                     Ok(p) => p,
                     Err(e) => {
                         handle_poll_error(db, &gen, &e, over_age).await;
                         continue;
                     }
                 };
+                // A vendor flow's next billed stage, or its new continuation
+                // state — the same bookkeeping the client's poll applies.
+                crate::proxy::model3d_stages::advance(db, provider.as_ref(), &gen.id, &mut handle, &mut poll, "poller").await;
 
                 // Re-host NOW, in the same tick that observed completion: several
                 // vendors expire their download URLs within minutes, so the bytes
@@ -956,6 +959,8 @@ mod poller_tests {
             _h: &crate::providers::Model3dGenerationHandle,
         ) -> Result<crate::providers::Model3dGenerationPollResult, crate::providers::ProviderError> {
             Ok(crate::providers::Model3dGenerationPollResult {
+                stage_context: None,
+                next_stage: None,
                 status: crate::types::GenerationStatus::Completed,
                 progress: 100,
                 files: vec![crate::providers::Model3dFile {
@@ -1014,6 +1019,220 @@ mod poller_tests {
             symmetry: None, topology: None, rig: None, extra: None,
         };
         p.generate(&schema, &base, &extras, &Default::default()).await.unwrap().provider_job_id
+    }
+
+    // ─── stages after submit (3D doc §3G) ────────────────────────────────
+
+    /// A vendor flow with a second billed stage: stage `one` finishes, then
+    /// stage `two` must be started — once — before the mesh arrives. Counts
+    /// every `start_stage` call, which is what a vendor would bill.
+    struct StagedModel3dProvider {
+        starts: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl Model3dProvider for StagedModel3dProvider {
+        fn name(&self) -> &str { "mock" }
+        fn configure(&mut self, _c: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+
+        async fn generate(
+            &self,
+            m: &crate::capabilities::ModelSchema,
+            _b: &crate::types::BaseGenerationRequest,
+            _e: &crate::providers::Model3dExtras,
+            _mat: &crate::proxy::materializer::MaterializedRequest,
+        ) -> Result<crate::providers::Model3dGenerationHandle, crate::providers::ProviderError> {
+            Ok(crate::providers::Model3dGenerationHandle {
+                provider_job_id: "staged-job".into(),
+                provider: "mock".into(),
+                model: m.id.clone(),
+                stage_context: Some(serde_json::json!({ "stage": "one" })),
+            })
+        }
+
+        async fn poll_status(
+            &self,
+            h: &crate::providers::Model3dGenerationHandle,
+        ) -> Result<crate::providers::Model3dGenerationPollResult, crate::providers::ProviderError> {
+            let stage = h.stage_context.as_ref().and_then(|c| c["stage"].as_str()).unwrap_or("");
+            Ok(match stage {
+                "one" => crate::providers::Model3dGenerationPollResult {
+                    status: crate::types::GenerationStatus::Processing,
+                    progress: 40,
+                    files: vec![],
+                    error: None,
+                    metadata: Default::default(),
+                    stage_context: None,
+                    next_stage: Some("two".into()),
+                },
+                _ => crate::providers::Model3dGenerationPollResult {
+                    status: crate::types::GenerationStatus::Completed,
+                    progress: 100,
+                    files: vec![crate::providers::Model3dFile {
+                        kind: crate::types::Model3dAssetKind::Mesh,
+                        format: "glb".into(),
+                        content_type: "model/gltf-binary".into(),
+                        bytes: crate::providers::model3d::glb::generate_cube_glb("staged"),
+                        polycount: None,
+                        width: None,
+                        height: None,
+                    }],
+                    error: None,
+                    metadata: Default::default(),
+                    stage_context: None,
+                    next_stage: None,
+                },
+            })
+        }
+
+        async fn start_stage(
+            &self,
+            _h: &crate::providers::Model3dGenerationHandle,
+            stage: &str,
+        ) -> Result<serde_json::Value, crate::providers::ProviderError> {
+            // Widen the window in which a second observer could also start it.
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            self.starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(serde_json::json!({ "stage": stage, "task": "vendor-task-2" }))
+        }
+
+        async fn estimate_cost(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _r: &crate::types::Model3dGenerationRequest,
+        ) -> Result<crate::types::CostEstimate, crate::providers::ProviderError> {
+            unimplemented!()
+        }
+
+        async fn health_check(&self) -> crate::providers::HealthCheckResult {
+            unimplemented!()
+        }
+    }
+
+    fn staged_schema() -> crate::capabilities::ModelSchema {
+        use crate::capabilities::{MediaType, ModelCapabilityFlags, ModelPricing, PromptSpec};
+        crate::capabilities::ModelSchema {
+            id: "mock/staged-3d".into(), provider: "mock".into(), media_type: MediaType::Model3d,
+            task: Default::default(),
+            display_name: "staged".into(), description: String::new(), docs_url: None,
+            pricing: ModelPricing { base_cost_usd: 0.0, variable_pricing: None },
+            capabilities: ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
+            prompt: PromptSpec { required: true, min_length: None, max_length: None },
+            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], tags: vec![],
+        }
+    }
+
+    /// A router over a registry whose mock 3D provider is `provider`, and a
+    /// job submitted through it whose row exists, as the submit handler leaves it.
+    async fn staged_job(
+        db: &Arc<dyn DatabaseStore>,
+        provider: Arc<StagedModel3dProvider>,
+    ) -> (Arc<ProviderRegistry>, crate::proxy::router::ProxyRouter, String) {
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_mock_model3d(provider).await;
+        let router = crate::proxy::router::ProxyRouter::new(
+            registry.clone(),
+            Arc::new(crate::proxy::cache::GenerationCache::new(&crate::config::CacheGlobalConfig::default())),
+            Arc::new(crate::config::AppConfig::default()),
+            Arc::new(crate::proxy::storage::LocalStore),
+        );
+        let base = crate::types::BaseGenerationRequest {
+            prompt: "a fox".into(), model: "mock/staged-3d".into(), n: 1, negative_prompt: None, seed: None,
+            reference_images: vec![], strict: true, extra: None, metadata: None,
+        };
+        let extras = crate::providers::Model3dExtras {
+            output_formats: vec!["glb".into()],
+            texture: None, pbr: None, target_polycount: None,
+            symmetry: None, topology: None, rig: None, extra: None,
+        };
+        let resp = router.generate_model3d(&staged_schema(), &base, &extras, &Default::default(), None).await.unwrap();
+        db.insert_generation(&resp.id, None, "mock/staged-3d", "mock", "model3d", Some("staged-job"), 0.0, None, None).await.unwrap();
+        db.merge_generation_metadata_if_active(&resp.id, &serde_json::json!({
+            "requested_formats": ["glb"],
+            "stage_context": { "stage": "one" },
+        })).await.unwrap();
+        (registry, router, resp.id)
+    }
+
+    #[tokio::test]
+    async fn two_observers_start_a_billed_stage_exactly_once() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let provider = Arc::new(StagedModel3dProvider { starts: Default::default() });
+        let (registry, router, id) = staged_job(&db, provider.clone()).await;
+        let store = test_3d_store();
+
+        // The client's poll and the poller both see stage one finish.
+        let (client, _) = tokio::join!(
+            router.get_model3d_status(&id, None, None, &db),
+            poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &store),
+        );
+        client.expect("the client's poll answers");
+        assert_eq!(provider.starts.load(std::sync::atomic::Ordering::SeqCst), 1, "stage two is billed once");
+
+        // Both go on to completion without starting it again.
+        for _ in 0..3 {
+            let _ = router.get_model3d_status(&id, None, None, &db).await;
+            poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &store).await;
+        }
+        assert_eq!(provider.starts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let row = db.get_generation(&id).await.unwrap().unwrap();
+        assert_eq!(row.status, crate::types::GenerationStatus::Completed, "{:?}", row.error_message);
+    }
+
+    #[tokio::test]
+    async fn a_started_stage_reaches_the_row_for_the_next_observer() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let provider = Arc::new(StagedModel3dProvider { starts: Default::default() });
+        let (registry, router, id) = staged_job(&db, provider.clone()).await;
+
+        // The client's poll starts stage two…
+        let resp = router.get_model3d_status(&id, None, None, &db).await.unwrap();
+        assert_eq!(resp.status, crate::types::GenerationStatus::Processing);
+        let row = db.get_generation(&id).await.unwrap().unwrap();
+        let meta = row.metadata.unwrap();
+        assert_eq!(meta["stage_context"]["stage"], "two", "{meta}");
+        assert_eq!(meta["stage_context"]["task"], "vendor-task-2", "{meta}");
+
+        // …and a poller rebuilding the handle from the row (a restart) polls
+        // stage two, never stage one again.
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &test_3d_store()).await;
+        let row = db.get_generation(&id).await.unwrap().unwrap();
+        assert_eq!(row.status, crate::types::GenerationStatus::Completed, "{:?}", row.error_message);
+        assert_eq!(provider.starts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_stage_start_fails_the_generation_instead_of_resending() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let provider = Arc::new(StagedModel3dProvider { starts: Default::default() });
+        let (registry, _router, id) = staged_job(&db, provider.clone()).await;
+        // A claim from a process that died before it could record stage two.
+        let at = (chrono::Utc::now() - chrono::Duration::minutes(11)).to_rfc3339();
+        db.merge_generation_metadata_if_active(&id, &serde_json::json!({
+            "stage_claims": { "two": { "by": "a-dead-process", "at": at } },
+        })).await.unwrap();
+
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &test_3d_store()).await;
+        let row = db.get_generation(&id).await.unwrap().unwrap();
+        assert_eq!(row.status, crate::types::GenerationStatus::Failed);
+        assert!(row.error_message.as_deref().unwrap_or("").contains("interrupted"), "{:?}", row.error_message);
+        assert_eq!(provider.starts.load(std::sync::atomic::Ordering::SeqCst), 0, "never re-sent");
+    }
+
+    #[tokio::test]
+    async fn a_fresh_claim_by_another_observer_just_waits() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let provider = Arc::new(StagedModel3dProvider { starts: Default::default() });
+        let (registry, _router, id) = staged_job(&db, provider.clone()).await;
+        db.merge_generation_metadata_if_active(&id, &serde_json::json!({
+            "stage_claims": { "two": { "by": "the-client", "at": chrono::Utc::now().to_rfc3339() } },
+        })).await.unwrap();
+
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &test_3d_store()).await;
+        let row = db.get_generation(&id).await.unwrap().unwrap();
+        assert_eq!(row.status, crate::types::GenerationStatus::Processing);
+        assert_eq!(provider.starts.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

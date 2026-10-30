@@ -38,6 +38,12 @@
 //! mock of the vendor: the outbound field for every canonical param it maps,
 //! the auth header, every terminal state including the vendor's failure
 //! envelopes, and that a transient poll failure stays retryable.
+//!
+//! A vendor flow with a second BILLED call (Tripo's free `rig-check` before
+//! `rig`, an upload before its task, Meshy's preview before refine) reports the
+//! boundary from `poll_status` as `next_stage` and implements `start_stage`;
+//! `proxy::model3d_stages` claims the stage on the row so only one observer
+//! starts it, and persists the context `start_stage` returns.
 
 pub mod cube;
 pub mod fal;

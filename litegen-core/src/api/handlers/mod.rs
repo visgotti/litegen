@@ -924,7 +924,7 @@ pub async fn get_3d_status(
         None => (None, None),
     };
 
-    match state.router.get_model3d_status(&id, app_store, app_prefix.as_deref()).await {
+    match state.router.get_model3d_status(&id, app_store, app_prefix.as_deref(), &state.db).await {
         Ok(mut resp) => {
             // Persist the terminal result so `GET /v1/generations/{id}`, the
             // gallery, and any webhook see the same assets the poller would have
@@ -4838,6 +4838,8 @@ mod model3d_completion_contract_tests {
             _handle: &Model3dGenerationHandle,
         ) -> Result<Model3dGenerationPollResult, ProviderError> {
             Ok(Model3dGenerationPollResult {
+                stage_context: None,
+                next_stage: None,
                 status: GenerationStatus::Completed,
                 progress: 100,
                 files: vec![], // contract violation under test

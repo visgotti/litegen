@@ -203,6 +203,8 @@ impl Model3dProvider for MockModel3dProvider {
 
         if n < POLLS_BEFORE_DONE {
             return Ok(Model3dGenerationPollResult {
+                stage_context: None,
+                next_stage: None,
                 status: if n == 1 { GenerationStatus::Pending } else { GenerationStatus::Processing },
                 progress: ((n * 100) / POLLS_BEFORE_DONE) as u8,
                 files: Vec::new(),
@@ -224,6 +226,8 @@ impl Model3dProvider for MockModel3dProvider {
 
         if job.model == FAIL_MODEL {
             return Ok(Model3dGenerationPollResult {
+                stage_context: None,
+                next_stage: None,
                 status: GenerationStatus::Failed,
                 progress: 100,
                 files: Vec::new(),
@@ -260,6 +264,8 @@ impl Model3dProvider for MockModel3dProvider {
         });
 
         Ok(Model3dGenerationPollResult {
+            stage_context: None,
+            next_stage: None,
             status: GenerationStatus::Completed,
             progress: 100,
             files,
