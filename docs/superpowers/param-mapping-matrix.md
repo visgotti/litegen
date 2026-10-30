@@ -437,6 +437,14 @@ field name — but it is what makes the family behave the same on every model:
   `max_items`, the served set a superset of the native one, a `docs_url` on
   every vendor row, no-prompt models never requiring one, image-only models
   requiring their image.
+- `litegen-core/tests/model3d_chain.rs` — the 3D doc §3J chain end to end:
+  a base64 still → mock/mesh-3d → mock/rig-3d by generation id →
+  mock/animate-3d with an in-place `walk` and `idle`, litegen restarted over
+  the same database file and asset directory between every step, and every
+  step re-sent with its `Idempotency-Key` answering the same id and billing
+  nothing. The final GLB is read by litegen and by `@gltf-transform/core`
+  (`scripts/mesh-verify/read-gltf.mjs`; skipped, loudly, until `npm ci` runs
+  there): exactly `walk` and `idle`, 1 s each, 7 joints, nothing required.
 - `litegen-core/tests/animate_api.rs` — animation over HTTP against
   `mock/animate-3d`: clip order and names, in place by the vendor or litegen,
   `fps`, prompt length, the loop hint, the inherited front, and an unrigged

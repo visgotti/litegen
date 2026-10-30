@@ -139,3 +139,11 @@ A full run needs Node (for Playwright's Chromium and the validator, from `npm ci
 Any tool that is missing is named at the end of the run and in `report.json`
 (`summary.tools`), and its checks are skipped. A missing usdrecord fails the USD cases
 instead, since three.js alone cannot judge them.
+
+## `read-gltf.mjs`
+
+`node read-gltf.mjs <file.glb>` reads one glTF or GLB with `@gltf-transform/core`, a reader
+that shares no code with litegen, and prints what a consumer of the file sees as JSON: each
+animation's name, channel count and last key time, the skins' joint names, and the
+extensions the file requires. The 3D chain test (`litegen-core/tests/model3d_chain.rs`) runs
+it on the final animated GLB after `npm ci` here.

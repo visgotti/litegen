@@ -176,7 +176,9 @@ fn manifest(
             let in_place = c.in_place();
             let by_litegen = litegen_in_place.get(i).copied().unwrap_or(false);
             SceneAnimation {
-                name: plan.clips.get(i).map(|p| p.name.clone()).or_else(|| c.name.clone()).unwrap_or_else(|| format!("clip_{i}")),
+                // As the file names it: delivery renamed the clips already,
+                // and the manifest vouches only for what it read.
+                name: c.name.clone().unwrap_or_else(|| format!("clip_{i}")),
                 duration_s: c.duration_s,
                 in_place,
                 in_place_by: in_place.then(|| if by_litegen { "litegen" } else { "vendor" }.to_string()),
@@ -543,6 +545,15 @@ mod tests {
             clips: names.iter().map(|n| ClipPlan { name: n.to_string(), in_place: Some(false), loop_requested: None }).collect(),
             ..plan(&["glb"], Some(("+y", "+z")))
         }
+    }
+
+    #[test]
+    fn the_manifest_names_each_clip_as_the_file_does() {
+        // Measured, never taken from the request: a manifest that echoed the
+        // asked-for names would vouch for a file that does not carry them.
+        let file = animated(&[("Armature|walk", &[0.0, 1.0])]);
+        let m = manifest(&file, "glb", &clip_plan(&["walk"]), "vendor", &[]).unwrap();
+        assert_eq!(m.animations[0].name, "Armature|walk");
     }
 
     #[test]
