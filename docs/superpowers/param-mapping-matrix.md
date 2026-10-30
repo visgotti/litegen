@@ -154,6 +154,23 @@ video   seed             seed          10  bedrock/amazon.nova-reel-v1:1
 | `strength` | Float | range | 3 | validator: **none** — no `strength_out_of_range` case exists (only `guidance_scale` is exercised for the Float kind). provider: strong — `stability::tests::image_to_image_sends_mode_image_to_image`, `strength_is_not_sent_for_text_to_image`, `image_to_image_defaults_strength_when_omitted` all assert presence/absence of the outbound `strength` multipart field. conformance: n/a. | 🟡 |
 | `steps` | Int | range | 13 | validator: `unsupported_param_strict_rejects` / `unsupported_param_lax_drops` prove the shared drop mechanism using `steps` as the literal example — this is genuine, param-named coverage, unlike the other rows above. No test exercises the *range* branch (`steps` out of `[min,max]`) specifically. provider: `fal::tests::generates_flux_dev_image` (`body["num_inference_steps"]==28` — **note the outbound rename `steps` → `num_inference_steps`**), `replicate::tests::generates_flux_dev_via_polling` (`body["input"]["num_inference_steps"]==28`) and `replicate::tests::guidance_and_steps_use_each_models_own_input_names` (each model's own input name: flux-dev `num_inference_steps`, flux-pro and SD3 `steps`, fallback `num_inference_steps`). Not universal: `stability.rs` sets `body["steps"]` (line 466) and the multipart `steps` field (line 375) with zero assertion. conformance: n/a. | 🟡 |
 
+### References for URL-only vendors (L4)
+
+Every model takes a base64 or uploaded reference. For a vendor that takes
+references as URLs, the materializer sends the bytes inline as a `data:` URI
+when the vendor accepts one (`ref_inputs.data_uri`, default true) and otherwise
+publishes them at `{server.public_base_url}/v1/refs/{expiry}-{random}.{ext}`:
+32 random bytes, answering for an hour, kept past the submit (an async vendor
+fetches later), swept from local storage within the next hour after expiry.
+When litegen's public origin is loopback, private or single-label (a laptop),
+such a request is refused 400 before anything is billed.
+
+| vendor rows | `data_uri` | evidence | proof | status |
+|---|---|---|---|---|
+| `luma/*` (5) | false | "You should upload and use your own cdn image urls, currently this is the only way to pass an image" (docs.lumalabs.ai/docs/image-generation.md, 2026-10-30) | conformance `only_vendors_that_refuse_data_uris_get_published_references` | 🟡 unverified live |
+| `fal/*`, `runway/*`, `vidu/*`, `replicate/*` | true | fal: file inputs take data URIs (fal-cdn docs); Runway: "Data URIs are accepted in any field where a URL is accepted" (≤ 5 MB, jpeg/png/webp); Vidu: base64 images; Replicate: "HTTP URLs or data URLs" (≤ 256 KB recommended) | HTTP `fal_trellis_still_receives_the_upload_inline_as_a_data_uri` | ✅ wiremock |
+| `mock/url-only-image` | false | — | HTTP `a_url_only_vendor_fetches_the_upload_from_an_unguessable_litegen_url`, `with_no_public_address_a_url_only_vendor_is_refused_before_billing`; materializer `a_base64_ref_for_a_url_only_vendor_is_published_at_an_unguessable_url`; publisher `a_published_ref_expires_within_the_hour`, `an_expired_or_unknown_token_is_not_served`, `the_sweep_removes_expired_refs_and_keeps_live_ones` | ✅ mock |
+
 ### Partial image edits (3D doc §4)
 
 A caller sends ONE mask convention — an opaque image the size of `init`,

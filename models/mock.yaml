@@ -136,6 +136,27 @@ models:
         init: { required: false, min_count: 0, max_count: 1 }
     tags: [mock, test, refs-url]
 
+  - id: mock/url-only-image
+    provider: mock
+    media_type: image
+    display_name: Mock URL-Only Image
+    description: >-
+      Takes references only as fetchable URLs, refusing data URIs the way Luma
+      does. litegen publishes an uploaded reference at an unguessable URL of
+      its own for an hour; the mock records the URL it was handed.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: true, image_to_image: true }
+    prompt: { required: true, max_length: 4000 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      data_uri: false
+      roles:
+        init: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [mock, test, refs-url]
+
   - id: mock/base64-refs-image
     provider: mock
     media_type: image

@@ -29,6 +29,7 @@ mod tests {
                 max_total: 2,
                 default_role: Some("init".into()),
                 provider_format: form,
+                data_uri: true,
                 roles: HashMap::from([
                     ("init".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
                     ("mask".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
@@ -193,4 +194,62 @@ mod tests {
     }
 
     fn reqwest_stub() -> reqwest::Client { reqwest::Client::new() }
+
+    // ─── L4: a vendor that refuses data URIs gets a published URL ───────────
+
+    fn url_only_schema() -> ModelSchema {
+        let mut s = schema_with_format(RefProviderFormat::Url);
+        s.ref_inputs.as_mut().unwrap().data_uri = false;
+        s
+    }
+
+    fn publisher(base: &str) -> (Arc<crate::proxy::ref_publish::RefPublisher>, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap().keep();
+        let store: Arc<dyn crate::proxy::storage::ImageStorage> =
+            Arc::new(crate::proxy::storage::LocalModel3dStorage::new(dir.clone(), base.into()));
+        (Arc::new(crate::proxy::ref_publish::RefPublisher::new(store, base.into())), dir)
+    }
+
+    #[tokio::test]
+    async fn a_base64_ref_for_a_url_only_vendor_is_published_at_an_unguessable_url() {
+        let (p, _dir) = publisher("https://litegen.example.com");
+        let mat = Materializer::new(Arc::new(InMemoryStorage::default()), reqwest_stub()).with_publisher(p.clone());
+        let png = [PNG_HEAD.as_slice(), b"rest-of-the-image"].concat();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        let out = mat.materialize(&url_only_schema(), vec![ref_(RefImageKind::Base64, &b64, "init")], &Default::default()).await.unwrap();
+        let MaterializedRefForm::Url(url) = &out.refs[0].form else { panic!("{:?}", out.refs[0].form) };
+        let token = url.strip_prefix("https://litegen.example.com/v1/refs/").unwrap_or_else(|| panic!("{url}"));
+        assert!(token.len() >= 40, "unguessable: {token}");
+        let token = token.to_string();
+        let (bytes, ct) = p.get(&token).await.unwrap().expect("served while the job runs");
+        assert_eq!((bytes.as_ref(), ct.as_str()), (png.as_slice(), "image/png"));
+        drop(out);
+        assert!(p.get(&token).await.unwrap().is_some(), "kept after the request returns: an async vendor fetches later");
+    }
+
+    #[tokio::test]
+    async fn a_vendor_that_takes_data_uris_still_gets_one() {
+        let (p, _dir) = publisher("https://litegen.example.com");
+        let mat = Materializer::new(Arc::new(InMemoryStorage::default()), reqwest_stub()).with_publisher(p);
+        let b64 = base64::engine::general_purpose::STANDARD.encode([PNG_HEAD.as_slice(), b"x"].concat());
+        let out = mat
+            .materialize(&schema_with_format(RefProviderFormat::Url), vec![ref_(RefImageKind::Base64, &b64, "init")], &Default::default())
+            .await
+            .unwrap();
+        let MaterializedRefForm::Url(url) = &out.refs[0].form else { panic!() };
+        assert!(url.starts_with("data:image/png;base64,"), "{url}");
+    }
+
+    #[tokio::test]
+    async fn without_a_public_address_a_url_only_vendor_is_refused_before_anything_runs() {
+        for base in ["http://127.0.0.1:4000", "http://localhost:4000", "http://192.168.1.20:4000"] {
+            let (p, _dir) = publisher(base);
+            let mat = Materializer::new(Arc::new(InMemoryStorage::default()), reqwest_stub()).with_publisher(p);
+            let b64 = base64::engine::general_purpose::STANDARD.encode(PNG_HEAD);
+            let Err(err) = mat.materialize(&url_only_schema(), vec![ref_(RefImageKind::Base64, &b64, "init")], &Default::default()).await else {
+                panic!("{base}: published to an address no vendor reaches");
+            };
+            assert!(err.to_string().contains("public"), "{base}: {err}");
+        }
+    }
 }

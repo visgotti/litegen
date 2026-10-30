@@ -160,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
         db: db.clone(),
         master_key: config.master_key.clone(),
         registry: cap_registry,
-        materializer,
+        materializer: materializer.clone(),
         rate_limiter: std::sync::Arc::new(litegen::api::middleware::rate_limit::RateLimiter::new()),
         in_flight: std::sync::Arc::new(
             litegen::api::middleware::backpressure::InFlightLimit::new(
@@ -192,6 +192,13 @@ async fn main() -> anyhow::Result<()> {
         let mut rx = shutdown_rx.clone();
         async move { let _ = rx.changed().await; }
     };
+
+    // L4: a reference for a vendor that refuses `data:` URIs is published on
+    // the same asset store, at litegen's public origin.
+    materializer.set_publisher(Arc::new(litegen::proxy::ref_publish::RefPublisher::new(
+        router.model3d_store.clone(),
+        config.server.public_base_url(),
+    )));
 
     // Spawn background video-generation poller
     let poller_handle = spawn_poller(

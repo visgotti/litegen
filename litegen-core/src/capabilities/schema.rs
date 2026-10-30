@@ -388,6 +388,11 @@ pub struct RefInputSpec {
     #[schema(value_type = serde_json::Value)]
     pub provider_format: RefProviderFormat,
     pub roles: HashMap<String, RefRoleSpec>,
+    /// Whether the vendor takes a `data:` URI where it takes a URL (default
+    /// yes). When it does not, litegen publishes an uploaded reference at an
+    /// unguessable URL of its own for the vendor to fetch (L4).
+    #[serde(default = "default_true")]
+    pub data_uri: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

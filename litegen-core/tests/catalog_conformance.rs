@@ -3116,3 +3116,20 @@ fn stability_inpaint_takes_a_white_mask_and_grows_it_itself() {
         }
     }
 }
+
+// ─── References for URL-only vendors (PixelGenie L4) ────────────────────────
+
+/// @see <https://docs.lumalabs.ai/docs/image-generation.md> (2026-10-30): "You
+/// should upload and use your own cdn image urls, currently this is the only
+/// way to pass an image". fal documents data: URIs as file inputs
+/// (<https://fal.ai/docs/documentation/model-apis/fal-cdn>), Runway takes them
+/// "in any field where a URL is accepted", Vidu and Replicate take them too.
+#[test]
+fn only_vendors_that_refuse_data_uris_get_published_references() {
+    let reg = registry();
+    for m in reg.all() {
+        let Some(refs) = &m.ref_inputs else { continue };
+        let refuses = m.provider == "luma" || m.id == "mock/url-only-image";
+        assert_eq!(!refs.data_uri, refuses, "{}: data_uri", m.id);
+    }
+}

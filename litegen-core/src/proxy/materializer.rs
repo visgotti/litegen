@@ -92,11 +92,44 @@ impl Drop for Cleanup {
 pub struct Materializer {
     storage: Arc<dyn TempStorage>,
     http: reqwest::Client,
+    /// Publishes an uploaded reference for a vendor that refuses `data:` URIs
+    /// (`ref_inputs.data_uri: false`). Set once the asset store exists.
+    publisher: std::sync::OnceLock<Arc<crate::proxy::ref_publish::RefPublisher>>,
 }
 
 impl Materializer {
     pub fn new(storage: Arc<dyn TempStorage>, http: reqwest::Client) -> Self {
-        Self { storage, http }
+        Self { storage, http, publisher: std::sync::OnceLock::new() }
+    }
+
+    /// The same materializer, publishing references with `publisher`.
+    pub fn with_publisher(self, publisher: Arc<crate::proxy::ref_publish::RefPublisher>) -> Self {
+        let _ = self.publisher.set(publisher);
+        self
+    }
+
+    /// Publish references with `publisher` from now on (once; later calls
+    /// are ignored).
+    pub fn set_publisher(&self, publisher: Arc<crate::proxy::ref_publish::RefPublisher>) {
+        let _ = self.publisher.set(publisher);
+    }
+
+    /// The publisher, for the route that serves what it published.
+    pub fn publisher(&self) -> Option<&Arc<crate::proxy::ref_publish::RefPublisher>> {
+        self.publisher.get()
+    }
+
+    /// An uploaded reference as the URL a URL-taking vendor receives: inline
+    /// as a `data:` URI where it takes one, else published at litegen's own
+    /// URL (L4).
+    async fn as_url(&self, bytes: &[u8], mime: &str, data_uri: bool) -> Result<String, MaterializeError> {
+        if data_uri {
+            return Ok(format!("data:{mime};base64,{}", B64.encode(bytes)));
+        }
+        let publisher = self.publisher.get().ok_or_else(|| {
+            MaterializeError::Ref("this model fetches its references by URL and litegen cannot publish one here; send a public image URL".into())
+        })?;
+        publisher.publish(bytes, mime).await.map_err(MaterializeError::Ref)
     }
 
     #[tracing::instrument(
@@ -119,7 +152,7 @@ impl Materializer {
         for r in refs {
             let role = r.role.clone().or_else(|| ri.default_role.clone())
                 .ok_or_else(|| MaterializeError::Ref("ref missing role".into()))?;
-            let form = self.convert(&role, r, &ri.provider_format, ctx).await?;
+            let form = self.convert(&role, r, &ri.provider_format, ri.data_uri, ctx).await?;
             out_refs.push(MaterializedRef { role, form });
         }
         // No conversion uploads anything any more (see the `→ Url` arms in
@@ -137,6 +170,7 @@ impl Materializer {
         role: &str,
         r: ReferenceImage,
         target: &RefProviderFormat,
+        data_uri: bool,
         ctx: &MaterializeContext,
     ) -> Result<MaterializedRefForm, MaterializeError> {
         // A generation reference is read back into bytes by the handler, which
@@ -176,10 +210,14 @@ impl Materializer {
             // @see <https://fal.ai/docs/documentation/model-apis/fal-cdn> (data URIs)
             (RefImageKind::Base64, RefProviderFormat::Url) => {
                 let raw = strip_data_prefix(&r.value);
-                // Decoded only to prove it is base64 — the URI carries the
-                // caller's text, which is already in the form a data URI needs.
-                B64.decode(raw).map_err(|e| MaterializeError::Decode(e.to_string()))?;
-                Ok(MaterializedRefForm::Url(base64_data_uri(raw, data_uri_mime(&r.value))))
+                let bytes = B64.decode(raw).map_err(|e| MaterializeError::Decode(e.to_string()))?;
+                if data_uri {
+                    // The URI carries the caller's text, already in the form a
+                    // data URI needs.
+                    return Ok(MaterializedRefForm::Url(base64_data_uri(raw, data_uri_mime(&r.value))));
+                }
+                let mime = sniff_image_mime(&bytes).or_else(|| data_uri_mime(&r.value)).unwrap_or("image/png");
+                Ok(MaterializedRefForm::Url(self.as_url(&bytes, mime, false).await?))
             }
             (RefImageKind::Base64, RefProviderFormat::Multipart(crate::capabilities::RefProviderFormatMultipart { field_map })) => {
                 let raw = strip_data_prefix(&r.value);
@@ -193,12 +231,8 @@ impl Materializer {
                 let (bytes, ct) = ctx.blob_parts.get(&r.value).cloned().ok_or_else(|| {
                     MaterializeError::Ref(format!("blob part '{}' not present", r.value))
                 })?;
-                let mime = sniff_image_mime(&bytes).or_else(|| image_mime(&ct));
-                Ok(MaterializedRefForm::Url(format!(
-                    "data:{};base64,{}",
-                    mime.unwrap_or("application/octet-stream"),
-                    B64.encode(&bytes),
-                )))
+                let mime = sniff_image_mime(&bytes).or_else(|| image_mime(&ct)).unwrap_or("application/octet-stream");
+                Ok(MaterializedRefForm::Url(self.as_url(&bytes, mime, data_uri).await?))
             }
             (RefImageKind::Blob, RefProviderFormat::Base64) => {
                 let (bytes, _ct) = ctx.blob_parts.get(&r.value).cloned().ok_or_else(|| {

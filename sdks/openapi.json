@@ -11463,6 +11463,10 @@
                     "roles"
                 ],
                 "properties": {
+                    "data_uri": {
+                        "type": "boolean",
+                        "description": "Whether the vendor takes a `data:` URI where it takes a URL (default\nyes). When it does not, litegen publishes an uploaded reference at an\nunguessable URL of its own for the vendor to fetch (L4)."
+                    },
                     "default_role": {
                         "type": [
                             "string",

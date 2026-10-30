@@ -87,9 +87,14 @@ pub async fn app_over(db: Arc<SqliteDatabase>, asset_dir: &std::path::Path, twea
     let config = Arc::new(app_config);
     let cache = Arc::new(GenerationCache::new(&CacheGlobalConfig::default()));
     let image_store: Arc<dyn ImageStore> = Arc::new(LocalStore);
+    let public_base_url = config.server.public_base_url();
     let router = Arc::new(ProxyRouter::new(provider_registry, cache, config, image_store));
 
-    let materializer = Arc::new(Materializer::new(Arc::new(NoopStorage), reqwest::Client::new()));
+    let materializer = Arc::new(
+        Materializer::new(Arc::new(NoopStorage), reqwest::Client::new()).with_publisher(Arc::new(
+            litegen::proxy::ref_publish::RefPublisher::new(router.model3d_store.clone(), public_base_url),
+        )),
+    );
 
     // Shipped capability registry lives at <repo>/models, i.e. CARGO_MANIFEST_DIR
     // (litegen-core) with the last component popped, then `models`.

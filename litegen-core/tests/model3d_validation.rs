@@ -377,6 +377,7 @@ fn multiview_roles_are_accepted_when_the_model_declares_them() {
         max_total: 4,
         default_role: Some("init".into()),
         provider_format: RefProviderFormat::Base64,
+        data_uri: true,
         roles: HashMap::from([
             ("init".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
             ("view-front".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),

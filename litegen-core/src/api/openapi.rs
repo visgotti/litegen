@@ -449,6 +449,13 @@ mod tests {
     }
 
     #[test]
+    fn a_models_reference_spec_says_whether_its_vendor_takes_data_uris() {
+        let d = doc();
+        let p = property(&d["components"]["schemas"]["RefInputSpec"], "data_uri");
+        assert_eq!(p["type"], "boolean", "{p}");
+    }
+
+    #[test]
     fn the_3d_request_types_the_rig_params() {
         let d = doc();
         let req = &d["components"]["schemas"]["Model3dGenerationRequest"];

@@ -35,6 +35,17 @@ const EDIT_FILL: [u8; 4] = [0xff, 0xcd, 0x75, 0xff];
 
 static LAST_REGION_WINDOW: std::sync::Mutex<Option<Region>> = std::sync::Mutex::new(None);
 
+/// The model that takes references only as URLs it can fetch (L4).
+const URL_ONLY_MODEL: &str = "mock/url-only-image";
+
+static LAST_REF_URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The reference URL `mock/url-only-image` was last handed — how a test sees
+/// what litegen published.
+pub fn last_ref_url() -> Option<String> {
+    LAST_REF_URL.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
 /// The box `mock/region-image` was last sent — how a test sees the window
 /// litegen chose.
 pub fn last_region_window() -> Option<Region> {
@@ -177,6 +188,16 @@ impl ImageProvider for MockProvider {
         metadata.insert("prompt".to_string(), serde_json::Value::String(base.prompt.clone()));
         metadata.insert("provider".to_string(), serde_json::Value::String("mock".to_string()));
 
+        if model.id == URL_ONLY_MODEL {
+            let url = _materialized.refs.iter().find_map(|r| match &r.form {
+                crate::proxy::materializer::MaterializedRefForm::Url(u) => Some(u.clone()),
+                _ => None,
+            });
+            if url.as_deref().is_some_and(|u| u.starts_with("data:")) {
+                return Err(ProviderError::InvalidRequest("mock/url-only-image takes no data: URIs".into()));
+            }
+            *LAST_REF_URL.lock().unwrap_or_else(|p| p.into_inner()) = url;
+        }
         let edited = if model.id == INPAINTING_MODEL || model.id == REGION_MODEL {
             fill_edit_area(&model.id, _extras, _materialized)?
         } else {

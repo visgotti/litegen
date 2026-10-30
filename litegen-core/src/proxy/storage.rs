@@ -495,7 +495,14 @@ pub fn spawn_retention_sweeper(root: std::path::PathBuf, retention_days: u32) ->
         loop {
             tick.tick().await;
             let root = root.clone();
-            match tokio::task::spawn_blocking(move || sweep_expired(&root, retention, std::time::SystemTime::now())).await {
+            match tokio::task::spawn_blocking(move || {
+                // Published references go within the hour (L4); everything
+                // else keeps the retention.
+                crate::proxy::ref_publish::sweep_expired_refs(&root, chrono::Utc::now().timestamp())
+                    + sweep_expired(&root, retention, std::time::SystemTime::now())
+            })
+            .await
+            {
                 Ok(n) if n > 0 => info!(removed = n, "asset retention sweep"),
                 Ok(_) => {}
                 Err(e) => error!(error = %e, "asset retention sweep panicked"),

@@ -3514,6 +3514,12 @@ export interface components {
         /** @enum {string} */
         RefImageKind: "base64" | "url" | "blob" | "generation";
         RefInputSpec: {
+            /**
+             * @description Whether the vendor takes a `data:` URI where it takes a URL (default
+             *     yes). When it does not, litegen publishes an uploaded reference at an
+             *     unguessable URL of its own for the vendor to fetch (L4).
+             */
+            data_uri?: boolean;
             default_role?: string | null;
             /** Format: int32 */
             max_total: number;

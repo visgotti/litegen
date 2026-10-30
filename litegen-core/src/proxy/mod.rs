@@ -8,6 +8,7 @@ pub mod model3d_stages;
 pub mod model3d_source;
 pub mod image_edit;
 pub mod model3d_deliver;
+pub mod ref_publish;
 pub mod webhook;
 pub mod poller;
 pub mod circuit_breaker;

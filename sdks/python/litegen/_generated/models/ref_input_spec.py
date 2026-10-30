@@ -19,12 +19,16 @@ class RefInputSpec:
         max_total (int):
         provider_format (Any):
         roles (RefInputSpecRoles):
+        data_uri (Union[Unset, bool]): Whether the vendor takes a `data:` URI where it takes a URL (default
+            yes). When it does not, litegen publishes an uploaded reference at an
+            unguessable URL of its own for the vendor to fetch (L4).
         default_role (Union[None, Unset, str]):
     """
 
     max_total: int
     provider_format: Any
     roles: "RefInputSpecRoles"
+    data_uri: Union[Unset, bool] = UNSET
     default_role: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -34,6 +38,8 @@ class RefInputSpec:
         provider_format = self.provider_format
 
         roles = self.roles.to_dict()
+
+        data_uri = self.data_uri
 
         default_role: Union[None, Unset, str]
         if isinstance(self.default_role, Unset):
@@ -50,6 +56,8 @@ class RefInputSpec:
                 "roles": roles,
             }
         )
+        if data_uri is not UNSET:
+            field_dict["data_uri"] = data_uri
         if default_role is not UNSET:
             field_dict["default_role"] = default_role
 
@@ -66,6 +74,8 @@ class RefInputSpec:
 
         roles = RefInputSpecRoles.from_dict(d.pop("roles"))
 
+        data_uri = d.pop("data_uri", UNSET)
+
         def _parse_default_role(data: object) -> Union[None, Unset, str]:
             if data is None:
                 return data
@@ -79,6 +89,7 @@ class RefInputSpec:
             max_total=max_total,
             provider_format=provider_format,
             roles=roles,
+            data_uri=data_uri,
             default_role=default_role,
         )
 

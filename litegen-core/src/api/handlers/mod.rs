@@ -3411,6 +3411,7 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         // theoretical collision — a generation id literally equal to "assets" —
         // is unreachable, since ids are minted `litegen-3d-{uuid}`).
         .route("/v1/models3d/assets/{*key}", get(get_model3d_asset_bytes))
+        .route("/v1/refs/{token}", get(get_published_ref))
         .with_state(state)
 }
 
@@ -3492,6 +3493,31 @@ pub async fn get_model3d_asset_bytes(
                 (axum::http::header::CONTENT_TYPE, content_type),
                 // Meshes are immutable once written and keyed by generation id.
                 (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
+            ],
+            bytes,
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+/// GET /v1/refs/{token} — A reference litegen published for a vendor that
+/// fetches its inputs only by URL (L4). No auth: vendors fetch it without
+/// litegen's keys, and the token is unguessable and expires within the hour.
+pub async fn get_published_ref(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+) -> impl IntoResponse {
+    let found = match state.materializer.publisher() {
+        Some(p) => p.get(&token).await.ok().flatten(),
+        None => None,
+    };
+    match found {
+        Some((bytes, content_type)) => (
+            StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, content_type),
+                (axum::http::header::CACHE_CONTROL, "private, max-age=3600".to_string()),
             ],
             bytes,
         )

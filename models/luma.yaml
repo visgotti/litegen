@@ -19,6 +19,11 @@ models:
       max_total: 4
       default_role: init
       provider_format: { form: url }
+      # @see https://docs.lumalabs.ai/docs/image-generation.md (2026-10-30):
+      #   "You should upload and use your own cdn image urls, currently this is
+      #   the only way to pass an image" — no data: URIs, so litegen publishes
+      #   an uploaded reference at its own URL (L4).
+      data_uri: false
       roles:
         init:      { required: false, min_count: 0, max_count: 4 }
         style:     { required: false, min_count: 0, max_count: 4 }
@@ -44,6 +49,11 @@ models:
       max_total: 4
       default_role: init
       provider_format: { form: url }
+      # @see https://docs.lumalabs.ai/docs/image-generation.md (2026-10-30):
+      #   "You should upload and use your own cdn image urls, currently this is
+      #   the only way to pass an image" — no data: URIs, so litegen publishes
+      #   an uploaded reference at its own URL (L4).
+      data_uri: false
       roles:
         init:      { required: false, min_count: 0, max_count: 4 }
         style:     { required: false, min_count: 0, max_count: 4 }
@@ -74,6 +84,11 @@ models:
       max_total: 2
       default_role: first_frame
       provider_format: { form: url }
+      # @see https://docs.lumalabs.ai/docs/image-generation.md (2026-10-30):
+      #   "You should upload and use your own cdn image urls, currently this is
+      #   the only way to pass an image" — no data: URIs, so litegen publishes
+      #   an uploaded reference at its own URL (L4).
+      data_uri: false
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
@@ -102,6 +117,11 @@ models:
       max_total: 2
       default_role: first_frame
       provider_format: { form: url }
+      # @see https://docs.lumalabs.ai/docs/image-generation.md (2026-10-30):
+      #   "You should upload and use your own cdn image urls, currently this is
+      #   the only way to pass an image" — no data: URIs, so litegen publishes
+      #   an uploaded reference at its own URL (L4).
+      data_uri: false
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
@@ -130,6 +150,11 @@ models:
       max_total: 2
       default_role: first_frame
       provider_format: { form: url }
+      # @see https://docs.lumalabs.ai/docs/image-generation.md (2026-10-30):
+      #   "You should upload and use your own cdn image urls, currently this is
+      #   the only way to pass an image" — no data: URIs, so litegen publishes
+      #   an uploaded reference at its own URL (L4).
+      data_uri: false
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
