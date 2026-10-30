@@ -344,4 +344,62 @@ models:
         assert_eq!(r.for_provider("y").count(), 1);
         assert_eq!(r.for_provider("z").count(), 0);
     }
+
+    // ─── task (3D doc §2 rule 1) ────────────────────────────────────────────
+
+    fn model3d(task_line: &str, caps: &str, params: &str) -> String {
+        format!(r#"
+models:
+  - id: x/op
+    provider: x
+    media_type: model3d
+    display_name: Op
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {caps}
+    prompt: {{ required: false }}
+{task_line}
+{params}
+"#)
+    }
+
+    #[test]
+    fn task_defaults_to_generate() {
+        let r = yaml(&model3d("", "{ image_to_3d: true }", "")).unwrap();
+        assert_eq!(r.get("x/op").unwrap().task, ModelTask::Generate);
+    }
+
+    #[test]
+    fn loads_a_3d_operation_task() {
+        let r = yaml(&model3d("    task: rig", "{}", "")).unwrap();
+        assert_eq!(r.get("x/op").unwrap().task, ModelTask::Rig);
+    }
+
+    #[test]
+    fn rejects_a_task_from_another_modality() {
+        let err = yaml(r#"
+models:
+  - id: x/m
+    provider: x
+    media_type: image
+    display_name: M
+    task: extend
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true }
+"#).unwrap_err().to_string();
+        assert!(err.contains("task 'extend'") && err.contains("image"), "{err}");
+    }
+
+    #[test]
+    fn rejects_to_3d_flags_on_a_non_generate_task() {
+        // The flags say how a GENERATION is driven; an operation takes a mesh.
+        let err = yaml(&model3d("    task: rig", "{ image_to_3d: true }", "")).unwrap_err().to_string();
+        assert!(err.contains("image_to_3d") && err.contains("generate"), "{err}");
+    }
+
+    #[test]
+    fn rejects_an_unknown_task() {
+        let err = yaml(&model3d("    task: teleport", "{}", "")).unwrap_err().to_string();
+        assert!(err.contains("teleport"), "{err}");
+    }
 }

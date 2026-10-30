@@ -15,6 +15,7 @@ mod tests {
             id: "t/m".into(),
             provider: "t".into(),
             media_type: MediaType::Image,
+            task: Default::default(),
             display_name: "M".into(),
             description: "".into(),
             docs_url: None,

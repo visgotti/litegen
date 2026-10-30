@@ -13,6 +13,7 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.capability_media_type import CapabilityMediaType
+from ..models.model_task import ModelTask
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -46,6 +47,17 @@ class ModelSchema:
         params (Union[Unset, ModelSchemaParams]):
         ref_inputs (Union['RefInputSpec', None, Unset]):
         tags (Union[Unset, List[str]]):
+        task (Union[Unset, ModelTask]): What a catalog model does.
+
+            An operation on an existing asset is a model of its own, submitted to its
+            modality's one job endpoint: `tripo/rig` and `meshy/animate` go to
+            `POST /v1/models3d/generations` like any generation, and are polled,
+            priced, cancelled, re-hosted and billed the same way, because each
+            produces a new asset.
+
+            One task per model. `generate` is the default in every modality. It still
+            covers image edits driven by `init` and `mask` references, and 3D models
+            that infer text, image or multiview input from their references.
     """
 
     capabilities: "ModelCapabilityFlags"
@@ -61,6 +73,7 @@ class ModelSchema:
     params: Union[Unset, "ModelSchemaParams"] = UNSET
     ref_inputs: Union["RefInputSpec", None, Unset] = UNSET
     tags: Union[Unset, List[str]] = UNSET
+    task: Union[Unset, ModelTask] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -108,6 +121,10 @@ class ModelSchema:
         if not isinstance(self.tags, Unset):
             tags = self.tags
 
+        task: Union[Unset, str] = UNSET
+        if not isinstance(self.task, Unset):
+            task = self.task.value
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -133,6 +150,8 @@ class ModelSchema:
             field_dict["ref_inputs"] = ref_inputs
         if tags is not UNSET:
             field_dict["tags"] = tags
+        if task is not UNSET:
+            field_dict["task"] = task
 
         return field_dict
 
@@ -198,6 +217,13 @@ class ModelSchema:
 
         tags = cast(List[str], d.pop("tags", UNSET))
 
+        _task = d.pop("task", UNSET)
+        task: Union[Unset, ModelTask]
+        if isinstance(_task, Unset):
+            task = UNSET
+        else:
+            task = ModelTask(_task)
+
         model_schema = cls(
             capabilities=capabilities,
             display_name=display_name,
@@ -212,6 +238,7 @@ class ModelSchema:
             params=params,
             ref_inputs=ref_inputs,
             tags=tags,
+            task=task,
         )
 
         model_schema.additional_properties = d

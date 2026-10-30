@@ -2591,6 +2591,12 @@ export interface components {
             supports_text_to_video?: boolean;
             /** @description Takes the `texture` param. */
             supports_texture?: boolean;
+            /**
+             * @description What the model does: `generate`, or an operation on an existing asset
+             *     such as `rig` or `animate`. The same value `GET /v1/models/{id}`
+             *     serves as `task`.
+             */
+            task?: components["schemas"]["ModelTask"];
         };
         ModelCapabilityFlags: {
             image_to_3d?: boolean;
@@ -2668,12 +2674,32 @@ export interface components {
             provider: string;
             ref_inputs?: null | components["schemas"]["RefInputSpec"];
             tags?: string[];
+            /**
+             * @description What the model does: `generate`, or an operation on an existing asset
+             *     such as `rig` or `animate`.
+             */
+            task?: components["schemas"]["ModelTask"];
         };
         /**
          * @description Where a served model definition comes from.
          * @enum {string}
          */
         ModelSource: "catalog" | "runtime";
+        /**
+         * @description What a catalog model does.
+         *
+         *     An operation on an existing asset is a model of its own, submitted to its
+         *     modality's one job endpoint: `tripo/rig` and `meshy/animate` go to
+         *     `POST /v1/models3d/generations` like any generation, and are polled,
+         *     priced, cancelled, re-hosted and billed the same way, because each
+         *     produces a new asset.
+         *
+         *     One task per model. `generate` is the default in every modality. It still
+         *     covers image edits driven by `init` and `mask` references, and 3D models
+         *     that infer text, image or multiview input from their references.
+         * @enum {string}
+         */
+        ModelTask: "generate" | "rig" | "animate" | "texture" | "remesh" | "segment" | "multiview" | "background_swap" | "extend" | "retake" | "video_edit";
         ModelUsageStat: {
             /** Format: double */
             avg_latency_ms: number;

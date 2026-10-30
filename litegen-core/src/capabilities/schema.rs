@@ -13,6 +13,103 @@ pub enum MediaType {
     Model3d,
 }
 
+// An operation is a catalog model, and each modality has one job endpoint
+// (PixelGenie 3D doc §2 rule 1, docs/superpowers/plans/2026-10-30-…): validation,
+// pricing, routing and `docs_url` then stay per operation, with no new routes.
+
+/// What a catalog model does.
+///
+/// An operation on an existing asset is a model of its own, submitted to its
+/// modality's one job endpoint: `tripo/rig` and `meshy/animate` go to
+/// `POST /v1/models3d/generations` like any generation, and are polled,
+/// priced, cancelled, re-hosted and billed the same way, because each
+/// produces a new asset.
+///
+/// One task per model. `generate` is the default in every modality. It still
+/// covers image edits driven by `init` and `mask` references, and 3D models
+/// that infer text, image or multiview input from their references.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelTask {
+    /// Make a new asset: text-, image- or multiview-to-X, image edits included.
+    #[default]
+    Generate,
+    /// 3D: add a skeleton and skin to `source_model`.
+    Rig,
+    /// 3D: give a rigged `source_model` animation clips.
+    Animate,
+    /// 3D: paint new textures onto `source_model`.
+    Texture,
+    /// 3D: retopologise `source_model`.
+    Remesh,
+    /// 3D: split `source_model` into named parts.
+    Segment,
+    /// Image: views of the `init` image's subject from other sides.
+    Multiview,
+    /// Image: replace the background behind the `init` image's subject.
+    BackgroundSwap,
+    /// Video: make `source_video` longer.
+    Extend,
+    /// Video: regenerate a time window of `source_video`.
+    Retake,
+    /// Video: edit the whole of `source_video`.
+    VideoEdit,
+}
+
+impl ModelTask {
+    pub const ALL: [ModelTask; 11] = [
+        ModelTask::Generate,
+        ModelTask::Rig,
+        ModelTask::Animate,
+        ModelTask::Texture,
+        ModelTask::Remesh,
+        ModelTask::Segment,
+        ModelTask::Multiview,
+        ModelTask::BackgroundSwap,
+        ModelTask::Extend,
+        ModelTask::Retake,
+        ModelTask::VideoEdit,
+    ];
+
+    /// The wire spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ModelTask::Generate => "generate",
+            ModelTask::Rig => "rig",
+            ModelTask::Animate => "animate",
+            ModelTask::Texture => "texture",
+            ModelTask::Remesh => "remesh",
+            ModelTask::Segment => "segment",
+            ModelTask::Multiview => "multiview",
+            ModelTask::BackgroundSwap => "background_swap",
+            ModelTask::Extend => "extend",
+            ModelTask::Retake => "retake",
+            ModelTask::VideoEdit => "video_edit",
+        }
+    }
+
+    /// Whether a model of this media type may declare this task.
+    pub fn allowed_for(self, media: MediaType) -> bool {
+        use ModelTask::*;
+        match media {
+            MediaType::Model3d => matches!(self, Generate | Rig | Animate | Texture | Remesh | Segment),
+            MediaType::Image => matches!(self, Generate | Multiview | BackgroundSwap),
+            MediaType::Video => matches!(self, Generate | Extend | Retake | VideoEdit),
+        }
+    }
+}
+
+impl MediaType {
+    /// The wire spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            MediaType::Image => "image",
+            MediaType::Video => "video",
+            MediaType::Model3d => "model3d",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct ModelCapabilityFlags {
     #[serde(default)] pub text_to_image: bool,
@@ -235,6 +332,10 @@ pub struct ModelSchema {
     pub id: String,
     pub provider: String,
     pub media_type: MediaType,
+    /// What the model does: `generate`, or an operation on an existing asset
+    /// such as `rig` or `animate`.
+    #[serde(default)]
+    pub task: ModelTask,
     pub display_name: String,
     #[serde(default)] pub description: String,
     /// The vendor's own API reference page for the endpoint this model calls —

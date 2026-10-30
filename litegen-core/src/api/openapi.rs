@@ -169,6 +169,7 @@ use utoipa::OpenApi;
         crate::types::Model3dFormat,
         crate::types::Model3dTopology,
         crate::types::Model3dSymmetry,
+        crate::capabilities::ModelTask,
         crate::types::ReferenceImage,
         crate::types::RefImageKind,
         crate::types::GenerationStatus,
@@ -400,6 +401,19 @@ mod tests {
         assert!(mentions(legacy, "\"deprecated\":true"), "{legacy}");
         assert!(mentions(property(req, "topology"), "Model3dTopology"));
         assert!(mentions(property(req, "symmetry"), "Model3dSymmetry"));
+    }
+
+    #[test]
+    fn model_task_is_a_named_enum_on_the_schema_and_the_capabilities() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        assert_eq!(
+            s["ModelTask"]["enum"],
+            json!(["generate", "rig", "animate", "texture", "remesh", "segment",
+                   "multiview", "background_swap", "extend", "retake", "video_edit"]),
+        );
+        assert!(mentions(&s["ModelCapabilities"]["properties"]["task"], "#/components/schemas/ModelTask"), "{}", s["ModelCapabilities"]);
+        assert!(mentions(&s["ModelSchema"]["properties"]["task"], "#/components/schemas/ModelTask"), "{}", s["ModelSchema"]);
     }
 
     #[test]

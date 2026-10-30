@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Type, TypeVar, Union, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.model_task import ModelTask
 from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="ModelCapabilities")
@@ -33,6 +34,17 @@ class ModelCapabilities:
         supports_text_to_3d (Union[Unset, bool]): Accepts a prompt with no reference images (text-to-3D).
         supports_text_to_video (Union[Unset, bool]):
         supports_texture (Union[Unset, bool]): Takes the `texture` param.
+        task (Union[Unset, ModelTask]): What a catalog model does.
+
+            An operation on an existing asset is a model of its own, submitted to its
+            modality's one job endpoint: `tripo/rig` and `meshy/animate` go to
+            `POST /v1/models3d/generations` like any generation, and are polled,
+            priced, cancelled, re-hosted and billed the same way, because each
+            produces a new asset.
+
+            One task per model. `generate` is the default in every modality. It still
+            covers image edits driven by `init` and `mask` references, and 3D models
+            that infer text, image or multiview input from their references.
     """
 
     supports_image_to_image: bool
@@ -53,6 +65,7 @@ class ModelCapabilities:
     supports_text_to_3d: Union[Unset, bool] = UNSET
     supports_text_to_video: Union[Unset, bool] = UNSET
     supports_texture: Union[Unset, bool] = UNSET
+    task: Union[Unset, ModelTask] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -104,6 +117,10 @@ class ModelCapabilities:
 
         supports_texture = self.supports_texture
 
+        task: Union[Unset, str] = UNSET
+        if not isinstance(self.task, Unset):
+            task = self.task.value
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -144,6 +161,8 @@ class ModelCapabilities:
             field_dict["supports_text_to_video"] = supports_text_to_video
         if supports_texture is not UNSET:
             field_dict["supports_texture"] = supports_texture
+        if task is not UNSET:
+            field_dict["task"] = task
 
         return field_dict
 
@@ -202,6 +221,13 @@ class ModelCapabilities:
 
         supports_texture = d.pop("supports_texture", UNSET)
 
+        _task = d.pop("task", UNSET)
+        task: Union[Unset, ModelTask]
+        if isinstance(_task, Unset):
+            task = UNSET
+        else:
+            task = ModelTask(_task)
+
         model_capabilities = cls(
             supports_image_to_image=supports_image_to_image,
             supports_text_to_image=supports_text_to_image,
@@ -221,6 +247,7 @@ class ModelCapabilities:
             supports_text_to_3d=supports_text_to_3d,
             supports_text_to_video=supports_text_to_video,
             supports_texture=supports_texture,
+            task=task,
         )
 
         model_capabilities.additional_properties = d

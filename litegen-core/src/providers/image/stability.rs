@@ -612,6 +612,7 @@ impl ImageProvider for StabilityProvider {
 impl Default for ModelCapabilities {
     fn default() -> Self {
         Self {
+            task: Default::default(),
             supports_text_to_image: false,
             supports_image_to_image: false,
             supports_inpainting: false,

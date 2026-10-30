@@ -8596,6 +8596,10 @@
                     "supports_texture": {
                         "type": "boolean",
                         "description": "Takes the `texture` param."
+                    },
+                    "task": {
+                        "$ref": "#/components/schemas/ModelTask",
+                        "description": "What the model does: `generate`, or an operation on an existing asset\nsuch as `rig` or `animate`. The same value `GET /v1/models/{id}`\nserves as `task`."
                     }
                 }
             },
@@ -8830,6 +8834,10 @@
                         "items": {
                             "type": "string"
                         }
+                    },
+                    "task": {
+                        "$ref": "#/components/schemas/ModelTask",
+                        "description": "What the model does: `generate`, or an operation on an existing asset\nsuch as `rig` or `animate`."
                     }
                 }
             },
@@ -8839,6 +8847,23 @@
                 "enum": [
                     "catalog",
                     "runtime"
+                ]
+            },
+            "ModelTask": {
+                "type": "string",
+                "description": "What a catalog model does.\n\nAn operation on an existing asset is a model of its own, submitted to its\nmodality's one job endpoint: `tripo/rig` and `meshy/animate` go to\n`POST /v1/models3d/generations` like any generation, and are polled,\npriced, cancelled, re-hosted and billed the same way, because each\nproduces a new asset.\n\nOne task per model. `generate` is the default in every modality. It still\ncovers image edits driven by `init` and `mask` references, and 3D models\nthat infer text, image or multiview input from their references.",
+                "enum": [
+                    "generate",
+                    "rig",
+                    "animate",
+                    "texture",
+                    "remesh",
+                    "segment",
+                    "multiview",
+                    "background_swap",
+                    "extend",
+                    "retake",
+                    "video_edit"
                 ]
             },
             "ModelUsageStat": {

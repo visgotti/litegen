@@ -124,6 +124,12 @@ export type Model3dConvertFormats = components["schemas"]["Model3dConvertFormats
 export type Model3dTopology = components["schemas"]["Model3dTopology"];
 /** Symmetry handling a 3D request may ask for (`symmetry`). */
 export type Model3dSymmetry = components["schemas"]["Model3dSymmetry"];
+/**
+ * What a catalog model does (`task` on its schema, `capabilities.task` in the
+ * listing): `generate`, or an operation on an existing asset such as `rig` or
+ * `animate`, submitted to its modality's usual generation endpoint.
+ */
+export type ModelTask = components["schemas"]["ModelTask"];
 export type ReferenceImage = components["schemas"]["ReferenceImage"];
 export type ModelInfo = components["schemas"]["ModelInfo"];
 export type ModelSchema = components["schemas"]["ModelSchema"];

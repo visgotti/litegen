@@ -1769,6 +1769,7 @@ mod model3d_router_tests {
         );
         let schema = crate::capabilities::ModelSchema {
             id: "mock/slow-3d".into(), provider: "mock".into(), media_type: crate::capabilities::MediaType::Model3d,
+            task: Default::default(),
             display_name: "slow".into(), description: String::new(), docs_url: None,
             pricing: crate::capabilities::ModelPricing { base_cost_usd: 0.0, variable_pricing: None },
             capabilities: crate::capabilities::ModelCapabilityFlags { text_to_3d: true, ..Default::default() },

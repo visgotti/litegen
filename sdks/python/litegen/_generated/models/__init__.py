@@ -83,6 +83,7 @@ from .model_route import ModelRoute
 from .model_schema import ModelSchema
 from .model_schema_params import ModelSchemaParams
 from .model_source import ModelSource
+from .model_task import ModelTask
 from .model_usage_stat import ModelUsageStat
 from .org_allowed_models import OrgAllowedModels
 from .org_summary import OrgSummary
@@ -260,6 +261,7 @@ __all__ = (
     "ModelSchema",
     "ModelSchemaParams",
     "ModelSource",
+    "ModelTask",
     "ModelUsageStat",
     "OrgAllowedModels",
     "Organization",

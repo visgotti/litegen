@@ -47,6 +47,36 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         )));
     }
 
+    // 3D doc §2 rule 1: one task per model, from its own modality's list.
+    if !m.task.allowed_for(m.media_type) {
+        let allowed: Vec<&str> = ModelTask::ALL
+            .iter()
+            .filter(|t| t.allowed_for(m.media_type))
+            .map(|t| t.as_str())
+            .collect();
+        return Err(bad(format!(
+            "model '{}' task '{}' is not a {} task; {} tasks are {}",
+            m.id, m.task.as_str(), m.media_type.as_str(), m.media_type.as_str(), allowed.join(" | ")
+        )));
+    }
+    // The `*_to_3d` flags say how a 3D GENERATION is driven (its references
+    // pick text, image or multiview). An operation takes a mesh instead, and
+    // no other modality has a 3D mode at all.
+    let c = &m.capabilities;
+    for (flag, set) in [
+        ("text_to_3d", c.text_to_3d),
+        ("image_to_3d", c.image_to_3d),
+        ("multiview_to_3d", c.multiview_to_3d),
+    ] {
+        if set && (m.media_type != MediaType::Model3d || m.task != ModelTask::Generate) {
+            return Err(bad(format!(
+                "model '{}' sets {} on a {} '{}' model; the *_to_3d flags belong to model3d \
+                 models whose task is generate",
+                m.id, flag, m.media_type.as_str(), m.task.as_str()
+            )));
+        }
+    }
+
     if m.pricing.base_cost_usd < 0.0 {
         return Err(bad(format!("model '{}' has negative base_cost_usd", m.id)));
     }

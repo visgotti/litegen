@@ -57,6 +57,14 @@ CostSource = Literal["dynamic", "estimated"]
 MediaType = Literal["image", "video", "model3d"]
 """The ``media_type`` filter accepted by ``client.models.list``."""
 
+ModelTask = Literal[
+    "generate", "rig", "animate", "texture", "remesh", "segment",
+    "multiview", "background_swap", "extend", "retake", "video_edit",
+]
+"""What a catalog model does (``capabilities.task``, and ``task`` on its
+schema): ``generate``, or an operation on an existing asset. Operations are
+submitted to their modality's usual generation endpoint."""
+
 
 # ─── Requests ────────────────────────────────────────────────────────────────
 

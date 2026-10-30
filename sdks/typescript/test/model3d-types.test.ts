@@ -6,7 +6,9 @@ import type {
   Model3dSymmetry,
   Model3dTopology,
   ParamSpecStringArray,
+  ModelInfo,
   ModelSchema,
+  ModelTask,
 } from "../src";
 import { Model3dAssetKind } from "../src";
 
@@ -24,6 +26,15 @@ describe("3D vocabulary types", () => {
     >();
     expectTypeOf<Model3dTopology>().toEqualTypeOf<"triangle" | "quad">();
     expectTypeOf<Model3dSymmetry>().toEqualTypeOf<"off" | "auto" | "on">();
+  });
+
+  it("names every catalog task, on the schema and the listing alike", () => {
+    expectTypeOf<ModelTask>().toEqualTypeOf<
+      | "generate" | "rig" | "animate" | "texture" | "remesh" | "segment"
+      | "multiview" | "background_swap" | "extend" | "retake" | "video_edit"
+    >();
+    expectTypeOf<ModelSchema["task"]>().toEqualTypeOf<ModelTask | undefined>();
+    expectTypeOf<ModelInfo["capabilities"]["task"]>().toEqualTypeOf<ModelTask | undefined>();
   });
 
   it("types output_formats with the format vocabulary", () => {

@@ -296,6 +296,7 @@ mod tests {
             id: id.into(),
             provider: "mock".into(),
             media_type: MediaType::Model3d,
+            task: Default::default(),
             display_name: id.into(),
             description: String::new(),
             docs_url: None,

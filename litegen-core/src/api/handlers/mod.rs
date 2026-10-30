@@ -1341,6 +1341,7 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
         },
         is_available: true,
         capabilities: ModelCapabilities {
+            task: s.task,
             supports_text_to_image: s.capabilities.text_to_image,
             supports_image_to_image: s.capabilities.image_to_image,
             supports_inpainting: s.capabilities.inpainting,
@@ -4499,6 +4500,14 @@ mod model_info_tests {
         // No-ref model: Recraft v3 has no ref_inputs → defaults to 1.
         let recraft = reg.get("recraft/recraftv3").expect("recraftv3 present");
         assert_eq!(project_model_info(recraft).capabilities.max_images, 1);
+    }
+
+    #[test]
+    fn the_listing_carries_each_models_task() {
+        let reg = shipped_registry();
+        let trellis = reg.get("fal/trellis").expect("fal/trellis present");
+        let info = serde_json::to_value(project_model_info(trellis)).unwrap();
+        assert_eq!(info["capabilities"]["task"], "generate", "{info}");
     }
 }
 

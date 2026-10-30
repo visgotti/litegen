@@ -67,6 +67,17 @@ criterion 2 is unmet for the whole family. This is a real, no-code-change gap
 worth a follow-up test file (`validate_video` unit tests mirroring
 `validator_tests.rs`'s image coverage).
 
+## Catalog fields
+
+Fields a client reads off `GET /v1/models` (`capabilities`) and
+`GET /v1/models/{id}` to decide what a model can do. They map to no vendor
+field, so the proof is the loader rule, the catalog-wide conformance check and
+the wire shape both SDKs type.
+
+| field | where | rule | proof | status |
+|---|---|---|---|---|
+| `task` | `ModelSchema.task`, `ModelCapabilities.task` (`ModelTask`) | One per model, from its modality's list (3D: `generate` \| `rig` \| `animate` \| `texture` \| `remesh` \| `segment`; image: `generate` \| `multiview` \| `background_swap`; video: `generate` \| `extend` \| `retake` \| `video_edit`). Omitted in yaml means `generate`. The `*_to_3d` flags are refused on anything but a 3D `generate` model. | loader: `task_defaults_to_generate`, `loads_a_3d_operation_task`, `rejects_a_task_from_another_modality`, `rejects_to_3d_flags_on_a_non_generate_task`, `rejects_an_unknown_task`. conformance: `every_model_declares_a_task_its_modality_has`. wire: `model_task_is_a_named_enum_on_the_schema_and_the_capabilities`, `the_listing_carries_each_models_task`. SDKs: `test_literal_values_match_the_schema_enum[ModelTask]` (Python), `names every catalog task` (TS type test). | ✅ |
+
 ## Image / Video
 
 Row inventory generated 2026-08-27 via:

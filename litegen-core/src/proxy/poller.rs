@@ -998,6 +998,7 @@ mod poller_tests {
         p.configure(ProviderInstanceConfig::default());
         let schema = crate::capabilities::ModelSchema {
             id: model.into(), provider: "mock".into(), media_type: MediaType::Model3d,
+            task: Default::default(),
             display_name: model.into(), description: String::new(), docs_url: None,
             pricing: ModelPricing { base_cost_usd: 0.0, variable_pricing: None },
             capabilities: ModelCapabilityFlags { text_to_3d: true, ..Default::default() },

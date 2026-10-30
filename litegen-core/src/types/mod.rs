@@ -563,6 +563,11 @@ pub enum MediaType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ModelCapabilities {
+    /// What the model does: `generate`, or an operation on an existing asset
+    /// such as `rig` or `animate`. The same value `GET /v1/models/{id}`
+    /// serves as `task`.
+    #[serde(default)]
+    pub task: crate::capabilities::ModelTask,
     pub supports_text_to_image: bool,
     pub supports_image_to_image: bool,
     #[serde(default)]

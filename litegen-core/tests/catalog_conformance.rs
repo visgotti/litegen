@@ -3027,3 +3027,19 @@ fn hunyuan_video_i2v_extra_allowlist_names_only_submit_image_to_video_general_jo
         );
     }
 }
+
+/// 3D doc §2 rule 1: every model's `task` belongs to its modality, and the
+/// `*_to_3d` flags appear only on 3D `generate` models.
+#[test]
+fn every_model_declares_a_task_its_modality_has() {
+    use litegen::capabilities::schema::{MediaType, ModelTask};
+    let reg = registry();
+    for m in reg.all() {
+        assert!(m.task.allowed_for(m.media_type), "{} declares task {:?} on a {:?} model", m.id, m.task, m.media_type);
+        let c = &m.capabilities;
+        if c.text_to_3d || c.image_to_3d || c.multiview_to_3d {
+            assert_eq!(m.media_type, MediaType::Model3d, "{} sets a *_to_3d flag", m.id);
+            assert_eq!(m.task, ModelTask::Generate, "{} sets a *_to_3d flag on a {:?} model", m.id, m.task);
+        }
+    }
+}
