@@ -50,6 +50,34 @@ impl PostgresDatabase {
     pub(crate) fn pool(&self) -> &PgPool {
         &self.pool
     }
+
+    /// A row's status and its `metadata` exactly as stored: the "before" a
+    /// compare-and-swap on the column compares against.
+    async fn status_and_metadata(&self, id: &str) -> Result<Option<(String, Option<String>)>, sqlx::Error> {
+        sqlx::query_as("SELECT status, metadata FROM generations WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+}
+
+/// Attempts a compare-and-swap on `generations.metadata` makes before giving
+/// up. Each failed attempt means another writer changed the column between
+/// the read and the write, which only a burst of writers can sustain.
+const METADATA_CAS_ATTEMPTS: usize = 32;
+
+fn parse_metadata(text: Option<&str>) -> Option<serde_json::Value> {
+    text.and_then(|t| serde_json::from_str(t).ok())
+}
+
+fn is_in_flight(status: &str) -> bool {
+    status == "pending" || status == "processing"
+}
+
+fn metadata_cas_exhausted(id: &str) -> sqlx::Error {
+    sqlx::Error::Protocol(format!(
+        "metadata of generation {id} kept changing under {METADATA_CAS_ATTEMPTS} write attempts"
+    ))
 }
 
 #[async_trait]
@@ -137,20 +165,63 @@ impl DatabaseStore for PostgresDatabase {
         Ok(())
     }
 
-    async fn update_generation_metadata_if_active(
+    async fn merge_generation_metadata_if_active(
         &self,
         id: &str,
-        metadata: &serde_json::Value,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "UPDATE generations SET metadata = $1 \
-             WHERE id = $2 AND status IN ('pending', 'processing')",
-        )
-        .bind(serde_json::to_string(metadata).unwrap_or_else(|_| "null".into()))
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        patch: &serde_json::Value,
+    ) -> Result<crate::db::GenerationWrite, sqlx::Error> {
+        for _ in 0..METADATA_CAS_ATTEMPTS {
+            let Some((status, before)) = self.status_and_metadata(id).await? else {
+                return Ok(crate::db::GenerationWrite::Missing);
+            };
+            if !is_in_flight(&status) {
+                return Ok(crate::db::GenerationWrite::AlreadyTerminal);
+            }
+            let merged = crate::db::merge_metadata(parse_metadata(before.as_deref()).as_ref(), patch);
+            let res = sqlx::query(
+                "UPDATE generations SET metadata = $1 \
+                 WHERE id = $2 AND status IN ('pending', 'processing') AND metadata IS NOT DISTINCT FROM $3",
+            )
+            .bind(serde_json::to_string(&merged).unwrap_or_else(|_| "{}".into()))
+            .bind(id)
+            .bind(before.as_deref())
+            .execute(&self.pool)
+            .await?;
+            if res.rows_affected() > 0 {
+                return Ok(crate::db::GenerationWrite::Written);
+            }
+        }
+        Err(metadata_cas_exhausted(id))
+    }
+
+    async fn claim_generation_stage(&self, id: &str, stage: &str, claimant: &str) -> Result<bool, sqlx::Error> {
+        for _ in 0..METADATA_CAS_ATTEMPTS {
+            let Some((status, before)) = self.status_and_metadata(id).await? else { return Ok(false) };
+            if !is_in_flight(&status) {
+                return Ok(false);
+            }
+            let meta = parse_metadata(before.as_deref());
+            let claims = meta.as_ref().and_then(|m| m.get("stage_claims"));
+            if claims.and_then(|c| c.get(stage)).is_some() {
+                return Ok(false);
+            }
+            let mut claims = claims.filter(|c| c.is_object()).cloned().unwrap_or_else(|| serde_json::json!({}));
+            claims[stage] = crate::db::stage_claim_record(claimant);
+            let merged = crate::db::merge_metadata(meta.as_ref(), &serde_json::json!({ "stage_claims": claims }));
+            let res = sqlx::query(
+                "UPDATE generations SET metadata = $1 \
+                 WHERE id = $2 AND status IN ('pending', 'processing') AND metadata IS NOT DISTINCT FROM $3",
+            )
+            .bind(serde_json::to_string(&merged).unwrap_or_else(|_| "{}".into()))
+            .bind(id)
+            .bind(before.as_deref())
+            .execute(&self.pool)
+            .await?;
+            if res.rows_affected() > 0 {
+                return Ok(true);
+            }
+        }
+        Err(metadata_cas_exhausted(id))
     }
 
     async fn update_generation_if_active(
@@ -163,6 +234,42 @@ impl DatabaseStore for PostgresDatabase {
         completed_at: Option<chrono::DateTime<chrono::Utc>>,
         metadata: Option<&serde_json::Value>,
     ) -> Result<crate::db::GenerationWrite, sqlx::Error> {
+        // A metadata patch is MERGED into the column (`merge_metadata`), so it
+        // goes through the same compare-and-swap as every other metadata write;
+        // status, result and the merged metadata still land in ONE statement.
+        if let Some(patch) = metadata {
+            for _ in 0..METADATA_CAS_ATTEMPTS {
+                let Some((current, before)) = self.status_and_metadata(id).await? else {
+                    return Ok(crate::db::GenerationWrite::Missing);
+                };
+                if !is_in_flight(&current) {
+                    return Ok(crate::db::GenerationWrite::AlreadyTerminal);
+                }
+                let merged = crate::db::merge_metadata(parse_metadata(before.as_deref()).as_ref(), patch);
+                let res = sqlx::query(
+                    r#"
+                    UPDATE generations
+                    SET status = $1, progress = $2, result_url = $3,
+                        error_message = $4, completed_at = $5, metadata = $6
+                    WHERE id = $7 AND status IN ('pending', 'processing') AND metadata IS NOT DISTINCT FROM $8
+                    "#,
+                )
+                .bind(status)
+                .bind(progress)
+                .bind(result_url)
+                .bind(error)
+                .bind(completed_at)
+                .bind(serde_json::to_string(&merged).unwrap_or_else(|_| "{}".into()))
+                .bind(id)
+                .bind(before.as_deref())
+                .execute(&self.pool)
+                .await?;
+                if res.rows_affected() > 0 {
+                    return Ok(crate::db::GenerationWrite::Written);
+                }
+            }
+            return Err(metadata_cas_exhausted(id));
+        }
         // `COALESCE($6, metadata)` leaves the column alone when no metadata is
         // supplied, so status and assets still land in ONE statement.
         let meta = metadata.map(|m| serde_json::to_string(m).unwrap_or_else(|_| "null".into()));

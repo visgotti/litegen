@@ -58,6 +58,37 @@ impl GenerationWrite {
     }
 }
 
+/// The one rule every write to a generation's `metadata` follows: a SHALLOW
+/// merge. Each top-level key in `patch` replaces the existing key whole (a
+/// nested object is replaced, not merged); a `null` deletes the key; keys the
+/// patch does not name are kept.
+///
+/// The row carries the request, its source lineage, stage claims, stage
+/// context, the promised formats and the delivered assets, each written by a
+/// different step. Replacing the whole column, as writes used to, let each
+/// step erase what the others had recorded.
+pub fn merge_metadata(existing: Option<&serde_json::Value>, patch: &serde_json::Value) -> serde_json::Value {
+    let mut out = match existing {
+        Some(serde_json::Value::Object(m)) => m.clone(),
+        _ => serde_json::Map::new(),
+    };
+    if let serde_json::Value::Object(p) = patch {
+        for (k, v) in p {
+            if v.is_null() {
+                out.remove(k);
+            } else {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
+/// What `claim_generation_stage` records under `metadata.stage_claims.<stage>`.
+pub fn stage_claim_record(claimant: &str) -> serde_json::Value {
+    serde_json::json!({ "by": claimant, "at": chrono::Utc::now().to_rfc3339() })
+}
+
 /// Trait defining the database operations. Implementations exist for SQLite and PostgreSQL.
 #[async_trait]
 #[allow(clippy::too_many_arguments)] // DB trait methods need many params; would need wrapper structs to reduce
@@ -137,7 +168,9 @@ pub trait DatabaseStore: Send + Sync {
     ///    litegen billed).
     ///
     /// `completed_at` is `None` for a mid-flight progress update and `Some(now)`
-    /// for a terminal one. `metadata` is `None` to leave the column untouched.
+    /// for a terminal one. `metadata` is `None` to leave the column untouched,
+    /// and otherwise a patch MERGED into it ([`merge_metadata`]), never a
+    /// replacement: what submit recorded survives the terminal write.
     ///
     /// The default implementation is the unguarded, non-atomic pair — correct
     /// enough for in-memory test doubles, never used by a real backend: both
@@ -152,30 +185,61 @@ pub trait DatabaseStore: Send + Sync {
         completed_at: Option<chrono::DateTime<chrono::Utc>>,
         metadata: Option<&serde_json::Value>,
     ) -> Result<GenerationWrite, sqlx::Error> {
+        let existing = self.get_generation(id).await?.and_then(|g| g.metadata);
         self.update_generation_status(id, status, progress, result_url, error, completed_at).await?;
-        if let Some(meta) = metadata {
-            self.update_generation_metadata(id, meta).await?;
+        if let Some(patch) = metadata {
+            self.update_generation_metadata(id, &merge_metadata(existing.as_ref(), patch)).await?;
         }
         Ok(GenerationWrite::Written)
     }
 
-    /// Replace a generation's `metadata` ONLY while the row is still in flight.
+    /// Merge `patch` into a generation's `metadata` (see [`merge_metadata`])
+    /// ONLY while the row is still in flight.
     ///
-    /// Exists because `metadata` is replaced wholesale, and the submit path
-    /// records `requested_formats` from a spawned task: a fast client can poll
-    /// a 3D job to completion between that task's row insert and its metadata
-    /// write, and the unguarded write then lands second and erases the assets
-    /// the terminal write had just stored — a `completed` row with no mesh,
-    /// which every observer correctly reports as a failure.
+    /// Guarded because a fast client can poll a job to completion between the
+    /// submit path's row insert and this write; landing second, it must not
+    /// touch a decided row. Atomic in the real backends: a compare-and-swap on
+    /// the column, retried on contention, so two writers merging different
+    /// keys at once both land.
     ///
-    /// The default implementation is the unguarded write, correct enough for
+    /// The default implementation reads then writes, correct enough for
     /// in-memory test doubles; SQLite and Postgres both override it.
-    async fn update_generation_metadata_if_active(
+    async fn merge_generation_metadata_if_active(
         &self,
         id: &str,
-        metadata: &serde_json::Value,
-    ) -> Result<(), sqlx::Error> {
-        self.update_generation_metadata(id, metadata).await
+        patch: &serde_json::Value,
+    ) -> Result<GenerationWrite, sqlx::Error> {
+        match self.get_generation(id).await? {
+            None => Ok(GenerationWrite::Missing),
+            Some(g) if g.status.is_terminal() => Ok(GenerationWrite::AlreadyTerminal),
+            Some(g) => {
+                self.update_generation_metadata(id, &merge_metadata(g.metadata.as_ref(), patch)).await?;
+                Ok(GenerationWrite::Written)
+            }
+        }
+    }
+
+    /// Claim the right to start a billed `stage` of an in-flight generation.
+    ///
+    /// `true` for exactly one caller per (generation, stage): it records
+    /// `metadata.stage_claims.<stage> = {by, at}` only if no claim is there
+    /// and the row is still `pending`/`processing`. Both observers of a job
+    /// (the client's poll and the background poller) can see a stage finish;
+    /// the claim is what stops them both from starting the next billed one.
+    ///
+    /// The default implementation is not atomic (test doubles only); SQLite
+    /// and Postgres override it with a compare-and-swap.
+    async fn claim_generation_stage(&self, id: &str, stage: &str, claimant: &str) -> Result<bool, sqlx::Error> {
+        let Some(g) = self.get_generation(id).await? else { return Ok(false) };
+        if g.status.is_terminal()
+            || g.metadata.as_ref().and_then(|m| m.get("stage_claims")).and_then(|c| c.get(stage)).is_some()
+        {
+            return Ok(false);
+        }
+        let mut claims = g.metadata.as_ref().and_then(|m| m.get("stage_claims")).cloned().unwrap_or_else(|| serde_json::json!({}));
+        claims[stage] = stage_claim_record(claimant);
+        self.update_generation_metadata(id, &merge_metadata(g.metadata.as_ref(), &serde_json::json!({ "stage_claims": claims }))).await?;
+        Ok(true)
     }
 
     /// Fetch a generation by its local ID.

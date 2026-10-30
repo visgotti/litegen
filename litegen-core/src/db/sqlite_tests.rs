@@ -1436,4 +1436,96 @@ mod tests {
             "generations referencing the deleted app must be removed"
         );
     }
+
+    // ─── merge-on-write metadata and stage claims ─────────────────────────
+
+    async fn active_row(db: &SqliteDatabase, id: &str) {
+        db.insert_generation(id, None, "mock/mesh-3d", "mock", "model3d", Some("job"), 0.0, None, None).await.unwrap();
+    }
+
+    async fn metadata_of(db: &SqliteDatabase, id: &str) -> serde_json::Value {
+        db.get_generation(id).await.unwrap().unwrap().metadata.unwrap_or(serde_json::Value::Null)
+    }
+
+    #[tokio::test]
+    async fn a_terminal_write_keeps_what_submit_recorded() {
+        let db = in_memory_db().await;
+        active_row(&db, "g-merge").await;
+        db.merge_generation_metadata_if_active("g-merge", &serde_json::json!({
+            "request": { "prompt": "a red chair" },
+            "requested_formats": ["glb"],
+        })).await.unwrap();
+        let w = db.update_generation_if_active(
+            "g-merge", "completed", 100, Some("https://x/model.glb"), None, Some(chrono::Utc::now()),
+            Some(&serde_json::json!({ "assets": [{ "kind": "mesh" }] })),
+        ).await.unwrap();
+        assert!(w.owns_outcome());
+        let m = metadata_of(&db, "g-merge").await;
+        assert_eq!(m["request"]["prompt"], "a red chair", "{m}");
+        assert_eq!(m["requested_formats"], serde_json::json!(["glb"]), "{m}");
+        assert_eq!(m["assets"][0]["kind"], "mesh", "{m}");
+    }
+
+    #[tokio::test]
+    async fn a_patch_replaces_top_level_keys_whole_and_null_removes_one() {
+        let db = in_memory_db().await;
+        active_row(&db, "g-patch").await;
+        db.merge_generation_metadata_if_active("g-patch", &serde_json::json!({
+            "stage_context": { "a": 1, "b": 2 }, "keep": true,
+        })).await.unwrap();
+        db.merge_generation_metadata_if_active("g-patch", &serde_json::json!({
+            "stage_context": { "a": 3 }, "keep": null,
+        })).await.unwrap();
+        let m = metadata_of(&db, "g-patch").await;
+        assert_eq!(m["stage_context"], serde_json::json!({ "a": 3 }), "a nested object is replaced, not merged: {m}");
+        assert!(m.get("keep").is_none(), "{m}");
+    }
+
+    #[tokio::test]
+    async fn a_merge_never_touches_a_terminal_row() {
+        let db = in_memory_db().await;
+        active_row(&db, "g-done").await;
+        db.update_generation_if_active("g-done", "failed", 0, None, Some("boom"), Some(chrono::Utc::now()), None).await.unwrap();
+        let w = db.merge_generation_metadata_if_active("g-done", &serde_json::json!({ "late": 1 })).await.unwrap();
+        assert_eq!(w, crate::db::GenerationWrite::AlreadyTerminal);
+        assert!(metadata_of(&db, "g-done").await.get("late").is_none());
+        let missing = db.merge_generation_metadata_if_active("g-nope", &serde_json::json!({ "x": 1 })).await.unwrap();
+        assert_eq!(missing, crate::db::GenerationWrite::Missing);
+    }
+
+    #[tokio::test]
+    async fn a_stage_is_claimed_once() {
+        let db = in_memory_db().await;
+        active_row(&db, "g-claim").await;
+        assert!(db.claim_generation_stage("g-claim", "rig", "poller").await.unwrap());
+        assert!(!db.claim_generation_stage("g-claim", "rig", "client").await.unwrap(), "a second claimant loses");
+        assert!(db.claim_generation_stage("g-claim", "refine", "client").await.unwrap(), "another stage is its own claim");
+        let m = metadata_of(&db, "g-claim").await;
+        assert_eq!(m["stage_claims"]["rig"]["by"], "poller", "{m}");
+        assert!(m["stage_claims"]["rig"]["at"].is_string(), "{m}");
+    }
+
+    #[tokio::test]
+    async fn racing_claimants_produce_exactly_one_winner() {
+        let db = std::sync::Arc::new(in_memory_db().await);
+        active_row(&db, "g-race").await;
+        let mut tasks = Vec::new();
+        for i in 0..8 {
+            let db = db.clone();
+            tasks.push(tokio::spawn(async move { db.claim_generation_stage("g-race", "rig", &format!("o{i}")).await.unwrap() }));
+        }
+        let mut wins = 0;
+        for t in tasks {
+            if t.await.unwrap() { wins += 1; }
+        }
+        assert_eq!(wins, 1);
+    }
+
+    #[tokio::test]
+    async fn a_terminal_row_cannot_be_claimed() {
+        let db = in_memory_db().await;
+        active_row(&db, "g-term").await;
+        db.update_generation_if_active("g-term", "cancelled", 0, None, None, Some(chrono::Utc::now()), None).await.unwrap();
+        assert!(!db.claim_generation_stage("g-term", "rig", "poller").await.unwrap());
+    }
 }

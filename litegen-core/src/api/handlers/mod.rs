@@ -810,7 +810,7 @@ pub async fn generate_3d(
                     if let Some(ctx) = stage_context {
                         meta["stage_context"] = ctx;
                     }
-                    if let Err(e) = db.update_generation_metadata_if_active(&id, &meta).await {
+                    if let Err(e) = db.merge_generation_metadata_if_active(&id, &meta).await {
                         tracing::warn!(generation_id = %id, error = %e, "failed to record requested 3d formats");
                     }
                 })
@@ -1106,10 +1106,10 @@ pub(crate) async fn persist_model3d_result(
     requested_formats: &[String],
 ) -> bool {
     let mesh_url = resp.mesh().map(|m| m.url.clone());
-    // `metadata` is REPLACED, not merged (see `Database::update_generation_metadata`),
-    // so the requested formats have to be re-stated here or the terminal write
-    // erases what submit recorded — and `model3d_response_from_row` would then
-    // fall back to the GLB floor and under-enforce for every row it answers.
+    // The terminal write MERGES into `metadata` (`db::merge_metadata`), so what
+    // submit recorded survives it. The requested formats are re-stated anyway:
+    // a row whose submit-time write was lost then still carries them, instead
+    // of `model3d_response_from_row` falling back to the GLB floor.
     let meta = serde_json::json!({
         "assets": resp.assets,
         "requested_formats": requested_formats,

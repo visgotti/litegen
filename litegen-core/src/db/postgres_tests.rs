@@ -246,3 +246,64 @@ async fn request_log_status_update_round_trips_against_postgres() {
         "a row that was never `pending` keeps the latency its handler measured"
     );
 }
+
+/// The compare-and-swap metadata writes in their Postgres spelling
+/// (`IS NOT DISTINCT FROM`, `$n` placeholders): merge keeps what submit
+/// recorded, a terminal row is never touched, and racing claimants of one
+/// stage produce exactly one winner.
+#[tokio::test]
+async fn metadata_merge_and_stage_claims_against_postgres() {
+    let Ok(url) = std::env::var("LITEGEN_PG_TEST_URL") else {
+        eprintln!(
+            "skipping metadata_merge_and_stage_claims_against_postgres: \
+             set LITEGEN_PG_TEST_URL to a throwaway Postgres database to run"
+        );
+        return;
+    };
+    let db = std::sync::Arc::new(
+        PostgresDatabase::connect(&url).await.expect("connect + migrate against the test Postgres"),
+    );
+
+    let id = format!("litegen-3d-{}", Uuid::new_v4());
+    db.insert_generation(&id, None, "mock/mesh-3d", "mock", "model3d", Some("job"), 0.0, None, None)
+        .await
+        .expect("insert");
+    db.merge_generation_metadata_if_active(&id, &serde_json::json!({ "request": { "prompt": "a chair" }, "keep": 1 }))
+        .await
+        .expect("merge");
+    db.merge_generation_metadata_if_active(&id, &serde_json::json!({ "keep": null }))
+        .await
+        .expect("merge a removal");
+
+    let mut tasks = Vec::new();
+    for i in 0..8 {
+        let db = db.clone();
+        let id = id.clone();
+        tasks.push(tokio::spawn(async move { db.claim_generation_stage(&id, "rig", &format!("o{i}")).await.unwrap() }));
+    }
+    let mut wins = 0;
+    for t in tasks {
+        if t.await.unwrap() {
+            wins += 1;
+        }
+    }
+    assert_eq!(wins, 1, "exactly one claimant starts the stage");
+
+    let w = db
+        .update_generation_if_active(
+            &id, "completed", 100, Some("https://x/model.glb"), None, Some(chrono::Utc::now()),
+            Some(&serde_json::json!({ "assets": [{ "kind": "mesh" }] })),
+        )
+        .await
+        .expect("terminal write");
+    assert_eq!(w, crate::db::GenerationWrite::Written);
+    let m = db.get_generation(&id).await.unwrap().unwrap().metadata.unwrap();
+    assert_eq!(m["request"]["prompt"], "a chair", "{m}");
+    assert!(m.get("keep").is_none(), "{m}");
+    assert!(m["stage_claims"]["rig"]["by"].is_string(), "{m}");
+    assert_eq!(m["assets"][0]["kind"], "mesh", "{m}");
+
+    let late = db.merge_generation_metadata_if_active(&id, &serde_json::json!({ "late": 1 })).await.unwrap();
+    assert_eq!(late, crate::db::GenerationWrite::AlreadyTerminal);
+    assert!(!db.claim_generation_stage(&id, "refine", "poller").await.unwrap());
+}

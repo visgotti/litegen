@@ -368,10 +368,9 @@ pub(crate) async fn poll_once(
                         progress: poll.progress,
                         result_url: mesh_url,
                         error: poll.error,
-                        // `requested_formats` rides along because the terminal
-                        // write REPLACES metadata — dropping it here would erase
-                        // what submit recorded and leave every later read of this
-                        // row enforcing only the GLB floor.
+                        // The terminal write merges into metadata, so submit's
+                        // keys survive; `requested_formats` is re-stated so a row
+                        // whose submit-time write was lost still carries it.
                         assets: assets.map(|a| serde_json::json!({
                             "assets": a,
                             "requested_formats": requested,
