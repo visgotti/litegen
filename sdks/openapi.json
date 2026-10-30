@@ -4056,6 +4056,16 @@
                             }
                         }
                     },
+                    "500": {
+                        "description": "`generation_record_failed`: the vendor accepted the job but litegen could not record it, so it has no id to poll; `vendor_job_id` names the vendor's job. A retry with the same `Idempotency-Key` gets this answer, not a second job.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
                     "504": {
                         "description": "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.",
                         "content": {
@@ -6330,6 +6340,16 @@
                             }
                         }
                     },
+                    "500": {
+                        "description": "`generation_record_failed`: the vendor accepted the job but litegen could not record it, so it has no id to poll; `vendor_job_id` names the vendor's job. A retry with the same `Idempotency-Key` gets this answer, not a second job.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
                     "504": {
                         "description": "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.",
                         "content": {
@@ -7725,7 +7745,7 @@
                             "string",
                             "null"
                         ],
-                        "description": "On `vendor_timeout`: the job the vendor had accepted when litegen\nstopped waiting, if it had. The job was not re-sent."
+                        "description": "The vendor's own job id, on `vendor_timeout` (the job the vendor had\naccepted when litegen stopped waiting, if it had; not re-sent) and on\n`generation_record_failed` (a job the vendor took that litegen could\nnot record)."
                     }
                 }
             },

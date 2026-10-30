@@ -67,7 +67,12 @@ pub async fn app_with(asset_dir: &std::path::Path, tweak: impl FnOnce(&mut AppCo
             .await
             .expect("in-memory sqlite"),
     );
+    (app_over(db.clone(), asset_dir, tweak).await, db)
+}
 
+/// The full app over a database the test opened itself — a file it can also
+/// reach with its own connection, to inject a failure or restart over it.
+pub async fn app_over(db: Arc<SqliteDatabase>, asset_dir: &std::path::Path, tweak: impl FnOnce(&mut AppConfig)) -> Router {
     let mut app_config = AppConfig::default();
     tweak(&mut app_config);
     app_config.providers.insert(
@@ -108,8 +113,7 @@ pub async fn app_with(asset_dir: &std::path::Path, tweak: impl FnOnce(&mut AppCo
         allow_password: true,
     });
 
-    let app = litegen::api::create_router(state);
-    (app, db)
+    litegen::api::create_router(state)
 }
 
 pub async fn submit(app: &Router, model: &str, prompt: &str) -> String {

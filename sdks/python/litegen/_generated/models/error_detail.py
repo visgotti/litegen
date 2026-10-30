@@ -22,8 +22,10 @@ class ErrorDetail:
             `reference_images`, `extra.<key>` — so a caller can tell which one to fix
             without parsing `message`. Validation errors only.
         provider_error (Union[Unset, Any]):
-        vendor_job_id (Union[None, Unset, str]): On `vendor_timeout`: the job the vendor had accepted when litegen
-            stopped waiting, if it had. The job was not re-sent.
+        vendor_job_id (Union[None, Unset, str]): The vendor's own job id, on `vendor_timeout` (the job the vendor had
+            accepted when litegen stopped waiting, if it had; not re-sent) and on
+            `generation_record_failed` (a job the vendor took that litegen could
+            not record).
     """
 
     message: str

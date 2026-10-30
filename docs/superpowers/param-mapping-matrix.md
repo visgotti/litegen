@@ -352,6 +352,13 @@ field name — but it is what makes the family behave the same on every model:
   the mock provider, including what `GET /v1/models/{id}` serves, and that a
   stored mesh still downloads from a restarted process
   (`a_mesh_still_downloads_after_a_restart`).
+- `litegen-core/tests/job_rows.rs` (L2) — a video or 3D submit answers only
+  after its generation row is written, so its id answers on the very next
+  request; a row that cannot be written fails the submit with 500
+  `generation_record_failed` (naming the vendor's job, and cancelling a 3D
+  one at the vendor); and the row's `metadata.request` records the request —
+  prompt, params, `extra` and each reference as SHA-256 + size or URL, never
+  its bytes.
 - `proxy::storage::model3d_storage_tests` — the local backend keeps assets on
   disk (`a_store_over_the_same_dir_serves_what_an_earlier_one_stored`), refuses
   keys that would leave its directory, sweeps only what is past retention, and

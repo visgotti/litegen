@@ -2164,8 +2164,10 @@ export interface components {
              */
             type: string;
             /**
-             * @description On `vendor_timeout`: the job the vendor had accepted when litegen
-             *     stopped waiting, if it had. The job was not re-sent.
+             * @description The vendor's own job id, on `vendor_timeout` (the job the vendor had
+             *     accepted when litegen stopped waiting, if it had; not re-sent) and on
+             *     `generation_record_failed` (a job the vendor took that litegen could
+             *     not record).
              */
             vendor_job_id?: string | null;
         };
@@ -6710,6 +6712,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description `generation_record_failed`: the vendor accepted the job but litegen could not record it, so it has no id to poll; `vendor_job_id` names the vendor's job. A retry with the same `Idempotency-Key` gets this answer, not a second job. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description `vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one. */
             504: {
                 headers: {
@@ -8254,6 +8265,15 @@ export interface operations {
             };
             /** @description `idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set). */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `generation_record_failed`: the vendor accepted the job but litegen could not record it, so it has no id to poll; `vendor_job_id` names the vendor's job. A retry with the same `Idempotency-Key` gets this answer, not a second job. */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

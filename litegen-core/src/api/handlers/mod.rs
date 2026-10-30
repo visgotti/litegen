@@ -377,6 +377,7 @@ pub async fn estimate_image_cost(
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 409, description = "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).", body = ErrorResponse),
         (status = 504, description = "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.", body = ErrorResponse),
+        (status = 500, description = "`generation_record_failed`: the vendor accepted the job but litegen could not record it, so it has no id to poll; `vendor_job_id` names the vendor's job. A retry with the same `Idempotency-Key` gets this answer, not a second job.", body = ErrorResponse),
     ),
     tag = "Videos"
 )]
@@ -489,22 +490,54 @@ pub async fn generate_video(
             let key_id_for_insert = key_ctx.as_ref().and_then(|c| c.key_id);
             let org_id = key_ctx.as_ref().and_then(|c| c.org_id.clone());
             let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
+            let request = request_record(&validated.request.base, serde_json::to_value(&extras).ok(), &validated.ctx);
+
+            // The row is written BEFORE the response (L2): the caller learns the
+            // id only from it and polls `GET /v1/generations/{id}` at once, and
+            // after a restart. Run in a task the handler awaits, so a client that
+            // disconnects now cannot cancel the writes for a job the vendor took.
+            let vendor_job = provider_job_id_for_insert.clone();
+            let writes = {
+                let db = db.clone();
+                let id = id.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = db
+                        .log_request(&id, &model, &provider, "pending", "video", cost, latency, None, None, org_id.as_deref(), app_id.as_deref())
+                        .await
+                    {
+                        tracing::warn!(generation_id = %id, error = %e, "failed to log the video request");
+                    }
+                    crate::management::enforce::attribute(&db, &id, &attributed).await;
+                    db.insert_generation(
+                        &id,
+                        key_id_for_insert.as_ref(),
+                        &model,
+                        &provider,
+                        "video",
+                        provider_job_id_for_insert.as_deref(),
+                        cost,
+                        org_id.as_deref(),
+                        app_id.as_deref(),
+                    ).await?;
+                    if let Err(e) = db.merge_generation_metadata_if_active(&id, &serde_json::json!({ "request": request })).await {
+                        tracing::warn!(generation_id = %id, error = %e, "failed to record the video request on its row");
+                    }
+                    Ok::<(), sqlx::Error>(())
+                })
+            };
+            match writes.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::error!(generation_id = %id, error = %e, "video row could not be written; failing the submit");
+                    return generation_record_failed_response(&id, vendor_job.as_deref(), &e.to_string());
+                }
+                Err(e) => {
+                    tracing::error!(generation_id = %id, error = %e, "video submit bookkeeping task failed");
+                    return generation_record_failed_response(&id, vendor_job.as_deref(), &e.to_string());
+                }
+            }
+            // The artifact is diagnostic only, so it alone stays off the response path.
             tokio::spawn(async move {
-                let _ = db
-                    .log_request(&id, &model, &provider, "pending", "video", cost, latency, None, None, org_id.as_deref(), app_id.as_deref())
-                    .await;
-                crate::management::enforce::attribute(&db, &id, &attributed).await;
-                let _ = db.insert_generation(
-                    &id,
-                    key_id_for_insert.as_ref(),
-                    &model,
-                    &provider,
-                    "video",
-                    provider_job_id_for_insert.as_deref(),
-                    cost,
-                    org_id.as_deref(),
-                    app_id.as_deref(),
-                ).await;
                 if let Err(e) = db.insert_request_artifact(&video_artifact).await {
                     tracing::warn!(error = %e, request_id = %video_artifact.request_id, "Failed to store video artifact");
                 }
@@ -688,6 +721,7 @@ pub async fn estimate_video_cost(
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 409, description = "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).", body = ErrorResponse),
         (status = 504, description = "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.", body = ErrorResponse),
+        (status = 500, description = "`generation_record_failed`: the vendor accepted the job but litegen could not record it, so it has no id to poll; `vendor_job_id` names the vendor's job. A retry with the same `Idempotency-Key` gets this answer, not a second job.", body = ErrorResponse),
     ),
     tag = "Models3D"
 )]
@@ -779,6 +813,7 @@ pub async fn generate_3d(
             let org_id = key_ctx.as_ref().and_then(|c| c.org_id.clone());
             let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
             let requested_formats = extras.output_formats.clone();
+            let request = request_record(&validated.request.base, serde_json::to_value(&extras).ok(), &validated.ctx);
 
             // Everything below runs in a task the handler awaits, not on the
             // request future itself: the vendor has accepted (and will bill)
@@ -811,12 +846,12 @@ pub async fn generate_3d(
                         tracing::warn!(generation_id = %id, error = %e, "failed to log the 3d request");
                     }
                     crate::management::enforce::attribute(&db, &id, &attributed).await;
-                    if let Err(e) = db.insert_generation(
+                    // A job with no row cannot be polled, resumed or reaped, so
+                    // the submit fails rather than answer with its id (L2).
+                    db.insert_generation(
                         &id, key_id.as_ref(), &model, &provider, "model3d",
                         provider_job_id.as_deref(), cost, org_id.as_deref(), app_id.as_deref(),
-                    ).await {
-                        tracing::warn!(generation_id = %id, error = %e, "failed to record the 3d generation");
-                    }
+                    ).await.map_err(|e| (e, provider_job_id.clone()))?;
                     // The containers promised to this caller, recorded on the row so
                     // the poller and the row-answered path can enforce them — neither
                     // can reach the router's in-memory job map, and the row outlives
@@ -826,7 +861,7 @@ pub async fn generate_3d(
                     // the same: the background poller can reach the row between the
                     // insert and this write, and an unguarded write landing after a
                     // terminal one would replace its assets.
-                    let mut meta = serde_json::json!({ "requested_formats": requested_formats });
+                    let mut meta = serde_json::json!({ "requested_formats": requested_formats, "request": request });
                     // The adapter's own continuation state — fal's status_url and
                     // response_url, Meshy's preview task id. The poller rebuilds the
                     // handle from this row and cannot reach the router's in-memory
@@ -838,10 +873,26 @@ pub async fn generate_3d(
                     if let Err(e) = db.merge_generation_metadata_if_active(&id, &meta).await {
                         tracing::warn!(generation_id = %id, error = %e, "failed to record requested 3d formats");
                     }
+                    Ok::<(), (sqlx::Error, Option<String>)>(())
                 })
             };
-            if let Err(e) = writes.await {
-                tracing::error!(generation_id = %id, error = %e, "3d submit bookkeeping task failed");
+            let failure = match writes.await {
+                Ok(Ok(())) => None,
+                Ok(Err((e, vendor_job))) => Some((e.to_string(), vendor_job)),
+                Err(e) => Some((e.to_string(), state.router.get_model3d_provider_job_id(&id).await)),
+            };
+            if let Some((err, vendor_job)) = failure {
+                tracing::error!(generation_id = %id, error = %err, "3d row could not be written; failing the submit");
+                // Nothing will ever poll this job: stop it at the vendor (best effort).
+                if let Some(job) = state.router.forget_model3d_job(&id).await {
+                    let (handle, provider) = job;
+                    tokio::spawn(async move {
+                        if let Err(e) = provider.cancel(&handle).await {
+                            tracing::warn!(error = %e, "could not cancel an unrecorded 3d job at the vendor");
+                        }
+                    });
+                }
+                return generation_record_failed_response(&id, vendor_job.as_deref(), &err);
             }
             // The artifact is diagnostic only — no observer of completion reads
             // it — so it alone stays off the response path.
@@ -3121,6 +3172,74 @@ fn build_refs_meta(refs: &[crate::types::ReferenceImage]) -> Option<serde_json::
         })
     }).collect();
     Some(serde_json::json!(summaries))
+}
+
+/// The request as its generation row records it (PixelGenie L2): enough to
+/// audit the job and run it again, with each reference image identified by
+/// its SHA-256 and size, never by its bytes. A URL reference keeps its URL.
+pub(crate) fn request_record(
+    base: &crate::types::BaseGenerationRequest,
+    params: Option<serde_json::Value>,
+    ctx: &crate::proxy::materializer::MaterializeContext,
+) -> serde_json::Value {
+    use base64::Engine;
+    use sha2::Digest;
+    let refs: Vec<serde_json::Value> = base.reference_images.iter().map(|r| {
+        let digest = |bytes: &[u8]| serde_json::json!({
+            "sha256": hex::encode(sha2::Sha256::digest(bytes)),
+            "bytes": bytes.len(),
+        });
+        let mut entry = match r.kind {
+            crate::types::RefImageKind::Url => serde_json::json!({ "url": r.value }),
+            crate::types::RefImageKind::Base64 => {
+                let raw = r.value.split_once(";base64,").map(|(_, b)| b).unwrap_or(&r.value);
+                match base64::engine::general_purpose::STANDARD.decode(raw.trim()) {
+                    Ok(bytes) => digest(&bytes),
+                    Err(_) => serde_json::json!({ "undecodable": true }),
+                }
+            }
+            crate::types::RefImageKind::Blob => match ctx.blob_parts.get(&r.value) {
+                Some((bytes, _)) => digest(bytes),
+                None => serde_json::json!({ "part": r.value }),
+            },
+        };
+        entry["role"] = serde_json::json!(r.role);
+        entry["type"] = serde_json::to_value(r.kind).unwrap_or(serde_json::Value::Null);
+        entry
+    }).collect();
+    serde_json::json!({
+        "model": base.model,
+        "prompt": base.prompt,
+        "negative_prompt": base.negative_prompt,
+        "seed": base.seed,
+        "n": base.n,
+        "strict": base.strict,
+        "params": params,
+        "extra": base.extra,
+        "reference_images": refs,
+    })
+}
+
+/// 500 for a submit the vendor accepted but whose row litegen could not write
+/// (L2): answering with an id nothing can poll would hand the caller a job it
+/// can neither follow nor resume. Marked as having reached the vendor, so a
+/// retry with the same `Idempotency-Key` gets this answer back instead of a
+/// second billed job.
+fn generation_record_failed_response(id: &str, vendor_job_id: Option<&str>, err: &str) -> axum::response::Response {
+    let mut resp = (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({
+            "error": {
+                "message": format!("the vendor accepted the job, but litegen could not record generation {id}: {err}"),
+                "type": "internal_error",
+                "code": "generation_record_failed",
+                "vendor_job_id": vendor_job_id,
+            }
+        })),
+    )
+        .into_response();
+    resp.extensions_mut().insert(crate::api::middleware::idempotency::VendorAttempted);
+    resp
 }
 
 fn validation_rejection_response(message: &str, code: u16, model: &str) -> axum::response::Response {
