@@ -350,6 +350,7 @@ mod tests {
             fps: None,
             // Provide a pre-existing imageId so the test skips the upload step.
             extra: Some(json!({ "imageId": "init-123", "imageType": "UPLOADED" })),
+            camera: None, audio: None, r#loop: None,
         }
     }
 

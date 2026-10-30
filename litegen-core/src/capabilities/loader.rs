@@ -221,6 +221,22 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
+    // PixelGenie L10: a camera from the closed vocabulary, and a duration
+    // list inside the duration range.
+    if let Some(ParamSpec::String(s)) = m.params.get("camera") {
+        if let Some(v) = s.enum_values.iter().find(|v| !["fixed", "auto"].contains(&v.as_str())) {
+            return Err(bad(format!("model '{}' camera value '{v}' is not one of [\"fixed\", \"auto\"]", m.id)));
+        }
+    }
+    let listed: Vec<f64> = match m.params.get("duration_seconds") {
+        Some(ParamSpec::Float(f)) => f.values.iter().copied().filter(|v| f.min.is_some_and(|m| *v < m) || f.max.is_some_and(|m| *v > m)).collect(),
+        Some(ParamSpec::Int(i)) => i.values.iter().copied().filter(|v| i.min.is_some_and(|m| *v < m) || i.max.is_some_and(|m| *v > m)).map(|v| v as f64).collect(),
+        _ => Vec::new(),
+    };
+    if let Some(v) = listed.first() {
+        return Err(bad(format!("model '{}' duration_seconds value {v} is outside its min/max", m.id)));
+    }
+
     // L14: lifecycle dates are calendar days, a model retires no earlier
     // than it was deprecated, and it is not its own replacement.
     let day = |field: &str, v: &Option<String>| -> Result<Option<chrono::NaiveDate>, LoadError> {

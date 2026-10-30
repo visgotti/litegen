@@ -172,6 +172,32 @@ pub fn generate_keyframe_blend_gif(first: &[u8], last: &[u8], prompt: &str) -> V
     bytes
 }
 
+/// A 64×64 sprite clip (PixelGenie L10): `duration_s × fps` frames of a
+/// square crossing a still background, each `1000 / fps` ms; looped, its last
+/// frame is its first.
+pub fn generate_sprite_gif(duration_s: f64, fps: u32, looped: bool) -> Vec<u8> {
+    let fps = fps.max(1);
+    let frames = ((duration_s * f64::from(fps)).round() as usize).max(1);
+    let frame = |i: usize| {
+        let x0 = (i * 48 / frames.max(1)) as u32;
+        ImageBuffer::from_fn(64, 64, |x, y| {
+            if (x0..x0 + 16).contains(&x) && (24..40).contains(&y) { Rgba([240, 200, 40, 255]) } else { Rgba([20, 30, 60, 255]) }
+        })
+    };
+    let mut bytes: Vec<u8> = Vec::new();
+    {
+        let mut encoder = GifEncoder::new(&mut bytes);
+        encoder.set_repeat(Repeat::Infinite).expect("set repeat");
+        for i in 0..frames {
+            let image = if looped && i + 1 == frames { frame(0) } else { frame(i) };
+            encoder
+                .encode_frame(Frame::from_parts(image, 0, 0, Delay::from_numer_denom_ms(1000, fps)))
+                .expect("encode frame");
+        }
+    }
+    bytes
+}
+
 /// An animated GIF at `fps` over `duration_s` (both ends included) that shows
 /// each keyframe's image, unchanged, in the frame at its time, and blends
 /// between neighbours; before the first and after the last it holds them

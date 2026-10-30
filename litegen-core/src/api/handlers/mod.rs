@@ -447,6 +447,10 @@ pub async fn generate_video(
         resolution: validated.request.resolution.clone(),
         fps: validated.request.fps,
         extra: validated.request.base.extra.clone(),
+
+        camera: validated.request.camera.clone(),
+        audio: validated.request.audio,
+        r#loop: validated.request.r#loop,
     };
 
     // Resolve the calling app's BYO credential for this model's provider (see
@@ -730,6 +734,7 @@ fn video_response_from_row(gen: &crate::types::Generation) -> VideoGenerationRes
         error: gen.error_message.clone(),
         usage: Some(usage_from_row_cost(gen.cost_usd)),
         created: gen.created_at.timestamp(),
+        media: gen.metadata.as_ref().and_then(crate::types::VideoMedia::from_assets),
     }
 }
 
@@ -828,6 +833,7 @@ pub(crate) fn generation_assets(gen: &crate::types::Generation) -> Vec<crate::ty
                 height: a.height,
                 duration_s: None,
                 fps: None,
+                has_audio: None,
             })
             .collect();
     }
@@ -851,6 +857,7 @@ pub(crate) fn generation_assets(gen: &crate::types::Generation) -> Vec<crate::ty
             height: None,
             duration_s: None,
             fps: None,
+            has_audio: None,
         }).collect();
     }
     recorded.into_iter().enumerate().map(|(i, a)| GenerationAsset { index: i as u32, ..a }).collect()
@@ -1868,6 +1875,17 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
                 Some(crate::capabilities::ParamSpec::String(b)) if b.enum_values.iter().any(|v| v == "transparent")
             ),
             lossy_only: !image_formats.is_empty() && !image_formats.iter().any(|f| f == "png"),
+            supports_fixed_camera: matches!(
+                s.params.get("camera"),
+                Some(crate::capabilities::ParamSpec::String(c)) if c.enum_values.iter().any(|v| v == "fixed")
+            ),
+            supports_audio_toggle: matches!(s.params.get("audio"), Some(crate::capabilities::ParamSpec::Bool(_))),
+            supports_loop: matches!(s.params.get("loop"), Some(crate::capabilities::ParamSpec::Bool(_))),
+            duration_values: match s.params.get("duration_seconds") {
+                Some(crate::capabilities::ParamSpec::Float(f)) => f.values.clone(),
+                Some(crate::capabilities::ParamSpec::Int(i)) => i.values.iter().map(|v| *v as f64).collect(),
+                _ => Vec::new(),
+            },
         },
         pricing: Some(ModelPricing {
             base_cost_usd: s.pricing.base_cost_usd,
@@ -4040,6 +4058,7 @@ async fn keep_image_result(
                     height: None,
                     duration_s: None,
                     fps: None,
+                    has_audio: None,
                 },
                 Err(e) => {
                     tracing::warn!(generation_id = %response.id, error = %e, "could not keep an image result");
@@ -4058,6 +4077,7 @@ async fn keep_image_result(
                 height: None,
                 duration_s: None,
                 fps: None,
+                has_audio: None,
             }
         } else {
             continue;

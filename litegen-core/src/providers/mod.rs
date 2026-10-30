@@ -316,6 +316,13 @@ pub struct VideoExtras {
     pub resolution: Option<String>,
     pub fps: Option<u32>,
     pub extra: Option<serde_json::Value>,
+    /// `fixed` | `auto`, when the request named one (PixelGenie L10).
+    pub camera: Option<String>,
+    /// `false` for a silent clip, `true` for audio, when named.
+    pub audio: Option<bool>,
+    /// `true` for a clip that ends on its first frame, when named.
+    #[serde(rename = "loop")]
+    pub r#loop: Option<bool>,
 }
 
 /// The core trait that every provider (OpenAI, Stability, Replicate, etc.) implements.

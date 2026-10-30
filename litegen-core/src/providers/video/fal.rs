@@ -327,6 +327,10 @@ impl VideoProvider for FalVideoProvider {
                 }
             }
         }
+        // PixelGenie L10: audio on or off, where the endpoint takes it.
+        if let Some(audio) = extras.audio {
+            body["generate_audio"] = Value::Bool(audio);
+        }
 
         let resp = crate::providers::inject_trace_headers(
             self.client
@@ -684,6 +688,7 @@ mod tests {
             resolution: None,
             fps: None,
             extra: None,
+            camera: None, audio: None, r#loop: None,
         }
     }
 
@@ -705,7 +710,8 @@ mod tests {
         let provider = make_provider(&server.uri());
         let schema = ref_schema("fal/video");
         let base = make_base("a robot walking through a city", "fal/video");
-        let extras = make_extras();
+        let mut extras = make_extras();
+        extras.audio = Some(false);
         let materialized = empty_materialized();
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
@@ -724,6 +730,7 @@ mod tests {
         assert_eq!(received.len(), 1);
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
         assert_eq!(body["prompt"], "a robot walking through a city");
+        assert_eq!(body["generate_audio"], false, "PixelGenie L10: audio false");
     }
 
     /// `fal-ai/ltx-video`'s input schema is
@@ -854,6 +861,7 @@ mod tests {
             resolution: Some("1440p".to_string()),
             fps: Some(24),
             extra: Some(json!({ "generate_audio": false })),
+            camera: None, audio: None, r#loop: None,
         }
     }
 

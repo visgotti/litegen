@@ -60,7 +60,7 @@ models:
     prompt: { required: true, max_length: 5000 }
     params:
       seed: { kind: seed, min: 0, max: 2147483647 }
-      duration_seconds: { kind: float, min: 5.0, max: 8.0, default: 5.0 }
+      duration_seconds: { kind: float, min: 5.0, max: 8.0, default: 5.0, values: [5.0, 8.0] }
       resolution:
         kind: string
         enum_values: [360p, 540p, 720p, 1080p]
@@ -234,13 +234,15 @@ models:
         - { when: { resolution: 360p }, per_second_usd: 0.0222222 }
         - { when: { resolution: 720p }, per_second_usd: 0.04 }
         - { when: { resolution: 1080p }, per_second_usd: 0.08 }
-        - { when: { extra.generate_audio_switch: true }, per_second_usd: 0.04 }
-        - { when: { resolution: 360p, extra.generate_audio_switch: true }, per_second_usd: 0.0311111 }
-        - { when: { resolution: 720p, extra.generate_audio_switch: true }, per_second_usd: 0.0533333 }
-        - { when: { resolution: 1080p, extra.generate_audio_switch: true }, per_second_usd: 0.1022222 }
+        - { when: { audio: true }, per_second_usd: 0.04 }
+        - { when: { resolution: 360p, audio: true }, per_second_usd: 0.0311111 }
+        - { when: { resolution: 720p, audio: true }, per_second_usd: 0.0533333 }
+        - { when: { resolution: 1080p, audio: true }, per_second_usd: 0.1022222 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
+      # PixelGenie L10: audio is sent as generate_audio_switch (default false).
+      audio: { kind: bool, default: false }
       seed: { kind: seed, min: 0, max: 2147483647 }
       # "v6/c1 : 1~15" on text/, img/ and transition/generate ("1080p supports up to 15s").
       # https://docs.platform.pixverse.ai/text-to-video-generation-13016634e0.md
@@ -270,7 +272,7 @@ models:
     # Audio is priced by the rules above (9 credits/s at 540p). No
     # negative_prompt, motion_mode or sound_effect_* / lip_sync_* (v5 and below).
     # https://docs.platform.pixverse.ai/v6-2056814m0.md
-    extra_allowlist: [generate_audio_switch, generate_multi_clip_switch]
+    extra_allowlist: [generate_multi_clip_switch]
     tags: [text-to-video, image-to-video]
 
   - id: pixverse/c1
@@ -290,13 +292,15 @@ models:
         - { when: { resolution: 360p }, per_second_usd: 0.0266667 }
         - { when: { resolution: 720p }, per_second_usd: 0.0444444 }
         - { when: { resolution: 1080p }, per_second_usd: 0.0844444 }
-        - { when: { extra.generate_audio_switch: true }, per_second_usd: 0.0444444 }
-        - { when: { resolution: 360p, extra.generate_audio_switch: true }, per_second_usd: 0.0355556 }
-        - { when: { resolution: 720p, extra.generate_audio_switch: true }, per_second_usd: 0.0577778 }
-        - { when: { resolution: 1080p, extra.generate_audio_switch: true }, per_second_usd: 0.1066667 }
+        - { when: { audio: true }, per_second_usd: 0.0444444 }
+        - { when: { resolution: 360p, audio: true }, per_second_usd: 0.0355556 }
+        - { when: { resolution: 720p, audio: true }, per_second_usd: 0.0577778 }
+        - { when: { resolution: 1080p, audio: true }, per_second_usd: 0.1066667 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
+      # PixelGenie L10: audio is sent as generate_audio_switch (default false).
+      audio: { kind: bool, default: false }
       seed: { kind: seed, min: 0, max: 2147483647 }
       # "Any integer from 1–15s (1080p supports up to 15s)" on every C1 endpoint.
       # https://docs.platform.pixverse.ai/c1-2067883m0.md
@@ -325,5 +329,5 @@ models:
     # generate_multi_clip_switch is "Supported in v5.5/v6". Audio is priced by
     # the rules above (10 credits/s at 540p).
     # https://docs.platform.pixverse.ai/c1-2067883m0.md
-    extra_allowlist: [generate_audio_switch]
+    extra_allowlist: []
     tags: [text-to-video, image-to-video, premium]

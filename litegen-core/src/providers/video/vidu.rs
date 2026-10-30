@@ -193,6 +193,10 @@ impl VideoProvider for ViduProvider {
                 }
             }
         }
+        // PixelGenie L10: audio on or off (Vidu's own `audio`).
+        if let Some(audio) = extras.audio {
+            body["audio"] = Value::Bool(audio);
+        }
 
         let builder = crate::providers::auth::apply(
             &self.auth,
@@ -331,7 +335,7 @@ mod tests {
     }
 
     fn make_extras() -> VideoExtras {
-        VideoExtras { duration_seconds: 5.0, aspect_ratio: Some("16:9".to_string()), resolution: Some("720p".to_string()), fps: None, extra: None }
+        VideoExtras { duration_seconds: 5.0, aspect_ratio: Some("16:9".to_string()), resolution: Some("720p".to_string()), fps: None, extra: None, camera: None, audio: None, r#loop: None }
     }
 
     #[tokio::test]
@@ -353,7 +357,8 @@ mod tests {
         let provider = make_provider(&server.uri());
         let schema = ref_schema("vidu/viduq1");
         let base = make_base("a hummingbird in slow motion", "vidu/viduq1");
-        let extras = make_extras();
+        let mut extras = make_extras();
+        extras.audio = Some(false);
         let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
 
         let handle = provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
@@ -362,6 +367,7 @@ mod tests {
         let received = server.received_requests().await.unwrap();
         assert_eq!(received[0].headers.get("authorization").unwrap(), "Token vidu-key");
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["audio"], false, "PixelGenie L10: audio false");
         assert_eq!(body["model"], "viduq1");
 
         let poll = provider.poll_status(&handle).await.unwrap();

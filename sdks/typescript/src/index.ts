@@ -136,6 +136,10 @@ export type ImageView = components["schemas"]["ImageView"];
  * `replaced_by` names the catalog model to move to.
  */
 export type ModelStatus = components["schemas"]["ModelStatus"];
+/** A video's camera (`camera`): `fixed` holds the shot still (`supports_fixed_camera`). */
+export type VideoCamera = components["schemas"]["VideoCamera"];
+/** What a finished video is, read from its bytes: length, rate, size, audio. */
+export type VideoMedia = components["schemas"]["VideoMedia"];
 /** An image container (`output_format`): one of the model's `capabilities.output_formats`. */
 export type ImageOutputFormat = components["schemas"]["ImageOutputFormat"];
 /** An image's background: `transparent` is a real alpha channel (needs PNG or WebP). */

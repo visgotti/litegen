@@ -2337,6 +2337,8 @@ export interface components {
              * @description Videos: frames per second, when known.
              */
             fps?: number | null;
+            /** @description Whether a video carries an audio track (PixelGenie L10). */
+            has_audio?: boolean | null;
             /** Format: int32 */
             height?: number | null;
             /**
@@ -2785,6 +2787,11 @@ export interface components {
          */
         Model3dTopology: "triangle" | "quad";
         ModelCapabilities: {
+            /**
+             * @description The only `duration_seconds` values the model takes; empty when it
+             *     takes its range.
+             */
+            duration_values?: number[];
             keyframe_timing?: null | components["schemas"]["KeyframeTiming"];
             /** @description Returns only lossy containers (no PNG). */
             lossy_only?: boolean;
@@ -2822,7 +2829,11 @@ export interface components {
             preserves_unmasked?: null | components["schemas"]["PreservesUnmasked"];
             region_input?: null | components["schemas"]["RegionInput"];
             supported_sizes?: string[];
+            /** @description Takes `audio: false` (or `true`) to leave audio out (or in). */
+            supports_audio_toggle?: boolean;
             supports_first_frame?: boolean;
+            /** @description Takes `camera: fixed` (PixelGenie L10). */
+            supports_fixed_camera?: boolean;
             /** @description Accepts one `init` reference image (image-to-3D). */
             supports_image_to_3d?: boolean;
             supports_image_to_image: boolean;
@@ -2831,6 +2842,8 @@ export interface components {
             /** @description Takes `keyframe` references, each pinned at its `time_s` (3D doc §5). */
             supports_keyframes?: boolean;
             supports_last_frame?: boolean;
+            /** @description Takes `loop: true`. */
+            supports_loop?: boolean;
             /** @description Accepts several `view-*` reference images (multiview-to-3D). */
             supports_multiview_to_3d?: boolean;
             /** @description Takes the `pbr` param. */
@@ -3266,6 +3279,11 @@ export interface components {
             max?: number | null;
             /** Format: double */
             min?: number | null;
+            /**
+             * @description The only values the vendor takes, when it takes a list rather than a
+             *     range (`duration_seconds`, PixelGenie L10).
+             */
+            values?: number[];
         };
         ParamSpecInt: {
             /** Format: int64 */
@@ -3276,6 +3294,11 @@ export interface components {
             max?: number | null;
             /** Format: int64 */
             min?: number | null;
+            /**
+             * @description The only values the vendor takes, when it takes a list rather than a
+             *     range (`duration_seconds`, PixelGenie L10).
+             */
+            values?: number[];
         };
         /** @description `region` on a model (3D doc §4). */
         ParamSpecRegion: {
@@ -4146,8 +4169,19 @@ export interface components {
             /** Format: int32 */
             status?: number | null;
         };
+        /**
+         * @description A video's camera (PixelGenie L10): `fixed` holds the shot still.
+         * @enum {string}
+         */
+        VideoCamera: "fixed" | "auto";
         VideoGenerationRequest: components["schemas"]["BaseGenerationRequest"] & {
             aspect_ratio?: string | null;
+            /**
+             * @description `false` for a silent clip, where the model can leave audio out
+             *     (`supports_audio_toggle`).
+             */
+            audio?: boolean | null;
+            camera?: null | components["schemas"]["VideoCamera"];
             /**
              * Format: double
              * @description Absent means the model's own `duration_seconds` default (resolved by
@@ -4158,6 +4192,8 @@ export interface components {
             duration_seconds?: number | null;
             /** Format: int32 */
             fps?: number | null;
+            /** @description `true` for a clip whose last frame is its first (`supports_loop`). */
+            loop?: boolean | null;
             resolution?: string | null;
         };
         /** @description Video generation can be async — this is the initial response. */
@@ -4171,6 +4207,7 @@ export interface components {
             error?: string | null;
             /** @description Unique generation ID for polling. */
             id: string;
+            media?: null | components["schemas"]["VideoMedia"];
             /** @description The model used. */
             model: string;
             /**
@@ -4185,6 +4222,18 @@ export interface components {
             usage?: null | components["schemas"]["UsageInfo"];
             /** @description Video URL when completed. */
             video_url?: string | null;
+        };
+        /** @description What a finished video is, read from its bytes (PixelGenie L10). */
+        VideoMedia: {
+            /** Format: double */
+            duration_s?: number | null;
+            /** Format: double */
+            fps?: number | null;
+            has_audio?: boolean | null;
+            /** Format: int32 */
+            height?: number | null;
+            /** Format: int32 */
+            width?: number | null;
         };
         /** @description One row in the `webhook_deliveries` table. */
         WebhookDelivery: {

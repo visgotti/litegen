@@ -150,6 +150,10 @@ impl VideoProvider for KlingVideoProvider {
                 }
             }
         }
+        // PixelGenie L10: native audio is Kling's `sound`, on or off.
+        if let Some(audio) = extras.audio {
+            body["sound"] = Value::String(if audio { "on" } else { "off" }.to_string());
+        }
 
         let builder = crate::providers::auth::apply(
             &self.auth,
@@ -292,7 +296,7 @@ mod tests {
     }
 
     fn make_extras() -> VideoExtras {
-        VideoExtras { duration_seconds: 5.0, aspect_ratio: Some("16:9".to_string()), resolution: None, fps: None, extra: None }
+        VideoExtras { duration_seconds: 5.0, aspect_ratio: Some("16:9".to_string()), resolution: None, fps: None, extra: None, camera: None, audio: None, r#loop: None }
     }
 
     #[tokio::test]
@@ -317,7 +321,8 @@ mod tests {
         let provider = make_provider(&server.uri());
         let schema = ref_schema("kling/video-kling-v2-6");
         let base = make_base("a phoenix rising", "kling/video-kling-v2-6");
-        let extras = make_extras();
+        let mut extras = make_extras();
+        extras.audio = Some(false);
         let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
 
         let handle = provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
@@ -326,6 +331,8 @@ mod tests {
         let received = server.received_requests().await.unwrap();
         let auth = received[0].headers.get("authorization").unwrap().to_str().unwrap();
         assert!(auth.starts_with("Bearer ey"), "expected JWT bearer, got {auth}");
+        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["sound"], "off", "PixelGenie L10: audio false");
 
         let poll = provider.poll_status(&handle).await.unwrap();
         assert_eq!(poll.status, GenerationStatus::Completed);

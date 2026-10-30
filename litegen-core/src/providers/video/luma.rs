@@ -197,6 +197,10 @@ impl VideoProvider for LumaProvider {
                 }
             }
         }
+        // PixelGenie L10: a clip that ends on its first frame.
+        if let Some(looped) = extras.r#loop {
+            body["loop"] = Value::Bool(looped);
+        }
 
         let resp = crate::providers::inject_trace_headers(
             self.client
@@ -450,6 +454,7 @@ mod tests {
             resolution: None,
             fps: None,
             extra: None,
+            camera: None, audio: None, r#loop: None,
         }
     }
 
@@ -469,7 +474,8 @@ mod tests {
         let provider = make_provider(&server.uri());
         let schema = ref_schema("luma/dream-machine");
         let base = make_base("a sunset over the ocean", "luma/dream-machine");
-        let extras = make_extras();
+        let mut extras = make_extras();
+        extras.r#loop = Some(true);
         let materialized = materialized_with_first_frame("https://x");
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
@@ -484,6 +490,7 @@ mod tests {
         assert_eq!(received.len(), 1);
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
         assert_eq!(body["model"], "ray-2");
+        assert_eq!(body["loop"], true, "PixelGenie L10: loop");
         assert_eq!(body["prompt"], "a sunset over the ocean");
         assert_eq!(body["keyframes"]["frame0"]["url"], "https://x");
         assert_eq!(body["keyframes"]["frame0"]["type"], "image");

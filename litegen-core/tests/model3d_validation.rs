@@ -59,7 +59,7 @@ fn req(strict: bool) -> Model3dGenerationRequest {
 }
 
 fn int_param(min: i64, max: i64) -> ParamSpec {
-    ParamSpec::Int(ParamSpecInt { min: Some(min), max: Some(max), default: None, label: None, description: None })
+    ParamSpec::Int(ParamSpecInt { min: Some(min), max: Some(max), default: None, label: None, description: None, values: Vec::new() })
 }
 
 fn str_param(values: &[&str]) -> ParamSpec {

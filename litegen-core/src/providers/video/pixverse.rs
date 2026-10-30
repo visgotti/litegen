@@ -174,6 +174,10 @@ impl PixverseProvider {
                 }
             }
         }
+        // PixelGenie L10: audio on or off.
+        if let Some(audio) = extras.audio {
+            body["generate_audio_switch"] = Value::Bool(audio);
+        }
         Ok((path, body))
     }
 
@@ -428,7 +432,7 @@ mod tests {
     }
 
     fn make_extras() -> VideoExtras {
-        VideoExtras { duration_seconds: 5.0, aspect_ratio: Some("16:9".to_string()), resolution: Some("720p".to_string()), fps: None, extra: None }
+        VideoExtras { duration_seconds: 5.0, aspect_ratio: Some("16:9".to_string()), resolution: Some("720p".to_string()), fps: None, extra: None, camera: None, audio: None, r#loop: None }
     }
 
     #[tokio::test]
@@ -452,7 +456,8 @@ mod tests {
         let provider = make_provider(&server.uri());
         let schema = ref_schema("pixverse/v4.5");
         let base = make_base("a paper airplane gliding", "pixverse/v4.5");
-        let extras = make_extras();
+        let mut extras = make_extras();
+        extras.audio = Some(true);
         let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
 
         let handle = provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
@@ -463,6 +468,7 @@ mod tests {
         assert_eq!(post.headers.get("api-key").unwrap(), "pv-key");
         assert!(post.headers.get("ai-trace-id").is_some(), "Ai-trace-id header must be present");
         let body: Value = serde_json::from_slice(&post.body).unwrap();
+        assert_eq!(body["generate_audio_switch"], true, "PixelGenie L10: audio true");
         assert_eq!(body["model"], "v4.5");
         assert_eq!(body["quality"], "720p");
 
@@ -472,7 +478,7 @@ mod tests {
     }
 
     fn extras_without_quality_or_ratio() -> VideoExtras {
-        VideoExtras { duration_seconds: 5.0, aspect_ratio: None, resolution: None, fps: None, extra: None }
+        VideoExtras { duration_seconds: 5.0, aspect_ratio: None, resolution: None, fps: None, extra: None, camera: None, audio: None, r#loop: None }
     }
 
     async fn mount_ok(server: &MockServer, endpoint: &str, resp: Value) {

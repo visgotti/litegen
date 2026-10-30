@@ -120,6 +120,8 @@ models:
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
+      # PixelGenie L10: audio is sent as Vidu's own `audio` (default true on q3).
+      audio: { kind: bool, default: true }
       # text2video / img2video / start-end2video take 1-16s, but reference2video
       # takes 3-16s; one range serves every endpoint, so the floor is 3s.
       # https://platform.vidu.com/docs/reference-to-video.md
@@ -150,7 +152,7 @@ models:
     # available in q3 models"), style or movement_amplitude (no effect on q2/q3),
     # voice_id ("The Q3 series model is not effective") or audio_type (q2/q1/2.0).
     # https://platform.vidu.com/docs/image-to-video.md
-    extra_allowlist: [audio, off_peak, callback_url]
+    extra_allowlist: [off_peak, callback_url]
     tags: [text-to-video, image-to-video, reference-to-video]
 
   - id: vidu/viduq3-pro
@@ -169,6 +171,8 @@ models:
     # https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md (2026-10-12)
     prompt: { required: true, max_length: 20000 }
     params:
+      # PixelGenie L10: audio is sent as Vidu's own `audio` (default true on q3).
+      audio: { kind: bool, default: true }
       # 1-16s at 540p / 720p / 1080p on text2video, img2video and start-end2video.
       # https://platform.vidu.com/docs/start-end-to-video.md
       duration_seconds: { kind: float, min: 1.0, max: 16.0, default: 5.0 }
@@ -193,7 +197,7 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     # Same q3 field rules as viduq3-turbo.
-    extra_allowlist: [audio, off_peak, callback_url]
+    extra_allowlist: [off_peak, callback_url]
     tags: [text-to-video, image-to-video, premium]
 
   - id: vidu/viduq2-pro-fast

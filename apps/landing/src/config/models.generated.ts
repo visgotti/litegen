@@ -577,6 +577,15 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "camera",
+        "kind": "string",
+        "enum": [
+          "fixed",
+          "auto"
+        ],
+        "default": "auto"
+      },
+      {
         "name": "duration_seconds",
         "kind": "float",
         "default": 5,
@@ -656,6 +665,11 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
         "name": "duration_seconds",
         "kind": "float",
         "default": 5,
@@ -722,6 +736,15 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 3000
     },
     "params": [
+      {
+        "name": "camera",
+        "kind": "string",
+        "enum": [
+          "fixed",
+          "auto"
+        ],
+        "default": "auto"
+      },
       {
         "name": "duration_seconds",
         "kind": "float",
@@ -1463,6 +1486,11 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 5000
     },
     "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
       {
         "name": "duration_seconds",
         "kind": "float",
@@ -3236,6 +3264,11 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
         "name": "negative_prompt",
         "kind": "string"
       },
@@ -3299,6 +3332,11 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 2500
     },
     "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
       {
         "name": "negative_prompt",
         "kind": "string"
@@ -3648,6 +3686,11 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 1000
     },
     "params": [
+      {
+        "name": "loop",
+        "kind": "bool",
+        "default": false
+      },
       {
         "name": "duration_seconds",
         "kind": "float",
@@ -4870,6 +4913,11 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -5239,6 +5287,11 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 5000
     },
     "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": false
+      },
       {
         "name": "seed",
         "kind": "seed",
@@ -7531,6 +7584,11 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
+      {
         "name": "duration_seconds",
         "kind": "float",
         "default": 5,
@@ -7609,6 +7667,11 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 5000
     },
     "params": [
+      {
+        "name": "audio",
+        "kind": "bool",
+        "default": true
+      },
       {
         "name": "duration_seconds",
         "kind": "float",

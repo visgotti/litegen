@@ -147,6 +147,13 @@ impl VideoProvider for ByteDanceVideoProvider {
                 }
             }
         }
+        // PixelGenie L10: a still camera, and audio where the model takes it.
+        if let Some(camera) = extras.camera.as_deref() {
+            body["camera_fixed"] = Value::Bool(camera == "fixed");
+        }
+        if let Some(audio) = extras.audio {
+            body["generate_audio"] = Value::Bool(audio);
+        }
 
         let builder = crate::providers::auth::apply(
             &self.auth,
@@ -287,7 +294,7 @@ mod tests {
     }
 
     fn make_extras() -> VideoExtras {
-        VideoExtras { duration_seconds: 5.0, aspect_ratio: Some("16:9".to_string()), resolution: Some("1080p".to_string()), fps: None, extra: None }
+        VideoExtras { duration_seconds: 5.0, aspect_ratio: Some("16:9".to_string()), resolution: Some("1080p".to_string()), fps: None, extra: None, camera: None, audio: None, r#loop: None }
     }
 
     #[tokio::test]
@@ -309,7 +316,8 @@ mod tests {
         let provider = make_provider(&server.uri());
         let schema = ref_schema("bytedance/doubao-seedance-1-0-pro-250528");
         let base = make_base("a timelapse of city traffic", "bytedance/doubao-seedance-1-0-pro-250528");
-        let extras = make_extras();
+        let mut extras = make_extras();
+        extras.camera = Some("fixed".into());
         let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
 
         let handle = provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
@@ -318,6 +326,7 @@ mod tests {
         let received = server.received_requests().await.unwrap();
         assert_eq!(received[0].headers.get("authorization").unwrap(), "Bearer ark-key");
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        assert_eq!(body["camera_fixed"], true, "PixelGenie L10: camera fixed");
         // BytePlus documents `seedance-1-0-pro-250528`; `doubao-…` is the
         // Volcengine (China) id. The public catalog id is unchanged.
         assert_eq!(body["model"], "seedance-1-0-pro-250528");

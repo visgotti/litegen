@@ -320,6 +320,28 @@ even where provider evidence is strong.
 | `negative_prompt` | String | max_length | 3 | validator: none. provider: setters exist in `kling.rs`, `pixverse.rs` — **zero assertions**. conformance: n/a. | 🟡 |
 | `fps` | Int | range | 3 | validator: none. provider: `bedrock.rs` sets `video_config["fps"]` — **zero assertions anywhere in the suite**. conformance: n/a. | 🟡 |
 
+### Video controls for sprites (L10)
+
+`camera` (`fixed` | `auto`), `audio` (bool) and `loop` (bool) are request
+fields where a row declares them (strict refuses, lax drops and reports an
+undeclared one); the listing serves `supports_fixed_camera`,
+`supports_audio_toggle`, `supports_loop` and `duration_values` — a
+`duration_seconds` param may list the only values its vendor takes, and any
+other is 400 `param_enum_mismatch`. Every finished video reports `media
+{duration_s, fps, width, height, has_audio}`, read from the kept bytes (MP4/MOV
+boxes or GIF frames) and recorded on its asset.
+
+| control | rows | wire | proof | status |
+|---|---|---|---|---|
+| `camera: fixed` | `bytedance/doubao-seedance-1-0-pro-250528`, `seedance-1-0-pro-fast-251015` | `camera_fixed: true` | `submits_seedance_task_and_polls` | 🟡 wiremock |
+| `audio` | `bytedance/dreamina-seedance-2-0-mini-260615` (`generate_audio`, default on), `fal/ltx-2.3` (`generate_audio`, on), `kling/video-kling-v2-6`, `-v3` (`sound` on/off, off), `pixverse/v6`, `c1` (`generate_audio_switch`, off), `vidu/viduq3-turbo`, `-pro` (`audio`, on) | as listed | `submits_fal_video_job_and_returns_handle`, `submits_text2video_with_jwt_and_polls`, `submits_text_to_video_and_polls`, `submits_text2video_with_token_auth_and_polls` | 🟡 wiremock |
+| `loop` | `luma/dream-machine` | `loop` | `submits_luma_job_with_first_frame_keyframe` | 🟡 wiremock |
+| `duration_values` | Kling 2.5 Turbo / 2.6 (5, 10), MiniMax Hailuo 02 / 2.3 / 2.3 Fast (6, 10), fal LTX-2.3 (6, 8, 10), Leonardo Kling 2.5 (5, 10), PixVerse v5 (5, 8), Luma Dream Machine / Ray 2 / Ray Flash 2 (5, 9) | the validator refuses others | HTTP `controls_and_durations_a_model_lacks_are_refused` | ✅ |
+| `media` | every finished video | — | unit `an_mp4_says_its_length_rate_size_and_audio`; HTTP `a_looping_still_silent_clip_reports_what_came_back` (`mock/sprite-video`: 64×64, 10 fps, 2 s, silent, last frame = first) | ✅ |
+
+Kling's audio prices (Task 17) now read the canonical `audio`, as do
+PixVerse's.
+
 ### Timed keyframes (3D doc §5)
 
 A `keyframe` reference carries `time_s`, seconds from the start of the clip;

@@ -153,7 +153,7 @@ models:
     # @see https://docs.leonardo.ai/reference/creategeneration (2026-09-11)
     prompt: { required: true, max_length: 2500 }
     params:
-      duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0 }
+      duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0, values: [5.0, 10.0] }
       resolution:
         kind: string
         enum_values: [1080p]

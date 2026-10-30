@@ -17,6 +17,8 @@ class ParamSpecFloat:
         label (Union[None, Unset, str]):
         max_ (Union[None, Unset, float]):
         min_ (Union[None, Unset, float]):
+        values (Union[Unset, List[float]]): The only values the vendor takes, when it takes a list rather than a
+            range (`duration_seconds`, PixelGenie L10).
     """
 
     default: Union[None, Unset, float] = UNSET
@@ -24,6 +26,7 @@ class ParamSpecFloat:
     label: Union[None, Unset, str] = UNSET
     max_: Union[None, Unset, float] = UNSET
     min_: Union[None, Unset, float] = UNSET
+    values: Union[Unset, List[float]] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -57,6 +60,10 @@ class ParamSpecFloat:
         else:
             min_ = self.min_
 
+        values: Union[Unset, List[float]] = UNSET
+        if not isinstance(self.values, Unset):
+            values = self.values
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -70,6 +77,8 @@ class ParamSpecFloat:
             field_dict["max"] = max_
         if min_ is not UNSET:
             field_dict["min"] = min_
+        if values is not UNSET:
+            field_dict["values"] = values
 
         return field_dict
 
@@ -122,12 +131,15 @@ class ParamSpecFloat:
 
         min_ = _parse_min_(d.pop("min", UNSET))
 
+        values = cast(List[float], d.pop("values", UNSET))
+
         param_spec_float = cls(
             default=default,
             description=description,
             label=label,
             max_=max_,
             min_=min_,
+            values=values,
         )
 
         param_spec_float.additional_properties = d

@@ -35,7 +35,7 @@ models:
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2000 }
     params:
-      duration_seconds: { kind: float, min: 6.0, max: 10.0, default: 6.0 }
+      duration_seconds: { kind: float, min: 6.0, max: 10.0, default: 6.0, values: [6.0, 10.0] }
       # 512P is image-to-video only: Hailuo-02 text-to-video takes 768P | 1080P
       # and first/last-frame "does not support 512P". One list serves every
       # mode this model advertises, so 512P is not offered.
@@ -67,7 +67,7 @@ models:
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2000 }
     params:
-      duration_seconds: { kind: float, min: 6.0, max: 10.0, default: 6.0 }
+      duration_seconds: { kind: float, min: 6.0, max: 10.0, default: 6.0, values: [6.0, 10.0] }
       resolution:
         kind: string
         enum_values: [768P, 1080P]
@@ -103,7 +103,7 @@ models:
       # i2v: 6 or 10 s at 768P, 6 s only at 1080P. The schema has no discrete
       # durations or per-resolution bounds, so 6-10 is the closest it can say;
       # 7-9 s, and 10 s at 1080P, are rejected upstream.
-      duration_seconds: { kind: float, min: 6.0, max: 10.0, default: 6.0 }
+      duration_seconds: { kind: float, min: 6.0, max: 10.0, default: 6.0, values: [6.0, 10.0] }
       resolution:
         kind: string
         enum_values: [768P, 1080P]

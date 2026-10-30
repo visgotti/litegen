@@ -653,6 +653,7 @@ impl ProxyRouter {
             error: None,
             usage: usage_info,
             created: chrono::Utc::now().timestamp(),
+            media: None,
         })
     }
 
@@ -706,6 +707,7 @@ impl ProxyRouter {
         } else {
             (poll.video_url.clone(), None)
         };
+        let media = assets.as_ref().and_then(|a| crate::types::VideoMedia::from_assets(a));
 
         if matches!(
             poll.status,
@@ -727,6 +729,7 @@ impl ProxyRouter {
                 // reads `usage` off the poll response it actually waits for.
                 usage,
                 created: chrono::Utc::now().timestamp(),
+                media,
             },
             assets,
         ))
@@ -1217,6 +1220,7 @@ impl ProxyRouter {
             aspect_ratio: extras.aspect_ratio.clone(),
             resolution: extras.resolution.clone(),
             fps: extras.fps,
+            camera: None, audio: None, r#loop: None,
         };
         let mut cost_sorted: Vec<(f64, &Deployment)> = Vec::new();
         for d in deployments {
@@ -1594,6 +1598,8 @@ pub async fn rehost_video(
         "{}/{generation_id}/video.{format}",
         path_prefix.unwrap_or(crate::proxy::storage::VIDEO_PATH_PREFIX).trim_matches('/')
     );
+    // What came back, read from the bytes (PixelGenie L10).
+    let media = crate::proxy::video_probe::probe(&bytes);
     let url = store
         .put(&key, &bytes::Bytes::from(bytes.clone()), crate::proxy::storage::model3d_content_type(format, &ct))
         .await
@@ -1606,10 +1612,11 @@ pub async fn rehost_video(
             url: url.clone(),
             size_bytes: Some(bytes.len() as u64),
             sha256: Some(sha256_hex(&bytes)),
-            width: None,
-            height: None,
-            duration_s: None,
-            fps: None,
+            width: media.width,
+            height: media.height,
+            duration_s: media.duration_s,
+            fps: media.fps,
+            has_audio: media.has_audio,
         },
         url,
     })

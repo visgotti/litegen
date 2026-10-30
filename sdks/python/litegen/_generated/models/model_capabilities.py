@@ -19,6 +19,8 @@ class ModelCapabilities:
     Attributes:
         supports_image_to_image (bool):
         supports_text_to_image (bool):
+        duration_values (Union[Unset, List[float]]): The only `duration_seconds` values the model takes; empty when it
+            takes its range.
         keyframe_timing (Union[KeyframeTiming, None, Unset]):
         lossy_only (Union[Unset, bool]): Returns only lossy containers (no PNG).
         mask_convention (Union[MaskConvention, None, Unset]):
@@ -36,12 +38,15 @@ class ModelCapabilities:
         preserves_unmasked (Union[None, PreservesUnmasked, Unset]):
         region_input (Union[None, RegionInput, Unset]):
         supported_sizes (Union[Unset, List[str]]):
+        supports_audio_toggle (Union[Unset, bool]): Takes `audio: false` (or `true`) to leave audio out (or in).
         supports_first_frame (Union[Unset, bool]):
+        supports_fixed_camera (Union[Unset, bool]): Takes `camera: fixed` (PixelGenie L10).
         supports_image_to_3d (Union[Unset, bool]): Accepts one `init` reference image (image-to-3D).
         supports_image_to_video (Union[Unset, bool]):
         supports_inpainting (Union[Unset, bool]):
         supports_keyframes (Union[Unset, bool]): Takes `keyframe` references, each pinned at its `time_s` (3D doc §5).
         supports_last_frame (Union[Unset, bool]):
+        supports_loop (Union[Unset, bool]): Takes `loop: true`.
         supports_multiview_to_3d (Union[Unset, bool]): Accepts several `view-*` reference images (multiview-to-3D).
         supports_pbr (Union[Unset, bool]): Takes the `pbr` param.
         supports_region_edit (Union[Unset, bool]): Takes `region` (3D doc §4).
@@ -66,6 +71,7 @@ class ModelCapabilities:
 
     supports_image_to_image: bool
     supports_text_to_image: bool
+    duration_values: Union[Unset, List[float]] = UNSET
     keyframe_timing: Union[KeyframeTiming, None, Unset] = UNSET
     lossy_only: Union[Unset, bool] = UNSET
     mask_convention: Union[MaskConvention, None, Unset] = UNSET
@@ -78,12 +84,15 @@ class ModelCapabilities:
     preserves_unmasked: Union[None, PreservesUnmasked, Unset] = UNSET
     region_input: Union[None, RegionInput, Unset] = UNSET
     supported_sizes: Union[Unset, List[str]] = UNSET
+    supports_audio_toggle: Union[Unset, bool] = UNSET
     supports_first_frame: Union[Unset, bool] = UNSET
+    supports_fixed_camera: Union[Unset, bool] = UNSET
     supports_image_to_3d: Union[Unset, bool] = UNSET
     supports_image_to_video: Union[Unset, bool] = UNSET
     supports_inpainting: Union[Unset, bool] = UNSET
     supports_keyframes: Union[Unset, bool] = UNSET
     supports_last_frame: Union[Unset, bool] = UNSET
+    supports_loop: Union[Unset, bool] = UNSET
     supports_multiview_to_3d: Union[Unset, bool] = UNSET
     supports_pbr: Union[Unset, bool] = UNSET
     supports_region_edit: Union[Unset, bool] = UNSET
@@ -100,6 +109,10 @@ class ModelCapabilities:
         supports_image_to_image = self.supports_image_to_image
 
         supports_text_to_image = self.supports_text_to_image
+
+        duration_values: Union[Unset, List[float]] = UNSET
+        if not isinstance(self.duration_values, Unset):
+            duration_values = self.duration_values
 
         keyframe_timing: Union[None, Unset, str]
         if isinstance(self.keyframe_timing, Unset):
@@ -165,7 +178,11 @@ class ModelCapabilities:
         if not isinstance(self.supported_sizes, Unset):
             supported_sizes = self.supported_sizes
 
+        supports_audio_toggle = self.supports_audio_toggle
+
         supports_first_frame = self.supports_first_frame
+
+        supports_fixed_camera = self.supports_fixed_camera
 
         supports_image_to_3d = self.supports_image_to_3d
 
@@ -176,6 +193,8 @@ class ModelCapabilities:
         supports_keyframes = self.supports_keyframes
 
         supports_last_frame = self.supports_last_frame
+
+        supports_loop = self.supports_loop
 
         supports_multiview_to_3d = self.supports_multiview_to_3d
 
@@ -207,6 +226,8 @@ class ModelCapabilities:
                 "supports_text_to_image": supports_text_to_image,
             }
         )
+        if duration_values is not UNSET:
+            field_dict["duration_values"] = duration_values
         if keyframe_timing is not UNSET:
             field_dict["keyframe_timing"] = keyframe_timing
         if lossy_only is not UNSET:
@@ -231,8 +252,12 @@ class ModelCapabilities:
             field_dict["region_input"] = region_input
         if supported_sizes is not UNSET:
             field_dict["supported_sizes"] = supported_sizes
+        if supports_audio_toggle is not UNSET:
+            field_dict["supports_audio_toggle"] = supports_audio_toggle
         if supports_first_frame is not UNSET:
             field_dict["supports_first_frame"] = supports_first_frame
+        if supports_fixed_camera is not UNSET:
+            field_dict["supports_fixed_camera"] = supports_fixed_camera
         if supports_image_to_3d is not UNSET:
             field_dict["supports_image_to_3d"] = supports_image_to_3d
         if supports_image_to_video is not UNSET:
@@ -243,6 +268,8 @@ class ModelCapabilities:
             field_dict["supports_keyframes"] = supports_keyframes
         if supports_last_frame is not UNSET:
             field_dict["supports_last_frame"] = supports_last_frame
+        if supports_loop is not UNSET:
+            field_dict["supports_loop"] = supports_loop
         if supports_multiview_to_3d is not UNSET:
             field_dict["supports_multiview_to_3d"] = supports_multiview_to_3d
         if supports_pbr is not UNSET:
@@ -274,6 +301,8 @@ class ModelCapabilities:
         supports_image_to_image = d.pop("supports_image_to_image")
 
         supports_text_to_image = d.pop("supports_text_to_image")
+
+        duration_values = cast(List[float], d.pop("duration_values", UNSET))
 
         def _parse_keyframe_timing(data: object) -> Union[KeyframeTiming, None, Unset]:
             if data is None:
@@ -386,7 +415,11 @@ class ModelCapabilities:
 
         supported_sizes = cast(List[str], d.pop("supported_sizes", UNSET))
 
+        supports_audio_toggle = d.pop("supports_audio_toggle", UNSET)
+
         supports_first_frame = d.pop("supports_first_frame", UNSET)
+
+        supports_fixed_camera = d.pop("supports_fixed_camera", UNSET)
 
         supports_image_to_3d = d.pop("supports_image_to_3d", UNSET)
 
@@ -397,6 +430,8 @@ class ModelCapabilities:
         supports_keyframes = d.pop("supports_keyframes", UNSET)
 
         supports_last_frame = d.pop("supports_last_frame", UNSET)
+
+        supports_loop = d.pop("supports_loop", UNSET)
 
         supports_multiview_to_3d = d.pop("supports_multiview_to_3d", UNSET)
 
@@ -428,6 +463,7 @@ class ModelCapabilities:
         model_capabilities = cls(
             supports_image_to_image=supports_image_to_image,
             supports_text_to_image=supports_text_to_image,
+            duration_values=duration_values,
             keyframe_timing=keyframe_timing,
             lossy_only=lossy_only,
             mask_convention=mask_convention,
@@ -440,12 +476,15 @@ class ModelCapabilities:
             preserves_unmasked=preserves_unmasked,
             region_input=region_input,
             supported_sizes=supported_sizes,
+            supports_audio_toggle=supports_audio_toggle,
             supports_first_frame=supports_first_frame,
+            supports_fixed_camera=supports_fixed_camera,
             supports_image_to_3d=supports_image_to_3d,
             supports_image_to_video=supports_image_to_video,
             supports_inpainting=supports_inpainting,
             supports_keyframes=supports_keyframes,
             supports_last_frame=supports_last_frame,
+            supports_loop=supports_loop,
             supports_multiview_to_3d=supports_multiview_to_3d,
             supports_pbr=supports_pbr,
             supports_region_edit=supports_region_edit,

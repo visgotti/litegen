@@ -277,6 +277,14 @@ pub fn validate_video(
                         Some("duration_seconds"),
                     ));
                 }
+                // A vendor that takes a list, not a range (PixelGenie L10).
+                if !s.values.is_empty() && !s.values.iter().any(|a| (a - v).abs() < 1e-9) {
+                    return Err(ValidationError::new(
+                        "param_enum_mismatch",
+                        format!("'{}' takes duration_seconds {:?}; got {v}", schema.id, s.values),
+                        Some("duration_seconds"),
+                    ));
+                }
             }
             Some(ParamSpec::Int(s)) => {
                 let v = requested.round() as i64;
@@ -284,6 +292,13 @@ pub fn validate_video(
                     return Err(ValidationError::new(
                         "param_out_of_range",
                         format!("duration_seconds {} out of range", v),
+                        Some("duration_seconds"),
+                    ));
+                }
+                if !s.values.is_empty() && !s.values.contains(&v) {
+                    return Err(ValidationError::new(
+                        "param_enum_mismatch",
+                        format!("'{}' takes duration_seconds {:?}; got {v}", schema.id, s.values),
                         Some("duration_seconds"),
                     ));
                 }
@@ -364,6 +379,7 @@ pub fn validate_video(
         }
     }
 
+    check_video_controls(schema, &mut req, strict, &mut dropped)?;
     check_refs(schema, &mut req.base.reference_images, strict, &mut dropped)?;
     check_video_request(schema, &req)?;
     check_keyframes(schema, &mut req)?;
@@ -1102,6 +1118,37 @@ fn check_image_request(schema: &ModelSchema, req: &ImageGenerationRequest) -> Re
             format!("'{}' does not take an init image", schema.id),
             Some("reference_images"),
         ));
+    }
+    Ok(())
+}
+
+/// PixelGenie L10: a still camera, a silent clip and a loop, where the model
+/// declares each; strict mode refuses an undeclared one, lax mode drops it.
+fn check_video_controls(
+    schema: &ModelSchema,
+    req: &mut VideoGenerationRequest,
+    strict: bool,
+    dropped: &mut Vec<String>,
+) -> Result<(), ValidationError> {
+    let undeclared = |name: &str| ValidationError::new("param_unsupported", format!("'{}' does not take {name}", schema.id), Some(name));
+    if let Some(camera) = req.camera.as_deref() {
+        match schema.params.get("camera") {
+            Some(ParamSpec::String(s)) => check_string(camera, &s.enum_values, s.max_length, "camera")?,
+            _ if strict => return Err(undeclared("camera")),
+            _ => {
+                dropped.push("camera".into());
+                req.camera = None;
+            }
+        }
+    }
+    for (name, value) in [("audio", &mut req.audio), ("loop", &mut req.r#loop)] {
+        if value.is_some() && !matches!(schema.params.get(name), Some(ParamSpec::Bool(_))) {
+            if strict {
+                return Err(undeclared(name));
+            }
+            dropped.push(name.into());
+            *value = None;
+        }
     }
     Ok(())
 }

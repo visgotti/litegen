@@ -199,6 +199,9 @@ pub struct ParamSpecInt {
     #[serde(default)] pub min: Option<i64>,
     #[serde(default)] pub max: Option<i64>,
     #[serde(default)] pub default: Option<i64>,
+    /// The only values the vendor takes, when it takes a list rather than a
+    /// range (`duration_seconds`, PixelGenie L10).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub values: Vec<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
@@ -208,6 +211,9 @@ pub struct ParamSpecFloat {
     #[serde(default)] pub min: Option<f64>,
     #[serde(default)] pub max: Option<f64>,
     #[serde(default)] pub default: Option<f64>,
+    /// The only values the vendor takes, when it takes a list rather than a
+    /// range (`duration_seconds`, PixelGenie L10).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub values: Vec<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
@@ -708,6 +714,9 @@ pub struct ModelsFile {
 
 /// Canonical param names. The loader rejects unknown keys to keep yaml honest.
 pub const KNOWN_PARAMS: &[&str] = &[
+    "camera",
+    "audio",
+    "loop",
     "output_format",
     "background",
     "negative_prompt",
@@ -774,7 +783,8 @@ pub fn canonical_param_kinds(name: &str) -> &'static [&'static str] {
         "height_m" => &["float"],
         "animations" => &["animation_list"],
         "region" => &["region"],
-        "texture" | "pbr" | "rig" => &["bool"],
+        "texture" | "pbr" | "rig" | "audio" | "loop" => &["bool"],
+        "camera" => &["string"],
         "target_polycount" => &["int"],
         "source_model" => &["source_model"],
         _ => &[],

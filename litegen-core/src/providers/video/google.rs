@@ -381,6 +381,7 @@ mod tests {
             resolution: Some("720p".to_string()),
             fps: None,
             extra: None,
+            camera: None, audio: None, r#loop: None,
         }
     }
 

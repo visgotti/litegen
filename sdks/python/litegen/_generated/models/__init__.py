@@ -207,8 +207,10 @@ from .update_org_request import UpdateOrgRequest
 from .usage_info import UsageInfo
 from .user import User
 from .vendor_error import VendorError
+from .video_camera import VideoCamera
 from .video_generation_request import VideoGenerationRequest
 from .video_generation_response import VideoGenerationResponse
+from .video_media import VideoMedia
 from .webhook_delivery import WebhookDelivery
 from .webhook_test_result import WebhookTestResult
 
@@ -412,8 +414,10 @@ __all__ = (
     "UsageInfo",
     "User",
     "VendorError",
+    "VideoCamera",
     "VideoGenerationRequest",
     "VideoGenerationResponse",
+    "VideoMedia",
     "WebhookDelivery",
     "WebhookTestResult",
 )

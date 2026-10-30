@@ -9,7 +9,7 @@ use crate::providers::{
 };
 use crate::types::*;
 use crate::proxy::materializer::MaterializedRefForm;
-use super::visual_mock::{generate_keyframe_blend_gif, generate_timed_keyframes_gif, generate_visual_video_gif, global_store};
+use super::visual_mock::{generate_keyframe_blend_gif, generate_sprite_gif, generate_timed_keyframes_gif, generate_visual_video_gif, global_store};
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 
 /// Pull the raw decoded bytes for a ref with the given role, regardless of
@@ -32,7 +32,8 @@ fn should_render_visual_video(model_id: &str) -> bool {
         "mock/passthrough-video" |
         "mock/strict-duration-video" |
         "mock/expensive-video" |
-        "mock/priced-video"
+        "mock/priced-video" |
+        "mock/sprite-video"
     )
 }
 
@@ -89,7 +90,9 @@ impl VideoProvider for MockVideoProvider {
             // cross-fade between the two real images so the dev sees that the
             // ref-image flow actually delivered bytes to the provider.
             let timed = materialized.refs.iter().any(|r| r.role == "keyframe");
-            let gif_bytes = if model.id == "mock/keyframe-video" && timed {
+            let gif_bytes = if model.id == "mock/sprite-video" {
+                generate_sprite_gif(extras.duration_seconds, 10, extras.r#loop == Some(true))
+            } else if model.id == "mock/keyframe-video" && timed {
                 // Timed keyframes: first_frame is t = 0 and last_frame the end.
                 let duration = extras.duration_seconds;
                 let at = |r: &crate::proxy::materializer::MaterializedRef| match r.role.as_str() {
@@ -234,6 +237,7 @@ mod tests {
             resolution: None,
             fps: None,
             extra: None,
+            camera: None, audio: None, r#loop: None,
         }
     }
 

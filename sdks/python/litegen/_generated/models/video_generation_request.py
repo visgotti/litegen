@@ -1,8 +1,18 @@
-from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.video_camera import VideoCamera
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -30,12 +40,16 @@ class VideoGenerationRequest:
         seed (Union[None, Unset, int]):
         strict (Union[Unset, bool]):
         aspect_ratio (Union[None, Unset, str]):
+        audio (Union[None, Unset, bool]): `false` for a silent clip, where the model can leave audio out
+            (`supports_audio_toggle`).
+        camera (Union[None, Unset, VideoCamera]):
         duration_seconds (Union[None, Unset, float]): Absent means the model's own `duration_seconds` default (resolved
             by
             `resolve_duration_seconds`), not a fixed 5s: models whose minimum is
             higher (fal/ltx-2.3, bedrock nova-reel) rejected every request that
             omitted it.
         fps (Union[None, Unset, int]):
+        loop (Union[None, Unset, bool]): `true` for a clip whose last frame is its first (`supports_loop`).
         resolution (Union[None, Unset, str]):
     """
 
@@ -49,8 +63,11 @@ class VideoGenerationRequest:
     seed: Union[None, Unset, int] = UNSET
     strict: Union[Unset, bool] = UNSET
     aspect_ratio: Union[None, Unset, str] = UNSET
+    audio: Union[None, Unset, bool] = UNSET
+    camera: Union[None, Unset, VideoCamera] = UNSET
     duration_seconds: Union[None, Unset, float] = UNSET
     fps: Union[None, Unset, int] = UNSET
+    loop: Union[None, Unset, bool] = UNSET
     resolution: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -92,6 +109,20 @@ class VideoGenerationRequest:
         else:
             aspect_ratio = self.aspect_ratio
 
+        audio: Union[None, Unset, bool]
+        if isinstance(self.audio, Unset):
+            audio = UNSET
+        else:
+            audio = self.audio
+
+        camera: Union[None, Unset, str]
+        if isinstance(self.camera, Unset):
+            camera = UNSET
+        elif isinstance(self.camera, VideoCamera):
+            camera = self.camera.value
+        else:
+            camera = self.camera
+
         duration_seconds: Union[None, Unset, float]
         if isinstance(self.duration_seconds, Unset):
             duration_seconds = UNSET
@@ -103,6 +134,12 @@ class VideoGenerationRequest:
             fps = UNSET
         else:
             fps = self.fps
+
+        loop: Union[None, Unset, bool]
+        if isinstance(self.loop, Unset):
+            loop = UNSET
+        else:
+            loop = self.loop
 
         resolution: Union[None, Unset, str]
         if isinstance(self.resolution, Unset):
@@ -135,10 +172,16 @@ class VideoGenerationRequest:
             field_dict["strict"] = strict
         if aspect_ratio is not UNSET:
             field_dict["aspect_ratio"] = aspect_ratio
+        if audio is not UNSET:
+            field_dict["audio"] = audio
+        if camera is not UNSET:
+            field_dict["camera"] = camera
         if duration_seconds is not UNSET:
             field_dict["duration_seconds"] = duration_seconds
         if fps is not UNSET:
             field_dict["fps"] = fps
+        if loop is not UNSET:
+            field_dict["loop"] = loop
         if resolution is not UNSET:
             field_dict["resolution"] = resolution
 
@@ -195,6 +238,32 @@ class VideoGenerationRequest:
 
         aspect_ratio = _parse_aspect_ratio(d.pop("aspect_ratio", UNSET))
 
+        def _parse_audio(data: object) -> Union[None, Unset, bool]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, bool], data)
+
+        audio = _parse_audio(d.pop("audio", UNSET))
+
+        def _parse_camera(data: object) -> Union[None, Unset, VideoCamera]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                camera_type_1 = VideoCamera(data)
+
+                return camera_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[None, Unset, VideoCamera], data)
+
+        camera = _parse_camera(d.pop("camera", UNSET))
+
         def _parse_duration_seconds(data: object) -> Union[None, Unset, float]:
             if data is None:
                 return data
@@ -212,6 +281,15 @@ class VideoGenerationRequest:
             return cast(Union[None, Unset, int], data)
 
         fps = _parse_fps(d.pop("fps", UNSET))
+
+        def _parse_loop(data: object) -> Union[None, Unset, bool]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, bool], data)
+
+        loop = _parse_loop(d.pop("loop", UNSET))
 
         def _parse_resolution(data: object) -> Union[None, Unset, str]:
             if data is None:
@@ -233,8 +311,11 @@ class VideoGenerationRequest:
             seed=seed,
             strict=strict,
             aspect_ratio=aspect_ratio,
+            audio=audio,
+            camera=camera,
             duration_seconds=duration_seconds,
             fps=fps,
+            loop=loop,
             resolution=resolution,
         )
 

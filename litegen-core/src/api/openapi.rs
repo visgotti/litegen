@@ -542,6 +542,25 @@ mod tests {
     }
 
     #[test]
+    fn a_video_request_documents_its_sprite_controls_and_the_result_its_media() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        assert_eq!(s["VideoCamera"]["enum"], json!(["fixed", "auto"]));
+        let req = &s["VideoGenerationRequest"];
+        assert!(mentions(property(req, "camera"), "#/components/schemas/VideoCamera"), "{}", property(req, "camera"));
+        assert!(mentions(property(req, "audio"), "boolean"));
+        assert!(mentions(property(req, "loop"), "boolean"));
+        for f in ["supports_fixed_camera", "supports_audio_toggle", "supports_loop", "duration_values"] {
+            property(&s["ModelCapabilities"], f);
+        }
+        assert!(mentions(property(&s["VideoGenerationResponse"], "media"), "#/components/schemas/VideoMedia"));
+        for f in ["duration_s", "fps", "width", "height", "has_audio"] {
+            property(&s["VideoMedia"], f);
+        }
+        property(&s["ParamSpecFloat"], "values");
+    }
+
+    #[test]
     fn a_models_reference_spec_says_whether_its_vendor_takes_data_uris() {
         let d = doc();
         let p = property(&d["components"]["schemas"]["RefInputSpec"], "data_uri");

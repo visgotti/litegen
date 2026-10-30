@@ -381,7 +381,7 @@ mod tests {
     }
 
     fn make_extras() -> VideoExtras {
-        VideoExtras { duration_seconds: 5.0, aspect_ratio: None, resolution: None, fps: None, extra: None }
+        VideoExtras { duration_seconds: 5.0, aspect_ratio: None, resolution: None, fps: None, extra: None, camera: None, audio: None, r#loop: None }
     }
 
     fn submit_body(received: &[wiremock::Request]) -> Value {

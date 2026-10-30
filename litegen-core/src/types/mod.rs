@@ -91,6 +91,46 @@ pub struct VideoGenerationRequest {
     #[serde(default)] pub aspect_ratio: Option<String>,
     #[serde(default)] pub resolution: Option<String>,
     #[serde(default)] pub fps: Option<u32>,
+    /// `fixed` for a still camera, where the model takes one
+    /// (`supports_fixed_camera`, PixelGenie L10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<VideoCamera>)]
+    pub camera: Option<String>,
+    /// `false` for a silent clip, where the model can leave audio out
+    /// (`supports_audio_toggle`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<bool>,
+    /// `true` for a clip whose last frame is its first (`supports_loop`).
+    #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
+    pub r#loop: Option<bool>,
+}
+
+/// A video's camera (PixelGenie L10): `fixed` holds the shot still.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoCamera {
+    Fixed,
+    Auto,
+}
+
+/// What a finished video is, read from its bytes (PixelGenie L10).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct VideoMedia {
+    pub duration_s: Option<f64>,
+    pub fps: Option<f64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub has_audio: Option<bool>,
+}
+
+impl VideoMedia {
+    /// The first video asset's measurements, from a row's or a poll's
+    /// `{"assets": [...]}` metadata.
+    pub fn from_assets(metadata: &serde_json::Value) -> Option<Self> {
+        let video = metadata["assets"].as_array()?.iter().find(|a| a["kind"] == "video")?;
+        let media = serde_json::from_value::<Self>(video.clone()).ok()?;
+        (media != Self::default()).then_some(media)
+    }
 }
 
 /// An image container litegen asks a vendor for (PixelGenie L9).
@@ -225,6 +265,9 @@ pub struct VideoGenerationResponse {
     pub usage: Option<UsageInfo>,
     /// Unix timestamp.
     pub created: i64,
+    /// What came back, read from the finished video (PixelGenie L10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<VideoMedia>,
 }
 
 // ─── 3D Model Generation ──────────────────────────────────────────────────
@@ -877,6 +920,9 @@ pub struct GenerationAsset {
     /// Videos: frames per second, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps: Option<f64>,
+    /// Whether a video carries an audio track (PixelGenie L10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_audio: Option<bool>,
 }
 
 /// `GET /v1/generations/{id}/assets`.
@@ -1150,6 +1196,19 @@ pub struct ModelCapabilities {
     /// takes a mask, whatever its vendor reads — litegen converts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask_convention: Option<crate::capabilities::MaskConvention>,
+    /// Takes `camera: fixed` (PixelGenie L10).
+    #[serde(default)]
+    pub supports_fixed_camera: bool,
+    /// Takes `audio: false` (or `true`) to leave audio out (or in).
+    #[serde(default)]
+    pub supports_audio_toggle: bool,
+    /// Takes `loop: true`.
+    #[serde(default)]
+    pub supports_loop: bool,
+    /// The only `duration_seconds` values the model takes; empty when it
+    /// takes its range.
+    #[serde(default)]
+    pub duration_values: Vec<f64>,
     /// Takes `background: transparent` (PixelGenie L9).
     #[serde(default)]
     pub supports_transparent_background: bool,

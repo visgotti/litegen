@@ -23,6 +23,7 @@ class GenerationAsset:
             url (str): Where the file is served from: absolute, and litegen's own storage.
             duration_s (Union[None, Unset, float]): Videos: length in seconds, when known.
             fps (Union[None, Unset, float]): Videos: frames per second, when known.
+            has_audio (Union[None, Unset, bool]): Whether a video carries an audio track (PixelGenie L10).
             height (Union[None, Unset, int]):
             sha256 (Union[None, Unset, str]): Lowercase hex SHA-256 of the stored file.
             size_bytes (Union[None, Unset, int]):
@@ -35,6 +36,7 @@ class GenerationAsset:
     url: str
     duration_s: Union[None, Unset, float] = UNSET
     fps: Union[None, Unset, float] = UNSET
+    has_audio: Union[None, Unset, bool] = UNSET
     height: Union[None, Unset, int] = UNSET
     sha256: Union[None, Unset, str] = UNSET
     size_bytes: Union[None, Unset, int] = UNSET
@@ -61,6 +63,12 @@ class GenerationAsset:
             fps = UNSET
         else:
             fps = self.fps
+
+        has_audio: Union[None, Unset, bool]
+        if isinstance(self.has_audio, Unset):
+            has_audio = UNSET
+        else:
+            has_audio = self.has_audio
 
         height: Union[None, Unset, int]
         if isinstance(self.height, Unset):
@@ -100,6 +108,8 @@ class GenerationAsset:
             field_dict["duration_s"] = duration_s
         if fps is not UNSET:
             field_dict["fps"] = fps
+        if has_audio is not UNSET:
+            field_dict["has_audio"] = has_audio
         if height is not UNSET:
             field_dict["height"] = height
         if sha256 is not UNSET:
@@ -139,6 +149,15 @@ class GenerationAsset:
             return cast(Union[None, Unset, float], data)
 
         fps = _parse_fps(d.pop("fps", UNSET))
+
+        def _parse_has_audio(data: object) -> Union[None, Unset, bool]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, bool], data)
+
+        has_audio = _parse_has_audio(d.pop("has_audio", UNSET))
 
         def _parse_height(data: object) -> Union[None, Unset, int]:
             if data is None:
@@ -183,6 +202,7 @@ class GenerationAsset:
             url=url,
             duration_s=duration_s,
             fps=fps,
+            has_audio=has_audio,
             height=height,
             sha256=sha256,
             size_bytes=size_bytes,

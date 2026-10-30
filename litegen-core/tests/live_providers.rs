@@ -86,6 +86,7 @@ fn vid_extras() -> VideoExtras {
         resolution: None,
         fps: None,
         extra: None,
+        camera: None, audio: None, r#loop: None,
     }
 }
 

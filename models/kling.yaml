@@ -114,7 +114,7 @@ models:
     prompt: { required: true, max_length: 2500 }
     params:
       negative_prompt: { kind: string, max_length: 2500 }
-      duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0 }
+      duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0, values: [5.0, 10.0] }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9","9:16","1:1"]
@@ -143,12 +143,14 @@ models:
       variable_pricing:
         - { per_second_usd: 0.042 }
         - { when: { extra.mode: pro }, per_second_usd: 0.07 }
-        - { when: { extra.mode: pro, extra.sound: "on" }, per_second_usd: 0.14 }
+        - { when: { extra.mode: pro, audio: true }, per_second_usd: 0.14 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2500 }
     params:
+      # PixelGenie L10: audio is sent as sound on | off (default off).
+      audio: { kind: bool, default: false }
       negative_prompt: { kind: string, max_length: 2500 }
-      duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0 }
+      duration_seconds: { kind: float, min: 5.0, max: 10.0, default: 5.0, values: [5.0, 10.0] }
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9","9:16","1:1"]
@@ -163,7 +165,7 @@ models:
     # sound: on | off (default off). Native audio is 1080p only (mode pro;
     # "720P supports silent videos only"), and first + last frame is 1080p
     # silent only.
-    extra_allowlist: [mode, sound]
+    extra_allowlist: [mode]
     tags: [text-to-video, image-to-video]
 
   # Kling 3.0 on the same legacy /v1/videos/text2video and
@@ -192,13 +194,15 @@ models:
       base_cost_usd: 0.42
       variable_pricing:
         - { per_second_usd: 0.084 }
-        - { when: { extra.sound: "on" }, per_second_usd: 0.126 }
+        - { when: { audio: true }, per_second_usd: 0.126 }
         - { when: { extra.mode: pro }, per_second_usd: 0.112 }
-        - { when: { extra.mode: pro, extra.sound: "on" }, per_second_usd: 0.168 }
+        - { when: { extra.mode: pro, audio: true }, per_second_usd: 0.168 }
         - { when: { extra.mode: 4k }, per_second_usd: 0.42 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2500 }
     params:
+      # PixelGenie L10: audio is sent as sound on | off (default off).
+      audio: { kind: bool, default: false }
       negative_prompt: { kind: string, max_length: 2500 }
       duration_seconds: { kind: float, min: 3.0, max: 15.0, default: 5.0 }
       aspect_ratio:
@@ -220,5 +224,5 @@ models:
     # Kling 3.0 (its own API has no such setting), so it is not allowlisted;
     # voice_list is voice control ("Not Supported"); element_list needs
     # Element Management ids, which we do not wrap.
-    extra_allowlist: [mode, sound, multi_shot, shot_type, multi_prompt]
+    extra_allowlist: [mode, multi_shot, shot_type, multi_prompt]
     tags: [text-to-video, image-to-video]

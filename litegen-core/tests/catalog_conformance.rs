@@ -1411,9 +1411,10 @@ fn bytedance_seedance_1_0_pro_allowlists_the_camera_fixed_body_field() {
     let schema = reg
         .get("bytedance/doubao-seedance-1-0-pro-250528")
         .expect("seedance-1-0-pro missing");
+    // PixelGenie L10: the still camera is the canonical `camera`, sent as camera_fixed.
     assert!(
-        schema.extra_allowlist.iter().any(|k| k == "camera_fixed"),
-        "camera_fixed is the documented body field"
+        matches!(schema.params.get("camera"), Some(ParamSpec::String(c)) if c.enum_values == ["fixed", "auto"]),
+        "camera fixed | auto is sent as the documented camera_fixed body field"
     );
     assert!(
         !schema.extra_allowlist.iter().any(|k| k == "camerafixed"),
@@ -1999,7 +2000,8 @@ fn kling_v2_5_turbo_and_v2_6_video_match_the_capability_map() {
         }
         assert!(schema.extra_allowlist.iter().any(|k| k == "mode"), "{id}: mode selects 720p/1080p");
     }
-    let has_sound = |id: &str| reg.get(id).unwrap().extra_allowlist.iter().any(|k| k == "sound");
+    // PixelGenie L10: native audio is the canonical `audio`, sent as `sound`.
+    let has_sound = |id: &str| matches!(reg.get(id).unwrap().params.get("audio"), Some(ParamSpec::Bool(_)));
     assert!(has_sound("kling/video-kling-v2-6"), "Kling 2.6 documents native audio (sound)");
     assert!(!has_sound("kling/video-kling-v2-5-turbo"), "Kling 2.5 Turbo has no native audio");
 }
@@ -2198,10 +2200,10 @@ fn vidu_q3_models_allowlist_audio_but_not_bgm() {
     let reg = registry();
     for id in ["vidu/viduq3-turbo", "vidu/viduq3-pro"] {
         let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        // PixelGenie L10: Vidu's own `audio` is the canonical `audio` (default on for q3).
         assert!(
-            schema.extra_allowlist.iter().any(|k| k == "audio"),
-            "{id} extra_allowlist is missing audio: {:?}",
-            schema.extra_allowlist
+            matches!(schema.params.get("audio"), Some(ParamSpec::Bool(b)) if b.default == Some(true)),
+            "{id} is missing audio"
         );
         assert!(
             !schema.extra_allowlist.iter().any(|k| k == "bgm"),
@@ -2285,10 +2287,10 @@ fn pixverse_v6_and_c1_are_carried_with_their_documented_contract() {
                 "{id} does not advertise {ar:?}, a v6/c1 aspect ratio"
             );
         }
+        // PixelGenie L10: generate_audio_switch is the canonical `audio` (default off).
         assert!(
-            schema.extra_allowlist.iter().any(|k| k == "generate_audio_switch"),
-            "{id} extra_allowlist is missing generate_audio_switch: {:?}",
-            schema.extra_allowlist
+            matches!(schema.params.get("audio"), Some(ParamSpec::Bool(b)) if b.default == Some(false)),
+            "{id} is missing audio (generate_audio_switch)"
         );
     }
 }
@@ -2744,7 +2746,8 @@ fn kling_v3_video_matches_the_capability_map() {
         .collect();
     want.sort();
     assert_eq!(got, want, "{id} aspect ratios");
-    for key in ["mode", "sound"] {
+    assert!(matches!(schema.params.get("audio"), Some(ParamSpec::Bool(_))), "{id}: Kling 3.0 documents sound (canonical audio)");
+    for key in ["mode"] {
         assert!(
             schema.extra_allowlist.iter().any(|k| k == key),
             "{id}: Kling 3.0 documents {key}"

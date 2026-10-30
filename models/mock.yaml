@@ -574,6 +574,25 @@ models:
     extra_allowlist: []
     tags: [mock, test, multiview]
 
+  - id: mock/sprite-video
+    provider: mock
+    media_type: video
+    display_name: Mock Sprite Video
+    description: >-
+      A 64×64 GIF at 10 fps for exactly the asked duration (2 or 4 s): a
+      square crossing a still background. loop true ends it on its first
+      frame; camera and audio are accepted, as a sprite pipeline sends them
+      (PixelGenie L10).
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: float, min: 2.0, max: 4.0, default: 2.0, values: [2.0, 4.0] }
+      camera: { kind: string, enum_values: [fixed, auto], default: auto }
+      audio: { kind: bool, default: false }
+      loop: { kind: bool, default: false }
+    tags: [mock, test, sprites]
+
   - id: mock/format-image
     provider: mock
     media_type: image

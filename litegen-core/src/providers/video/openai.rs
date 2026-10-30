@@ -497,6 +497,7 @@ mod tests {
             resolution: None,
             fps: None,
             extra: None,
+            camera: None, audio: None, r#loop: None,
         }
     }
 

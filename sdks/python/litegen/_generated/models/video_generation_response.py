@@ -1,13 +1,4 @@
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Type,
-    TypeVar,
-    Union,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -17,6 +8,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.usage_info import UsageInfo
+    from ..models.video_media import VideoMedia
 
 
 T = TypeVar("T", bound="VideoGenerationResponse")
@@ -34,6 +26,7 @@ class VideoGenerationResponse:
         provider (str): The provider.
         status (GenerationStatus):
         error (Union[None, Unset, str]): Error message if failed.
+        media (Union['VideoMedia', None, Unset]):
         usage (Union['UsageInfo', None, Unset]):
         video_url (Union[None, Unset, str]): Video URL when completed.
     """
@@ -45,12 +38,14 @@ class VideoGenerationResponse:
     provider: str
     status: GenerationStatus
     error: Union[None, Unset, str] = UNSET
+    media: Union["VideoMedia", None, Unset] = UNSET
     usage: Union["UsageInfo", None, Unset] = UNSET
     video_url: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         from ..models.usage_info import UsageInfo
+        from ..models.video_media import VideoMedia
 
         created = self.created
 
@@ -69,6 +64,14 @@ class VideoGenerationResponse:
             error = UNSET
         else:
             error = self.error
+
+        media: Union[Dict[str, Any], None, Unset]
+        if isinstance(self.media, Unset):
+            media = UNSET
+        elif isinstance(self.media, VideoMedia):
+            media = self.media.to_dict()
+        else:
+            media = self.media
 
         usage: Union[Dict[str, Any], None, Unset]
         if isinstance(self.usage, Unset):
@@ -98,6 +101,8 @@ class VideoGenerationResponse:
         )
         if error is not UNSET:
             field_dict["error"] = error
+        if media is not UNSET:
+            field_dict["media"] = media
         if usage is not UNSET:
             field_dict["usage"] = usage
         if video_url is not UNSET:
@@ -108,6 +113,7 @@ class VideoGenerationResponse:
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         from ..models.usage_info import UsageInfo
+        from ..models.video_media import VideoMedia
 
         d = src_dict.copy()
         created = d.pop("created")
@@ -130,6 +136,23 @@ class VideoGenerationResponse:
             return cast(Union[None, Unset, str], data)
 
         error = _parse_error(d.pop("error", UNSET))
+
+        def _parse_media(data: object) -> Union["VideoMedia", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                media_type_1 = VideoMedia.from_dict(data)
+
+                return media_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union["VideoMedia", None, Unset], data)
+
+        media = _parse_media(d.pop("media", UNSET))
 
         def _parse_usage(data: object) -> Union["UsageInfo", None, Unset]:
             if data is None:
@@ -165,6 +188,7 @@ class VideoGenerationResponse:
             provider=provider,
             status=status,
             error=error,
+            media=media,
             usage=usage,
             video_url=video_url,
         )

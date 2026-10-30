@@ -102,6 +102,10 @@ back 180, back-right 225, right 270, front-right 315; top and bottom have none.
 A multiview image model takes ``views=`` from this list; a multiview-to-3D model
 takes ``view-<name>`` references."""
 
+VideoCamera = Literal["fixed", "auto"]
+"""A video's camera (``camera=`` on ``videos.generate``): ``fixed`` holds the shot
+still, on models with ``supports_fixed_camera``."""
+
 ImageOutputFormat = Literal["png", "webp", "jpeg"]
 """An image container (``output_format=`` on ``images.generate``): one of the
 model's ``capabilities.output_formats``; a ``lossy_only`` model offers no PNG."""
@@ -448,6 +452,8 @@ class GenerationAsset(TypedDict):
     height: NotRequired[int | None]
     duration_s: NotRequired[float | None]
     fps: NotRequired[float | None]
+    has_audio: NotRequired[bool | None]
+    """Videos: whether the file carries an audio track (read from its bytes)."""
 
 
 class GenerationAssetList(TypedDict):

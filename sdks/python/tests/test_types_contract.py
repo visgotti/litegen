@@ -150,6 +150,7 @@ def test_model3d_params_cover_the_request_schema() -> None:
         ("KeyframeTiming", t.KeyframeTiming),
         ("ModelStatus", t.ModelStatus),
         ("ImageOutputFormat", t.ImageOutputFormat),
+        ("VideoCamera", t.VideoCamera),
         ("ImageBackground", t.ImageBackground),
         ("MaskConvention", t.MaskConvention),
         ("RegionInput", t.RegionInput),

@@ -2,6 +2,7 @@ pub mod registry;
 pub mod router;
 pub mod cache;
 pub mod storage;
+pub mod video_probe;
 pub mod materializer;
 pub mod model3d_convert;
 pub mod model3d_stages;

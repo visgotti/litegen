@@ -540,7 +540,7 @@ mod tests {
     }
 
     fn make_extras() -> VideoExtras {
-        VideoExtras { duration_seconds: 6.0, aspect_ratio: None, resolution: Some("1080P".to_string()), fps: None, extra: None }
+        VideoExtras { duration_seconds: 6.0, aspect_ratio: None, resolution: Some("1080P".to_string()), fps: None, extra: None, camera: None, audio: None, r#loop: None }
     }
 
     #[tokio::test]
@@ -602,7 +602,7 @@ mod tests {
         let provider = make_provider(&server.uri());
         let schema = ref_schema("minimax/S2V-01");
         let base = make_base("the same character waves", "minimax/S2V-01");
-        let extras = VideoExtras { duration_seconds: 6.0, aspect_ratio: None, resolution: None, fps: None, extra: None };
+        let extras = VideoExtras { duration_seconds: 6.0, aspect_ratio: None, resolution: None, fps: None, extra: None, camera: None, audio: None, r#loop: None };
         let materialized = MaterializedRequest {
             refs: vec![crate::proxy::materializer::MaterializedRef {
                 role: "subject".to_string(),
@@ -649,7 +649,7 @@ mod tests {
 
     fn default_extras() -> VideoExtras {
         // The gateway's default duration (5 s); no resolution or ratio given.
-        VideoExtras { duration_seconds: 5.0, aspect_ratio: None, resolution: None, fps: None, extra: None }
+        VideoExtras { duration_seconds: 5.0, aspect_ratio: None, resolution: None, fps: None, extra: None, camera: None, audio: None, r#loop: None }
     }
 
     async fn sent_body(server: &MockServer) -> Value {
@@ -700,7 +700,7 @@ mod tests {
         let provider = make_v2_provider(&server);
         let schema = ref_schema("minimax/MiniMax-H3-Max");
         let base = make_base("a little girl grows up", "minimax/MiniMax-H3-Max");
-        let extras = VideoExtras { duration_seconds: 6.0, aspect_ratio: None, resolution: Some("480P".to_string()), fps: None, extra: None };
+        let extras = VideoExtras { duration_seconds: 6.0, aspect_ratio: None, resolution: Some("480P".to_string()), fps: None, extra: None, camera: None, audio: None, r#loop: None };
         let materialized = MaterializedRequest {
             refs: vec![
                 url_ref("first_frame", "https://img.test/start.png"),
