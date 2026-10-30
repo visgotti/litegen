@@ -799,6 +799,13 @@ pub struct Model3dGenerationRequest {
     /// Frames per second of the delivered clips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps: Option<u32>,
+    /// A `texture` model's map size in pixels, one of its
+    /// `texture_resolutions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture_resolution: Option<u32>,
+    /// Paint the source's own UV layout rather than a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_uvs: Option<bool>,
     /// The mesh an operation (`rig`, `animate`, `texture`, `remesh`,
     /// `segment`) works on, required by every model whose task is not
     /// `generate`. A litegen generation id chains a step onto the last; a URL
@@ -917,6 +924,22 @@ pub struct SceneManifest {
     pub animations: Vec<SceneAnimation>,
     /// glTF extensions the file uses (none is ever required).
     pub extensions_used: Vec<String>,
+    /// A `segment` model's parts: one glTF node each, named with the
+    /// vendor's label or `part_<n>`. Absent on every other model's mesh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<Vec<ScenePart>>,
+}
+
+/// One part of a segmented mesh, measured by litegen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ScenePart {
+    pub name: String,
+    /// The part's node: its index in the delivered glTF's `nodes`.
+    pub node: u32,
+    pub triangle_count: u64,
+    /// World-space bounds at rest, in metres.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<SceneBounds>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -1298,6 +1321,13 @@ pub struct ModelCapabilities {
     /// background removed (PixelGenie L8).
     #[serde(default)]
     pub supports_background_removal: bool,
+    /// The map sizes a `texture` model paints at (`texture_resolution`);
+    /// empty when it takes none.
+    #[serde(default)]
+    pub texture_resolutions: Vec<u32>,
+    /// Takes `keep_uvs`.
+    #[serde(default)]
+    pub supports_keep_uvs: bool,
     /// Serves `POST /v1/images/segmentations` (PixelGenie L7).
     #[serde(default)]
     pub supports_segmentation: bool,

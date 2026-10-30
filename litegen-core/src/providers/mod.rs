@@ -476,6 +476,10 @@ pub struct Model3dExtras {
     pub joint_naming: Option<String>,
     /// The character's height in metres.
     pub height_m: Option<f64>,
+    /// A `texture` model's map size (3D doc §3F).
+    pub texture_resolution: Option<u32>,
+    /// Paint the source's own UV layout.
+    pub keep_uvs: Option<bool>,
     /// The clips to make, in order (3D doc §3C), presets resolved to the
     /// model's own ids.
     pub animations: Vec<AnimationClip>,

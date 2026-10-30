@@ -72,6 +72,7 @@ async fn live_fal_trellis_delivers_four_containers_from_one_glb() {
         source: None,
         animations: Vec::new(), fps: None,
         skeleton: None, joint_naming: None, height_m: None, preflight: None,
+        texture_resolution: None, keep_uvs: None,
     };
     let refs = MaterializedRequest {
         refs: vec![MaterializedRef {

@@ -429,6 +429,104 @@ models:
     extra_allowlist: []
     tags: [mock, test]
 
+  # ─── Texture, remesh, segment (PixelGenie 3D doc §3F) ─────────────────────
+  - id: mock/texture-3d
+    provider: mock
+    media_type: model3d
+    task: texture
+    native_orientation:
+      up: source
+      front: source
+      evidence: the mock paints the source's own geometry and moves nothing (litegen-core/src/providers/model3d/mock.rs)
+    display_name: Mock Texture 3D
+    description: >-
+      Paints any mesh it can read with one material: a base colour map, plus
+      metallic-roughness and normal maps with `pbr`, each `texture_resolution`
+      pixels square. `keep_uvs` keeps the source's own UV set where it has
+      one; otherwise each primitive gets a planar one over X and Z. Paints
+      from a prompt, a `style` reference image, or both.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: {}
+    prompt: { required: false, max_length: 1000 }
+    params:
+      source_model:
+        kind: source_model
+        formats: [glb]
+        max_bytes: 52428800
+        label: Source mesh
+        description: The mesh to paint.
+      pbr: { kind: bool, default: false, label: PBR maps, description: Metallic-roughness and normal maps besides the base colour. }
+      texture_resolution:
+        kind: int
+        values: [512, 1024, 2048]
+        default: 1024
+        label: Texture resolution
+        description: Each map's size in pixels.
+      keep_uvs: { kind: bool, default: false, label: Keep UVs, description: Paint the source's own UV layout rather than a new one. }
+    ref_inputs:
+      max_total: 1
+      default_role: style
+      provider_format: { form: base64 }
+      roles:
+        style: { required: false, min_count: 0, max_count: 1 }
+    extra_allowlist: []
+    tags: [mock, test, texture]
+
+  - id: mock/remesh-3d
+    provider: mock
+    media_type: model3d
+    task: remesh
+    native_orientation:
+      up: source
+      front: source
+      evidence: the mock builds its ring inside the source's own bounds and frame (litegen-core/src/providers/model3d/mock.rs)
+    display_name: Mock Remesh 3D
+    description: >-
+      Rebuilds any mesh it can read as a flat ring across its bounds made of
+      exactly `target_polycount` triangles — or, with `topology: quad`, of
+      half as many quads, two triangles each in glTF.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: {}
+    prompt: { required: false, max_length: 0 }
+    params:
+      source_model:
+        kind: source_model
+        formats: [glb]
+        max_bytes: 52428800
+        label: Source mesh
+        description: The mesh to retopologise.
+      target_polycount: { kind: int, min: 4, max: 100000, default: 1000, label: Target triangles, description: The triangle count to rebuild the mesh at. }
+      topology: { kind: string, enum_values: [triangle, quad], default: triangle, label: Topology, description: Triangles, or quads (two triangles each in glTF). }
+    extra_allowlist: []
+    tags: [mock, test, remesh]
+
+  - id: mock/segment-3d
+    provider: mock
+    media_type: model3d
+    task: segment
+    native_orientation:
+      up: source
+      front: source
+      evidence: the mock splits the source's own geometry in place (litegen-core/src/providers/model3d/mock.rs)
+    display_name: Mock Segment 3D
+    description: >-
+      Splits any mesh it can read into two parts by which side of its middle
+      along X each triangle's centre lies on: the −X half labelled
+      `negative_x`, as a vendor labels a part it knows, and the +X half
+      unlabelled, which litegen names `part_1`.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: {}
+    prompt: { required: false, max_length: 0 }
+    params:
+      source_model:
+        kind: source_model
+        formats: [glb]
+        max_bytes: 52428800
+        label: Source mesh
+        description: The mesh to split into parts.
+    extra_allowlist: []
+    tags: [mock, test, segment]
+
   - id: mock/rig-3d
     provider: mock
     media_type: model3d

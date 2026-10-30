@@ -2742,6 +2742,8 @@ export interface components {
              */
             height_m?: number | null;
             joint_naming?: null | components["schemas"]["Model3dJointNaming"];
+            /** @description Paint the source's own UV layout rather than a new one. */
+            keep_uvs?: boolean | null;
             /**
              * @deprecated
              * @description Superseded by `output_formats`. A lone value is folded into it; when both are sent, `output_formats` wins and this one is reported dropped.
@@ -2776,6 +2778,12 @@ export interface components {
             target_polycount?: number | null;
             /** @description Texture the mesh, rather than returning bare geometry. */
             texture?: boolean | null;
+            /**
+             * Format: int32
+             * @description A `texture` model's map size in pixels, one of its
+             *     `texture_resolutions`.
+             */
+            texture_resolution?: number | null;
             topology?: null | components["schemas"]["Model3dTopology"];
         };
         /**
@@ -2899,6 +2907,8 @@ export interface components {
             supports_image_to_image: boolean;
             supports_image_to_video?: boolean;
             supports_inpainting?: boolean;
+            /** @description Takes `keep_uvs`. */
+            supports_keep_uvs?: boolean;
             /** @description Takes `keyframe` references, each pinned at its `time_s` (3D doc §5). */
             supports_keyframes?: boolean;
             supports_last_frame?: boolean;
@@ -2930,6 +2940,11 @@ export interface components {
              *     serves as `task`.
              */
             task?: components["schemas"]["ModelTask"];
+            /**
+             * @description The map sizes a `texture` model paints at (`texture_resolution`);
+             *     empty when it takes none.
+             */
+            texture_resolutions?: number[];
         };
         ModelCapabilityFlags: {
             /**
@@ -3980,6 +3995,11 @@ export interface components {
             materials: components["schemas"]["SceneMaterial"][];
             /** @description `vendor` (it arrived so) or `litegen` (litegen turned it). */
             oriented_by: string;
+            /**
+             * @description A `segment` model's parts: one glTF node each, named with the
+             *     vendor's label or `part_<n>`. Absent on every other model's mesh.
+             */
+            parts?: components["schemas"]["ScenePart"][] | null;
             skin?: null | components["schemas"]["SceneSkin"];
             /** Format: int64 */
             triangle_count: number;
@@ -3997,6 +4017,18 @@ export interface components {
             /** @description `base_color`, `metallic_roughness`, `normal`, `occlusion`, `emissive`. */
             maps: string[];
             name?: string | null;
+        };
+        /** @description One part of a segmented mesh, measured by litegen. */
+        ScenePart: {
+            bounds?: null | components["schemas"]["SceneBounds"];
+            name: string;
+            /**
+             * Format: int32
+             * @description The part's node: its index in the delivered glTF's `nodes`.
+             */
+            node: number;
+            /** Format: int64 */
+            triangle_count: number;
         };
         SceneSkin: {
             /** @description `t`, `a` or `unknown`, from the upper-arm angle at rest. */

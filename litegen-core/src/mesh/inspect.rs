@@ -230,10 +230,65 @@ pub fn inspect(scene: &Scene) -> Result<SceneFacts, MeshError> {
     })
 }
 
+/// One part of a segmented mesh: a mesh-bearing node.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartFacts {
+    pub node: usize,
+    pub name: Option<String>,
+    pub triangle_count: usize,
+    /// World-space bounds at rest.
+    pub bounds: Option<([f32; 3], [f32; 3])>,
+}
+
+/// Every mesh-bearing node, in node order, measured at rest.
+pub fn parts(scene: &Scene) -> Result<Vec<PartFacts>, MeshError> {
+    let mut out: Vec<PartFacts> = scene
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.mesh.is_some())
+        .map(|(node, n)| PartFacts { node, name: n.name.clone(), triangle_count: 0, bounds: None })
+        .collect();
+    for wp in pose::world_primitives(scene, &pose::default_pose(scene))? {
+        let Some(part) = out.iter_mut().find(|p| p.node == wp.node) else { continue };
+        part.triangle_count += wp.indices.len() / 3;
+        for p in &wp.positions {
+            let (lo, hi) = part.bounds.get_or_insert((*p, *p));
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use super::super::fixtures;
+
+    #[test]
+    fn each_mesh_node_is_a_part_with_its_own_triangles_and_world_bounds() {
+        use super::super::scene::{Node, Transform};
+        let mut scene = fixtures::cube();
+        let mesh = scene.nodes.iter().find_map(|n| n.mesh).unwrap();
+        let at = |x: f64, name: &str| Node {
+            name: Some(name.into()),
+            transform: Transform::Trs { translation: [x, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+            children: Vec::new(),
+            mesh: Some(mesh),
+            skin: None,
+            weights: None,
+        };
+        scene.nodes = vec![at(-5.0, "left"), at(5.0, "right")];
+        scene.roots = vec![0, 1];
+        let cube = scene.meshes[mesh].primitives.iter().map(|p| p.triangle_count()).sum::<usize>();
+        let parts = parts(&scene).unwrap();
+        assert_eq!(parts.iter().map(|p| (p.node, p.name.as_deref(), p.triangle_count)).collect::<Vec<_>>(), [(0, Some("left"), cube), (1, Some("right"), cube)]);
+        let (l, r) = (parts[0].bounds.unwrap(), parts[1].bounds.unwrap());
+        assert!(l.1[0] < 0.0 && r.0[0] > 0.0, "each part's own world bounds: {l:?} {r:?}");
+    }
 
     #[test]
     fn a_static_mesh_reports_its_geometry_and_materials() {

@@ -767,6 +767,36 @@ pub fn validate_model3d(
     bool_param!(req.texture, "texture");
     bool_param!(req.pbr, "pbr");
     bool_param!(req.rig, "rig");
+    bool_param!(req.keep_uvs, "keep_uvs");
+    // 3D doc §3F: a map size the model paints at, one of its listed values.
+    if let Some(v) = req.texture_resolution {
+        match schema.params.get("texture_resolution") {
+            Some(ParamSpec::Int(s)) => {
+                let v = i64::from(v);
+                if !s.values.is_empty() && !s.values.contains(&v) {
+                    return Err(ValidationError::new(
+                        "param_enum_mismatch",
+                        format!("texture_resolution {v}: '{}' paints at {:?}", schema.id, s.values),
+                        Some("texture_resolution"),
+                    ));
+                }
+                if s.min.is_some_and(|m| v < m) || s.max.is_some_and(|m| v > m) {
+                    return Err(ValidationError::new("param_out_of_range", format!("texture_resolution {v} out of range"), Some("texture_resolution")));
+                }
+            }
+            Some(_) | None => {
+                if strict {
+                    return Err(ValidationError::new(
+                        "param_unsupported",
+                        format!("texture_resolution not supported by '{}'", schema.id),
+                        Some("texture_resolution"),
+                    ));
+                }
+                dropped.push("texture_resolution".into());
+                req.texture_resolution = None;
+            }
+        }
+    }
 
     if req.target_polycount.is_some() {
         match schema.params.get("target_polycount") {
@@ -847,6 +877,18 @@ pub fn validate_model3d(
 
     check_refs(schema, &mut req.base.reference_images, strict, &mut dropped)?;
     check_multiview_refs(schema, &req.base.reference_images)?;
+
+    // 3D doc §3F: a texture model paints from a prompt, a style image, or both.
+    if schema.task == ModelTask::Texture
+        && req.base.prompt.trim().is_empty()
+        && !req.base.reference_images.iter().any(|r| r.role.as_deref() == Some("style"))
+    {
+        return Err(ValidationError::new(
+            "param_required",
+            format!("'{}' paints from a prompt, a style reference image, or both; send one", schema.id),
+            Some("prompt"),
+        ));
+    }
 
     // The mode is inferred from the images that survived `check_refs`: none
     // means text-to-3D. That needs a model with a text arm, and a prompt to

@@ -115,6 +115,159 @@ fn animate_source(
     crate::mesh::glb::write_scene(&scene).map_err(|e| ProviderError::InvalidRequest(format!("mock/animate-3d could not write its result: {e}")))
 }
 
+/// The texturing operation (3D doc §3F).
+const TEXTURE_MODEL: &str = "mock/texture-3d";
+/// The remeshing operation (3D doc §3F).
+const REMESH_MODEL: &str = "mock/remesh-3d";
+/// The segmentation operation (3D doc §3F).
+const SEGMENT_MODEL: &str = "mock/segment-3d";
+
+fn read_source(source: &crate::providers::SourceInput, model: &str) -> Result<crate::mesh::scene::Scene, ProviderError> {
+    let format = crate::mesh::MeshFormat::parse(&source.format)
+        .ok_or_else(|| ProviderError::InvalidRequest(format!("{model} cannot read '{}'", source.format)))?;
+    Ok(crate::mesh::read_scene(&source.bytes, format, &crate::mesh::package::NoSidecars)
+        .map_err(|e| ProviderError::InvalidRequest(format!("{model} cannot read the source: {e}")))?
+        .scene)
+}
+
+fn write_glb(scene: &crate::mesh::scene::Scene, model: &str) -> Result<Vec<u8>, ProviderError> {
+    crate::mesh::glb::write_scene(scene).map_err(|e| ProviderError::InvalidRequest(format!("{model} could not write its result: {e}")))
+}
+
+/// A solid `size`-pixel square PNG.
+fn solid_png(size: u32, rgba: [u8; 4]) -> Vec<u8> {
+    let mut out = Vec::new();
+    image::RgbaImage::from_pixel(size, size, image::Rgba(rgba))
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .expect("a solid png encodes");
+    out
+}
+
+/// `mock/texture-3d`: the source's geometry painted with one material — a
+/// base colour map, plus metallic-roughness and normal maps with `pbr` — each
+/// `resolution` pixels square. `keep_uvs` keeps a primitive's own first UV
+/// set where it has one; otherwise it gets a planar one over its X and Z.
+fn texture_source(source: &crate::providers::SourceInput, pbr: bool, resolution: u32, keep_uvs: bool) -> Result<Vec<u8>, ProviderError> {
+    use crate::mesh::scene::{Image, ImageFormat, Material, Texture, TextureRef};
+    let mut scene = read_source(source, TEXTURE_MODEL)?;
+    for prim in scene.meshes.iter_mut().flat_map(|m| m.primitives.iter_mut()) {
+        if keep_uvs && !prim.uvs.is_empty() {
+            prim.uvs.truncate(1);
+            continue;
+        }
+        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for p in &prim.positions {
+            for (k, axis) in [0, 2].into_iter().enumerate() {
+                lo[k] = lo[k].min(p[axis]);
+                hi[k] = hi[k].max(p[axis]);
+            }
+        }
+        let span = |k: usize| (hi[k] - lo[k]).max(f32::EPSILON);
+        prim.uvs = vec![prim.positions.iter().map(|p| [(p[0] - lo[0]) / span(0), (p[2] - lo[1]) / span(1)]).collect()];
+    }
+    let maps: &[[u8; 4]] = if pbr { &[[0xb7, 0x41, 0x0e, 0xff], [0x00, 0x80, 0xff, 0xff], [0x80, 0x80, 0xff, 0xff]] } else { &[[0xb7, 0x41, 0x0e, 0xff]] };
+    scene.images = maps.iter().map(|c| Image { name: None, format: ImageFormat::Png, data: solid_png(resolution, *c) }).collect();
+    scene.textures = (0..maps.len()).map(|image| Texture { name: None, image, sampler: Default::default() }).collect();
+    let map = |texture: usize| Some(TextureRef { texture, uv_set: 0, transform: None });
+    scene.materials = vec![Material {
+        name: Some("painted".into()),
+        base_color_texture: map(0),
+        metallic_roughness_texture: if pbr { map(1) } else { None },
+        normal_texture: if pbr { map(2) } else { None },
+        ..Default::default()
+    }];
+    for prim in scene.meshes.iter_mut().flat_map(|m| m.primitives.iter_mut()) {
+        prim.material = Some(0);
+    }
+    write_glb(&scene, TEXTURE_MODEL)
+}
+
+/// `mock/remesh-3d`: a flat ring across the source's bounds made of exactly
+/// `target` triangles — or, with `quads`, of `target / 2` quads, each two
+/// triangles in glTF.
+fn remesh_source(source: &crate::providers::SourceInput, target: u32, quads: bool) -> Result<Vec<u8>, ProviderError> {
+    use crate::mesh::scene::{Node, Primitive, SceneMesh};
+    let scene = read_source(source, REMESH_MODEL)?;
+    let (lo, hi) = crate::mesh::inspect::inspect(&scene)
+        .ok()
+        .and_then(|f| f.bounds)
+        .unwrap_or(([-0.5; 3], [0.5; 3]));
+    let centre = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0];
+    let radius = ((hi[0] - lo[0]).max(hi[2] - lo[2]) / 2.0).max(0.01);
+    let segments = if quads { (target / 2).max(1) } else { target.max(1) };
+    let at = |i: u32, r: f32| {
+        let a = std::f32::consts::TAU * i as f32 / segments as f32;
+        [centre[0] + r * a.cos(), centre[1], centre[2] + r * a.sin()]
+    };
+    let (mut positions, mut indices) = (Vec::new(), Vec::new());
+    if quads {
+        for i in 0..segments {
+            positions.push(at(i, radius / 2.0));
+            positions.push(at(i, radius));
+        }
+        for i in 0..segments {
+            let (a, b, c, d) = (2 * i, 2 * i + 1, 2 * ((i + 1) % segments), 2 * ((i + 1) % segments) + 1);
+            indices.extend([a, c, b, b, c, d]);
+        }
+    } else {
+        positions.push(centre);
+        positions.extend((0..segments).map(|i| at(i, radius)));
+        for i in 0..segments {
+            indices.extend([0, 1 + (i + 1) % segments, 1 + i]);
+        }
+    }
+    let out = crate::mesh::scene::Scene {
+        nodes: vec![Node { name: Some("remeshed".into()), mesh: Some(0), ..Default::default() }],
+        roots: vec![0],
+        meshes: vec![SceneMesh { name: Some("remeshed".into()), primitives: vec![Primitive { positions, indices, ..Default::default() }], ..Default::default() }],
+        ..Default::default()
+    };
+    write_glb(&out, REMESH_MODEL)
+}
+
+/// `mock/segment-3d`: the source's triangles split by which side of its
+/// middle along X each triangle's centre lies on — the −X half labelled
+/// `negative_x`, as a vendor labels a part it knows, and the +X half left
+/// unlabelled for litegen to name.
+fn segment_source(source: &crate::providers::SourceInput) -> Result<Vec<u8>, ProviderError> {
+    use crate::mesh::scene::{Node, Primitive, SceneMesh};
+    let scene = read_source(source, SEGMENT_MODEL)?;
+    let flat = crate::mesh::pose::flatten(&scene).map_err(|e| ProviderError::InvalidRequest(format!("{SEGMENT_MODEL} cannot read the source: {e}")))?;
+    let (lo, hi) = flat.positions.iter().fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), p| {
+        ([lo[0].min(p[0]), lo[1].min(p[1]), lo[2].min(p[2])], [hi[0].max(p[0]), hi[1].max(p[1]), hi[2].max(p[2])])
+    });
+    let mid = (lo[0] + hi[0]) / 2.0;
+    let mut halves: [Vec<u32>; 2] = [Vec::new(), Vec::new()];
+    for t in flat.indices.chunks_exact(3) {
+        let x = t.iter().map(|&i| flat.positions[i as usize][0]).sum::<f32>() / 3.0;
+        halves[usize::from(x >= mid)].extend_from_slice(t);
+    }
+    let part = |tris: &[u32]| {
+        let mut remap = std::collections::HashMap::new();
+        let mut positions = Vec::new();
+        let indices = tris
+            .iter()
+            .map(|&i| {
+                *remap.entry(i).or_insert_with(|| {
+                    positions.push(flat.positions[i as usize]);
+                    (positions.len() - 1) as u32
+                })
+            })
+            .collect();
+        SceneMesh { primitives: vec![Primitive { positions, indices, ..Default::default() }], ..Default::default() }
+    };
+    let out = crate::mesh::scene::Scene {
+        nodes: vec![
+            Node { name: Some("negative_x".into()), mesh: Some(0), ..Default::default() },
+            Node { name: None, mesh: Some(1), ..Default::default() },
+        ],
+        roots: vec![0, 1],
+        meshes: vec![part(&halves[0]), part(&halves[1])],
+        ..Default::default()
+    };
+    write_glb(&out, SEGMENT_MODEL)
+}
+
 struct Job {
     model: String,
     /// One entry per container the caller was promised, in request order.
@@ -232,6 +385,32 @@ impl Model3dProvider for MockModel3dProvider {
                 model: model.id.clone(),
                 meshes: vec![("glb".into(), animated)],
                 preview: generate_visual_image_png("animated"),
+                polls: AtomicU32::new(0),
+                finished_at: std::sync::OnceLock::new(),
+            });
+            jobs().write().await.insert(job_id.clone(), job);
+            return Ok(Model3dGenerationHandle {
+                provider_job_id: job_id,
+                provider: "mock".to_string(),
+                model: model.id.clone(),
+                stage_context: None,
+            });
+        }
+        if [TEXTURE_MODEL, REMESH_MODEL, SEGMENT_MODEL].contains(&model.id.as_str()) {
+            let source = extras.source.as_ref().ok_or_else(|| ProviderError::InvalidRequest(format!("{} needs a source_model", model.id)))?;
+            source.record(match &source.vendor_task_id {
+                Some(id) if jobs().read().await.contains_key(id) => crate::providers::SourceDelivery::VendorTask,
+                _ => crate::providers::SourceDelivery::DataUri,
+            });
+            let mesh = match model.id.as_str() {
+                TEXTURE_MODEL => texture_source(source, extras.pbr.unwrap_or(false), extras.texture_resolution.unwrap_or(1024), extras.keep_uvs.unwrap_or(false))?,
+                REMESH_MODEL => remesh_source(source, extras.target_polycount.unwrap_or(1000), extras.topology.as_deref() == Some("quad"))?,
+                _ => segment_source(source)?,
+            };
+            let job = Arc::new(Job {
+                model: model.id.clone(),
+                meshes: vec![("glb".into(), mesh)],
+                preview: generate_visual_image_png(&model.id),
                 polls: AtomicU32::new(0),
                 finished_at: std::sync::OnceLock::new(),
             });
@@ -508,6 +687,7 @@ mod tests {
             source: None,
             animations: Vec::new(), fps: None,
             skeleton: None, joint_naming: None, height_m: None, preflight: None,
+            texture_resolution: None, keep_uvs: None,
         }
     }
 

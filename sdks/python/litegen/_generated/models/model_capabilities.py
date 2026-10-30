@@ -50,6 +50,7 @@ class ModelCapabilities:
         supports_image_to_3d (Union[Unset, bool]): Accepts one `init` reference image (image-to-3D).
         supports_image_to_video (Union[Unset, bool]):
         supports_inpainting (Union[Unset, bool]):
+        supports_keep_uvs (Union[Unset, bool]): Takes `keep_uvs`.
         supports_keyframes (Union[Unset, bool]): Takes `keyframe` references, each pinned at its `time_s` (3D doc §5).
         supports_last_frame (Union[Unset, bool]):
         supports_loop (Union[Unset, bool]): Takes `loop: true`.
@@ -74,6 +75,8 @@ class ModelCapabilities:
             One task per model. `generate` is the default in every modality. It still
             covers image edits driven by `init` and `mask` references, and 3D models
             that infer text, image or multiview input from their references.
+        texture_resolutions (Union[Unset, List[int]]): The map sizes a `texture` model paints at (`texture_resolution`);
+            empty when it takes none.
     """
 
     supports_image_to_image: bool
@@ -99,6 +102,7 @@ class ModelCapabilities:
     supports_image_to_3d: Union[Unset, bool] = UNSET
     supports_image_to_video: Union[Unset, bool] = UNSET
     supports_inpainting: Union[Unset, bool] = UNSET
+    supports_keep_uvs: Union[Unset, bool] = UNSET
     supports_keyframes: Union[Unset, bool] = UNSET
     supports_last_frame: Union[Unset, bool] = UNSET
     supports_loop: Union[Unset, bool] = UNSET
@@ -113,6 +117,7 @@ class ModelCapabilities:
     supports_texture: Union[Unset, bool] = UNSET
     supports_transparent_background: Union[Unset, bool] = UNSET
     task: Union[Unset, ModelTask] = UNSET
+    texture_resolutions: Union[Unset, List[int]] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -209,6 +214,8 @@ class ModelCapabilities:
 
         supports_inpainting = self.supports_inpainting
 
+        supports_keep_uvs = self.supports_keep_uvs
+
         supports_keyframes = self.supports_keyframes
 
         supports_last_frame = self.supports_last_frame
@@ -238,6 +245,10 @@ class ModelCapabilities:
         task: Union[Unset, str] = UNSET
         if not isinstance(self.task, Unset):
             task = self.task.value
+
+        texture_resolutions: Union[Unset, List[int]] = UNSET
+        if not isinstance(self.texture_resolutions, Unset):
+            texture_resolutions = self.texture_resolutions
 
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -289,6 +300,8 @@ class ModelCapabilities:
             field_dict["supports_image_to_video"] = supports_image_to_video
         if supports_inpainting is not UNSET:
             field_dict["supports_inpainting"] = supports_inpainting
+        if supports_keep_uvs is not UNSET:
+            field_dict["supports_keep_uvs"] = supports_keep_uvs
         if supports_keyframes is not UNSET:
             field_dict["supports_keyframes"] = supports_keyframes
         if supports_last_frame is not UNSET:
@@ -319,6 +332,8 @@ class ModelCapabilities:
             )
         if task is not UNSET:
             field_dict["task"] = task
+        if texture_resolutions is not UNSET:
+            field_dict["texture_resolutions"] = texture_resolutions
 
         return field_dict
 
@@ -465,6 +480,8 @@ class ModelCapabilities:
 
         supports_inpainting = d.pop("supports_inpainting", UNSET)
 
+        supports_keep_uvs = d.pop("supports_keep_uvs", UNSET)
+
         supports_keyframes = d.pop("supports_keyframes", UNSET)
 
         supports_last_frame = d.pop("supports_last_frame", UNSET)
@@ -500,6 +517,8 @@ class ModelCapabilities:
         else:
             task = ModelTask(_task)
 
+        texture_resolutions = cast(List[int], d.pop("texture_resolutions", UNSET))
+
         model_capabilities = cls(
             supports_image_to_image=supports_image_to_image,
             supports_text_to_image=supports_text_to_image,
@@ -524,6 +543,7 @@ class ModelCapabilities:
             supports_image_to_3d=supports_image_to_3d,
             supports_image_to_video=supports_image_to_video,
             supports_inpainting=supports_inpainting,
+            supports_keep_uvs=supports_keep_uvs,
             supports_keyframes=supports_keyframes,
             supports_last_frame=supports_last_frame,
             supports_loop=supports_loop,
@@ -538,6 +558,7 @@ class ModelCapabilities:
             supports_texture=supports_texture,
             supports_transparent_background=supports_transparent_background,
             task=task,
+            texture_resolutions=texture_resolutions,
         )
 
         model_capabilities.additional_properties = d

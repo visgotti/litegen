@@ -184,6 +184,7 @@ from .scene_animation import SceneAnimation
 from .scene_bounds import SceneBounds
 from .scene_manifest import SceneManifest
 from .scene_material import SceneMaterial
+from .scene_part import ScenePart
 from .scene_skin import SceneSkin
 from .scene_skin_humanoid_type_0 import SceneSkinHumanoidType0
 from .segmentation_mask import SegmentationMask
@@ -402,6 +403,7 @@ __all__ = (
     "SceneBounds",
     "SceneManifest",
     "SceneMaterial",
+    "ScenePart",
     "SceneSkin",
     "SceneSkinHumanoidType0",
     "SegmentationMask",

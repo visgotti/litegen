@@ -456,6 +456,22 @@ mod tests {
     }
 
     #[test]
+    fn texture_remesh_and_segment_document_their_params_and_the_parts() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        let req = &s["Model3dGenerationRequest"];
+        assert!(mentions(property(req, "texture_resolution"), "integer"), "{}", property(req, "texture_resolution"));
+        assert!(mentions(property(req, "keep_uvs"), "boolean"), "{}", property(req, "keep_uvs"));
+        assert!(mentions(property(&s["SceneManifest"], "parts"), "#/components/schemas/ScenePart"), "{}", property(&s["SceneManifest"], "parts"));
+        for f in ["name", "node", "triangle_count", "bounds"] {
+            property(&s["ScenePart"], f);
+        }
+        assert_eq!(s["ScenePart"]["required"], json!(["name", "node", "triangle_count"]));
+        assert!(mentions(property(&s["ModelCapabilities"], "texture_resolutions"), "integer"));
+        assert!(mentions(property(&s["ModelCapabilities"], "supports_keep_uvs"), "boolean"));
+    }
+
+    #[test]
     fn background_removal_is_a_catalog_flag_and_a_listed_capability() {
         let d = doc();
         let s = &d["components"]["schemas"];

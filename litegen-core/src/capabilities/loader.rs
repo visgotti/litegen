@@ -218,6 +218,14 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
+    // 3D doc §3F: a texture model lists the map sizes it paints at, so the
+    // listing's `texture_resolutions` names every size the validator takes.
+    if let Some(ParamSpec::Int(r)) = m.params.get("texture_resolution") {
+        if r.values.is_empty() {
+            return Err(bad(format!("model '{}' texture_resolution lists no values: name the sizes it paints at", m.id)));
+        }
+    }
+
     // PixelGenie L8: a background-removal model takes one init image and no
     // prompt, does nothing else, and answers in a container with alpha.
     if c.background_removal {

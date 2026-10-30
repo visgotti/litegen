@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from ..models.scene_animation import SceneAnimation
     from ..models.scene_bounds import SceneBounds
     from ..models.scene_material import SceneMaterial
+    from ..models.scene_part import ScenePart
     from ..models.scene_skin import SceneSkin
 
 
@@ -35,6 +36,8 @@ class SceneManifest:
             vertex_colors (bool):
             vertex_count (int):
             bounds (Union['SceneBounds', None, Unset]):
+            parts (Union[List['ScenePart'], None, Unset]): A `segment` model's parts: one glTF node each, named with the
+                vendor's label or `part_<n>`. Absent on every other model's mesh.
             skin (Union['SceneSkin', None, Unset]):
     """
 
@@ -50,6 +53,7 @@ class SceneManifest:
     vertex_colors: bool
     vertex_count: int
     bounds: Union["SceneBounds", None, Unset] = UNSET
+    parts: Union[List["ScenePart"], None, Unset] = UNSET
     skin: Union["SceneSkin", None, Unset] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -93,6 +97,18 @@ class SceneManifest:
         else:
             bounds = self.bounds
 
+        parts: Union[List[Dict[str, Any]], None, Unset]
+        if isinstance(self.parts, Unset):
+            parts = UNSET
+        elif isinstance(self.parts, list):
+            parts = []
+            for parts_type_0_item_data in self.parts:
+                parts_type_0_item = parts_type_0_item_data.to_dict()
+                parts.append(parts_type_0_item)
+
+        else:
+            parts = self.parts
+
         skin: Union[Dict[str, Any], None, Unset]
         if isinstance(self.skin, Unset):
             skin = UNSET
@@ -120,6 +136,8 @@ class SceneManifest:
         )
         if bounds is not UNSET:
             field_dict["bounds"] = bounds
+        if parts is not UNSET:
+            field_dict["parts"] = parts
         if skin is not UNSET:
             field_dict["skin"] = skin
 
@@ -130,6 +148,7 @@ class SceneManifest:
         from ..models.scene_animation import SceneAnimation
         from ..models.scene_bounds import SceneBounds
         from ..models.scene_material import SceneMaterial
+        from ..models.scene_part import ScenePart
         from ..models.scene_skin import SceneSkin
 
         d = src_dict.copy()
@@ -182,6 +201,28 @@ class SceneManifest:
 
         bounds = _parse_bounds(d.pop("bounds", UNSET))
 
+        def _parse_parts(data: object) -> Union[List["ScenePart"], None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                parts_type_0 = []
+                _parts_type_0 = data
+                for parts_type_0_item_data in _parts_type_0:
+                    parts_type_0_item = ScenePart.from_dict(parts_type_0_item_data)
+
+                    parts_type_0.append(parts_type_0_item)
+
+                return parts_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[List["ScenePart"], None, Unset], data)
+
+        parts = _parse_parts(d.pop("parts", UNSET))
+
         def _parse_skin(data: object) -> Union["SceneSkin", None, Unset]:
             if data is None:
                 return data
@@ -212,6 +253,7 @@ class SceneManifest:
             vertex_colors=vertex_colors,
             vertex_count=vertex_count,
             bounds=bounds,
+            parts=parts,
             skin=skin,
         )
 

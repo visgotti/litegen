@@ -55,6 +55,7 @@ class Model3DGenerationRequest:
             fps (Union[None, Unset, int]): Frames per second of the delivered clips.
             height_m (Union[None, Unset, float]): The character's height in metres, for a vendor that scales its rig.
             joint_naming (Union[Model3DJointNaming, None, Unset]):
+            keep_uvs (Union[None, Unset, bool]): Paint the source's own UV layout rather than a new one.
             output_format (Union[Unset, Model3DGenerationRequestOutputFormat]): Superseded by `output_formats`. A lone value
                 is folded into it; when both are sent, `output_formats` wins and this one is reported dropped.
             output_formats (Union[List[Model3DFormat], None, Unset]): Mesh containers to deliver, e.g. `["glb", "fbx"]`. A
@@ -77,6 +78,8 @@ class Model3DGenerationRequest:
                 declared
                 `target_polycount` range.
             texture (Union[None, Unset, bool]): Texture the mesh, rather than returning bare geometry.
+            texture_resolution (Union[None, Unset, int]): A `texture` model's map size in pixels, one of its
+                `texture_resolutions`.
             topology (Union[Model3DTopology, None, Unset]):
     """
 
@@ -93,6 +96,7 @@ class Model3DGenerationRequest:
     fps: Union[None, Unset, int] = UNSET
     height_m: Union[None, Unset, float] = UNSET
     joint_naming: Union[Model3DJointNaming, None, Unset] = UNSET
+    keep_uvs: Union[None, Unset, bool] = UNSET
     output_format: Union[Unset, Model3DGenerationRequestOutputFormat] = UNSET
     output_formats: Union[List[Model3DFormat], None, Unset] = UNSET
     pbr: Union[None, Unset, bool] = UNSET
@@ -102,6 +106,7 @@ class Model3DGenerationRequest:
     symmetry: Union[Model3DSymmetry, None, Unset] = UNSET
     target_polycount: Union[None, Unset, int] = UNSET
     texture: Union[None, Unset, bool] = UNSET
+    texture_resolution: Union[None, Unset, int] = UNSET
     topology: Union[Model3DTopology, None, Unset] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -171,6 +176,12 @@ class Model3DGenerationRequest:
         else:
             joint_naming = self.joint_naming
 
+        keep_uvs: Union[None, Unset, bool]
+        if isinstance(self.keep_uvs, Unset):
+            keep_uvs = UNSET
+        else:
+            keep_uvs = self.keep_uvs
+
         output_format: Union[Unset, str] = UNSET
         if not isinstance(self.output_format, Unset):
             output_format = self.output_format.value
@@ -235,6 +246,12 @@ class Model3DGenerationRequest:
         else:
             texture = self.texture
 
+        texture_resolution: Union[None, Unset, int]
+        if isinstance(self.texture_resolution, Unset):
+            texture_resolution = UNSET
+        else:
+            texture_resolution = self.texture_resolution
+
         topology: Union[None, Unset, str]
         if isinstance(self.topology, Unset):
             topology = UNSET
@@ -274,6 +291,8 @@ class Model3DGenerationRequest:
             field_dict["height_m"] = height_m
         if joint_naming is not UNSET:
             field_dict["joint_naming"] = joint_naming
+        if keep_uvs is not UNSET:
+            field_dict["keep_uvs"] = keep_uvs
         if output_format is not UNSET:
             field_dict["output_format"] = output_format
         if output_formats is not UNSET:
@@ -292,6 +311,8 @@ class Model3DGenerationRequest:
             field_dict["target_polycount"] = target_polycount
         if texture is not UNSET:
             field_dict["texture"] = texture
+        if texture_resolution is not UNSET:
+            field_dict["texture_resolution"] = texture_resolution
         if topology is not UNSET:
             field_dict["topology"] = topology
 
@@ -401,6 +422,15 @@ class Model3DGenerationRequest:
             return cast(Union[Model3DJointNaming, None, Unset], data)
 
         joint_naming = _parse_joint_naming(d.pop("joint_naming", UNSET))
+
+        def _parse_keep_uvs(data: object) -> Union[None, Unset, bool]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, bool], data)
+
+        keep_uvs = _parse_keep_uvs(d.pop("keep_uvs", UNSET))
 
         _output_format = d.pop("output_format", UNSET)
         output_format: Union[Unset, Model3DGenerationRequestOutputFormat]
@@ -522,6 +552,17 @@ class Model3DGenerationRequest:
 
         texture = _parse_texture(d.pop("texture", UNSET))
 
+        def _parse_texture_resolution(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        texture_resolution = _parse_texture_resolution(
+            d.pop("texture_resolution", UNSET)
+        )
+
         def _parse_topology(data: object) -> Union[Model3DTopology, None, Unset]:
             if data is None:
                 return data
@@ -553,6 +594,7 @@ class Model3DGenerationRequest:
             fps=fps,
             height_m=height_m,
             joint_naming=joint_naming,
+            keep_uvs=keep_uvs,
             output_format=output_format,
             output_formats=output_formats,
             pbr=pbr,
@@ -562,6 +604,7 @@ class Model3DGenerationRequest:
             symmetry=symmetry,
             target_polycount=target_polycount,
             texture=texture,
+            texture_resolution=texture_resolution,
             topology=topology,
         )
 

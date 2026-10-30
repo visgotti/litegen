@@ -210,6 +210,12 @@ A multiview request always needs `view-front`; a model whose `ref_inputs.view_or
 its views by position, so each view needs every view before it in that order. Rodin takes up to five
 views of any names, in any order.
 
+Operations on a mesh are models too, named by their `task` and given the mesh as `source_model` (a
+generation id, a URL or base64): `rig`, `animate`, `texture` (from a `prompt` and/or a `style`
+reference image, with `pbr`, `texture_resolution` and `keep_uvs`), `remesh` (`target_polycount`,
+`topology`) and `segment`. A segmented mesh's manifest lists its `parts`, one glTF node each, named
+with the vendor's label or `part_<n>`.
+
 > The built-in mocks need no key: `mock/mesh-3d` and `mock/all-params-3d` emit a real glTF 2.0
 > binary cube, while `mock/fail-3d` emits no mesh at all — it terminates `failed`, by design, to
 > exercise the error path. Vendor 3D models are listed under [Supported Providers](#supported-providers).

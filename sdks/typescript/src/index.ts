@@ -187,6 +187,8 @@ export type Model3dAsset = components["schemas"]["Model3dAsset"];
  */
 export type SceneManifest = components["schemas"]["SceneManifest"];
 export type SceneBounds = components["schemas"]["SceneBounds"];
+/** One part of a segmented mesh: a glTF node, named with the vendor's label or `part_<n>`. */
+export type ScenePart = components["schemas"]["ScenePart"];
 export type SceneMaterial = components["schemas"]["SceneMaterial"];
 /** A delivered mesh's skeleton, with its VRM 1.0 `humanoid` map when litegen recognises the rig. */
 export type SceneSkin = components["schemas"]["SceneSkin"];

@@ -1135,6 +1135,8 @@ pub async fn generate_3d(
         skeleton: validated.request.skeleton.clone(),
         joint_naming: validated.request.joint_naming.clone(),
         height_m: validated.request.height_m,
+        texture_resolution: validated.request.texture_resolution,
+        keep_uvs: validated.request.keep_uvs,
         animations: match (validated.request.animations.as_deref(), validated.schema.params.get("animations")) {
             (Some(clips), Some(crate::capabilities::ParamSpec::AnimationList(spec))) => {
                 crate::providers::AnimationClip::resolve(clips, spec)
@@ -1979,6 +1981,11 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
                 _ => Vec::new(),
             },
             supports_background_removal: s.capabilities.background_removal,
+            texture_resolutions: match s.params.get("texture_resolution") {
+                Some(crate::capabilities::ParamSpec::Int(i)) => i.values.iter().map(|v| *v as u32).collect(),
+                _ => Vec::new(),
+            },
+            supports_keep_uvs: declares_bool(s, "keep_uvs"),
             // PixelGenie L7, read the way the segmentation endpoint reads it.
             supports_segmentation: segmentation_prompts(s).is_some(),
             segmentation_prompts: segmentation_prompts(s).map(|p| p.types.clone()).unwrap_or_default(),

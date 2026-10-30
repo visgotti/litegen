@@ -268,3 +268,26 @@ fn every_animate_model_keeps_its_sources_orientation_or_proves_its_own() {
         assert_eq!((o.up.as_str(), o.front.as_str()), ("source", "source"), "{}", m.id);
     }
 }
+
+/// 3D doc §3F: a texture model paints from a prompt, a `style` image or both,
+/// so it takes at least one; and texture, remesh and segment models keep
+/// their source's axes (they work on the caller's mesh), as animate models do.
+#[test]
+fn texture_remesh_and_segment_models_take_what_they_work_from_and_keep_its_axes() {
+    use litegen::capabilities::ModelTask;
+    let reg = catalog();
+    let ops: Vec<&ModelSchema> = model3d(&reg)
+        .into_iter()
+        .filter(|m| matches!(m.task, ModelTask::Texture | ModelTask::Remesh | ModelTask::Segment))
+        .collect();
+    assert!(ops.len() >= 3, "a mock for each operation");
+    for m in ops {
+        let o = m.native_orientation.as_ref().unwrap_or_else(|| panic!("{}: no native_orientation", m.id));
+        assert_eq!((o.up.as_str(), o.front.as_str()), ("source", "source"), "{}", m.id);
+        if m.task == ModelTask::Texture {
+            let takes_prompt = m.prompt.max_length != Some(0);
+            let takes_style = m.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("style"));
+            assert!(takes_prompt || takes_style, "{}: paints from nothing", m.id);
+        }
+    }
+}

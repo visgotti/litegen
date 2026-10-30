@@ -124,6 +124,20 @@ pub fn unique_node_names(scene: &mut Scene) -> bool {
     changed
 }
 
+/// A segmented mesh's parts (3D doc §3F) are its mesh-bearing nodes, each
+/// named: the vendor's label, else `part_<n>` for the n-th part in node
+/// order. Whether any was named.
+pub fn name_parts(scene: &mut Scene) -> bool {
+    let mut changed = false;
+    for (n, node) in scene.nodes.iter_mut().filter(|node| node.mesh.is_some()).enumerate() {
+        if node.name.as_deref().is_none_or(|s| s.trim().is_empty()) {
+            node.name = Some(format!("part_{n}"));
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Rename nodes by `(from, to)`. Geometry never changes. Whether any did.
 pub fn rename_nodes(scene: &mut Scene, renames: &[(String, String)]) -> bool {
     let mut changed = false;
@@ -484,5 +498,26 @@ mod tests {
         let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
         let json = std::str::from_utf8(&glb[20..20 + json_len]).unwrap();
         assert!(!json.contains("EXT_texture_webp") && !json.contains("extensionsRequired"), "{json}");
+    }
+
+    #[test]
+    fn unnamed_parts_are_named_by_their_place_and_labels_are_kept() {
+        let mut scene = super::super::fixtures::cube();
+        let mesh = scene.nodes.iter().find_map(|n| n.mesh).unwrap();
+        let plain = |name: Option<&str>| super::super::scene::Node {
+            name: name.map(String::from),
+            transform: super::super::scene::Transform::Trs { translation: [0.0; 3], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] },
+            children: Vec::new(),
+            mesh: Some(mesh),
+            skin: None,
+            weights: None,
+        };
+        scene.nodes = vec![plain(Some("visor")), plain(None), plain(Some("")), plain(None)];
+        scene.nodes[3].mesh = None;
+        scene.roots = vec![0, 1, 2, 3];
+        assert!(name_parts(&mut scene));
+        let names: Vec<Option<&str>> = scene.nodes.iter().map(|n| n.name.as_deref()).collect();
+        assert_eq!(names, [Some("visor"), Some("part_1"), Some("part_2"), None], "a node without a mesh is no part");
+        assert!(!name_parts(&mut scene), "nothing left to name");
     }
 }

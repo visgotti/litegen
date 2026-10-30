@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use crate::mesh::normalize::{self, Axis};
 use crate::mesh::{MeshFormat, WriteOptions};
 use crate::providers::Model3dFile;
-use crate::types::{Model3dAssetKind, SceneAnimation, SceneBounds, SceneManifest, SceneMaterial, SceneSkin};
+use crate::types::{Model3dAssetKind, SceneAnimation, SceneBounds, SceneManifest, SceneMaterial, ScenePart, SceneSkin};
 
 /// A model's proven native orientation: the axes its vendor builds up and
 /// front along.
@@ -68,6 +68,10 @@ pub struct DeliveryPlan {
     /// The frame rate every clip is keyed at.
     #[serde(default)]
     pub fps: Option<u32>,
+    /// A segment model's mesh (3D doc §3F): every part named, and listed in
+    /// the manifest.
+    #[serde(default)]
+    pub parts: bool,
 }
 
 impl DeliveryPlan {
@@ -98,6 +102,7 @@ impl DeliveryPlan {
                 .map(|c| ClipPlan { name: c.name.clone(), in_place: c.in_place, loop_requested: c.loop_requested })
                 .collect(),
             fps: extras.fps,
+            parts: schema.task == crate::capabilities::ModelTask::Segment,
             ..Default::default()
         }
     }
@@ -205,6 +210,23 @@ fn manifest(
         skin,
         animations,
         extensions_used: gltf_extensions(bytes, format).0,
+        parts: if plan.parts {
+            let parts = crate::mesh::inspect::parts(&scene).ok()?;
+            Some(
+                parts
+                    .into_iter()
+                    .enumerate()
+                    .map(|(n, p)| ScenePart {
+                        name: p.name.unwrap_or_else(|| format!("part_{n}")),
+                        node: p.node as u32,
+                        triangle_count: p.triangle_count as u64,
+                        bounds: p.bounds.map(|(min, max)| SceneBounds { min, max }),
+                    })
+                    .collect(),
+            )
+        } else {
+            None
+        },
     })
 }
 
@@ -287,6 +309,9 @@ pub fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
             },
             _ => return Delivered { fatal: Some(format!("the model's declared orientation {}/{} is not a pair of axes", o.up, o.front)), ..Default::default() },
         }
+    }
+    if plan.parts {
+        changed |= normalize::name_parts(&mut scene);
     }
     changed |= normalize::unique_node_names(&mut scene);
     changed |= normalize::rename_nodes(&mut scene, &plan.joint_renames);
@@ -512,6 +537,7 @@ mod tests {
             skeleton: Some("quadruped".into()), joint_naming: None, height_m: None,
             extra: None, source: None, preflight: None,
             animations: Vec::new(), fps: None,
+            texture_resolution: None, keep_uvs: None,
         };
         let plan = DeliveryPlan::for_request(&schema, &extras);
         assert_eq!(plan.skeleton.as_deref(), Some("quadruped"));

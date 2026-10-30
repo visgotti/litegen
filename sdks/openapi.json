@@ -9190,6 +9190,13 @@
                                     }
                                 ]
                             },
+                            "keep_uvs": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ],
+                                "description": "Paint the source's own UV layout rather than a new one."
+                            },
                             "output_format": {
                                 "type": "string",
                                 "description": "Superseded by `output_formats`. A lone value is folded into it; when both are sent, `output_formats` wins and this one is reported dropped.",
@@ -9279,6 +9286,15 @@
                                     "null"
                                 ],
                                 "description": "Texture the mesh, rather than returning bare geometry."
+                            },
+                            "texture_resolution": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ],
+                                "format": "int32",
+                                "description": "A `texture` model's map size in pixels, one of its\n`texture_resolutions`.",
+                                "minimum": 0
                             },
                             "topology": {
                                 "oneOf": [
@@ -9549,6 +9565,10 @@
                     "supports_inpainting": {
                         "type": "boolean"
                     },
+                    "supports_keep_uvs": {
+                        "type": "boolean",
+                        "description": "Takes `keep_uvs`."
+                    },
                     "supports_keyframes": {
                         "type": "boolean",
                         "description": "Takes `keyframe` references, each pinned at its `time_s` (3D doc \u00a75)."
@@ -9605,6 +9625,15 @@
                     "task": {
                         "$ref": "#/components/schemas/ModelTask",
                         "description": "What the model does: `generate`, or an operation on an existing asset\nsuch as `rig` or `animate`. The same value `GET /v1/models/{id}`\nserves as `task`."
+                    },
+                    "texture_resolutions": {
+                        "type": "array",
+                        "items": {
+                            "type": "integer",
+                            "format": "int32",
+                            "minimum": 0
+                        },
+                        "description": "The map sizes a `texture` model paints at (`texture_resolution`);\nempty when it takes none."
                     }
                 }
             },
@@ -12709,6 +12738,16 @@
                         "type": "string",
                         "description": "`vendor` (it arrived so) or `litegen` (litegen turned it)."
                     },
+                    "parts": {
+                        "type": [
+                            "array",
+                            "null"
+                        ],
+                        "items": {
+                            "$ref": "#/components/schemas/ScenePart"
+                        },
+                        "description": "A `segment` model's parts: one glTF node each, named with the\nvendor's label or `part_<n>`. Absent on every other model's mesh."
+                    },
                     "skin": {
                         "oneOf": [
                             {
@@ -12765,6 +12804,42 @@
                             "string",
                             "null"
                         ]
+                    }
+                }
+            },
+            "ScenePart": {
+                "type": "object",
+                "description": "One part of a segmented mesh, measured by litegen.",
+                "required": [
+                    "name",
+                    "node",
+                    "triangle_count"
+                ],
+                "properties": {
+                    "bounds": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/SceneBounds",
+                                "description": "World-space bounds at rest, in metres."
+                            }
+                        ]
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "node": {
+                        "type": "integer",
+                        "format": "int32",
+                        "description": "The part's node: its index in the delivered glTF's `nodes`.",
+                        "minimum": 0
+                    },
+                    "triangle_count": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
                     }
                 }
             },

@@ -717,6 +717,7 @@ mod tests {
             source: Some(src),
             animations: Vec::new(), fps: None,
             preflight: None,
+            texture_resolution: None, keep_uvs: None,
         }
     }
 

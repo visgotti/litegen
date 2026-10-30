@@ -82,6 +82,7 @@ MIRRORED = {
     "Region": t.Region,
     "PriceRule": t.PriceRule,
     "SegmentationMask": t.SegmentationMask,
+    "ScenePart": t.ScenePart,
     "ImageSegmentationResponse": t.ImageSegmentationResponse,
 }
 

@@ -1567,6 +1567,7 @@ mod tests {
             source: None,
             animations: Vec::new(), fps: None,
             skeleton: None, joint_naming: None, height_m: None, preflight: None,
+            texture_resolution: None, keep_uvs: None,
         }
     }
 
@@ -2368,6 +2369,7 @@ mod tests {
             source_model: None,
             animations: None, fps: None,
             skeleton: None, joint_naming: None, height_m: None,
+            texture_resolution: None, keep_uvs: None,
         };
         let est = p.estimate_cost(&hunyuan, &req).await.unwrap();
         assert_eq!(est.base_cost_usd, 0.16, "the row's base; the router applies texture ×3");

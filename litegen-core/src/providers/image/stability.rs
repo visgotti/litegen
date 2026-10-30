@@ -674,6 +674,7 @@ impl Default for ModelCapabilities {
             supports_transparent_background: false, lossy_only: false,
             supports_fixed_camera: false, supports_audio_toggle: false, supports_loop: false, duration_values: Vec::new(),
             supports_background_removal: false, supports_segmentation: false, segmentation_prompts: Vec::new(),
+            texture_resolutions: Vec::new(), supports_keep_uvs: false,
         }
     }
 }

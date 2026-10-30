@@ -469,6 +469,7 @@ mod tests {
             texture: None, pbr: None, target_polycount: None, symmetry: None, topology: None, rig: None,
             skeleton: None, joint_naming: None, height_m: None, animations: Vec::new(), fps: None,
             extra: None, source: Some(src), preflight: None,
+            texture_resolution: None, keep_uvs: None,
         }
     }
 

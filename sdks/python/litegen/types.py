@@ -343,6 +343,11 @@ class Model3dGenerateParams(TypedDict, total=False):
     """The clips an ``animate`` model makes, in order."""
     fps: int | None
     """Frames per second of the delivered clips."""
+    texture_resolution: int | None
+    """A ``texture`` model's map size in pixels, one of its
+    ``texture_resolutions``."""
+    keep_uvs: bool | None
+    """Paint the source's own UV layout rather than a new one (texture models)."""
 
 
 # ─── Responses ───────────────────────────────────────────────────────────────
@@ -391,6 +396,17 @@ class SceneBounds(TypedDict):
 
     min: list[float]
     max: list[float]
+
+
+class ScenePart(TypedDict):
+    """One part of a segmented mesh: a glTF node, named with the vendor's label
+    or ``part_<n>``, measured by LiteGen."""
+
+    name: str
+    node: int
+    """The part's index in the delivered glTF's ``nodes``."""
+    triangle_count: int
+    bounds: NotRequired[SceneBounds | None]
 
 
 class SceneMaterial(TypedDict):
@@ -448,6 +464,8 @@ class SceneManifest(TypedDict):
     animations: list[SceneAnimation]
     extensions_used: list[str]
     """glTF extensions the file uses. None is ever required."""
+    parts: NotRequired[list[ScenePart] | None]
+    """A ``segment`` model's parts; absent on every other model's mesh."""
 
 
 class Model3dAsset(TypedDict):

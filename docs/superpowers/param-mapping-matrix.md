@@ -535,6 +535,27 @@ completed, FAILED and CANCELED → failed with `task_error.message`
 Meshy asks (`meshys_message_reaches_the_caller_and_a_create_is_never_resent_after_a_5xx`).
 Not verified live: no Tripo or Meshy key is available here.
 
+### Texture, remesh, segment (3D doc §3F)
+
+Operations on a mesh, submitted to `POST /v1/models3d/generations` like any
+3D job: `source_model` names the mesh (a generation id, a URL or base64) and
+is checked against the row's `params.source_model` before billing (§3A). Each
+keeps its source's axes (`native_orientation: source`).
+
+| task | request | delivered and measured | mock | proof | status |
+|---|---|---|---|---|---|
+| `texture` | `source_model`; `prompt` and/or a `style` reference image (neither: 400 `param_required`); `pbr`; `texture_resolution`, an int enum of the row's `values` (listed as `texture_resolutions`; anything else `param_enum_mismatch`; a row must list them, loader); `keep_uvs` (listed as `supports_keep_uvs`) | `materials[].maps` names the maps; `uv_sets` | `mock/texture-3d`: one material — `base_color`, plus `metallic_roughness` and `normal` with `pbr` — each `texture_resolution` px square; planar UVs unless `keep_uvs` | HTTP `texturing_paints_the_source_and_the_manifest_names_its_maps` (reads the delivered map's size), `a_texture_request_says_what_to_paint_and_asks_a_size_the_model_makes` (no log); loader `a_texture_resolution_lists_the_sizes_the_model_paints_at` | ✅ mock |
+| `remesh` | `source_model`, `target_polycount`, `topology` (`triangle` \| `quad`) | `triangle_count` | `mock/remesh-3d`: a ring of exactly `target_polycount` triangles, or `target_polycount / 2` quads (two triangles each in glTF) | HTTP `remeshing_delivers_the_asked_triangle_count` | ✅ mock |
+| `segment` | `source_model` | one glTF node per part, named with the vendor's label or `part_<n>` (n: its place among the mesh-bearing nodes); the manifest's `parts: [{name, node, triangle_count, bounds}]`, absent on every other model's mesh | `mock/segment-3d`: triangles split by their centre along X, the −X half labelled `negative_x`, the +X half unlabelled (delivered `part_1`) | HTTP `segmenting_splits_the_source_into_named_parts`; unit `unnamed_parts_are_named_by_their_place_and_labels_are_kept`, `each_mesh_node_is_a_part_with_its_own_triangles_and_world_bounds` | ✅ mock |
+
+Conformance `texture_remesh_and_segment_models_take_what_they_work_from_and_keep_its_axes`;
+OpenAPI `texture_remesh_and_segment_document_their_params_and_the_parts`;
+SDKs: TS `3D operation types`, Python `ScenePart` mirrored and
+`Model3dGenerateParams` covering the new fields. Vendors: none wired yet —
+§3H's candidates are Meshy `/openapi/v1/retexture` and `/openapi/v1/remesh`,
+Tripo `/v3/models/texture`, `/v3/mesh/decimate` and `/v3/mesh/segment`, and
+Tencent's texture edit, smart topology and HY 3D Part. ⬜ vendor.
+
 ### Normalised delivery (3D doc §2 rule 3, §3D)
 
 One step, `proxy::model3d_deliver::deliver`, runs on a finished job's files at

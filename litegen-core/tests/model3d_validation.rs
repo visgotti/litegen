@@ -55,6 +55,7 @@ fn req(strict: bool) -> Model3dGenerationRequest {
         skeleton: None, joint_naming: None, height_m: None,
         source_model: None,
         animations: None, fps: None,
+        texture_resolution: None, keep_uvs: None,
     }
 }
 

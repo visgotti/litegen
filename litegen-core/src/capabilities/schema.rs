@@ -805,6 +805,9 @@ pub const KNOWN_PARAMS: &[&str] = &[
     "views",
     // Promptable segmentation (PixelGenie L7).
     "prompts",
+    // Texturing (3D doc §3F).
+    "texture_resolution",
+    "keep_uvs",
 ];
 
 /// The `ParamSpec` kind(s) a canonical param may be declared with: exactly the
@@ -829,7 +832,8 @@ pub fn canonical_param_kinds(name: &str) -> &'static [&'static str] {
         "height_m" => &["float"],
         "animations" => &["animation_list"],
         "region" => &["region"],
-        "texture" | "pbr" | "rig" | "audio" | "loop" => &["bool"],
+        "texture" | "pbr" | "rig" | "audio" | "loop" | "keep_uvs" => &["bool"],
+        "texture_resolution" => &["int"],
         "camera" => &["string"],
         "target_polycount" => &["int"],
         "source_model" => &["source_model"],

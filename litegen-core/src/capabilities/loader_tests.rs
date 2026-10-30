@@ -902,4 +902,14 @@ models:
             assert!(err.contains(needle) && err.contains("background_removal"), "{caps} {prompt} {params} {init}: {err}");
         }
     }
+
+    // ─── Texture operations (3D doc §3F) ──────────────────────────────────────
+
+    #[test]
+    fn a_texture_resolution_lists_the_sizes_the_model_paints_at() {
+        let row = |spec: &str| yaml(&model3d("    task: texture", "{}", &format!("{RIG_SOURCE}\n      texture_resolution: {spec}")));
+        assert!(row("{ kind: int, values: [1024, 2048] }").is_ok());
+        let err = row("{ kind: int, min: 256, max: 4096 }").unwrap_err().to_string();
+        assert!(err.contains("texture_resolution") && err.contains("values"), "{err}");
+    }
 }
