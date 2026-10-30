@@ -436,4 +436,52 @@ models:
         let err = yaml(&model3d("    task: rig", "{}", empty)).unwrap_err().to_string();
         assert!(err.contains("formats"), "{err}");
     }
+
+    // ─── native_orientation (3D doc §2 rule 3) ──────────────────────────────
+
+    fn oriented(line: &str) -> Result<CapabilityRegistry, LoadError> {
+        yaml(&model3d(line, "{ image_to_3d: true }", ""))
+    }
+
+    #[test]
+    fn a_3d_model_declares_its_proven_orientation() {
+        let r = oriented("    native_orientation: { up: \"+y\", front: \"+x\", evidence: \"a live run's sample\" }").unwrap();
+        let o = r.get("x/op").unwrap().native_orientation.clone().unwrap();
+        assert_eq!((o.up.as_str(), o.front.as_str(), o.evidence.as_str()), ("+y", "+x", "a live run's sample"));
+        assert!(oriented("").unwrap().get("x/op").unwrap().native_orientation.is_none(), "unproven is the default");
+    }
+
+    #[test]
+    fn native_orientation_axes_are_signed_axes_at_right_angles() {
+        for (line, needle) in [
+            ("    native_orientation: { up: \"y\", front: \"+z\", evidence: \"e\" }", "'y'"),
+            ("    native_orientation: { up: \"+y\", front: \"forward\", evidence: \"e\" }", "'forward'"),
+            ("    native_orientation: { up: \"+y\", front: \"-y\", evidence: \"e\" }", "right angles"),
+        ] {
+            let err = oriented(line).unwrap_err().to_string();
+            assert!(err.contains(needle), "{line}: {err}");
+        }
+    }
+
+    #[test]
+    fn native_orientation_names_its_evidence() {
+        let err = oriented("    native_orientation: { up: \"+y\", front: \"+z\", evidence: \"  \" }").unwrap_err().to_string();
+        assert!(err.contains("evidence"), "{err}");
+    }
+
+    #[test]
+    fn native_orientation_is_a_3d_field() {
+        let err = yaml(r#"
+models:
+  - id: x/m
+    provider: x
+    media_type: image
+    display_name: M
+    native_orientation: { up: "+y", front: "+z", evidence: "e" }
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true }
+"#).unwrap_err().to_string();
+        assert!(err.contains("native_orientation") && err.contains("model3d"), "{err}");
+    }
 }

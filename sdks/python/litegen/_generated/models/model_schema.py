@@ -1,13 +1,4 @@
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Type,
-    TypeVar,
-    Union,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -20,6 +11,7 @@ if TYPE_CHECKING:
     from ..models.capability_model_pricing import CapabilityModelPricing
     from ..models.model_capability_flags import ModelCapabilityFlags
     from ..models.model_schema_params import ModelSchemaParams
+    from ..models.native_orientation import NativeOrientation
     from ..models.prompt_spec import PromptSpec
     from ..models.ref_input_spec import RefInputSpec
 
@@ -44,6 +36,7 @@ class ModelSchema:
             `https://` URL (the loader refuses anything else); every non-mock 3D
             model carries one.
         extra_allowlist (Union[Unset, List[str]]):
+        native_orientation (Union['NativeOrientation', None, Unset]):
         params (Union[Unset, ModelSchemaParams]):
         ref_inputs (Union['RefInputSpec', None, Unset]):
         tags (Union[Unset, List[str]]):
@@ -70,6 +63,7 @@ class ModelSchema:
     description: Union[Unset, str] = UNSET
     docs_url: Union[None, Unset, str] = UNSET
     extra_allowlist: Union[Unset, List[str]] = UNSET
+    native_orientation: Union["NativeOrientation", None, Unset] = UNSET
     params: Union[Unset, "ModelSchemaParams"] = UNSET
     ref_inputs: Union["RefInputSpec", None, Unset] = UNSET
     tags: Union[Unset, List[str]] = UNSET
@@ -77,6 +71,7 @@ class ModelSchema:
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        from ..models.native_orientation import NativeOrientation
         from ..models.ref_input_spec import RefInputSpec
 
         capabilities = self.capabilities.to_dict()
@@ -104,6 +99,14 @@ class ModelSchema:
         extra_allowlist: Union[Unset, List[str]] = UNSET
         if not isinstance(self.extra_allowlist, Unset):
             extra_allowlist = self.extra_allowlist
+
+        native_orientation: Union[Dict[str, Any], None, Unset]
+        if isinstance(self.native_orientation, Unset):
+            native_orientation = UNSET
+        elif isinstance(self.native_orientation, NativeOrientation):
+            native_orientation = self.native_orientation.to_dict()
+        else:
+            native_orientation = self.native_orientation
 
         params: Union[Unset, Dict[str, Any]] = UNSET
         if not isinstance(self.params, Unset):
@@ -144,6 +147,8 @@ class ModelSchema:
             field_dict["docs_url"] = docs_url
         if extra_allowlist is not UNSET:
             field_dict["extra_allowlist"] = extra_allowlist
+        if native_orientation is not UNSET:
+            field_dict["native_orientation"] = native_orientation
         if params is not UNSET:
             field_dict["params"] = params
         if ref_inputs is not UNSET:
@@ -160,6 +165,7 @@ class ModelSchema:
         from ..models.capability_model_pricing import CapabilityModelPricing
         from ..models.model_capability_flags import ModelCapabilityFlags
         from ..models.model_schema_params import ModelSchemaParams
+        from ..models.native_orientation import NativeOrientation
         from ..models.prompt_spec import PromptSpec
         from ..models.ref_input_spec import RefInputSpec
 
@@ -190,6 +196,27 @@ class ModelSchema:
         docs_url = _parse_docs_url(d.pop("docs_url", UNSET))
 
         extra_allowlist = cast(List[str], d.pop("extra_allowlist", UNSET))
+
+        def _parse_native_orientation(
+            data: object,
+        ) -> Union["NativeOrientation", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                native_orientation_type_1 = NativeOrientation.from_dict(data)
+
+                return native_orientation_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union["NativeOrientation", None, Unset], data)
+
+        native_orientation = _parse_native_orientation(
+            d.pop("native_orientation", UNSET)
+        )
 
         _params = d.pop("params", UNSET)
         params: Union[Unset, ModelSchemaParams]
@@ -235,6 +262,7 @@ class ModelSchema:
             description=description,
             docs_url=docs_url,
             extra_allowlist=extra_allowlist,
+            native_orientation=native_orientation,
             params=params,
             ref_inputs=ref_inputs,
             tags=tags,

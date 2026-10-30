@@ -45,6 +45,9 @@ const MODULE_FILES: &[&str] = &[
     "matrix_tests.rs",
     "scene_matrix_tests.rs",
     "isolation_tests.rs",
+    "inspect.rs",
+    "normalize.rs",
+    "humanoid.rs",
 ];
 
 /// Excluded from both scans below, for the obvious reason.
@@ -122,12 +125,17 @@ fn third_party_crates_stay_in_the_one_file_that_needs_each() {
     // - quick_xml: 3MF and Collada are XML (xml.rs, which the codecs use).
     //   Already linked through rust-s3.
     //
+    // - image: decoding a vendor's WebP texture to re-encode it as PNG, so no
+    //   delivered glTF requires EXT_texture_webp (normalize.rs). Already
+    //   linked for the mock providers' PNG rendering.
+    //
     // `matrix_tests.rs` may use serde_json to construct glTF documents field by
     // field — fixture construction, not a dependency the module carries.
     const ALLOWED: &[(&str, &[&str])] = &[
         ("serde_json", &["glb.rs", "matrix_tests.rs"]),
         ("miniz_oxide", &["zip.rs", "fbx.rs"]),
         ("quick_xml", &["xml.rs"]),
+        ("image::", &["normalize.rs"]),
     ];
     for name in MODULE_FILES {
         if *name == SELF {

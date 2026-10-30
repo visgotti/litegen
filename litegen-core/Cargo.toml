@@ -98,7 +98,9 @@ once_cell = "1"
 rand = "0.8"
 
 # Image generation (for visual mock provider)
-image = { version = "0.25", default-features = false, features = ["png", "gif"] }
+# webp: vendor meshes carry WebP textures (fal's TRELLIS.2), which a delivered
+# glTF may not require an extension to read, so they are transcoded to PNG.
+image = { version = "0.25", default-features = false, features = ["png", "gif", "webp"] }
 
 # Multipart parsing
 multer = "3"

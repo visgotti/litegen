@@ -41,8 +41,10 @@ Model3dTopology = Literal["triangle", "quad"]
 Model3dSymmetry = Literal["off", "auto", "on"]
 """Whether the model should enforce a symmetric mesh."""
 
-Model3dAssetKind = Literal["mesh", "texture", "preview"]
-"""What a :class:`Model3dAsset` is: the mesh itself, a texture map, or a preview render."""
+Model3dAssetKind = Literal["mesh", "texture", "preview", "original"]
+"""What a :class:`Model3dAsset` is: the mesh itself, a texture map, a preview
+render, or ``original`` — the vendor's own file, kept beside a mesh litegen
+changed to deliver it in glTF's conventions."""
 
 GenerationStatus = Literal["pending", "processing", "completed", "failed", "cancelled"]
 """Lifecycle of an async job. ``completed``, ``failed`` and ``cancelled`` are
@@ -196,6 +198,70 @@ class CostEstimate(TypedDict):
     """Free-form pricing details; the shape varies by model."""
 
 
+class SceneBounds(TypedDict):
+    """World-space bounds of a delivered mesh, in metres: ``[x, y, z]`` each."""
+
+    min: list[float]
+    max: list[float]
+
+
+class SceneMaterial(TypedDict):
+    name: NotRequired[str | None]
+    maps: list[str]
+    """``base_color``, ``metallic_roughness``, ``normal``, ``occlusion``, ``emissive``."""
+
+
+class SceneSkin(TypedDict):
+    """A delivered mesh's skeleton, as litegen read it."""
+
+    skeleton: NotRequired[str | None]
+    """``humanoid`` when a known naming scheme matched, else what the request asked for."""
+    joint_count: int
+    root: NotRequired[str | None]
+    bind_pose: str
+    """``t``, ``a`` or ``unknown``, from the upper-arm angle at rest."""
+    joints: list[str]
+    """Joint names, unique, in skin order."""
+    humanoid: NotRequired[dict[str, str] | None]
+    """VRM 1.0 humanoid bone → joint name, for a rig litegen recognises."""
+
+
+class SceneAnimation(TypedDict):
+    name: str
+    duration_s: float
+    in_place: bool
+    """Measured: the root ends within 1 cm of where it started, horizontally."""
+    in_place_by: NotRequired[str | None]
+    """``vendor`` (arrived in place) or ``litegen`` (litegen removed the root's travel)."""
+    root_travel_m: list[float]
+    loop_requested: NotRequired[bool | None]
+
+
+class SceneManifest(TypedDict):
+    """What litegen measured in a delivered mesh, read from the file's own bytes.
+
+    Every delivered mesh is in glTF's conventions — metres, ``+y`` up, facing
+    ``+z`` — and ``oriented_by`` says whether the vendor or litegen made it so.
+    ``front`` is ``"unverified"`` for a model whose orientation nobody has
+    proven yet; litegen never reports a guess.
+    """
+
+    units: str
+    up: str
+    front: str
+    oriented_by: str
+    bounds: NotRequired[SceneBounds | None]
+    vertex_count: int
+    triangle_count: int
+    uv_sets: int
+    vertex_colors: bool
+    materials: list[SceneMaterial]
+    skin: NotRequired[SceneSkin | None]
+    animations: list[SceneAnimation]
+    extensions_used: list[str]
+    """glTF extensions the file uses. None is ever required."""
+
+
 class Model3dAsset(TypedDict):
     """One file produced by a 3D generation. ``url`` is always absolute."""
 
@@ -214,6 +280,8 @@ class Model3dAsset(TypedDict):
     """Textures and previews only, in pixels."""
     sha256: NotRequired[str | None]
     """Lowercase hex SHA-256 of the stored file."""
+    scene: NotRequired[SceneManifest | None]
+    """Meshes only: what litegen's own reader found in this very file."""
 
 
 class Model3dGenerationResponse(TypedDict):

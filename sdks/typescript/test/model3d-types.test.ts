@@ -9,6 +9,8 @@ import type {
   ModelInfo,
   ModelSchema,
   ModelTask,
+  NativeOrientation,
+  SceneManifest,
   SourceRef,
 } from "../src";
 import { Model3dAssetKind } from "../src";
@@ -68,7 +70,14 @@ describe("3D vocabulary types", () => {
 
   it("exposes the asset kinds as constants matching the schema", () => {
     expectTypeOf<Model3dAssetKind>().toEqualTypeOf<Model3dAsset["kind"]>();
-    expect(Object.values(Model3dAssetKind)).toEqual(["mesh", "texture", "preview"]);
+    expect(Object.values(Model3dAssetKind)).toEqual(["mesh", "texture", "preview", "original"]);
+  });
+
+  it("types a mesh's manifest and a model's proven orientation", () => {
+    expectTypeOf<Model3dAsset["scene"]>().toEqualTypeOf<SceneManifest | null | undefined>();
+    expectTypeOf<SceneManifest["front"]>().toEqualTypeOf<string>();
+    expectTypeOf<NonNullable<SceneManifest["skin"]>["humanoid"]>().toEqualTypeOf<{ [key: string]: string } | null | undefined>();
+    expectTypeOf<ModelSchema["native_orientation"]>().toEqualTypeOf<NativeOrientation | null | undefined>();
   });
 
   it("exposes the server-computed derivable set and the docs link", () => {

@@ -103,7 +103,10 @@
 //! enforces that mechanically so it stays directly unit-testable (and
 //! extractable into its own crate) as the codebase moves around it.
 
+pub mod humanoid;
+pub mod inspect;
 pub mod ir;
+pub mod normalize;
 pub mod math;
 pub mod pose;
 pub mod scene;

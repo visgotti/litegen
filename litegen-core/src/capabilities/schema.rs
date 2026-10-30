@@ -355,6 +355,19 @@ pub enum RefProviderFormat {
     Multipart(RefProviderFormatMultipart),
 }
 
+/// The axes a 3D model's vendor builds its meshes along (3D doc §2 rule 3).
+/// Where they differ from glTF's (+Y up, +Z front), litegen adds a root
+/// rotation and the manifest says `oriented_by: "litegen"`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct NativeOrientation {
+    /// `+x`, `-x`, `+y`, `-y`, `+z` or `-z`.
+    pub up: String,
+    /// The axis the asset's front faces, at right angles to `up`.
+    pub front: String,
+    /// What showed it: the run, sample file or page.
+    pub evidence: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ModelSchema {
     pub id: String,
@@ -364,6 +377,11 @@ pub struct ModelSchema {
     /// such as `rig` or `animate`.
     #[serde(default)]
     pub task: ModelTask,
+    /// 3D only: the axes the vendor builds its meshes along, declared once a
+    /// run has shown them. Absent means unproven: the mesh is never turned and
+    /// its manifest says `front: "unverified"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_orientation: Option<NativeOrientation>,
     pub display_name: String,
     #[serde(default)] pub description: String,
     /// The vendor's own API reference page for the endpoint this model calls —

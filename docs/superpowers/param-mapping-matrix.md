@@ -77,6 +77,7 @@ the wire shape both SDKs type.
 | field | where | rule | proof | status |
 |---|---|---|---|---|
 | `task` | `ModelSchema.task`, `ModelCapabilities.task` (`ModelTask`) | One per model, from its modality's list (3D: `generate` \| `rig` \| `animate` \| `texture` \| `remesh` \| `segment`; image: `generate` \| `multiview` \| `background_swap`; video: `generate` \| `extend` \| `retake` \| `video_edit`). Omitted in yaml means `generate`. The `*_to_3d` flags are refused on anything but a 3D `generate` model. | loader: `task_defaults_to_generate`, `loads_a_3d_operation_task`, `rejects_a_task_from_another_modality`, `rejects_to_3d_flags_on_a_non_generate_task`, `rejects_an_unknown_task`. conformance: `every_model_declares_a_task_its_modality_has`. wire: `model_task_is_a_named_enum_on_the_schema_and_the_capabilities`, `the_listing_carries_each_models_task`. SDKs: `test_literal_values_match_the_schema_enum[ModelTask]` (Python), `names every catalog task` (TS type test). | ✅ |
+| `native_orientation` | `ModelSchema.native_orientation` (`NativeOrientation {up, front, evidence}`) | 3D only. The axes the vendor builds along, each one of `+x` `-x` `+y` `-y` `+z` `-z` spelled exactly so, at right angles, with the evidence that showed them. Absent means unproven: the mesh is never turned and its manifest says `front: "unverified"`. Declared today only by `mock/rig-3d` (+y/+z) and `mock/turned-3d` (+y/+x); every vendor row stays unproven until a live run shows its axes (no vendor keys here). | loader: `a_3d_model_declares_its_proven_orientation`, `native_orientation_axes_are_signed_axes_at_right_angles`, `native_orientation_names_its_evidence`, `native_orientation_is_a_3d_field`. wire: `a_3d_asset_documents_its_manifest_and_the_original_kind`, `the_catalog_says_which_models_have_a_proven_orientation`. SDKs: TS `types a mesh's manifest and a model's proven orientation`. | ✅ (mock); vendor rows 🟡 unproven |
 
 ## Request headers
 
@@ -220,6 +221,24 @@ submit.
 | `reference_images[].type: "generation"` | `RefImageKind` | A stored image generation's id; read back after the same access check and sent as inline bytes, so every vendor form takes it. Another org's, a non-image, or a vanished one is 404 `source_not_found` (`param: reference_images`); unfinished 409. | — | `a_stored_image_is_a_reference_by_its_generation_id` (an image edit and image-to-3D from a stored image), `an_image_reference_another_org_owns_is_not_found`, `a_mesh_is_not_an_image_reference` | ✅ |
 | row `vendor_account` | — | Every 3D row records the vendor account it ran on (`org:<id>` for an org credential, else `platform`); a source chains by the vendor's task id only on the same provider and account. | — | `a_rig_chained_by_generation_id_records_its_lineage` | ✅ |
 
+### Normalised delivery (3D doc §2 rule 3, §3D)
+
+One step, `proxy::model3d_deliver::deliver`, runs on a finished job's files at
+whichever observer sees completion first (the client's poll or the poller),
+from one plan fixed at submit (`metadata.delivery`). It maps no vendor field;
+it is what every vendor's mesh goes through before litegen stores it.
+
+| behaviour | rule | proof | status |
+|---|---|---|---|
+| read | The vendor's mesh is read with litegen's own reader. One it cannot read (Draco, meshopt) fails the generation, naming it and any promised container that cannot be derived (P-R7). | `a_mesh_litegen_cannot_read_fails_the_delivery_and_names_what_is_missing`; HTTP `a_mesh_litegen_cannot_read_is_never_delivered`; `a_provider_that_under_delivers_an_underivable_format_fails_the_generation` | ✅ |
+| orientation | A model whose `native_orientation` differs from +Y up / +Z front gets one root rotation; the manifest says `oriented_by: "litegen"`. Unproven: never turned, `front: "unverified"`. | `a_turned_mesh_is_rotated_to_face_z_and_the_vendors_file_kept`, `an_unproven_orientation_is_reported_never_guessed`; mesh `a_mesh_facing_x_is_turned_to_face_z`, `a_z_up_mesh_is_stood_up`; HTTP `a_turned_vendor_mesh_is_delivered_facing_z_with_the_vendors_file_kept`, `a_model_whose_orientation_is_unproven_says_so` | ✅ (mock) |
+| extensions | No delivered glTF requires an extension: WebP textures become PNG; a KTX2 texture is dropped from the normalised copy and logged (P-R8); a vendor glb that declares `extensionsRequired` is rewritten. | `a_webp_textured_mesh_needs_no_extension_once_delivered`, `webp_textures_become_png_and_nothing_needs_an_extension`; HTTP `every_asset_hash_matches_the_bytes_litegen_serves` (empty `extensionsRequired`) | ✅ |
+| names | Node names are made unique (`arm`, `arm_1`), so a bone map is unambiguous. | `duplicate_node_names_get_numeric_suffixes`, `duplicate_joint_names_are_delivered_with_numeric_suffixes` | ✅ |
+| `original` | When litegen changed the mesh, every vendor mesh is kept as an asset of kind `original`; when nothing changed, the vendor's bytes are delivered as they arrived. | `a_conforming_mesh_passes_through_with_a_measured_manifest` (bytes unchanged), `a_turned_mesh_is_rotated_to_face_z_and_the_vendors_file_kept` | ✅ |
+| `scene` manifest | Every delivered mesh carries `scene`, measured from its own bytes: `units`, `up`, `front`, `oriented_by`, `bounds`, vertex / triangle / UV-set counts, `vertex_colors`, `materials[].maps`, `skin` (`joints`, `root`, `bind_pose` t/a/unknown, VRM 1.0 `humanoid` map from the VRM, Unity, Mixamo, Meshy or litegen-mock naming tables), `animations` (`duration_s`, measured `in_place` with `root_travel_m`, `in_place_by`), `extensions_used`. | `a_conforming_mesh_passes_through_with_a_measured_manifest` (the mock cube exactly: 8 vertices, 12 triangles, no UVs, one material, bounds ±its scale), `a_rig_reports_its_skin_and_humanoid_map`; `mesh::inspect::tests::*` (validated against fal's published Meshy rig and animation samples); `mesh::humanoid::tests::*` | ✅ |
+| both observers | The client's poll and the poller deliver the same files byte for byte, with the same manifests. | `the_client_and_the_poller_deliver_identical_assets` (mutation-checked: removing the poller's delivery fails it) | ✅ |
+| `sha256` | Every stored asset's `sha256` is the hash of the bytes litegen serves for it. | `every_asset_hash_matches_the_bytes_litegen_serves` | ✅ |
+
 ### Proof: real billed runs against fal, 2026-09-12
 
 Four generations across all three fal 3D models, plus six rejections that had to
@@ -362,6 +381,11 @@ field name — but it is what makes the family behave the same on every model:
   `max_items`, the served set a superset of the native one, a `docs_url` on
   every vendor row, no-prompt models never requiring one, image-only models
   requiring their image.
+- `litegen-core/tests/delivery_api.rs` — normalised delivery over HTTP: a
+  turned vendor mesh delivered facing +Z with its `original`, every asset's
+  hash matching the served bytes, an unproven model reporting
+  `front: "unverified"`, the catalog's `native_orientation`, and an unreadable
+  mesh failing even when glb alone was asked for.
 - `litegen-core/tests/model3d_api.rs` — the HTTP lifecycle end to end against
   the mock provider, including what `GET /v1/models/{id}` serves, and that a
   stored mesh still downloads from a restarted process

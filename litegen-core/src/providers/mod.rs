@@ -485,6 +485,9 @@ pub struct Model3dFile {
     /// Pixel dimensions, for textures and previews whose vendor reports them.
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// On delivered meshes: what litegen measured in them
+    /// (`proxy::model3d_deliver`). Adapters leave it `None`.
+    pub manifest: Option<crate::types::SceneManifest>,
 }
 
 /// Handle returned when a 3D generation is started (for polling).

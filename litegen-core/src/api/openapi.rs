@@ -421,6 +421,25 @@ mod tests {
     }
 
     #[test]
+    fn a_3d_asset_documents_its_manifest_and_the_original_kind() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        assert_eq!(s["Model3dAssetKind"]["enum"], json!(["mesh", "texture", "preview", "original"]));
+        assert!(mentions(property(&s["Model3dAsset"], "scene"), "#/components/schemas/SceneManifest"), "{}", s["Model3dAsset"]);
+        for (schema, field) in [
+            ("SceneManifest", "front"), ("SceneManifest", "oriented_by"), ("SceneManifest", "extensions_used"),
+            ("SceneSkin", "humanoid"), ("SceneSkin", "bind_pose"), ("SceneAnimation", "in_place"),
+            ("SceneAnimation", "root_travel_m"), ("SceneBounds", "max"), ("SceneMaterial", "maps"),
+        ] {
+            property(&s[schema], field);
+        }
+        assert!(mentions(property(&s["ModelSchema"], "native_orientation"), "#/components/schemas/NativeOrientation"), "{}", s["ModelSchema"]);
+        for field in ["up", "front", "evidence"] {
+            property(&s["NativeOrientation"], field);
+        }
+    }
+
+    #[test]
     fn prompt_is_optional_on_the_wire() {
         // `PromptSpec.required` decides, per model. A wire-level `required`
         // would force image-to-3D callers to send `prompt: ""` to models that

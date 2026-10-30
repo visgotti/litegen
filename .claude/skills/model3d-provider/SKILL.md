@@ -131,14 +131,17 @@ been paid.
 - **Return what came back**, tagged with its real format. Never convert,
   rename or fabricate a container. Conversion is core's job, and a
   plausible-but-broken file surfaces at the customer instead of at us.
-- **Derivation needs a vendor file that litegen can read.** The glb reader
-  refuses any `extensionsRequired` entry outside its allowlist, and Draco,
-  meshopt and `KHR_mesh_quantization` are all refused. If a vendor's file
-  can't be read, every promised container except the one it delivered fails
-  *after* the vendor has billed. Prove in the live run that the real vendor
-  file parses and converts. The catalog can't yet express "this vendor's
-  output can't be converted", so if the file doesn't parse, stop and raise
-  it.
+- **Delivery needs a vendor file that litegen can read.** Every finished
+  job goes through one delivery step (`proxy/model3d_deliver.rs`) that reads
+  the vendor's mesh, normalises it (orientation, unique node names, WebP
+  textures to PNG, no required glTF extension), derives the promised
+  containers and measures each into the asset's `scene` manifest. The glb
+  reader refuses any `extensionsRequired` entry outside its allowlist, and
+  Draco, meshopt and `KHR_mesh_quantization` are all refused. A vendor file
+  litegen can't read fails the WHOLE generation *after* the vendor has
+  billed, even when that container alone was asked for. Ask the vendor for
+  an uncompressed file, and prove in the live run that the real vendor file
+  parses and converts. If it doesn't, stop and raise it.
 
 ## A. Model on an existing 3D adapter
 
@@ -380,6 +383,12 @@ specific to 3D:
   Rodin `addons_highpack_multiplier: 3`), and raise them with the user,
   because flat billing under-charges textured or add-on requests.
 - **`display_name`** names an aggregator host: "TRELLIS (Fal)".
+- **`native_orientation`** (`{up, front, evidence}`) only once a live run has
+  shown the axes the vendor builds along: open a real result and see which
+  way the subject faces. litegen then turns that vendor's meshes to +Y up,
+  +Z front and keeps the vendor's file as an `original` asset. Without it
+  the mesh is never turned and its manifest says `front: "unverified"` —
+  the honest answer, never a guess.
 
 ## Tests
 

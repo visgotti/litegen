@@ -392,6 +392,10 @@ models:
     provider: mock
     media_type: model3d
     task: rig
+    native_orientation:
+      up: "+y"
+      front: "+z"
+      evidence: litegen builds this rig itself, standing on +Y and facing +Z (litegen-core/src/providers/model3d/humanoid.rs)
     display_name: Mock Rig 3D
     description: >-
       Rigs any mesh it can read as the same skinned box humanoid: joints hips,
@@ -421,6 +425,34 @@ models:
     extra_allowlist: []
     tags: [mock, test, rig]
 
+  - id: mock/turned-3d
+    provider: mock
+    media_type: model3d
+    native_orientation:
+      up: "+y"
+      front: "+x"
+      evidence: litegen builds this mesh itself, turned a quarter left to face +X (litegen-core/src/providers/model3d/humanoid.rs, turned_humanoid_glb)
+    display_name: Mock Turned 3D
+    description: >-
+      Emits the skinned box humanoid turned to face +X, the way a vendor that
+      builds +X-forward delivers its meshes, and declares it in
+      native_orientation. litegen turns the delivered file to face +Z
+      (`oriented_by: "litegen"`) and keeps the vendor's file as the asset of
+      kind `original`.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_3d: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      output_formats:
+        kind: string_array
+        enum_values: [glb]
+        max_items: 1
+        default: [glb]
+        label: Output formats
+        description: Mesh containers. The mock emits glb; litegen derives the rest.
+    extra_allowlist: []
+    tags: [mock, test]
+
   - id: mock/fail-3d
     provider: mock
     media_type: model3d
@@ -439,11 +471,11 @@ models:
     display_name: Mock Partial-Delivery 3D
     description: >-
       Reports `completed` while returning only a glb, whatever was asked for —
-      and a glb litegen's converter cannot read, because it declares
+      and a glb litegen cannot read, because it declares
       KHR_draco_mesh_compression as required, the way a vendor that compresses
-      its meshes under-delivers. With nothing readable to derive from, every
-      other promised container stays missing: request `[glb, obj]` or
-      `[glb, fbx]` and the generation must FAIL, at every observer.
+      its meshes under-delivers. litegen delivers only meshes it can read and
+      describe, so every request FAILS, at every observer: `[glb]` because the
+      glb could not be read, `[glb, fbx]` naming the fbx that never arrived.
     pricing: { base_cost_usd: 0.0 }
     capabilities: { text_to_3d: true }
     prompt: { required: true, max_length: 1000 }

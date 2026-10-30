@@ -73,6 +73,11 @@ MIRRORED = {
     "GenerationAsset": t.GenerationAsset,
     "SourceRef": t.SourceRef,
     "GenerationAssetList": t.GenerationAssetList,
+    "SceneManifest": t.SceneManifest,
+    "SceneBounds": t.SceneBounds,
+    "SceneMaterial": t.SceneMaterial,
+    "SceneSkin": t.SceneSkin,
+    "SceneAnimation": t.SceneAnimation,
 }
 
 

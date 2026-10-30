@@ -1001,6 +1001,7 @@ impl Model3dProvider for FalModel3dProvider {
             polycount: None,
             width: None,
             height: None,
+            manifest: None,
         }];
 
         // Rodin returns its PBR maps separately, as fal `Image`s — the only
@@ -1022,6 +1023,7 @@ impl Model3dProvider for FalModel3dProvider {
                             polycount: None,
                             width: dimension("width"),
                             height: dimension("height"),
+                            manifest: None,
                         });
                     }
                     Err(AssetError::Transient(e)) => {

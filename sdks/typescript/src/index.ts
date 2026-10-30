@@ -99,11 +99,16 @@ export const RefImageKind = {
 } as const;
 export type RefImageKind = (typeof RefImageKind)[keyof typeof RefImageKind];
 
-/** What one file in a 3D result is: the mesh itself, a texture map, or a 2D preview render. */
+/**
+ * What one file in a 3D result is: the mesh itself, a texture map, a 2D preview
+ * render, or `original` — the vendor's own file, kept beside a mesh litegen
+ * changed to deliver it in glTF's conventions.
+ */
 export const Model3dAssetKind = {
   Mesh: "mesh",
   Texture: "texture",
   Preview: "preview",
+  Original: "original",
 } as const;
 export type Model3dAssetKind = (typeof Model3dAssetKind)[keyof typeof Model3dAssetKind];
 
@@ -116,6 +121,19 @@ export type VideoGenerationResponse = components["schemas"]["VideoGenerationResp
 export type Model3dGenerationRequest = components["schemas"]["Model3dGenerationRequest"];
 export type Model3dGenerationResponse = components["schemas"]["Model3dGenerationResponse"];
 export type Model3dAsset = components["schemas"]["Model3dAsset"];
+/**
+ * What litegen measured in a delivered mesh (`Model3dAsset.scene`), read from
+ * the file's own bytes: metres, `+y` up, facing `+z` — or `front: "unverified"`
+ * for a model whose orientation nobody has proven yet.
+ */
+export type SceneManifest = components["schemas"]["SceneManifest"];
+export type SceneBounds = components["schemas"]["SceneBounds"];
+export type SceneMaterial = components["schemas"]["SceneMaterial"];
+/** A delivered mesh's skeleton, with its VRM 1.0 `humanoid` map when litegen recognises the rig. */
+export type SceneSkin = components["schemas"]["SceneSkin"];
+export type SceneAnimation = components["schemas"]["SceneAnimation"];
+/** A 3D model's proven native axes (`ModelSchema.native_orientation`). */
+export type NativeOrientation = components["schemas"]["NativeOrientation"];
 /**
  * Every mesh container a 3D request may name in `output_formats`. Which of
  * them one model can deliver is that model's `params.output_formats.enum_values`

@@ -61,6 +61,9 @@ pub fn rigged_humanoid(names: &[&str; 7]) -> Scene {
     for (j, (_, _, lo, hi)) in BONES.iter().enumerate() {
         add_box(&mut prim, j as u16, *lo, *hi);
     }
+    // A nose on the front of the head, so which way the figure faces can be
+    // checked: +Z, the glTF front.
+    add_box(&mut prim, 2, [-0.02, 1.58, 0.11], [0.02, 1.62, 0.16]);
     s.meshes.push(SceneMesh { name: Some("body".into()), primitives: vec![prim], ..Default::default() });
 
     // Node 0 holds the skinned mesh; joints are nodes 1..=7.
@@ -86,6 +89,22 @@ pub fn rigged_humanoid(names: &[&str; 7]) -> Scene {
     let inverse_bind: Vec<Mat4> = BONES.iter().map(|(_, w, _, _)| math::translation([-w[0], -w[1], -w[2]])).collect();
     s.skins.push(Skin { name: Some("humanoid".into()), joints: (1..=7).collect(), inverse_bind_matrices: inverse_bind, skeleton: Some(1) });
     s
+}
+
+/// The humanoid turned a quarter left, to face +X, as a vendor that builds
+/// +X-forward delivers it: what `mock/turned-3d` emits.
+pub fn turned_humanoid_glb() -> Vec<u8> {
+    let mut s = rigged_humanoid(&MOCK_JOINTS);
+    let children = std::mem::take(&mut s.roots);
+    let h = std::f64::consts::FRAC_1_SQRT_2;
+    s.add_root(Node {
+        name: Some("vendor_root".into()),
+        // +90° about +Y: +Z (the face) turns to +X.
+        transform: Transform::Trs { translation: [0.0; 3], rotation: [0.0, h, 0.0, h], scale: [1.0; 3] },
+        children,
+        ..Default::default()
+    });
+    crate::mesh::glb::write_scene(&s).expect("the turned humanoid is a valid scene")
 }
 
 /// [`rigged_humanoid`] as a GLB.

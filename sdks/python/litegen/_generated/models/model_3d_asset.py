@@ -1,10 +1,23 @@
-from typing import Any, Dict, List, Type, TypeVar, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.model_3d_asset_kind import Model3DAssetKind
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.scene_manifest import SceneManifest
+
 
 T = TypeVar("T", bound="Model3DAsset")
 
@@ -29,6 +42,7 @@ class Model3DAsset:
             height (Union[None, Unset, int]): Pixel height, on textures and previews whose vendor reports it.
             polycount (Union[None, Unset, int]): Triangle count, on meshes whose vendor reports one. A container litegen
                 derived carries its source's count — conversion keeps every triangle.
+            scene (Union['SceneManifest', None, Unset]):
             sha256 (Union[None, Unset, str]): Lowercase hex SHA-256 of the stored file.
             size_bytes (Union[None, Unset, int]): Size of the stored file.
             width (Union[None, Unset, int]): Pixel width, on textures and previews whose vendor reports it.
@@ -39,12 +53,15 @@ class Model3DAsset:
     url: str
     height: Union[None, Unset, int] = UNSET
     polycount: Union[None, Unset, int] = UNSET
+    scene: Union["SceneManifest", None, Unset] = UNSET
     sha256: Union[None, Unset, str] = UNSET
     size_bytes: Union[None, Unset, int] = UNSET
     width: Union[None, Unset, int] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        from ..models.scene_manifest import SceneManifest
+
         format_ = self.format_
 
         kind = self.kind.value
@@ -62,6 +79,14 @@ class Model3DAsset:
             polycount = UNSET
         else:
             polycount = self.polycount
+
+        scene: Union[Dict[str, Any], None, Unset]
+        if isinstance(self.scene, Unset):
+            scene = UNSET
+        elif isinstance(self.scene, SceneManifest):
+            scene = self.scene.to_dict()
+        else:
+            scene = self.scene
 
         sha256: Union[None, Unset, str]
         if isinstance(self.sha256, Unset):
@@ -94,6 +119,8 @@ class Model3DAsset:
             field_dict["height"] = height
         if polycount is not UNSET:
             field_dict["polycount"] = polycount
+        if scene is not UNSET:
+            field_dict["scene"] = scene
         if sha256 is not UNSET:
             field_dict["sha256"] = sha256
         if size_bytes is not UNSET:
@@ -105,6 +132,8 @@ class Model3DAsset:
 
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
+        from ..models.scene_manifest import SceneManifest
+
         d = src_dict.copy()
         format_ = d.pop("format")
 
@@ -129,6 +158,23 @@ class Model3DAsset:
             return cast(Union[None, Unset, int], data)
 
         polycount = _parse_polycount(d.pop("polycount", UNSET))
+
+        def _parse_scene(data: object) -> Union["SceneManifest", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                scene_type_1 = SceneManifest.from_dict(data)
+
+                return scene_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union["SceneManifest", None, Unset], data)
+
+        scene = _parse_scene(d.pop("scene", UNSET))
 
         def _parse_sha256(data: object) -> Union[None, Unset, str]:
             if data is None:
@@ -163,6 +209,7 @@ class Model3DAsset:
             url=url,
             height=height,
             polycount=polycount,
+            scene=scene,
             sha256=sha256,
             size_bytes=size_bytes,
             width=width,

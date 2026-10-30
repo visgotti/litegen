@@ -60,7 +60,9 @@ struct TrackedJob<H> {
 struct Model3dJob {
     handle: Model3dGenerationHandle,
     usage: Option<UsageInfo>,
-    requested_formats: Vec<String>,
+    /// What delivering it must do: the same plan the submit recorded on the
+    /// row for the poller.
+    delivery: crate::proxy::model3d_deliver::DeliveryPlan,
     provider: Arc<dyn crate::providers::Model3dProvider>,
     /// Unix seconds at submit. Every poll reports this, not the poll time, so
     /// `created` means the same thing on every observer of one generation.
@@ -844,7 +846,13 @@ impl ProxyRouter {
             jobs.retain(|_, j| created - j.created < MODEL3D_JOB_MAX_AGE_SECS);
             jobs.insert(
                 local_id.clone(),
-                Model3dJob { handle, usage: usage_info.clone(), requested_formats, provider, created },
+                Model3dJob {
+                    handle,
+                    usage: usage_info.clone(),
+                    delivery: crate::proxy::model3d_deliver::DeliveryPlan::for_model(schema, &requested_formats),
+                    provider,
+                    created,
+                },
             );
         }
 
@@ -882,8 +890,9 @@ impl ProxyRouter {
             let jobs = self.model3d_jobs.read().await;
             jobs.get(id).cloned()
         };
-        let Model3dJob { mut handle, usage, requested_formats, provider, created } =
+        let Model3dJob { mut handle, usage, delivery, provider, created } =
             job.ok_or_else(|| ProxyError::NotFound(format!("3d job '{}' not found", id)))?;
+        let requested_formats = delivery.requested_formats.clone();
 
         // The instance that submitted the job — see `Model3dJob`.
         let mut poll = provider.poll_status(&handle).await.map_err(|e| ProxyError::ProviderError {
@@ -903,36 +912,16 @@ impl ProxyRouter {
             }
         }
 
+        // Normalise, measure and fill in the promised containers BEFORE
+        // rehost, so a delivered file is stored and served like a native one:
+        // the step the poller runs too, so whichever observer wins the race
+        // produces the same assets.
+        crate::proxy::model3d_deliver::deliver_poll(&mut poll, delivery, id).await;
         let is_terminal = matches!(
             poll.status,
             GenerationStatus::Completed | GenerationStatus::Failed | GenerationStatus::Cancelled
         );
-
-        // Fill in containers the vendor did not return, BEFORE rehost, so a
-        // derived file is stored and served exactly like a native one. Mirrors
-        // the poller step — whichever observer wins the race must produce the
-        // same asset list.
-        let files = if poll.status == GenerationStatus::Completed && !poll.files.is_empty() {
-            let requested = requested_formats.clone();
-            let files = poll.files.clone();
-            // CPU-bound, on a request path: off the runtime thread.
-            let (files, report) = tokio::task::spawn_blocking(move || {
-                crate::proxy::model3d_convert::synthesize_missing_formats(files, &requested)
-            })
-            .await
-            .unwrap_or_else(|e| {
-                // A panic in conversion must not take the request with it; the
-                // guard below then fails the generation for the missing format.
-                tracing::warn!(id = %id, error = %e, "3d format synthesis panicked");
-                (Vec::new(), Default::default())
-            });
-            for (fmt, why) in &report.failures {
-                tracing::warn!(id = %id, format = %fmt, reason = %why, "could not derive a requested 3d format");
-            }
-            files
-        } else {
-            poll.files.clone()
-        };
+        let files = poll.files.clone();
 
         // Re-host in the same call that saw completion — provider URLs expire.
         let assets = if poll.status == GenerationStatus::Completed && !files.is_empty() {
@@ -1480,6 +1469,7 @@ pub async fn rehost_model3d_files(
             Model3dAssetKind::Mesh => "model",
             Model3dAssetKind::Texture => "texture",
             Model3dAssetKind::Preview => "preview",
+            Model3dAssetKind::Original => "original",
         };
         // The vendor's spelling reaches a storage key and a public URL, so it is
         // normalised here rather than trusted.
@@ -1502,6 +1492,7 @@ pub async fn rehost_model3d_files(
             width: f.width,
             height: f.height,
             sha256: Some(sha256_hex(&f.bytes)),
+            scene: f.manifest.clone(),
         });
     }
     Ok(assets)
@@ -1748,6 +1739,7 @@ mod model3d_router_tests {
             polycount: Some(12),
             width: None,
             height: None,
+            manifest: None,
         }
     }
 
@@ -1760,6 +1752,7 @@ mod model3d_router_tests {
             polycount: None,
             width: Some(512),
             height: Some(512),
+            manifest: None,
         }
     }
 
@@ -1980,6 +1973,7 @@ mod model3d_router_tests {
         let schema = crate::capabilities::ModelSchema {
             id: "mock/slow-3d".into(), provider: "mock".into(), media_type: crate::capabilities::MediaType::Model3d,
             task: Default::default(),
+            native_orientation: None,
             display_name: "slow".into(), description: String::new(), docs_url: None,
             pricing: crate::capabilities::ModelPricing { base_cost_usd: 0.0, variable_pricing: None },
             capabilities: crate::capabilities::ModelCapabilityFlags { text_to_3d: true, ..Default::default() },

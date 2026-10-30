@@ -257,39 +257,12 @@ pub(crate) async fn poll_once(
                 // vendors expire their download URLs within minutes, so the bytes
                 // `poll` already carries must be moved to litegen-owned storage
                 // before the next poll cycle rather than deferred.
-                // Fill in containers the vendor did not return, BEFORE rehost,
-                // so derived files are stored and served exactly like native
-                // ones. Read the promise off the row first — the poller cannot
-                // see the router's in-flight job map.
-                let requested = crate::api::handlers::row_requested_formats(&gen);
-                let poll = if poll.status == GenerationStatus::Completed && !poll.files.is_empty() {
-                    let mut poll = poll;
-                    let files = std::mem::take(&mut poll.files);
-                    let requested = requested.clone();
-                    // Parsing and re-encoding a 300k-triangle mesh is real CPU
-                    // work, and this tick is shared with every other in-flight
-                    // generation — so it goes to a blocking thread rather than
-                    // stalling the runtime.
-                    let (files, report) = match tokio::task::spawn_blocking(move || {
-                        crate::proxy::model3d_convert::synthesize_missing_formats(files, &requested)
-                    }).await {
-                        Ok(v) => v,
-                        Err(e) => {
-                            // A panic in conversion must not take the poll tick
-                            // with it; the completion guard below then fails the
-                            // generation for the missing container.
-                            warn!(generation_id = %gen.id, error = %e, "poller: 3d format synthesis panicked");
-                            (Vec::new(), Default::default())
-                        }
-                    };
-                    for (fmt, why) in &report.failures {
-                        warn!(generation_id = %gen.id, format = %fmt, reason = %why, "poller: could not derive a requested 3d format");
-                    }
-                    poll.files = files;
-                    poll
-                } else {
-                    poll
-                };
+                // Normalise, measure and fill in the promised containers BEFORE
+                // rehost — the step the client's poll runs too. The plan is read
+                // off the row: the poller cannot see the router's job map.
+                let delivery = crate::proxy::model3d_deliver::DeliveryPlan::from_row(&gen);
+                let requested = delivery.requested_formats.clone();
+                crate::proxy::model3d_deliver::deliver_poll(&mut poll, delivery, &gen.id).await;
 
                 let assets = if poll.status == GenerationStatus::Completed && !poll.files.is_empty() {
                     // Per-app BYO bucket (and its configured prefix) if the app set
@@ -1009,6 +982,7 @@ mod poller_tests {
                     polycount: None,
                     width: Some(256),
                     height: Some(256),
+                    manifest: None,
                 }],
                 error: None,
                 metadata: Default::default(),
@@ -1041,6 +1015,7 @@ mod poller_tests {
         let schema = crate::capabilities::ModelSchema {
             id: model.into(), provider: "mock".into(), media_type: MediaType::Model3d,
             task: Default::default(),
+            native_orientation: None,
             display_name: model.into(), description: String::new(), docs_url: None,
             pricing: ModelPricing { base_cost_usd: 0.0, variable_pricing: None },
             capabilities: ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
@@ -1116,6 +1091,7 @@ mod poller_tests {
                         polycount: None,
                         width: None,
                         height: None,
+                        manifest: None,
                     }],
                     error: None,
                     metadata: Default::default(),
@@ -1154,6 +1130,7 @@ mod poller_tests {
         crate::capabilities::ModelSchema {
             id: "mock/staged-3d".into(), provider: "mock".into(), media_type: MediaType::Model3d,
             task: Default::default(),
+            native_orientation: None,
             display_name: "staged".into(), description: String::new(), docs_url: None,
             pricing: ModelPricing { base_cost_usd: 0.0, variable_pricing: None },
             capabilities: ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
@@ -1273,6 +1250,78 @@ mod poller_tests {
         let row = db.get_generation(&id).await.unwrap().unwrap();
         assert_eq!(row.status, crate::types::GenerationStatus::Processing);
         assert_eq!(provider.starts.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// 3D doc §3D: whichever observer sees a job finish, the caller gets the
+    /// same files — the client's poll and the poller run one delivery step
+    /// from one plan.
+    #[tokio::test]
+    async fn the_client_and_the_poller_deliver_identical_assets() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = make_3d_registry().await;
+        let store = test_3d_store();
+        let router = crate::proxy::router::ProxyRouter::new(
+            registry.clone(),
+            Arc::new(crate::proxy::cache::GenerationCache::new(&crate::config::CacheGlobalConfig::default())),
+            Arc::new(crate::config::AppConfig::default()),
+            Arc::new(crate::proxy::storage::LocalStore),
+        );
+        let mut schema = staged_schema();
+        schema.id = "mock/turned-3d".into();
+        schema.native_orientation = Some(crate::capabilities::NativeOrientation {
+            up: "+y".into(), front: "+x".into(), evidence: "the mock builds it so".into(),
+        });
+        let base = crate::types::BaseGenerationRequest {
+            prompt: "a knight".into(), model: schema.id.clone(), n: 1, negative_prompt: None, seed: None,
+            reference_images: vec![], strict: true, extra: None, metadata: None,
+        };
+        let extras = crate::providers::Model3dExtras {
+            output_formats: vec!["glb".into(), "obj".into()],
+            texture: None, pbr: None, target_polycount: None,
+            symmetry: None, topology: None, rig: None, extra: None,
+            source: None,
+        };
+        let plan = crate::proxy::model3d_deliver::DeliveryPlan::for_model(&schema, &extras.output_formats);
+
+        let mut seen = Vec::new();
+        for observer in ["client", "poller"] {
+            let resp = router.generate_model3d(&schema, &base, &extras, &Default::default(), None).await.unwrap();
+            let job = router.get_model3d_provider_job_id(&resp.id).await;
+            db.insert_generation(&resp.id, None, &schema.id, "mock", "model3d", job.as_deref(), 0.0, None, None).await.unwrap();
+            db.merge_generation_metadata_if_active(&resp.id, &serde_json::json!({
+                "requested_formats": extras.output_formats, "delivery": plan,
+            })).await.unwrap();
+            let mut assets = Vec::new();
+            if observer == "client" {
+                for _ in 0..5 {
+                    let r = router.get_model3d_status(&resp.id, None, None, &db).await.unwrap();
+                    if r.status == crate::types::GenerationStatus::Completed {
+                        assets = r.assets;
+                        break;
+                    }
+                }
+            } else {
+                router.forget_model3d_job(&resp.id).await;
+                for _ in 0..5 {
+                    poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &store).await;
+                    let row = db.get_generation(&resp.id).await.unwrap().unwrap();
+                    if row.status == crate::types::GenerationStatus::Completed {
+                        assets = serde_json::from_value(row.metadata.unwrap()["assets"].clone()).unwrap();
+                        break;
+                    }
+                }
+            }
+            assert!(!assets.is_empty(), "the {observer} saw the job finish");
+            seen.push(assets);
+        }
+        // Byte for byte, with the same manifests: only where they are stored differs.
+        let files = |a: &[crate::types::Model3dAsset]| {
+            a.iter().map(|a| (a.kind, a.format.clone(), a.sha256.clone(), a.scene.clone())).collect::<Vec<_>>()
+        };
+        assert_eq!(files(&seen[0]), files(&seen[1]));
+        assert!(seen[0].iter().any(|a| a.kind == crate::types::Model3dAssetKind::Original), "{:?}", files(&seen[0]));
+        assert!(seen[0].iter().filter(|a| a.kind == crate::types::Model3dAssetKind::Mesh)
+            .all(|a| a.scene.as_ref().is_some_and(|s| s.front == "+z" && s.oriented_by == "litegen")));
     }
 
     #[tokio::test]

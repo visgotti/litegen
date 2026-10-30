@@ -40,6 +40,10 @@ const PARTIAL_MODEL: &str = "mock/partial-3d";
 /// The rigging operation: any source becomes the skinned box humanoid.
 const RIG_MODEL: &str = "mock/rig-3d";
 
+/// Emits the humanoid facing +X, as a vendor building +X-forward does; its
+/// catalog row declares so, and litegen turns it to face +Z.
+const TURNED_MODEL: &str = "mock/turned-3d";
+
 struct Job {
     model: String,
     /// One entry per container the caller was promised, in request order.
@@ -89,7 +93,7 @@ impl Default for MockModel3dProvider {
 /// container `mock/partial-3d` leaves out stays missing — the one way a
 /// promised container still goes missing now that every container litegen
 /// names is derivable from a mesh it can read.
-fn generate_undecodable_glb(prompt: &str) -> Vec<u8> {
+pub(crate) fn generate_undecodable_glb(prompt: &str) -> Vec<u8> {
     let glb = generate_cube_glb(prompt);
     let json_len = u32::from_le_bytes([glb[12], glb[13], glb[14], glb[15]]) as usize;
     let mut json: serde_json::Value = serde_json::from_slice(&glb[20..20 + json_len]).expect("the mock's own glb");
@@ -170,7 +174,10 @@ impl Model3dProvider for MockModel3dProvider {
                 stage_context: None,
             });
         }
-        let meshes: Vec<(String, Vec<u8>)> = requested
+        let meshes: Vec<(String, Vec<u8>)> = if model.id == TURNED_MODEL {
+            vec![("glb".into(), crate::providers::model3d::humanoid::turned_humanoid_glb())]
+        } else {
+            requested
             .iter()
             .filter(|f| model.id != PARTIAL_MODEL || f.as_str() == "glb")
             .filter_map(|f| match f.as_str() {
@@ -180,7 +187,8 @@ impl Model3dProvider for MockModel3dProvider {
                 "stl" => Some((f.clone(), generate_cube_stl(&base.prompt))),
                 _ => None,
             })
-            .collect();
+            .collect()
+        };
 
         // Bytes are rendered at submit time so the poll ramp measures polling,
         // not generation, and so a prompt that reached us is provable later.
@@ -280,6 +288,7 @@ impl Model3dProvider for MockModel3dProvider {
                 polycount: Some(CUBE_TRIANGLE_COUNT),
                 width: None,
                 height: None,
+                manifest: None,
             })
             .collect();
         files.push(Model3dFile {
@@ -290,6 +299,7 @@ impl Model3dProvider for MockModel3dProvider {
             polycount: None,
             width: Some(512),
             height: Some(512),
+            manifest: None,
         });
 
         Ok(Model3dGenerationPollResult {
@@ -332,6 +342,7 @@ mod tests {
             provider: "mock".into(),
             media_type: MediaType::Model3d,
             task: Default::default(),
+            native_orientation: None,
             display_name: id.into(),
             description: String::new(),
             docs_url: None,

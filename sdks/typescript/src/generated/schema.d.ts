@@ -2488,6 +2488,7 @@ export interface components {
              *     derived carries its source's count — conversion keeps every triangle.
              */
             polycount?: number | null;
+            scene?: null | components["schemas"]["SceneManifest"];
             /** @description Lowercase hex SHA-256 of the stored file. */
             sha256?: string | null;
             /**
@@ -2511,7 +2512,7 @@ export interface components {
          * @description What a `Model3dAsset` is.
          * @enum {string}
          */
-        Model3dAssetKind: "mesh" | "texture" | "preview";
+        Model3dAssetKind: "mesh" | "texture" | "preview" | "original";
         /** @description What the converter can do, for a client to check before uploading. */
         Model3dConvertFormats: {
             /**
@@ -2757,6 +2758,7 @@ export interface components {
             extra_allowlist?: string[];
             id: string;
             media_type: components["schemas"]["CapabilityMediaType"];
+            native_orientation?: null | components["schemas"]["NativeOrientation"];
             params?: {
                 [key: string]: unknown;
             };
@@ -2799,6 +2801,19 @@ export interface components {
             model: string;
             /** Format: int64 */
             requests: number;
+        };
+        /**
+         * @description The axes a 3D model's vendor builds its meshes along (3D doc §2 rule 3).
+         *     Where they differ from glTF's (+Y up, +Z front), litegen adds a root
+         *     rotation and the manifest says `oriented_by: "litegen"`.
+         */
+        NativeOrientation: {
+            /** @description What showed it: the run, sample file or page. */
+            evidence: string;
+            /** @description The axis the asset's front faces, at right angles to `up`. */
+            front: string;
+            /** @description `+x`, `-x`, `+y`, `-y`, `+z` or `-z`. */
+            up: string;
         };
         OrgAllowedModels: {
             models: string[];
@@ -3476,6 +3491,86 @@ export interface components {
         };
         /** @enum {string} */
         RoutingStrategy: "fallback" | "weighted_round_robin" | "lowest_cost" | "lowest_latency";
+        SceneAnimation: {
+            /**
+             * Format: float
+             * @description Measured from the keys.
+             */
+            duration_s: number;
+            /** @description Measured: the root ends within 1 cm of where it started, horizontally. */
+            in_place: boolean;
+            /**
+             * @description `vendor` (arrived in place), `litegen` (litegen removed the root's
+             *     horizontal travel), or absent when not in place.
+             */
+            in_place_by?: string | null;
+            /** @description Whether the request asked for a loop (a hint; glTF has no loop flag). */
+            loop_requested?: boolean | null;
+            name: string;
+            /** @description The root's world displacement, first key to last, in metres. */
+            root_travel_m: number[];
+        };
+        SceneBounds: {
+            max: number[];
+            min: number[];
+        };
+        /**
+         * @description What litegen measured in a delivered mesh (3D doc §3D). Every delivered
+         *     mesh is in glTF's conventions: metres, +Y up, the subject facing +Z with
+         *     its right side at −X.
+         */
+        SceneManifest: {
+            animations: components["schemas"]["SceneAnimation"][];
+            bounds?: null | components["schemas"]["SceneBounds"];
+            /** @description glTF extensions the file uses (none is ever required). */
+            extensions_used: string[];
+            /**
+             * @description `+z`, or `unverified` when the model's orientation has not been proven
+             *     (litegen never reports a guess).
+             */
+            front: string;
+            materials: components["schemas"]["SceneMaterial"][];
+            /** @description `vendor` (it arrived so) or `litegen` (litegen turned it). */
+            oriented_by: string;
+            skin?: null | components["schemas"]["SceneSkin"];
+            /** Format: int64 */
+            triangle_count: number;
+            /** @description Always `m`. */
+            units: string;
+            /** @description Always `+y`. */
+            up: string;
+            /** Format: int32 */
+            uv_sets: number;
+            vertex_colors: boolean;
+            /** Format: int64 */
+            vertex_count: number;
+        };
+        SceneMaterial: {
+            /** @description `base_color`, `metallic_roughness`, `normal`, `occlusion`, `emissive`. */
+            maps: string[];
+            name?: string | null;
+        };
+        SceneSkin: {
+            /** @description `t`, `a` or `unknown`, from the upper-arm angle at rest. */
+            bind_pose: string;
+            /**
+             * @description VRM 1.0 humanoid bone → joint name, for a rig litegen recognises;
+             *     `null` for one it does not (never a guess).
+             */
+            humanoid?: {
+                [key: string]: string;
+            } | null;
+            /** Format: int32 */
+            joint_count: number;
+            /** @description Joint names, unique, in skin order. */
+            joints: string[];
+            root?: string | null;
+            /**
+             * @description `humanoid` when a known naming scheme matched, else what the request
+             *     asked the rig to be, else absent.
+             */
+            skeleton?: string | null;
+        };
         Session: {
             /** Format: date-time */
             created_at: string;

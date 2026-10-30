@@ -199,6 +199,7 @@ pub fn synthesize_missing_formats(
                     polycount: source.polycount,
                     width: None,
                     height: None,
+                    manifest: None,
                 });
                 report.synthesized.push(to.as_str().to_string());
             }
@@ -222,6 +223,7 @@ mod tests {
             polycount: Some(12),
             width: None,
             height: None,
+            manifest: None,
         }
     }
 
@@ -234,6 +236,7 @@ mod tests {
             polycount: None,
             width: Some(8),
             height: Some(8),
+            manifest: None,
         }
     }
 

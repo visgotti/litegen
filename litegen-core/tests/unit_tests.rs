@@ -536,6 +536,7 @@ mod tests {
                 width: None,
                 height: None,
                 sha256: None,
+                scene: None,
             }],
             status: GenerationStatus::Completed,
             progress: 100,

@@ -87,6 +87,7 @@ from .model_schema_params import ModelSchemaParams
 from .model_source import ModelSource
 from .model_task import ModelTask
 from .model_usage_stat import ModelUsageStat
+from .native_orientation import NativeOrientation
 from .org_allowed_models import OrgAllowedModels
 from .org_summary import OrgSummary
 from .org_transfer_owner_request import OrgTransferOwnerRequest
@@ -157,6 +158,12 @@ from .route_deployment import RouteDeployment
 from .route_spec import RouteSpec
 from .routes_document import RoutesDocument
 from .routing_strategy import RoutingStrategy
+from .scene_animation import SceneAnimation
+from .scene_bounds import SceneBounds
+from .scene_manifest import SceneManifest
+from .scene_material import SceneMaterial
+from .scene_skin import SceneSkin
+from .scene_skin_humanoid_type_0 import SceneSkinHumanoidType0
 from .session import Session
 from .session_info import SessionInfo
 from .set_app_model_access_request import SetAppModelAccessRequest
@@ -270,6 +277,7 @@ __all__ = (
     "ModelSource",
     "ModelTask",
     "ModelUsageStat",
+    "NativeOrientation",
     "OrgAllowedModels",
     "Organization",
     "OrganizationMember",
@@ -334,6 +342,12 @@ __all__ = (
     "RoutesDocument",
     "RouteSpec",
     "RoutingStrategy",
+    "SceneAnimation",
+    "SceneBounds",
+    "SceneManifest",
+    "SceneMaterial",
+    "SceneSkin",
+    "SceneSkinHumanoidType0",
     "Session",
     "SessionInfo",
     "SetAppModelAccessRequest",

@@ -8621,6 +8621,17 @@
                         "description": "Triangle count, on meshes whose vendor reports one. A container litegen\nderived carries its source's count \u2014 conversion keeps every triangle.",
                         "minimum": 0
                     },
+                    "scene": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/SceneManifest",
+                                "description": "On meshes: what litegen's own reader found in this very file. Never the\nvendor's claims."
+                            }
+                        ]
+                    },
                     "sha256": {
                         "type": [
                             "string",
@@ -8658,7 +8669,8 @@
                 "enum": [
                     "mesh",
                     "texture",
-                    "preview"
+                    "preview",
+                    "original"
                 ]
             },
             "Model3dConvertFormats": {
@@ -9179,6 +9191,17 @@
                     "media_type": {
                         "$ref": "#/components/schemas/CapabilityMediaType"
                     },
+                    "native_orientation": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/NativeOrientation",
+                                "description": "3D only: the axes the vendor builds its meshes along, declared once a\nrun has shown them. Absent means unproven: the mesh is never turned and\nits manifest says `front: \"unverified\"`."
+                            }
+                        ]
+                    },
                     "params": {
                         "type": "object",
                         "additionalProperties": {},
@@ -9266,6 +9289,29 @@
                         "type": "integer",
                         "format": "int64",
                         "minimum": 0
+                    }
+                }
+            },
+            "NativeOrientation": {
+                "type": "object",
+                "description": "The axes a 3D model's vendor builds its meshes along (3D doc \u00a72 rule 3).\nWhere they differ from glTF's (+Y up, +Z front), litegen adds a root\nrotation and the manifest says `oriented_by: \"litegen\"`.",
+                "required": [
+                    "up",
+                    "front",
+                    "evidence"
+                ],
+                "properties": {
+                    "evidence": {
+                        "type": "string",
+                        "description": "What showed it: the run, sample file or page."
+                    },
+                    "front": {
+                        "type": "string",
+                        "description": "The axis the asset's front faces, at right angles to `up`."
+                    },
+                    "up": {
+                        "type": "string",
+                        "description": "`+x`, `-x`, `+y`, `-y`, `+z` or `-z`."
                     }
                 }
             },
@@ -11468,6 +11514,240 @@
                     "lowest_cost",
                     "lowest_latency"
                 ]
+            },
+            "SceneAnimation": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "duration_s",
+                    "in_place",
+                    "root_travel_m"
+                ],
+                "properties": {
+                    "duration_s": {
+                        "type": "number",
+                        "format": "float",
+                        "description": "Measured from the keys."
+                    },
+                    "in_place": {
+                        "type": "boolean",
+                        "description": "Measured: the root ends within 1 cm of where it started, horizontally."
+                    },
+                    "in_place_by": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "`vendor` (arrived in place), `litegen` (litegen removed the root's\nhorizontal travel), or absent when not in place."
+                    },
+                    "loop_requested": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "Whether the request asked for a loop (a hint; glTF has no loop flag)."
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "root_travel_m": {
+                        "type": "array",
+                        "items": {
+                            "type": "number",
+                            "format": "float"
+                        },
+                        "description": "The root's world displacement, first key to last, in metres."
+                    }
+                }
+            },
+            "SceneBounds": {
+                "type": "object",
+                "required": [
+                    "min",
+                    "max"
+                ],
+                "properties": {
+                    "max": {
+                        "type": "array",
+                        "items": {
+                            "type": "number",
+                            "format": "float"
+                        }
+                    },
+                    "min": {
+                        "type": "array",
+                        "items": {
+                            "type": "number",
+                            "format": "float"
+                        }
+                    }
+                }
+            },
+            "SceneManifest": {
+                "type": "object",
+                "description": "What litegen measured in a delivered mesh (3D doc \u00a73D). Every delivered\nmesh is in glTF's conventions: metres, +Y up, the subject facing +Z with\nits right side at \u2212X.",
+                "required": [
+                    "units",
+                    "up",
+                    "front",
+                    "oriented_by",
+                    "vertex_count",
+                    "triangle_count",
+                    "uv_sets",
+                    "vertex_colors",
+                    "materials",
+                    "animations",
+                    "extensions_used"
+                ],
+                "properties": {
+                    "animations": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SceneAnimation"
+                        }
+                    },
+                    "bounds": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/SceneBounds",
+                                "description": "World-space bounds at rest, in metres."
+                            }
+                        ]
+                    },
+                    "extensions_used": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "glTF extensions the file uses (none is ever required)."
+                    },
+                    "front": {
+                        "type": "string",
+                        "description": "`+z`, or `unverified` when the model's orientation has not been proven\n(litegen never reports a guess)."
+                    },
+                    "materials": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SceneMaterial"
+                        }
+                    },
+                    "oriented_by": {
+                        "type": "string",
+                        "description": "`vendor` (it arrived so) or `litegen` (litegen turned it)."
+                    },
+                    "skin": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/SceneSkin"
+                            }
+                        ]
+                    },
+                    "triangle_count": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "units": {
+                        "type": "string",
+                        "description": "Always `m`."
+                    },
+                    "up": {
+                        "type": "string",
+                        "description": "Always `+y`."
+                    },
+                    "uv_sets": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "vertex_colors": {
+                        "type": "boolean"
+                    },
+                    "vertex_count": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    }
+                }
+            },
+            "SceneMaterial": {
+                "type": "object",
+                "required": [
+                    "maps"
+                ],
+                "properties": {
+                    "maps": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "`base_color`, `metallic_roughness`, `normal`, `occlusion`, `emissive`."
+                    },
+                    "name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            },
+            "SceneSkin": {
+                "type": "object",
+                "required": [
+                    "joint_count",
+                    "bind_pose",
+                    "joints"
+                ],
+                "properties": {
+                    "bind_pose": {
+                        "type": "string",
+                        "description": "`t`, `a` or `unknown`, from the upper-arm angle at rest."
+                    },
+                    "humanoid": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "description": "VRM 1.0 humanoid bone \u2192 joint name, for a rig litegen recognises;\n`null` for one it does not (never a guess).",
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
+                    "joint_count": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "joints": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Joint names, unique, in skin order."
+                    },
+                    "root": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "skeleton": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "`humanoid` when a known naming scheme matched, else what the request\nasked the rig to be, else absent."
+                    }
+                }
             },
             "Session": {
                 "type": "object",

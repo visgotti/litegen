@@ -20,6 +20,7 @@ fn schema_with(params: HashMap<String, ParamSpec>) -> ModelSchema {
         provider: "mock".into(),
         media_type: MediaType::Model3d,
         task: Default::default(),
+        native_orientation: None,
         display_name: "Mock Mesh 3D".into(),
         description: String::new(),
         docs_url: None,

@@ -98,6 +98,29 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
+    // 3D doc §2 rule 3: the axes litegen turns a vendor's mesh from.
+    if let Some(o) = &m.native_orientation {
+        if m.media_type != MediaType::Model3d {
+            return Err(bad(format!("model '{}' declares native_orientation, which only model3d models have", m.id)));
+        }
+        use crate::mesh::normalize::Axis;
+        // Spelled exactly as the API reports it.
+        let axis = |name: &str, v: &str| Axis::parse(v).filter(|a| a.as_str() == v).ok_or_else(|| bad(format!(
+            "model '{}' native_orientation.{} '{}' is not one of +x, -x, +y, -y, +z, -z", m.id, name, v
+        )));
+        let (up, front) = (axis("up", &o.up)?, axis("front", &o.front)?);
+        if up.as_str()[1..] == front.as_str()[1..] {
+            return Err(bad(format!(
+                "model '{}' native_orientation up '{}' and front '{}' are not at right angles", m.id, o.up, o.front
+            )));
+        }
+        if o.evidence.trim().is_empty() {
+            return Err(bad(format!(
+                "model '{}' native_orientation names no evidence; an orientation nobody has seen is a guess", m.id
+            )));
+        }
+    }
+
     if m.pricing.base_cost_usd < 0.0 {
         return Err(bad(format!("model '{}' has negative base_cost_usd", m.id)));
     }

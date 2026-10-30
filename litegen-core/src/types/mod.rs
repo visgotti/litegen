@@ -399,6 +399,10 @@ pub enum Model3dAssetKind {
     Texture,
     /// A 2D rendered preview of the result.
     Preview,
+    /// The vendor's own file, delivered whenever litegen changed anything in
+    /// the meshes it delivers (a rotation, a transcode, a rename), so nothing
+    /// is lost by normalising.
+    Original,
 }
 
 /// One file produced by a 3D generation, re-hosted on litegen storage (the
@@ -434,6 +438,89 @@ pub struct Model3dAsset {
     /// Lowercase hex SHA-256 of the stored file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
+    /// On meshes: what litegen's own reader found in this very file. Never the
+    /// vendor's claims.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<SceneManifest>,
+}
+
+/// What litegen measured in a delivered mesh (3D doc §3D). Every delivered
+/// mesh is in glTF's conventions: metres, +Y up, the subject facing +Z with
+/// its right side at −X.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct SceneManifest {
+    /// Always `m`.
+    pub units: String,
+    /// Always `+y`.
+    pub up: String,
+    /// `+z`, or `unverified` when the model's orientation has not been proven
+    /// (litegen never reports a guess).
+    pub front: String,
+    /// `vendor` (it arrived so) or `litegen` (litegen turned it).
+    pub oriented_by: String,
+    /// World-space bounds at rest, in metres.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<SceneBounds>,
+    pub vertex_count: u64,
+    pub triangle_count: u64,
+    pub uv_sets: u32,
+    pub vertex_colors: bool,
+    pub materials: Vec<SceneMaterial>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skin: Option<SceneSkin>,
+    pub animations: Vec<SceneAnimation>,
+    /// glTF extensions the file uses (none is ever required).
+    pub extensions_used: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct SceneBounds {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct SceneMaterial {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// `base_color`, `metallic_roughness`, `normal`, `occlusion`, `emissive`.
+    pub maps: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct SceneSkin {
+    /// `humanoid` when a known naming scheme matched, else what the request
+    /// asked the rig to be, else absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skeleton: Option<String>,
+    pub joint_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    /// `t`, `a` or `unknown`, from the upper-arm angle at rest.
+    pub bind_pose: String,
+    /// Joint names, unique, in skin order.
+    pub joints: Vec<String>,
+    /// VRM 1.0 humanoid bone → joint name, for a rig litegen recognises;
+    /// `null` for one it does not (never a guess).
+    pub humanoid: Option<std::collections::BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct SceneAnimation {
+    pub name: String,
+    /// Measured from the keys.
+    pub duration_s: f32,
+    /// Measured: the root ends within 1 cm of where it started, horizontally.
+    pub in_place: bool,
+    /// `vendor` (arrived in place), `litegen` (litegen removed the root's
+    /// horizontal travel), or absent when not in place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_place_by: Option<String>,
+    /// The root's world displacement, first key to last, in metres.
+    pub root_travel_m: [f32; 3],
+    /// Whether the request asked for a loop (a hint; glTF has no loop flag).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_requested: Option<bool>,
 }
 
 /// One stored file of a generation of any kind, as

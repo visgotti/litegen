@@ -16,6 +16,7 @@ mod tests {
             provider: "t".into(),
             media_type: MediaType::Image,
             task: Default::default(),
+            native_orientation: None,
             display_name: "M".into(),
             description: "".into(),
             docs_url: None,

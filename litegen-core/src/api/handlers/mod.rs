@@ -1090,6 +1090,9 @@ pub async fn generate_3d(
             let org_id = key_ctx.as_ref().and_then(|c| c.org_id.clone());
             let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
             let requested_formats = extras.output_formats.clone();
+            // The plan the router's job holds too, so the poller delivers
+            // exactly what the client's poll would.
+            let delivery = crate::proxy::model3d_deliver::DeliveryPlan::for_model(&validated.schema, &requested_formats);
             let request = request_record(&validated.request.base, serde_json::to_value(&extras).ok(), &validated.ctx);
             let source_record = lineage.clone();
             let source_delivery = extras.source.as_ref().and_then(|s| s.delivery()).map(|d| d.as_str());
@@ -1143,6 +1146,7 @@ pub async fn generate_3d(
                     // terminal one would replace its assets.
                     let mut meta = serde_json::json!({
                         "requested_formats": requested_formats,
+                        "delivery": delivery,
                         "request": request,
                         "vendor_account": vendor_account,
                     });
