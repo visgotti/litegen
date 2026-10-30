@@ -131,6 +131,10 @@ cache:
 image_storage:
   backend: "local"  # "local" or "s3"
   # path_prefix: "litegen/images"  # custom path prefix inside the bucket
+  # The local backend keeps stored results on disk, so they survive a restart
+  # and chained operations can read a source by generation id.
+  # local_dir: "data/assets"       # or LITEGEN_ASSET_DIR
+  # retention_days: 7              # never below 7; or LITEGEN_ASSET_RETENTION_DAYS
 
   # S3 configuration (required when backend = "s3")
   # Works with AWS S3, MinIO, Cloudflare R2, DigitalOcean Spaces, etc.

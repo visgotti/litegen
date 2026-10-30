@@ -68,3 +68,7 @@ litegen-dev.db
 # Scratch/verification artifacts — screenshots, one-off dumps, anything from a
 # manual check that isn't a build output or a real repo asset.
 .artifacts/
+
+# Locally stored assets (image_storage.local_dir defaults to data/assets).
+data/
+litegen-core/data/

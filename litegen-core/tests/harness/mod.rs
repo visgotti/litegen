@@ -48,7 +48,15 @@ impl TempStorage for NoopStorage {
 }
 
 /// Full app with the mock image/video/3d providers and an in-memory sqlite DB.
+/// Assets go to a fresh temporary directory.
 pub async fn app_with_mock_3d() -> (Router, Arc<SqliteDatabase>) {
+    let dir = tempfile::tempdir().expect("asset dir").keep();
+    app_with_mock_3d_assets_in(&dir).await
+}
+
+/// Like [`app_with_mock_3d`], with stored assets kept in `asset_dir` — two apps
+/// over one directory are a process before and after a restart.
+pub async fn app_with_mock_3d_assets_in(asset_dir: &std::path::Path) -> (Router, Arc<SqliteDatabase>) {
     let db = Arc::new(
         SqliteDatabase::connect("sqlite::memory:")
             .await
@@ -61,6 +69,7 @@ pub async fn app_with_mock_3d() -> (Router, Arc<SqliteDatabase>) {
         serde_json::from_value(serde_json::json!({ "enabled": true }))
             .expect("mock provider config"),
     );
+    app_config.image_storage.local_dir = Some(asset_dir.display().to_string());
     let provider_registry = Arc::new(ProviderRegistry::new());
     provider_registry.init_from_config(&app_config).await;
 

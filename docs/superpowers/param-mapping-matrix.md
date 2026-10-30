@@ -327,7 +327,13 @@ field name — but it is what makes the family behave the same on every model:
   every vendor row, no-prompt models never requiring one, image-only models
   requiring their image.
 - `litegen-core/tests/model3d_api.rs` — the HTTP lifecycle end to end against
-  the mock provider, including what `GET /v1/models/{id}` serves.
+  the mock provider, including what `GET /v1/models/{id}` serves, and that a
+  stored mesh still downloads from a restarted process
+  (`a_mesh_still_downloads_after_a_restart`).
+- `proxy::storage::model3d_storage_tests` — the local backend keeps assets on
+  disk (`a_store_over_the_same_dir_serves_what_an_earlier_one_stored`), refuses
+  keys that would leave its directory, sweeps only what is past retention, and
+  never retains for less than 7 days.
 - `litegen-core/tests/multitenant_api.rs` — a job the client's poll completes
   lands in the app's own bucket, and a DB error on a poll never answers with
   another org's job.

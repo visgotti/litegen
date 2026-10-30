@@ -1561,7 +1561,7 @@ mod model3d_router_tests {
     #[tokio::test]
     async fn rehost_writes_each_file_under_a_predictable_key_and_returns_absolute_urls() {
         let store: Arc<dyn crate::proxy::storage::ImageStorage> =
-            Arc::new(LocalModel3dStorage::new("https://cdn.example.com".into()));
+            Arc::new(LocalModel3dStorage::new(tempfile::tempdir().unwrap().keep(), "https://cdn.example.com".into()));
 
         let assets = rehost_model3d_files(&store, None, "litegen-3d-42", &[mesh_file(), preview_file()])
             .await
@@ -1587,7 +1587,7 @@ mod model3d_router_tests {
     #[tokio::test]
     async fn rehost_numbers_multiple_files_of_the_same_kind() {
         let store: Arc<dyn crate::proxy::storage::ImageStorage> =
-            Arc::new(LocalModel3dStorage::new("https://cdn.example.com".into()));
+            Arc::new(LocalModel3dStorage::new(tempfile::tempdir().unwrap().keep(), "https://cdn.example.com".into()));
         let mut a = preview_file();
         a.format = "png".into();
         let b = preview_file();
@@ -1604,7 +1604,7 @@ mod model3d_router_tests {
     #[tokio::test]
     async fn rehost_honours_a_per_app_path_prefix() {
         let store: Arc<dyn crate::proxy::storage::ImageStorage> =
-            Arc::new(LocalModel3dStorage::new("https://cdn.example.com".into()));
+            Arc::new(LocalModel3dStorage::new(tempfile::tempdir().unwrap().keep(), "https://cdn.example.com".into()));
         let assets = rehost_model3d_files(&store, Some("tenant-9/meshes"), "g1", &[mesh_file()]).await.unwrap();
         assert!(assets[0].url.contains("/tenant-9/meshes/g1/model.glb"), "got {}", assets[0].url);
     }

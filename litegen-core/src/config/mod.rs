@@ -474,6 +474,16 @@ pub struct ImageStorageConfig {
     /// Custom path prefix inside the bucket (default: "litegen/images").
     #[serde(default)]
     pub path_prefix: Option<String>,
+    /// Where the local backend keeps stored assets (default `data/assets`,
+    /// relative to the working directory). Stored files outlive a restart, so
+    /// a chain of operations that reads its source by generation id survives
+    /// one. Unused by the S3 backend, whose retention is the bucket's.
+    #[serde(default)]
+    pub local_dir: Option<String>,
+    /// Days the local backend keeps a stored asset. Never below 7: a smaller
+    /// value is raised to 7.
+    #[serde(default)]
+    pub retention_days: Option<u32>,
 }
 
 impl Default for ImageStorageConfig {
@@ -482,8 +492,41 @@ impl Default for ImageStorageConfig {
             backend: default_storage_backend(),
             s3: None,
             path_prefix: None,
+            local_dir: None,
+            retention_days: None,
         }
     }
+}
+
+/// The floor on `retention_days`. Clients chain operations by generation id
+/// and re-download results days later; PixelGenie's contract is a week.
+pub const MIN_ASSET_RETENTION_DAYS: u32 = 7;
+
+impl ImageStorageConfig {
+    /// The local backend's directory.
+    pub fn local_dir(&self) -> std::path::PathBuf {
+        match self.local_dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+            Some(d) => std::path::PathBuf::from(d),
+            None => default_local_dir(),
+        }
+    }
+
+    /// Days to keep a locally stored asset, raised to the 7-day floor.
+    pub fn retention_days(&self) -> u32 {
+        self.retention_days.unwrap_or(MIN_ASSET_RETENTION_DAYS).max(MIN_ASSET_RETENTION_DAYS)
+    }
+}
+
+#[cfg(not(test))]
+fn default_local_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("data/assets")
+}
+
+/// Unit tests build routers from default configs all over the crate; keep
+/// what they store out of the source tree.
+#[cfg(test)]
+fn default_local_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("litegen-unit-test-assets")
 }
 
 fn default_storage_backend() -> String {
@@ -595,6 +638,9 @@ fn load_provider_env_overrides(builder: &mut config::ConfigBuilder<config::build
         ("LITEGEN_S3_BUCKET", "image_storage.s3.bucket_name"),
         ("LITEGEN_S3_REGION", "image_storage.s3.region"),
         ("LITEGEN_S3_ENDPOINT_URL", "image_storage.s3.endpoint_url"),
+        // Local asset storage
+        ("LITEGEN_ASSET_DIR", "image_storage.local_dir"),
+        ("LITEGEN_ASSET_RETENTION_DAYS", "image_storage.retention_days"),
     ];
 
     for (env_var, _config_path) in &env_mappings {

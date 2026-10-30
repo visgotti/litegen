@@ -3050,11 +3050,14 @@ pub async fn get_mock_video_bytes(
 
 // ─── 3D asset bytes route ───────────────────────────────────────────────────
 
-/// GET /v1/models3d/assets/{key} — Serve a 3D asset held by the local
-/// (no-S3) store. No auth: these are the same unguessable, UUID-keyed URLs
+/// GET /v1/models3d/assets/{key} — Serve an asset held by the local (no-S3)
+/// store, from disk. No auth: these are the same unguessable, UUID-keyed URLs
 /// handed to clients in the response, and S3 deployments never reach here.
-pub async fn get_model3d_asset_bytes(Path(key): Path<String>) -> impl IntoResponse {
-    match crate::proxy::storage::local_asset_bytes(&key).await {
+pub async fn get_model3d_asset_bytes(
+    State(state): State<Arc<AppState>>,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
+    match state.router.model3d_store.get(&key).await.ok().flatten() {
         Some((bytes, content_type)) => (
             StatusCode::OK,
             [
@@ -3500,6 +3503,7 @@ async fn resolve_app_image_store(
             endpoint_url: row.endpoint_url.clone(),
             custom_public_url: row.custom_public_url.clone(),
         }),
+        ..Default::default()
     };
     match crate::proxy::storage::S3Store::from_config(&cfg) {
         Ok(store) => Some(std::sync::Arc::new(store) as std::sync::Arc<dyn crate::proxy::storage::ImageStore>),
@@ -3558,6 +3562,7 @@ pub(crate) async fn resolve_app_model3d_store(
             endpoint_url: row.endpoint_url.clone(),
             custom_public_url: row.custom_public_url.clone(),
         }),
+        ..Default::default()
     };
     match crate::proxy::storage::S3Storage::from_config(&cfg) {
         Ok(store) => Some((std::sync::Arc::new(store), row.path_prefix.clone())),

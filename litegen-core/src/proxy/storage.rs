@@ -154,6 +154,12 @@ pub trait ImageStorage: Send + Sync {
     async fn put(&self, key: &str, bytes: &bytes::Bytes, content_type: &str) -> Result<String, ImageStoreError>;
     /// Delete an object by key.
     async fn delete(&self, key: &str) -> Result<(), ImageStoreError>;
+    /// The bytes stored at `key` and their content type, or `None` when there
+    /// is nothing there. Chaining reads a stored source back through this.
+    /// Stores that cannot read answer `None`.
+    async fn get(&self, _key: &str) -> Result<Option<(bytes::Bytes, String)>, ImageStoreError> {
+        Ok(None)
+    }
 }
 
 /// LocalStorage: put/delete are no-ops (returns a fake URL for local dev).
@@ -231,6 +237,23 @@ impl ImageStorage for S3Storage {
         self.bucket.delete_object(key).await
             .map_err(|e| ImageStoreError::UploadFailed(format!("S3 DELETE failed: {e}")))?;
         Ok(())
+    }
+    async fn get(&self, key: &str) -> Result<Option<(bytes::Bytes, String)>, ImageStoreError> {
+        let response = self.bucket.get_object(key).await
+            .map_err(|e| ImageStoreError::UploadFailed(format!("S3 GET failed: {e}")))?;
+        match response.status_code() {
+            200 => {
+                let ext = key.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+                let ct = response
+                    .headers()
+                    .get("content-type")
+                    .cloned()
+                    .unwrap_or_else(|| model3d_content_type(ext, "application/octet-stream").to_string());
+                Ok(Some((bytes::Bytes::copy_from_slice(response.bytes()), ct)))
+            }
+            404 => Ok(None),
+            code => Err(ImageStoreError::UploadFailed(format!("S3 GET returned HTTP {code}"))),
+        }
     }
 }
 
@@ -319,45 +342,141 @@ pub fn model3d_content_type<'a>(format: &str, provider_value: &'a str) -> &'a st
     }
 }
 
-/// Process-global byte store backing [`LocalModel3dStorage`].
-type LocalAssets = tokio::sync::RwLock<std::collections::HashMap<String, (bytes::Bytes, String)>>;
-fn local_assets() -> &'static LocalAssets {
-    static ASSETS: std::sync::OnceLock<LocalAssets> = std::sync::OnceLock::new();
-    ASSETS.get_or_init(|| tokio::sync::RwLock::new(std::collections::HashMap::new()))
-}
-
-/// Fetch bytes previously stored by [`LocalModel3dStorage`]. Used by the
-/// asset-serving route.
-pub async fn local_asset_bytes(key: &str) -> Option<(bytes::Bytes, String)> {
-    local_assets().read().await.get(key).cloned()
-}
-
-/// Local (no-S3) 3D asset store.
+/// Local (no-S3) asset store, on disk.
 ///
-/// Unlike [`LocalStorage`], which returns an unusable `local://` URL, this keeps
-/// the bytes in-process and hands back an ABSOLUTE URL served by
+/// Unlike [`LocalStorage`], which returns an unusable `local://` URL, this
+/// writes the bytes under `root` and hands back an ABSOLUTE URL served by
 /// `GET /v1/models3d/assets/{key}`. Clients fetch mesh URLs from their own
 /// workers, where a relative path is indistinguishable from an outage.
+///
+/// On disk rather than in memory: chaining operations by generation id reads
+/// stored sources back, and a restart between two steps must not lose them.
+/// [`sweep_expired`] deletes what is older than the configured retention.
 pub struct LocalModel3dStorage {
+    root: std::path::PathBuf,
     public_base_url: String,
 }
 
 impl LocalModel3dStorage {
-    pub fn new(public_base_url: String) -> Self {
-        Self { public_base_url: public_base_url.trim_end_matches('/').to_string() }
+    pub fn new(root: impl Into<std::path::PathBuf>, public_base_url: String) -> Self {
+        Self {
+            root: root.into(),
+            public_base_url: public_base_url.trim_end_matches('/').to_string(),
+        }
+    }
+
+    /// The file a key lives in, or an error for a key that is empty, absolute,
+    /// or would leave `root` (`..`, `.`, empty segments, backslashes). Keys are
+    /// minted by litegen, but an app's configured path prefix flows into them.
+    fn path_for(&self, key: &str) -> Result<std::path::PathBuf, ImageStoreError> {
+        let bad = || ImageStoreError::UploadFailed(format!("refusing storage key {key:?}"));
+        if key.is_empty() || key.starts_with('/') || key.contains('\\') || key.contains('\0') {
+            return Err(bad());
+        }
+        let mut path = self.root.clone();
+        for seg in key.split('/') {
+            if seg.is_empty() || seg == "." || seg == ".." {
+                return Err(bad());
+            }
+            path.push(seg);
+        }
+        Ok(path)
     }
 }
 
 #[async_trait::async_trait]
 impl ImageStorage for LocalModel3dStorage {
-    async fn put(&self, key: &str, bytes: &bytes::Bytes, content_type: &str) -> Result<String, ImageStoreError> {
-        local_assets().write().await.insert(key.to_string(), (bytes.clone(), content_type.to_string()));
+    async fn put(&self, key: &str, bytes: &bytes::Bytes, _content_type: &str) -> Result<String, ImageStoreError> {
+        let path = self.path_for(key)?;
+        let bytes = bytes.clone();
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            // Written aside and renamed into place, so a reader never sees a
+            // half-written file and a crash leaves no truncated asset behind.
+            let tmp = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4().simple()));
+            std::fs::write(&tmp, &bytes)?;
+            std::fs::rename(&tmp, &path)
+        })
+        .await
+        .map_err(|e| ImageStoreError::UploadFailed(format!("local write task failed: {e}")))?
+        .map_err(|e| ImageStoreError::UploadFailed(format!("local write failed: {e}")))?;
         Ok(format!("{}/v1/models3d/assets/{}", self.public_base_url, key))
     }
     async fn delete(&self, key: &str) -> Result<(), ImageStoreError> {
-        local_assets().write().await.remove(key);
-        Ok(())
+        let path = self.path_for(key)?;
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(ImageStoreError::UploadFailed(format!("local delete failed: {e}"))),
+        }
     }
+    async fn get(&self, key: &str) -> Result<Option<(bytes::Bytes, String)>, ImageStoreError> {
+        let path = self.path_for(key)?;
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => {
+                let ext = key.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+                let ct = model3d_content_type(ext, "application/octet-stream").to_string();
+                Ok(Some((bytes::Bytes::from(bytes), ct)))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(ImageStoreError::UploadFailed(format!("local read failed: {e}"))),
+        }
+    }
+}
+
+/// Delete every file under `root` last modified more than `retention` before
+/// `now`, then every directory that leaves empty (never `root` itself).
+/// Returns how many files were deleted. Best-effort: an entry that cannot be
+/// read or removed is skipped, and the next sweep tries again.
+pub fn sweep_expired(root: &std::path::Path, retention: std::time::Duration, now: std::time::SystemTime) -> usize {
+    let cutoff = now.checked_sub(retention).unwrap_or(std::time::UNIX_EPOCH);
+    let mut removed = 0;
+    // Explicit stacks: a directory walk must not recurse on attacker-shaped depth.
+    let mut dirs = vec![root.to_path_buf()];
+    let mut visited = Vec::new();
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            let path = entry.path();
+            if ft.is_dir() {
+                dirs.push(path);
+            } else if ft.is_file() {
+                let expired = entry.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < cutoff);
+                if expired && std::fs::remove_file(&path).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        visited.push(dir);
+    }
+    // Deepest first, so a parent is only tried once its children are gone.
+    visited.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+    for dir in visited {
+        if dir != root {
+            let _ = std::fs::remove_dir(&dir); // fails, harmlessly, unless empty
+        }
+    }
+    removed
+}
+
+/// Run [`sweep_expired`] over `root` every hour, off the async runtime.
+pub fn spawn_retention_sweeper(root: std::path::PathBuf, retention_days: u32) -> tokio::task::JoinHandle<()> {
+    let retention = std::time::Duration::from_secs(u64::from(retention_days) * 86_400);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            tick.tick().await;
+            let root = root.clone();
+            match tokio::task::spawn_blocking(move || sweep_expired(&root, retention, std::time::SystemTime::now())).await {
+                Ok(n) if n > 0 => info!(removed = n, "asset retention sweep"),
+                Ok(_) => {}
+                Err(e) => error!(error = %e, "asset retention sweep panicked"),
+            }
+        }
+    })
 }
 
 /// Build the 3D asset store from configuration.
@@ -375,12 +494,12 @@ pub fn build_model3d_store(config: &ImageStorageConfig, public_base_url: &str) -
             }
             Err(e) => {
                 error!(error = %e, "Failed to configure S3 3D storage, falling back to local");
-                Arc::new(LocalModel3dStorage::new(public_base_url.to_string()))
+                Arc::new(LocalModel3dStorage::new(config.local_dir(), public_base_url.to_string()))
             }
         },
         _ => {
-            info!("3D asset storage: local (served from this process)");
-            Arc::new(LocalModel3dStorage::new(public_base_url.to_string()))
+            info!(dir = %config.local_dir().display(), "3D asset storage: local disk (served from this process)");
+            Arc::new(LocalModel3dStorage::new(config.local_dir(), public_base_url.to_string()))
         }
     }
 }
@@ -401,6 +520,7 @@ mod model3d_storage_tests {
                 custom_public_url: public.map(str::to_string),
             }),
             path_prefix: None,
+            ..Default::default()
         })
         .unwrap()
     }
@@ -447,7 +567,8 @@ mod model3d_storage_tests {
         // aipix fetches asset URLs from a worker: a root-relative path fails with
         // "invalid url: relative URL without a base" and is indistinguishable
         // from a provider outage.
-        let store = LocalModel3dStorage::new("http://127.0.0.1:8080".into());
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalModel3dStorage::new(dir.path(), "http://127.0.0.1:8080".into());
         let key = model3d_asset_key(None, "litegen-3d-local", "model", "glb");
         let url = store
             .put(&key, &bytes::Bytes::from_static(b"glTF\x02\x00\x00\x00"), "model/gltf-binary")
@@ -458,19 +579,82 @@ mod model3d_storage_tests {
         assert!(url.starts_with("http://") || url.starts_with("https://"), "must be absolute");
         assert!(!url.starts_with("local://"));
 
-        let (bytes, ct) = local_asset_bytes(&key).await.expect("bytes are retrievable");
+        let (bytes, ct) = store.get(&key).await.unwrap().expect("bytes are retrievable");
         assert_eq!(&bytes[0..4], b"glTF");
         assert_eq!(ct, "model/gltf-binary");
     }
 
     #[tokio::test]
     async fn local_store_trims_a_trailing_slash_on_the_base_url() {
-        let store = LocalModel3dStorage::new("https://litegen.example.com/".into());
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalModel3dStorage::new(dir.path(), "https://litegen.example.com/".into());
         let url = store
             .put("litegen/3d/x/model.glb", &bytes::Bytes::from_static(b"x"), "model/gltf-binary")
             .await
             .unwrap();
         assert_eq!(url, "https://litegen.example.com/v1/models3d/assets/litegen/3d/x/model.glb");
+    }
+
+    /// 3D doc §3A: chaining by generation id reads stored sources, so a
+    /// restart between two steps must not lose them.
+    #[tokio::test]
+    async fn a_store_over_the_same_dir_serves_what_an_earlier_one_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = model3d_asset_key(None, "litegen-3d-restart", "model", "glb");
+        let first = LocalModel3dStorage::new(dir.path(), "http://127.0.0.1:8080".into());
+        first.put(&key, &bytes::Bytes::from_static(b"glTF\x02\x00\x00\x00"), "model/gltf-binary").await.unwrap();
+        drop(first);
+        // Nothing in memory survives a restart; only the directory does.
+        let second = LocalModel3dStorage::new(dir.path(), "http://127.0.0.1:8080".into());
+        let (bytes, ct) = second.get(&key).await.unwrap().expect("bytes survive a restart");
+        assert_eq!(&bytes[..4], b"glTF");
+        assert_eq!(ct, "model/gltf-binary");
+        assert!(second.get("litegen/3d/litegen-3d-restart/model.obj").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn keys_that_would_leave_the_root_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalModel3dStorage::new(dir.path(), "http://h".into());
+        for key in ["../escape.glb", "/etc/passwd", "a/../../b.glb", "a\\b.glb", "", "a//b.glb", "./a.glb", "a/.."] {
+            assert!(store.put(key, &bytes::Bytes::from_static(b"x"), "x").await.is_err(), "{key:?} was stored");
+            assert!(store.get(key).await.unwrap_or(None).is_none(), "{key:?} was read");
+        }
+        assert!(!dir.path().parent().unwrap().join("escape.glb").exists());
+    }
+
+    #[test]
+    fn the_sweeper_deletes_only_files_older_than_retention() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("litegen/3d/old/model.glb");
+        let new = dir.path().join("litegen/3d/new/model.glb");
+        for p in [&old, &new] {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        let now = std::time::SystemTime::now();
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(now - std::time::Duration::from_secs(8 * 86_400))
+            .unwrap();
+        let removed = sweep_expired(dir.path(), std::time::Duration::from_secs(7 * 86_400), now);
+        assert_eq!(removed, 1);
+        assert!(!old.exists(), "the expired file goes");
+        assert!(!old.parent().unwrap().exists(), "and so does the directory it emptied");
+        assert!(new.exists(), "a fresh file stays");
+        assert!(dir.path().exists(), "the root itself is never removed");
+    }
+
+    #[test]
+    fn retention_is_never_below_seven_days() {
+        let mut cfg = ImageStorageConfig::default();
+        assert_eq!(cfg.retention_days(), 7);
+        cfg.retention_days = Some(1);
+        assert_eq!(cfg.retention_days(), 7);
+        cfg.retention_days = Some(30);
+        assert_eq!(cfg.retention_days(), 30);
     }
 
     #[test]
@@ -480,7 +664,7 @@ mod model3d_storage_tests {
         // must still hand back a store minting ABSOLUTE urls. A "local" config
         // takes the `_ =>` arm instead and never executes it, so this test used
         // to pass while that arm returned anything at all.
-        let cfg = crate::config::ImageStorageConfig { backend: "s3".into(), path_prefix: None, s3: None };
+        let cfg = crate::config::ImageStorageConfig { backend: "s3".into(), path_prefix: None, s3: None, ..Default::default() };
         assert!(
             matches!(S3Storage::from_config(&cfg), Err(ImageStoreError::NotConfigured)),
             "precondition: this config must drive the S3 error arm",
@@ -497,7 +681,7 @@ mod model3d_storage_tests {
 
     #[test]
     fn build_model3d_store_is_local_when_the_backend_is_local() {
-        let cfg = crate::config::ImageStorageConfig { backend: "local".into(), path_prefix: None, s3: None };
+        let cfg = crate::config::ImageStorageConfig { backend: "local".into(), path_prefix: None, s3: None, ..Default::default() };
         let store = build_model3d_store(&cfg, "http://localhost:8080");
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let url = rt

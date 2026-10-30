@@ -924,7 +924,7 @@ mod poller_tests {
     }
 
     fn test_3d_store() -> Arc<dyn ImageStorage> {
-        Arc::new(LocalModel3dStorage::new("https://assets.test".into()))
+        Arc::new(LocalModel3dStorage::new(tempfile::tempdir().unwrap().keep(), "https://assets.test".into()))
     }
 
     /// Submit through the mock provider so the row's provider_job_id refers to a

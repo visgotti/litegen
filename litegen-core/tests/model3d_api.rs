@@ -1169,3 +1169,25 @@ async fn an_omitted_prompt_is_a_validation_error_not_a_parse_error() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["code"], "prompt_required", "{body}");
 }
+
+/// 3D doc §3A: a stored mesh outlives a restart, so a chain of operations
+/// that reads its source by generation id survives one between two steps.
+#[tokio::test]
+async fn a_mesh_still_downloads_after_a_restart() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (app, _db) = harness::app_with_mock_3d_assets_in(dir.path()).await;
+    let url = harness::run_to_completion(&app, "mock/mesh-3d", "a red chair").await;
+    let path = format!("/v1/{}", url.split_once("/v1/").expect("an asset url").1);
+    drop(app);
+
+    // A new process: nothing in memory, the same asset directory.
+    let (restarted, _db2) = harness::app_with_mock_3d_assets_in(dir.path()).await;
+    let resp = restarted.oneshot(Request::get(&path).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp.status(), 200, "{path}");
+    let bytes = axum::body::to_bytes(resp.into_body(), 10 * 1024 * 1024).await.unwrap();
+    assert_eq!(&bytes[..4], b"glTF");
+}

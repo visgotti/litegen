@@ -199,12 +199,20 @@ async fn main() -> anyhow::Result<()> {
         registry.clone(),
         secrets_key,
         config.mode,
-        // Share the router's store rather than building a second instance: the
-        // local (no-S3) backend keeps bytes in a process-global map that both
-        // the router and poller paths must agree on.
+        // Share the router's store rather than building a second instance, so
+        // both observers of completion write through the same backend.
         router.model3d_store.clone(),
         poller_shutdown,
     );
+
+    // The local backend keeps assets on disk for the configured retention
+    // (never under 7 days); S3 retention is the bucket's lifecycle policy.
+    if config.image_storage.backend != "s3" {
+        litegen::proxy::storage::spawn_retention_sweeper(
+            config.image_storage.local_dir(),
+            config.image_storage.retention_days(),
+        );
+    }
 
     // Install signal handlers
     tokio::spawn(async move {
