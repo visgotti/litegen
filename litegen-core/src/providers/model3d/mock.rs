@@ -471,6 +471,7 @@ mod tests {
             media_type: MediaType::Model3d,
             task: Default::default(),
             native_orientation: None,
+            preserves_unmasked: None,
             display_name: id.into(),
             description: String::new(),
             docs_url: None,

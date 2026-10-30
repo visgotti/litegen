@@ -82,20 +82,24 @@ impl StabilityProvider {
             "sd3-medium" | "sd3.5-medium" => "sd3.5-medium".to_string(),
             "core" => "core".to_string(),
             "ultra" => "ultra".to_string(),
+            "inpaint" => "inpaint".to_string(),
             "sdxl" => "stable-diffusion-xl-1024-v1-0".to_string(),
             "sd-1.6" | "sd1.6" => "stable-diffusion-v1-6".to_string(),
             _ => native.to_string(),
         }
     }
 
-    /// Determine which V2 endpoint to use for a given model.
+    /// Determine which V2 route to use for a given model, under
+    /// `/v2beta/stable-image/`.
     ///
     /// @see <https://platform.stability.ai/docs/api-reference#tag/Generate> — V2beta Stable Image generate routes
+    /// @see <https://platform.stability.ai/docs/api-reference#tag/Edit> — the edit routes (`edit/inpaint`)
     fn v2_endpoint(model: &str) -> Option<&'static str> {
         match model {
-            "sd3.5-large" | "sd3.5-large-turbo" | "sd3.5-medium" => Some("sd3"),
-            "core" => Some("core"),
-            "ultra" => Some("ultra"),
+            "sd3.5-large" | "sd3.5-large-turbo" | "sd3.5-medium" => Some("generate/sd3"),
+            "core" => Some("generate/core"),
+            "ultra" => Some("generate/ultra"),
+            "inpaint" => Some("edit/inpaint"),
             _ => None,
         }
     }
@@ -188,8 +192,10 @@ impl ImageProvider for StabilityProvider {
 
         if Self::is_v2(&model_name) {
             // V2 multipart form API
-            let endpoint = Self::v2_endpoint(&model_name).unwrap();
-            let url = format!("{}/v2beta/stable-image/generate/{endpoint}", self.api_base());
+            let route = Self::v2_endpoint(&model_name).unwrap();
+            let url = format!("{}/v2beta/stable-image/{route}", self.api_base());
+            let endpoint = route.rsplit('/').next().unwrap_or(route);
+            let inpaint = route == "edit/inpaint";
 
             let mut form = reqwest::multipart::Form::new()
                 .text("prompt", base.prompt.clone());
@@ -198,6 +204,23 @@ impl ImageProvider for StabilityProvider {
             // request schemas do not define one; the route selects the model.
             if endpoint == "sd3" {
                 form = form.text("model", model_name.clone());
+            }
+
+            if inpaint {
+                // Inpaint edits where its mask is white; without one it would
+                // read the image's alpha, which litegen never relies on.
+                let has_mask = materialized.refs.iter().any(|r| {
+                    matches!(&r.form, MaterializedRefForm::MultipartField { field_name, .. } if field_name == "mask")
+                });
+                if !has_mask {
+                    return Err(ProviderError::InvalidRequest(format!(
+                        "'{}' edits a masked area: send a mask or a region", model.id
+                    )));
+                }
+                // Explicit, even 0: Stability's default grows the mask by 5.
+                // @see <https://api.stability.ai/v2alpha/openapi> — grow_mask "default": 5
+                let grow = extras.edit.as_ref().and_then(|e| e.vendor_grow_px).unwrap_or(0);
+                form = form.text("grow_mask", grow.to_string());
             }
 
             // output_format defaults to "png" for bytes
@@ -225,7 +248,7 @@ impl ImageProvider for StabilityProvider {
             // derivation. Skipped in image-to-image mode — the spec says
             // "This parameter is only valid for text-to-image requests";
             // there the output takes its shape from the input image.
-            if !has_image_ref {
+            if !has_image_ref && !inpaint {
                 if let Some(ar) = extras.aspect_ratio.as_deref() {
                     form = form.text("aspect_ratio", ar.to_string());
                 } else if let Some(size) = extras.size.as_deref() {
@@ -247,7 +270,7 @@ impl ImageProvider for StabilityProvider {
             // requires the prompt, image, and strength parameters") and is
             // "only valid for image-to-image requests" — so default it when a
             // reference image is present, and never send it otherwise.
-            if has_image_ref {
+            if has_image_ref && !inpaint {
                 form = form.text("strength", format!("{:.2}", extras.strength.unwrap_or(0.5)));
             }
 
@@ -632,6 +655,10 @@ impl Default for ModelCapabilities {
             supports_source_model: false,
             output_formats: Vec::new(),
             max_polycount: None,
+            supports_region_edit: false,
+            region_input: None,
+            preserves_unmasked: None,
+            mask_convention: None,
         }
     }
 }
@@ -698,6 +725,7 @@ mod tests {
             guidance_scale: None,
             strength: None,
             response_format: "url".to_string(),
+            edit: None,
             extra: None,
         }
     }

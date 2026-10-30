@@ -62,6 +62,7 @@ mod tests {
             guidance_scale: None,
             strength: None,
             response_format: "url".to_string(),
+            edit: None,
             extra: None,
         }
     }

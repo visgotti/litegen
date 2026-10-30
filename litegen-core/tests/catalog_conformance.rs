@@ -3063,3 +3063,56 @@ fn every_3d_operation_declares_the_source_its_vendor_takes() {
         }
     }
 }
+
+// ─── Partial image edits (PixelGenie 3D doc §4) ─────────────────────────────
+
+#[test]
+fn the_inpainting_flag_means_the_model_takes_a_mask() {
+    // `supports_inpainting` is "takes a mask"; a flag without the role (or the
+    // reverse) would advertise what the validator refuses.
+    let reg = registry();
+    for m in reg.all() {
+        let takes_mask = m.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("mask"));
+        assert_eq!(m.capabilities.inpainting, takes_mask, "{}: inpainting flag vs mask role", m.id);
+    }
+}
+
+/// @see <https://developer.ideogram.ai/v2/api-reference/images/precise-edit/ideogram-4-5.md>
+/// (2026-10-30): "Black marks the area to edit"; context_window "at least
+/// 256px on each side … between 1:6 and 6:1"; pixels "copied exactly";
+/// quality very_low | low | medium | high. Price (rendered pricing page):
+/// $0.008 / $0.03 / $0.06 / $0.22, medium the default.
+#[test]
+fn ideogram_precise_edit_takes_a_black_mask_and_a_256_px_box() {
+    use litegen::capabilities::{MaskConvention, ParamSpec, PreservesUnmasked, RegionInput};
+    let reg = registry();
+    let m = reg.get("ideogram/ideogram-4-5-precise-edit").expect("the row");
+    let mask = &m.ref_inputs.as_ref().unwrap().roles["mask"];
+    assert_eq!((mask.convention, mask.native_grow), (Some(MaskConvention::BlackEdits), false));
+    match m.params.get("region") {
+        Some(ParamSpec::Region(r)) => assert_eq!((r.input, r.min_window_px, r.max_aspect), (RegionInput::Box, Some(256), Some(6.0))),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(m.preserves_unmasked, Some(PreservesUnmasked::Exact));
+    assert!((m.pricing.base_cost_usd - 0.06).abs() < 1e-9);
+    assert!(m.docs_url.as_deref().is_some_and(|u| u.contains("precise-edit/ideogram-4-5")));
+}
+
+/// @see <https://api.stability.ai/v2alpha/openapi> (2026-10-30): POST
+/// /v2beta/stable-image/edit/inpaint — mask white is full strength; grow_mask
+/// default 5. Price: "Inpaint … 5" credits, "1 credit equals $0.01".
+#[test]
+fn stability_inpaint_takes_a_white_mask_and_grows_it_itself() {
+    use litegen::capabilities::MaskConvention;
+    let reg = registry();
+    let m = reg.get("stability/inpaint").expect("the row");
+    let mask = &m.ref_inputs.as_ref().unwrap().roles["mask"];
+    assert_eq!((mask.convention, mask.native_grow), (Some(MaskConvention::WhiteEdits), true));
+    assert!((m.pricing.base_cost_usd - 0.05).abs() < 1e-9);
+    // OpenAI reads transparency, the other way round from a white mask.
+    for id in ["openai/gpt-image-2", "openai/gpt-image-2.5"] {
+        if let Some(o) = reg.get(id) {
+            assert_eq!(o.ref_inputs.as_ref().unwrap().roles["mask"].convention, Some(MaskConvention::TransparentEdits), "{id}");
+        }
+    }
+}

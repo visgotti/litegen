@@ -2362,7 +2362,15 @@ export interface components {
             aspect_ratio?: string | null;
             /** Format: double */
             guidance_scale?: number | null;
+            /**
+             * Format: int32
+             * @description Grow the edit area outward by this many pixels: the vendor's own
+             *     setting where it has one (sent explicitly, even as 0), else litegen
+             *     dilates the mask itself. Default 0.
+             */
+            mask_grow_px?: number | null;
             quality?: string | null;
+            region?: null | components["schemas"]["Region"];
             response_format?: string;
             size?: string | null;
             /** Format: int32 */
@@ -2495,6 +2503,11 @@ export interface components {
             email: string;
             password: string;
         };
+        /**
+         * @description Which pixels of a mask mean "edit".
+         * @enum {string}
+         */
+        MaskConvention: "white_edits" | "black_edits" | "transparent_edits";
         /** @enum {string} */
         MediaType: "image" | "video" | "model3d";
         MemberView: {
@@ -2723,6 +2736,7 @@ export interface components {
          */
         Model3dTopology: "triangle" | "quad";
         ModelCapabilities: {
+            mask_convention?: null | components["schemas"]["MaskConvention"];
             /** Format: double */
             max_duration_seconds?: number | null;
             /** Format: int32 */
@@ -2739,6 +2753,8 @@ export interface components {
              *     Empty for image and video models.
              */
             output_formats?: string[];
+            preserves_unmasked?: null | components["schemas"]["PreservesUnmasked"];
+            region_input?: null | components["schemas"]["RegionInput"];
             supported_sizes?: string[];
             supports_first_frame?: boolean;
             /** @description Accepts one `init` reference image (image-to-3D). */
@@ -2751,6 +2767,8 @@ export interface components {
             supports_multiview_to_3d?: boolean;
             /** @description Takes the `pbr` param. */
             supports_pbr?: boolean;
+            /** @description Takes `region` (3D doc §4). */
+            supports_region_edit?: boolean;
             /** @description Takes the `rig` param. */
             supports_rig?: boolean;
             /** @description Takes `source_model`: an operation on an existing mesh. */
@@ -2840,6 +2858,7 @@ export interface components {
             params?: {
                 [key: string]: unknown;
             };
+            preserves_unmasked?: null | components["schemas"]["PreservesUnmasked"];
             pricing: components["schemas"]["CapabilityModelPricing"];
             prompt: components["schemas"]["PromptSpec"];
             provider: string;
@@ -3101,6 +3120,9 @@ export interface components {
         }) | (components["schemas"]["ParamSpecAnimationList"] & {
             /** @enum {string} */
             kind: "animation_list";
+        }) | (components["schemas"]["ParamSpecRegion"] & {
+            /** @enum {string} */
+            kind: "region";
         });
         /** @description The clips an `animate` model makes (`animations`, 3D doc §3C). */
         ParamSpecAnimationList: {
@@ -3151,6 +3173,23 @@ export interface components {
             max?: number | null;
             /** Format: int64 */
             min?: number | null;
+        };
+        /** @description `region` on a model (3D doc §4). */
+        ParamSpecRegion: {
+            description?: string | null;
+            input: components["schemas"]["RegionInput"];
+            label?: string | null;
+            /**
+             * Format: double
+             * @description The vendor's largest box aspect ratio (6 for 1:6–6:1).
+             */
+            max_aspect?: number | null;
+            /**
+             * Format: int32
+             * @description The vendor's smallest box side, in pixels. A smaller region gets a
+             *     window enlarged to it, with the exact region sent as the mask.
+             */
+            min_window_px?: number | null;
         };
         ParamSpecSeed: {
             description?: string | null;
@@ -3279,6 +3318,11 @@ export interface components {
             is_active?: boolean | null;
             role?: null | components["schemas"]["Role"];
         };
+        /**
+         * @description What a vendor promises about the pixels outside an edit.
+         * @enum {string}
+         */
+        PreservesUnmasked: "exact" | "similar" | "unspecified";
         /** @description How a model treats the request's `prompt`. Lengths count characters. */
         PromptSpec: {
             /**
@@ -3494,10 +3538,16 @@ export interface components {
             };
         };
         RefRoleSpec: {
+            convention?: null | components["schemas"]["MaskConvention"];
             /** Format: int32 */
             max_count: number;
             /** Format: int32 */
             min_count: number;
+            /**
+             * @description The mask role's vendor grows masks itself (Stability's `grow_mask`):
+             *     `mask_grow_px` goes to it, explicitly, instead of litegen dilating.
+             */
+            native_grow?: boolean;
             required?: boolean;
         };
         ReferenceImage: {
@@ -3505,6 +3555,26 @@ export interface components {
             type: components["schemas"]["RefImageKind"];
             value: string;
         };
+        /**
+         * @description A rectangle of an image, in its pixels: top-left origin, ends exclusive
+         *     (it covers `x..x+w` by `y..y+h`). Named keys, never arrays: vendors
+         *     disagree on axis order.
+         */
+        Region: {
+            /** Format: int32 */
+            h: number;
+            /** Format: int32 */
+            w: number;
+            /** Format: int32 */
+            x: number;
+            /** Format: int32 */
+            y: number;
+        };
+        /**
+         * @description How a model receives a `region`.
+         * @enum {string}
+         */
+        RegionInput: "box" | "mask";
         /** @description Stores the input/output snapshot of a generation request for drill-down. */
         RequestArtifact: {
             app_id?: string | null;

@@ -154,6 +154,29 @@ video   seed             seed          10  bedrock/amazon.nova-reel-v1:1
 | `strength` | Float | range | 3 | validator: **none** — no `strength_out_of_range` case exists (only `guidance_scale` is exercised for the Float kind). provider: strong — `stability::tests::image_to_image_sends_mode_image_to_image`, `strength_is_not_sent_for_text_to_image`, `image_to_image_defaults_strength_when_omitted` all assert presence/absence of the outbound `strength` multipart field. conformance: n/a. | 🟡 |
 | `steps` | Int | range | 13 | validator: `unsupported_param_strict_rejects` / `unsupported_param_lax_drops` prove the shared drop mechanism using `steps` as the literal example — this is genuine, param-named coverage, unlike the other rows above. No test exercises the *range* branch (`steps` out of `[min,max]`) specifically. provider: `fal::tests::generates_flux_dev_image` (`body["num_inference_steps"]==28` — **note the outbound rename `steps` → `num_inference_steps`**), `replicate::tests::generates_flux_dev_via_polling` (`body["input"]["num_inference_steps"]==28`) and `replicate::tests::guidance_and_steps_use_each_models_own_input_names` (each model's own input name: flux-dev `num_inference_steps`, flux-pro and SD3 `steps`, fallback `num_inference_steps`). Not universal: `stability.rs` sets `body["steps"]` (line 466) and the multipart `steps` field (line 375) with zero assertion. conformance: n/a. | 🟡 |
 
+### Partial image edits (3D doc §4)
+
+A caller sends ONE mask convention — an opaque image the size of `init`,
+white (128 or more) edits, black keeps — and an optional `region` box in init
+pixels (top-left origin, ends exclusive). Before anything is reserved,
+`proxy::image_edit::prepare` reads the init image and the mask, refuses what
+cannot be done, intersects mask and region, grows the area by `mask_grow_px`
+where the vendor cannot, and hands the vendor its own form; the handler
+replaces (or, for a region drawn as a mask, adds) the `mask` reference. Each
+mask role names its vendor's convention (`roles.mask.convention`, P-R9); the
+listing serves `mask_convention: white_edits` for every model that takes one.
+
+| behaviour | rule | `openai/gpt-image-*` | `stability/inpaint` | `stability/sdxl` | `ideogram/ideogram-4-5-precise-edit` | mocks | proof | status |
+|---|---|---|---|---|---|---|---|---|
+| mask convention | caller white-edits → vendor's own | `transparent_edits` (alpha 0 where white) | `white_edits` | `white_edits` (`mask_source=MASK_IMAGE_WHITE`) | `black_edits` | inpainting `white_edits`, region `black_edits` | core `a_white_edits_mask_becomes_each_vendors_convention`; HTTP `openai_receives_the_mask_transparent_where_the_caller_painted_white`, `stability_receives_the_white_mask_as_sent_and_an_explicit_grow_mask`; conformance `ideogram_precise_edit_takes_a_black_mask_and_a_256_px_box`, `stability_inpaint_takes_a_white_mask_and_grows_it_itself` | 🟡 wiremock / ✅ mock |
+| `region` | a box-native vendor gets its own box; a mask-only one the box drawn as the mask; with a mask, where they overlap | drawn as the mask | drawn as the mask | — (no region) | `context_window` = `y,x,y+h,x+w`; a region under 256 px a side gets a 256 px window (1:6–6:1, kept on the image) and its exact area as the mask | inpainting: drawn; region: box, 256 px minimum | core `a_small_region_gets_the_vendors_minimum_window_and_its_exact_area_as_the_mask`, `a_window_is_kept_on_the_image_and_within_the_vendors_aspect_ratio`, `a_region_and_a_mask_edit_only_where_they_overlap`; HTTP `a_region_reaches_ideogram_as_its_exact_context_window`, `a_small_region_reaches_ideogram_as_a_256_window_and_its_exact_area_in_black`, `a_region_on_a_mask_model_arrives_drawn_as_its_mask_and_overlaps_a_mask`, `a_small_region_on_a_box_model_gets_its_minimum_window_and_its_exact_area` | 🟡 wiremock / ✅ mock |
+| `mask_grow_px` | the vendor's own growth where it has one, sent explicitly (even 0); else litegen dilates (square, both axes); ≤ 100 | litegen dilates | `grow_mask` (default 5 overridden) | litegen dilates | litegen dilates | litegen dilates | core `litegen_grows_the_edit_area_where_the_vendor_cannot`, `a_vendor_that_grows_masks_gets_the_exact_mask_and_an_explicit_growth`; HTTP `stability_grows_its_own_mask_when_asked`, `mask_grow_px_grows_the_edit_area` | 🟡 wiremock / ✅ mock |
+| refusals, before billing | `init_required` (400, validator), `mask_size_mismatch`, `mask_ambiguous` (any alpha < 255), `region_out_of_bounds` (400), `region_too_small` (422: no window fits, or a box vendor takes no mask), `image_unreadable` (400) | ✓ | ✓ | ✓ | ✓ | ✓ | HTTP `a_bad_edit_is_refused_before_anything_is_billed` (no row, no log); core tests for each code | ✅ |
+| untouched pixels | `preserves_unmasked`: the vendor's own words | — (`unspecified`… not declared) | `unspecified` | — | `exact` ("copied exactly") | `exact`: every other pixel identical | HTTP `the_inpainting_mock_fills_exactly_the_masked_area` (every pixel compared) | ✅ mock |
+| listing | `supports_inpainting` (takes a mask), `supports_region_edit`, `region_input`, `preserves_unmasked`, `mask_convention` | | | | | | HTTP `the_listing_says_how_each_model_edits_part_of_an_image`; conformance `the_inpainting_flag_means_the_model_takes_a_mask` | ✅ |
+
+Not verified live: no OpenAI, Stability or Ideogram key is available here.
+
 ### Video
 
 Every row here is capped at 🟡 by the family-wide validator gap noted above,

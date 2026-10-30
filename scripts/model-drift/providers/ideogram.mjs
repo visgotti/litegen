@@ -4,14 +4,17 @@
 // and "keeps working" (ideogram-api/api-overview.md, "Moving from v1"). The old
 // single spec at /openapi.json is now an HTML "Available APIs" picker.
 //
-// Where the specs live: /.well-known/api-catalog maps each version's reference
-// to its spec — v1 → /openapi/api-reference-2.yaml, v2 → /openapi/api-reference.yaml,
-// each with a .json twin, which is what we read. The `-2` is Fern's numbering;
-// if the two ever swap, each source fails loudly (the v1 extract finds no
-// /v1/ path, the v2 extract no /v2/ path), and the catalog says where they went.
-// api.ideogram.ai/openapi.json is the server's own spec with undocumented and
-// partner endpoints (ernie, z-image, fp8/distilled builds); we track the
-// documented API only.
+// Where the specs live (moved 2026-10, re-read 2026-10-30): /.well-known/api-catalog
+// maps each version's reference to its spec — v1 → /openapi/ideogram-api-v1.yaml,
+// v2 → /openapi/ideogram-api-v2.yaml — each with a .json twin, which is what we
+// read (/openapi.json, the "Available APIs" picker, links the same two .json
+// files). The old Fern names (/openapi/api-reference-2.json for v1,
+// /openapi/api-reference.json for v2) now 404. If the files move again, each
+// source fails loudly (the v1 extract finds no /v1/ path, the v2 extract no
+// /v2/ path), and the api-catalog says where they went.
+// api.ideogram.ai/openapi.json now redirects to the v2 docs spec.
+// Every v1 generate operation is now "(legacy)": "Legacy: use
+// `POST /v2/image/generate/ideogram-4` instead" — no sunset date (2026-10-30).
 //
 // No model id is sent: the adapter POSTs the three 3.0 litegen ids to
 // /v1/ideogram-v3/generate and the three 4.0 ids to /v1/ideogram-v4/generate,
@@ -61,7 +64,15 @@ const postPaths = (spec) =>
 const v1GenerationModels = (spec) =>
   postPaths(spec).flatMap((path) => V1_GENERATE.map((re) => path.match(re)?.[1]).filter(Boolean));
 
-const v2GenerationModels = (spec) => postPaths(spec).map((path) => path.match(V2_GENERATE)?.[1]).filter(Boolean);
+// The one v2 endpoint the adapter calls: Ideogram 4.5 Precise Edit
+// (`/v2/image/precise-edit/{model}`, ids `precise-edit/{model}`).
+const V2_PRECISE_EDIT = /^\/v2\/image\/precise-edit\/([^/]+)$/;
+const PRECISE_EDIT = ['/v2/image/precise-edit/ideogram-4-5'];
+
+const v2GenerationModels = (spec) => [
+  ...postPaths(spec).map((path) => path.match(V2_GENERATE)?.[1]).filter(Boolean),
+  ...postPaths(spec).map((path) => path.match(V2_PRECISE_EDIT)?.[1]).filter(Boolean).map((m) => `precise-edit/${m}`),
+];
 
 export default {
   provider: 'ideogram',
@@ -72,12 +83,13 @@ export default {
     'ideogram/ideogram-v4': 'ideogram-v4',
     'ideogram/ideogram-v4-turbo': 'ideogram-v4',
     'ideogram/ideogram-v4-quality': 'ideogram-v4',
+    'ideogram/ideogram-4-5-precise-edit': 'precise-edit/ideogram-4-5',
   },
   sources: [
     {
       // v1 API reference (the one the adapter calls).
       key: 'openapi',
-      url: 'https://developer.ideogram.ai/openapi/api-reference-2.json',
+      url: 'https://developer.ideogram.ai/openapi/ideogram-api-v1.json',
       expect: 'json',
       extract: v1GenerationModels,
       snapshot: (spec, _body, { ours }) => openapiExcerpt(spec, { paths: ENDPOINTS, ours }),
@@ -85,9 +97,10 @@ export default {
     {
       // v2 API reference: where new generations ship.
       key: 'openapi-v2',
-      url: 'https://developer.ideogram.ai/openapi/api-reference.json',
+      url: 'https://developer.ideogram.ai/openapi/ideogram-api-v2.json',
       expect: 'json',
       extract: v2GenerationModels,
+      snapshot: (spec, _body, { ours }) => openapiExcerpt(spec, { paths: PRECISE_EDIT, ours }) + PRECISE_EDIT.join('\n') + '\n',
     },
   ],
   acknowledged: [

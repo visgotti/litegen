@@ -5,6 +5,7 @@ from attrs import field as _attrs_field
 
 from ..models.capability_media_type import CapabilityMediaType
 from ..models.model_task import ModelTask
+from ..models.preserves_unmasked import PreservesUnmasked
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -38,6 +39,7 @@ class ModelSchema:
         extra_allowlist (Union[Unset, List[str]]):
         native_orientation (Union['NativeOrientation', None, Unset]):
         params (Union[Unset, ModelSchemaParams]):
+        preserves_unmasked (Union[None, PreservesUnmasked, Unset]):
         ref_inputs (Union['RefInputSpec', None, Unset]):
         tags (Union[Unset, List[str]]):
         task (Union[Unset, ModelTask]): What a catalog model does.
@@ -65,6 +67,7 @@ class ModelSchema:
     extra_allowlist: Union[Unset, List[str]] = UNSET
     native_orientation: Union["NativeOrientation", None, Unset] = UNSET
     params: Union[Unset, "ModelSchemaParams"] = UNSET
+    preserves_unmasked: Union[None, PreservesUnmasked, Unset] = UNSET
     ref_inputs: Union["RefInputSpec", None, Unset] = UNSET
     tags: Union[Unset, List[str]] = UNSET
     task: Union[Unset, ModelTask] = UNSET
@@ -112,6 +115,14 @@ class ModelSchema:
         if not isinstance(self.params, Unset):
             params = self.params.to_dict()
 
+        preserves_unmasked: Union[None, Unset, str]
+        if isinstance(self.preserves_unmasked, Unset):
+            preserves_unmasked = UNSET
+        elif isinstance(self.preserves_unmasked, PreservesUnmasked):
+            preserves_unmasked = self.preserves_unmasked.value
+        else:
+            preserves_unmasked = self.preserves_unmasked
+
         ref_inputs: Union[Dict[str, Any], None, Unset]
         if isinstance(self.ref_inputs, Unset):
             ref_inputs = UNSET
@@ -151,6 +162,8 @@ class ModelSchema:
             field_dict["native_orientation"] = native_orientation
         if params is not UNSET:
             field_dict["params"] = params
+        if preserves_unmasked is not UNSET:
+            field_dict["preserves_unmasked"] = preserves_unmasked
         if ref_inputs is not UNSET:
             field_dict["ref_inputs"] = ref_inputs
         if tags is not UNSET:
@@ -225,6 +238,27 @@ class ModelSchema:
         else:
             params = ModelSchemaParams.from_dict(_params)
 
+        def _parse_preserves_unmasked(
+            data: object,
+        ) -> Union[None, PreservesUnmasked, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                preserves_unmasked_type_1 = PreservesUnmasked(data)
+
+                return preserves_unmasked_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[None, PreservesUnmasked, Unset], data)
+
+        preserves_unmasked = _parse_preserves_unmasked(
+            d.pop("preserves_unmasked", UNSET)
+        )
+
         def _parse_ref_inputs(data: object) -> Union["RefInputSpec", None, Unset]:
             if data is None:
                 return data
@@ -264,6 +298,7 @@ class ModelSchema:
             extra_allowlist=extra_allowlist,
             native_orientation=native_orientation,
             params=params,
+            preserves_unmasked=preserves_unmasked,
             ref_inputs=ref_inputs,
             tags=tags,
             task=task,

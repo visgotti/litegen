@@ -17,6 +17,7 @@ mod tests {
             media_type: MediaType::Image,
             task: Default::default(),
             native_orientation: None,
+            preserves_unmasked: None,
             display_name: "M".into(),
             description: "".into(),
             docs_url: None,
@@ -29,8 +30,8 @@ mod tests {
                 default_role: Some("init".into()),
                 provider_format: form,
                 roles: HashMap::from([
-                    ("init".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1 }),
-                    ("mask".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1 }),
+                    ("init".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
+                    ("mask".into(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
                 ]),
             }),
             extra_allowlist: vec![],

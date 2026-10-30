@@ -172,17 +172,29 @@ models:
     provider: mock
     media_type: image
     display_name: Mock Inpainting Image
-    description: Inpainting with init + mask roles via multipart form. Use to test the inpainting capability and dual-role ref path.
+    description: >-
+      Inpainting with init + mask roles via multipart form, white-edits like
+      Stability. Fills exactly the edit area — the mask, the region drawn as
+      a mask, or where both overlap, grown by `mask_grow_px` — with #ffcd75
+      and leaves every other pixel identical. Without a mask or region it
+      renders a fresh image.
     pricing: { base_cost_usd: 0.0 }
     capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
     prompt: { required: true, max_length: 4000 }
+    preserves_unmasked: exact
+    params:
+      region:
+        kind: region
+        input: mask
+        label: Region
+        description: The rectangle to edit, sent to this model drawn as its mask.
     ref_inputs:
       max_total: 2
       default_role: init
       provider_format: { form: multipart, field_map: { init: image, mask: mask } }
       roles:
         init: { required: true, min_count: 1, max_count: 1 }
-        mask: { required: false, min_count: 0, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: white_edits }
     tags: [mock, test, inpainting]
 
   - id: mock/passthrough-image
@@ -503,6 +515,38 @@ models:
         description: Mesh containers. The mock emits glb; litegen derives the rest.
     extra_allowlist: []
     tags: [mock, test]
+
+  - id: mock/region-image
+    provider: mock
+    media_type: image
+    display_name: Mock Region Edit
+    description: >-
+      Takes a region as its own box, at least 256 px a side within 1:6–6:1 —
+      Ideogram 4.5 Precise Edit's limits — and a black-edits mask beside it.
+      litegen enlarges a smaller region's window and sends the exact region
+      as the mask; the mock fills the edit area with #ffcd75 and leaves every
+      other pixel identical.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: false, image_to_image: true, inpainting: true }
+    prompt: { required: true, max_length: 1000 }
+    preserves_unmasked: exact
+    params:
+      region:
+        kind: region
+        input: box
+        min_window_px: 256
+        max_aspect: 6.0
+        label: Region
+        description: The rectangle to edit.
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: black_edits }
+    extra_allowlist: []
+    tags: [mock, test, inpainting]
 
   - id: mock/turned-3d
     provider: mock

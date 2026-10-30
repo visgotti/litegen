@@ -92,6 +92,29 @@ submitted to their modality's usual generation endpoint."""
 # ─── Requests ────────────────────────────────────────────────────────────────
 
 
+MaskConvention = Literal["white_edits", "black_edits", "transparent_edits"]
+"""Which pixels of a mask edit. Callers always send ``white_edits`` (white,
+128 or more, edits); a model's catalog row names its vendor's own, and
+litegen converts."""
+
+RegionInput = Literal["box", "mask"]
+"""How a model receives a ``region``: its own box, or drawn as its mask."""
+
+PreservesUnmasked = Literal["exact", "similar", "unspecified"]
+"""What a vendor promises about pixels outside an edit, in its own words."""
+
+
+class Region(TypedDict):
+    """A rectangle of the init image, in its pixels: top-left origin, ends
+    exclusive (``x..x+w`` by ``y..y+h``). Pass it to ``images.generate`` as
+    ``region=`` to edit only that part, with ``mask_grow_px=`` to grow it."""
+
+    x: int
+    y: int
+    w: int
+    h: int
+
+
 class ReferenceImage(TypedDict):
     """An input image. On a 3D model its ``role`` selects the mode; there is no
     separate mode switch:

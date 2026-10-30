@@ -8249,10 +8249,30 @@
                                 ],
                                 "format": "double"
                             },
+                            "mask_grow_px": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ],
+                                "format": "int32",
+                                "description": "Grow the edit area outward by this many pixels: the vendor's own\nsetting where it has one (sent explicitly, even as 0), else litegen\ndilates the mask itself. Default 0.",
+                                "minimum": 0
+                            },
                             "quality": {
                                 "type": [
                                     "string",
                                     "null"
+                                ]
+                            },
+                            "region": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Region",
+                                        "description": "Edit only this rectangle of the `init` image (3D doc \u00a74). A box-native\nmodel receives it as its own box; a mask-only one receives it drawn as\nthe mask. With a `mask` too, the edit area is where they overlap."
+                                    }
                                 ]
                             },
                             "response_format": {
@@ -8638,6 +8658,15 @@
                         "type": "string"
                     }
                 }
+            },
+            "MaskConvention": {
+                "type": "string",
+                "description": "Which pixels of a mask mean \"edit\".",
+                "enum": [
+                    "white_edits",
+                    "black_edits",
+                    "transparent_edits"
+                ]
             },
             "MediaType": {
                 "type": "string",
@@ -9082,6 +9111,17 @@
                     "supports_image_to_image"
                 ],
                 "properties": {
+                    "mask_convention": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/MaskConvention",
+                                "description": "The mask convention a caller sends: `white_edits` on every model that\ntakes a mask, whatever its vendor reads \u2014 litegen converts."
+                            }
+                        ]
+                    },
                     "max_duration_seconds": {
                         "type": [
                             "number",
@@ -9109,6 +9149,28 @@
                             "type": "string"
                         },
                         "description": "Every mesh container a caller may request, including those litegen\nderives locally \u2014 the same list, in the same order, as\n`GET /v1/models/{id}` serves under `params.output_formats.enum_values`.\nEmpty for image and video models."
+                    },
+                    "preserves_unmasked": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/PreservesUnmasked",
+                                "description": "What the vendor promises about pixels outside the edit, in its own\nwords: `exact`, `similar` or `unspecified`."
+                            }
+                        ]
+                    },
+                    "region_input": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/RegionInput",
+                                "description": "How the model receives a `region`: `box` (its own box) or `mask`\n(drawn as its mask)."
+                            }
+                        ]
                     },
                     "supported_sizes": {
                         "type": "array",
@@ -9142,6 +9204,10 @@
                     "supports_pbr": {
                         "type": "boolean",
                         "description": "Takes the `pbr` param."
+                    },
+                    "supports_region_edit": {
+                        "type": "boolean",
+                        "description": "Takes `region` (3D doc \u00a74)."
                     },
                     "supports_rig": {
                         "type": "boolean",
@@ -9388,6 +9454,17 @@
                         "propertyNames": {
                             "type": "string"
                         }
+                    },
+                    "preserves_unmasked": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/PreservesUnmasked",
+                                "description": "Image edits: what the vendor promises about pixels outside the edit\narea, in its own words."
+                            }
+                        ]
                     },
                     "pricing": {
                         "$ref": "#/components/schemas/CapabilityModelPricing"
@@ -10260,6 +10337,27 @@
                                 }
                             }
                         ]
+                    },
+                    {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/ParamSpecRegion"
+                            },
+                            {
+                                "type": "object",
+                                "required": [
+                                    "kind"
+                                ],
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                            "region"
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
                     }
                 ]
             },
@@ -10439,6 +10537,47 @@
                             "null"
                         ],
                         "format": "int64"
+                    }
+                }
+            },
+            "ParamSpecRegion": {
+                "type": "object",
+                "description": "`region` on a model (3D doc \u00a74).",
+                "required": [
+                    "input"
+                ],
+                "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "input": {
+                        "$ref": "#/components/schemas/RegionInput"
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "max_aspect": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "The vendor's largest box aspect ratio (6 for 1:6\u20136:1)."
+                    },
+                    "min_window_px": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "The vendor's smallest box side, in pixels. A smaller region gets a\nwindow enlarged to it, with the exact region sent as the mask.",
+                        "minimum": 0
                     }
                 }
             },
@@ -10718,6 +10857,15 @@
                         ]
                     }
                 }
+            },
+            "PreservesUnmasked": {
+                "type": "string",
+                "description": "What a vendor promises about the pixels outside an edit.",
+                "enum": [
+                    "exact",
+                    "similar",
+                    "unspecified"
+                ]
             },
             "PromptSpec": {
                 "type": "object",
@@ -11415,6 +11563,17 @@
                     "max_count"
                 ],
                 "properties": {
+                    "convention": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/MaskConvention",
+                                "description": "The mask role's VENDOR convention: which pixels it edits. Callers\nalways send white-edits masks; litegen converts."
+                            }
+                        ]
+                    },
                     "max_count": {
                         "type": "integer",
                         "format": "int32",
@@ -11424,6 +11583,10 @@
                         "type": "integer",
                         "format": "int32",
                         "minimum": 0
+                    },
+                    "native_grow": {
+                        "type": "boolean",
+                        "description": "The mask role's vendor grows masks itself (Stability's `grow_mask`):\n`mask_grow_px` goes to it, explicitly, instead of litegen dilating."
                     },
                     "required": {
                         "type": "boolean"
@@ -11450,6 +11613,46 @@
                         "type": "string"
                     }
                 }
+            },
+            "Region": {
+                "type": "object",
+                "description": "A rectangle of an image, in its pixels: top-left origin, ends exclusive\n(it covers `x..x+w` by `y..y+h`). Named keys, never arrays: vendors\ndisagree on axis order.",
+                "required": [
+                    "x",
+                    "y",
+                    "w",
+                    "h"
+                ],
+                "properties": {
+                    "h": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "w": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "x": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "y": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    }
+                }
+            },
+            "RegionInput": {
+                "type": "string",
+                "description": "How a model receives a `region`.",
+                "enum": [
+                    "box",
+                    "mask"
+                ]
             },
             "RequestArtifact": {
                 "type": "object",

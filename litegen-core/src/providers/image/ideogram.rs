@@ -22,6 +22,14 @@ enum Generation {
     /// `POST /v1/ideogram-v4/generate`: `text_prompt`, `resolution`,
     /// `rendering_speed`; multipart/form-data only.
     V4,
+    /// `POST /v2/image/precise-edit/ideogram-4-5`: `image`, `mask`,
+    /// `context_window`, `prompt`, `quality`, `seed`; multipart/form-data.
+    /// Synchronous by default, answering the same `data[]` shape.
+    ///
+    /// @see <https://developer.ideogram.ai/v2/api-reference/images/precise-edit/ideogram-4-5.md>
+    ///   Verbatim: "`y_min,x_min,y_max,x_max` names the region explicitly, by its
+    ///   corners. Rows come first" and "The maximum edges are exclusive".
+    PreciseEdit45,
 }
 
 /// Ideogram 3.0 and 4.0 image generation provider.
@@ -102,6 +110,7 @@ impl IdeogramProvider {
     fn generation(model_id: &str) -> Generation {
         match model_id.strip_prefix("ideogram/").unwrap_or(model_id) {
             "ideogram-v4" | "ideogram-v4-turbo" | "ideogram-v4-quality" => Generation::V4,
+            "ideogram-4-5-precise-edit" => Generation::PreciseEdit45,
             _ => Generation::V3,
         }
     }
@@ -283,6 +292,36 @@ impl ImageProvider for IdeogramProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let creds = self.creds()?;
+        if Self::generation(&model.id) == Generation::PreciseEdit45 {
+            let url = format!("{}/v2/image/precise-edit/ideogram-4-5", self.api_base());
+            let mut form = Form::new().text("prompt", base.prompt.clone());
+            // The region, as Ideogram's own box: rows first, ends exclusive.
+            if let Some(w) = extras.edit.as_ref().and_then(|e| e.window) {
+                form = form.text("context_window", format!("{},{},{},{}", w.y, w.x, w.y + w.h, w.x + w.w));
+            }
+            if let Some(q) = extras.quality.as_deref() {
+                form = form.text("quality", q.to_string());
+            }
+            if let Some(seed) = base.seed {
+                form = form.text("seed", seed.to_string());
+            }
+            // `image` and `mask` (already black-edits: litegen converted it).
+            let mut has_image = false;
+            for r in &materialized.refs {
+                if let MaterializedRefForm::MultipartField { field_name, bytes, content_type } = &r.form {
+                    has_image |= field_name == "image";
+                    let part = Part::bytes(bytes.to_vec())
+                        .file_name(format!("{field_name}.png"))
+                        .mime_str(content_type)
+                        .map_err(|e| ProviderError::InvalidRequest(format!("ideogram precise edit: {e}")))?;
+                    form = form.part(field_name.clone(), part);
+                }
+            }
+            if !has_image {
+                return Err(ProviderError::InvalidRequest(format!("'{}' edits an image: send one with role init", model.id)));
+            }
+            return self.send(self.client.post(&url).multipart(form), &creds).await;
+        }
         if Self::generation(&model.id) == Generation::V4 {
             let url = format!("{}/v1/ideogram-v4/generate", self.api_base());
             let mut form = Form::new();
@@ -452,6 +491,7 @@ mod tests {
             guidance_scale: None,
             strength: None,
             response_format: "url".to_string(),
+            edit: None,
             extra: None,
         }
     }

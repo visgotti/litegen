@@ -677,6 +677,7 @@ mod tests {
             guidance_scale: None,
             strength: None,
             response_format: "b64_json".to_string(),
+            edit: None,
             extra: None,
         }
     }
@@ -871,6 +872,7 @@ mod tests {
             guidance_scale: None,
             strength: None,
             response_format: "b64_json".to_string(),
+            region: None, mask_grow_px: None,
         };
         provider
             .estimate_cost(&ref_schema(id), &request)

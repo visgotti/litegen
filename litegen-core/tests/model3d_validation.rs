@@ -21,6 +21,7 @@ fn schema_with(params: HashMap<String, ParamSpec>) -> ModelSchema {
         media_type: MediaType::Model3d,
         task: Default::default(),
         native_orientation: None,
+        preserves_unmasked: None,
         display_name: "Mock Mesh 3D".into(),
         description: String::new(),
         docs_url: None,
@@ -377,9 +378,9 @@ fn multiview_roles_are_accepted_when_the_model_declares_them() {
         default_role: Some("init".into()),
         provider_format: RefProviderFormat::Base64,
         roles: HashMap::from([
-            ("init".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1 }),
-            ("view-front".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1 }),
-            ("view-back".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1 }),
+            ("init".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
+            ("view-front".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
+            ("view-back".to_string(), RefRoleSpec { required: false, min_count: 0, max_count: 1, convention: None, native_grow: false }),
         ]),
     });
     let mut r = req(true);

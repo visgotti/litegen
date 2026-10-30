@@ -25,6 +25,74 @@ pub fn slow_image_calls() -> u32 {
     SLOW_IMAGE_CALLS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// The edit mocks (3D doc §4): `mock/inpainting-image` takes a white-edits
+/// mask, `mock/region-image` a box and a black-edits mask.
+const INPAINTING_MODEL: &str = "mock/inpainting-image";
+const REGION_MODEL: &str = "mock/region-image";
+
+/// What an edit mock paints over its edit area.
+const EDIT_FILL: [u8; 4] = [0xff, 0xcd, 0x75, 0xff];
+
+static LAST_REGION_WINDOW: std::sync::Mutex<Option<Region>> = std::sync::Mutex::new(None);
+
+/// The box `mock/region-image` was last sent — how a test sees the window
+/// litegen chose.
+pub fn last_region_window() -> Option<Region> {
+    *LAST_REGION_WINDOW.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// An edit mock's answer: the init image with exactly the edit area painted
+/// `EDIT_FILL`, every other pixel as it came. `None` when there is no init
+/// image to edit (the request is text-to-image).
+fn fill_edit_area(model_id: &str, extras: &ImageExtras, materialized: &MaterializedRequest) -> Result<Option<Vec<u8>>, ProviderError> {
+    use crate::proxy::materializer::MaterializedRefForm;
+    use base64::Engine;
+    let bytes_of = |role: &str| -> Option<Vec<u8>> {
+        materialized.refs.iter().find(|r| r.role == role).and_then(|r| match &r.form {
+            MaterializedRefForm::MultipartField { bytes, .. } => Some(bytes.to_vec()),
+            MaterializedRefForm::Base64(b) => base64::engine::general_purpose::STANDARD.decode(b).ok(),
+            MaterializedRefForm::Url(_) => None,
+        })
+    };
+    let Some(init) = bytes_of("init") else { return Ok(None) };
+    let mut img = image::load_from_memory(&init)
+        .map_err(|e| ProviderError::InvalidRequest(format!("the mock cannot read the init image: {e}")))?
+        .to_rgba8();
+    let window = extras.edit.as_ref().and_then(|e| e.window);
+    if model_id == REGION_MODEL {
+        *LAST_REGION_WINDOW.lock().unwrap_or_else(|p| p.into_inner()) = window;
+    }
+    let mask = match bytes_of("mask") {
+        Some(m) => Some(
+            image::load_from_memory(&m)
+                .map_err(|e| ProviderError::InvalidRequest(format!("the mock cannot read the mask: {e}")))?
+                .to_luma8(),
+        ),
+        None => None,
+    };
+    let edits = |x: u32, y: u32| -> bool {
+        match (&mask, window) {
+            // The model's own convention: white edits here, black there.
+            (Some(m), _) if model_id == REGION_MODEL => m.get_pixel(x, y)[0] < 128,
+            (Some(m), _) => m.get_pixel(x, y)[0] >= 128,
+            (None, Some(w)) => x >= w.x && x < w.x + w.w && y >= w.y && y < w.y + w.h,
+            (None, None) => false,
+        }
+    };
+    let (w, h) = img.dimensions();
+    for y in 0..h {
+        for x in 0..w {
+            if edits(x, y) {
+                img.put_pixel(x, y, image::Rgba(EDIT_FILL));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .map_err(|e| ProviderError::InvalidRequest(format!("the mock could not encode its result: {e}")))?;
+    Ok(Some(out))
+}
+
 fn should_render_visual_image(model_id: &str) -> bool {
     matches!(model_id,
         "mock/visual-image-gen" |
@@ -109,7 +177,14 @@ impl ImageProvider for MockProvider {
         metadata.insert("prompt".to_string(), serde_json::Value::String(base.prompt.clone()));
         metadata.insert("provider".to_string(), serde_json::Value::String("mock".to_string()));
 
-        let data = if should_render_visual_image(&model.id) {
+        let edited = if model.id == INPAINTING_MODEL || model.id == REGION_MODEL {
+            fill_edit_area(&model.id, _extras, _materialized)?
+        } else {
+            None
+        };
+        let data = if let Some(edited) = edited {
+            edited
+        } else if should_render_visual_image(&model.id) {
             generate_visual_image_png(&base.prompt)
         } else {
             Self::placeholder_png()
@@ -195,6 +270,7 @@ mod tests {
             guidance_scale: None,
             strength: None,
             response_format: "url".to_string(),
+            edit: None,
             extra: None,
         }
     }
@@ -283,6 +359,7 @@ mod tests {
             guidance_scale: None,
             strength: None,
             response_format: "url".to_string(),
+            region: None, mask_grow_px: None,
         };
         let cost = provider.estimate_cost(&schema, &req).await.unwrap();
         // mock/test-model has base_cost_usd: 0.0

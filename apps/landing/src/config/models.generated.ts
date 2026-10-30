@@ -2073,6 +2073,77 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://www.tencentcloud.com/document/product/1284/74915"
   },
   {
+    "id": "ideogram/ideogram-4-5-precise-edit",
+    "provider": "ideogram",
+    "displayName": "Ideogram 4.5 Precise Edit",
+    "description": "Edits part of an image, keeping its size: a region becomes Ideogram's own box (`context_window`, at least 256 px a side within 1:6–6:1 — litegen enlarges a smaller one and sends the exact area as the mask), and a mask goes in Ideogram's black-edits convention. Pixels the edit did not meaningfully change come back exactly.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": true,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      },
+      {
+        "name": "mask",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 10000
+    },
+    "params": [
+      {
+        "name": "quality",
+        "kind": "string",
+        "enum": [
+          "very_low",
+          "low",
+          "medium",
+          "high"
+        ],
+        "default": "medium"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      },
+      {
+        "name": "region",
+        "kind": "region"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.06
+    },
+    "tags": [
+      "image-to-image",
+      "inpainting",
+      "region-edit"
+    ],
+    "referenceUrl": "https://developer.ideogram.ai/v2/api-reference/images/precise-edit/ideogram-4-5"
+  },
+  {
     "id": "ideogram/ideogram-v3",
     "provider": "ideogram",
     "displayName": "Ideogram 3.0",
@@ -5963,6 +6034,68 @@ export const MODELS: ModelEntry[] = [
       "affordable"
     ],
     "referenceUrl": "https://platform.stability.ai/docs/api-reference"
+  },
+  {
+    "id": "stability/inpaint",
+    "provider": "stability",
+    "displayName": "Stable Image Inpaint",
+    "description": "Replaces the masked part of an image (Stability's Inpaint). The mask is white-edits, Stability's own convention, and `mask_grow_px` goes to its `grow_mask` (sent as 0 unless asked: Stability's default is 5). A region is sent drawn as the mask.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": true,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 2,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      },
+      {
+        "name": "mask",
+        "required": false,
+        "min": 0,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true
+    },
+    "params": [
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 4294967294
+      },
+      {
+        "name": "region",
+        "kind": "region"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.05
+    },
+    "tags": [
+      "image-to-image",
+      "inpainting"
+    ],
+    "referenceUrl": "https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1inpaint/post"
   },
   {
     "id": "stability/sd3-large",

@@ -100,7 +100,8 @@ rand = "0.8"
 # Image generation (for visual mock provider)
 # webp: vendor meshes carry WebP textures (fal's TRELLIS.2), which a delivered
 # glTF may not require an extension to read, so they are transcoded to PNG.
-image = { version = "0.25", default-features = false, features = ["png", "gif", "webp"] }
+# jpeg: partial image edits read the caller's init image, often a JPEG.
+image = { version = "0.25", default-features = false, features = ["png", "gif", "webp", "jpeg"] }
 
 # Multipart parsing
 multer = "3"

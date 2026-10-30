@@ -522,6 +522,7 @@ impl ProxyRouter {
             guidance_scale: extras.guidance_scale,
             strength: extras.strength,
             response_format: extras.response_format.clone(),
+            region: None, mask_grow_px: None,
         };
         for d in deployments {
             let cost = if let Some(p) = self.registry.image_provider_for_request(&d.provider, app_creds.clone()).await {
@@ -2009,6 +2010,7 @@ mod model3d_router_tests {
             id: "mock/slow-3d".into(), provider: "mock".into(), media_type: crate::capabilities::MediaType::Model3d,
             task: Default::default(),
             native_orientation: None,
+            preserves_unmasked: None,
             display_name: "slow".into(), description: String::new(), docs_url: None,
             pricing: crate::capabilities::ModelPricing { base_cost_usd: 0.0, variable_pricing: None },
             capabilities: crate::capabilities::ModelCapabilityFlags { text_to_3d: true, ..Default::default() },

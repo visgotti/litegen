@@ -559,4 +559,71 @@ models:
         let half = format!("    task: animate\n    native_orientation: {{ up: \"+y\", front: source, evidence: \"e\" }}");
         assert!(yaml(&model3d(&half, "{}", &format!("    params:\n{ANIMATIONS}"))).is_err());
     }
+
+    // ─── partial image edits (3D doc §4) ────────────────────────────────────
+
+    fn editor(roles: &str, extra: &str) -> Result<CapabilityRegistry, LoadError> {
+        yaml(&format!(r#"
+models:
+  - id: x/edit
+    provider: x
+    media_type: image
+    display_name: Edit
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ text_to_image: false, image_to_image: true, inpainting: true }}
+    prompt: {{ required: true }}
+{extra}
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: {{ form: base64 }}
+      roles:
+        init: {{ required: true, min_count: 1, max_count: 1 }}
+{roles}
+"#))
+    }
+
+    #[test]
+    fn a_mask_role_names_its_vendors_convention() {
+        let r = editor("        mask: { required: false, min_count: 0, max_count: 1, convention: black_edits }", "").unwrap();
+        let m = r.get("x/edit").unwrap();
+        let role = &m.ref_inputs.as_ref().unwrap().roles["mask"];
+        assert_eq!(role.convention, Some(MaskConvention::BlackEdits));
+        let err = editor("        mask: { required: false, min_count: 0, max_count: 1 }", "").unwrap_err().to_string();
+        assert!(err.contains("convention"), "{err}");
+    }
+
+    #[test]
+    fn native_grow_and_a_convention_belong_to_the_mask_role_only() {
+        let err = editor("        mask: { required: false, min_count: 0, max_count: 1, convention: white_edits }\n        style: { required: false, min_count: 0, max_count: 1, native_grow: true }", "").unwrap_err().to_string();
+        assert!(err.contains("native_grow") || err.contains("style"), "{err}");
+    }
+
+    #[test]
+    fn a_region_model_declares_how_it_takes_the_region() {
+        let params = "    params:\n      region: { kind: region, input: box, min_window_px: 256, max_aspect: 6.0 }\n    preserves_unmasked: exact";
+        let r = editor("        mask: { required: false, min_count: 0, max_count: 1, convention: black_edits }", params).unwrap();
+        let m = r.get("x/edit").unwrap();
+        match m.params.get("region") {
+            Some(ParamSpec::Region(s)) => assert_eq!((s.input, s.min_window_px, s.max_aspect), (RegionInput::Box, Some(256), Some(6.0))),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(m.preserves_unmasked, Some(PreservesUnmasked::Exact));
+    }
+
+    #[test]
+    fn preserves_unmasked_is_for_models_that_edit_part_of_an_image() {
+        let err = yaml(r#"
+models:
+  - id: x/gen
+    provider: x
+    media_type: image
+    display_name: Gen
+    preserves_unmasked: exact
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true }
+"#).unwrap_err().to_string();
+        assert!(err.contains("preserves_unmasked"), "{err}");
+    }
 }

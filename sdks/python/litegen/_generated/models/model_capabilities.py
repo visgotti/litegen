@@ -3,7 +3,10 @@ from typing import Any, Dict, List, Type, TypeVar, Union, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.mask_convention import MaskConvention
 from ..models.model_task import ModelTask
+from ..models.preserves_unmasked import PreservesUnmasked
+from ..models.region_input import RegionInput
 from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="ModelCapabilities")
@@ -15,6 +18,7 @@ class ModelCapabilities:
     Attributes:
         supports_image_to_image (bool):
         supports_text_to_image (bool):
+        mask_convention (Union[MaskConvention, None, Unset]):
         max_duration_seconds (Union[None, Unset, float]):
         max_images (Union[Unset, int]):
         max_polycount (Union[None, Unset, int]): Upper bound of the model's `target_polycount` param, when it takes one.
@@ -22,6 +26,8 @@ class ModelCapabilities:
             derives locally — the same list, in the same order, as
             `GET /v1/models/{id}` serves under `params.output_formats.enum_values`.
             Empty for image and video models.
+        preserves_unmasked (Union[None, PreservesUnmasked, Unset]):
+        region_input (Union[None, RegionInput, Unset]):
         supported_sizes (Union[Unset, List[str]]):
         supports_first_frame (Union[Unset, bool]):
         supports_image_to_3d (Union[Unset, bool]): Accepts one `init` reference image (image-to-3D).
@@ -30,6 +36,7 @@ class ModelCapabilities:
         supports_last_frame (Union[Unset, bool]):
         supports_multiview_to_3d (Union[Unset, bool]): Accepts several `view-*` reference images (multiview-to-3D).
         supports_pbr (Union[Unset, bool]): Takes the `pbr` param.
+        supports_region_edit (Union[Unset, bool]): Takes `region` (3D doc §4).
         supports_rig (Union[Unset, bool]): Takes the `rig` param.
         supports_source_model (Union[Unset, bool]): Takes `source_model`: an operation on an existing mesh.
         supports_text_to_3d (Union[Unset, bool]): Accepts a prompt with no reference images (text-to-3D).
@@ -50,10 +57,13 @@ class ModelCapabilities:
 
     supports_image_to_image: bool
     supports_text_to_image: bool
+    mask_convention: Union[MaskConvention, None, Unset] = UNSET
     max_duration_seconds: Union[None, Unset, float] = UNSET
     max_images: Union[Unset, int] = UNSET
     max_polycount: Union[None, Unset, int] = UNSET
     output_formats: Union[Unset, List[str]] = UNSET
+    preserves_unmasked: Union[None, PreservesUnmasked, Unset] = UNSET
+    region_input: Union[None, RegionInput, Unset] = UNSET
     supported_sizes: Union[Unset, List[str]] = UNSET
     supports_first_frame: Union[Unset, bool] = UNSET
     supports_image_to_3d: Union[Unset, bool] = UNSET
@@ -62,6 +72,7 @@ class ModelCapabilities:
     supports_last_frame: Union[Unset, bool] = UNSET
     supports_multiview_to_3d: Union[Unset, bool] = UNSET
     supports_pbr: Union[Unset, bool] = UNSET
+    supports_region_edit: Union[Unset, bool] = UNSET
     supports_rig: Union[Unset, bool] = UNSET
     supports_source_model: Union[Unset, bool] = UNSET
     supports_text_to_3d: Union[Unset, bool] = UNSET
@@ -74,6 +85,14 @@ class ModelCapabilities:
         supports_image_to_image = self.supports_image_to_image
 
         supports_text_to_image = self.supports_text_to_image
+
+        mask_convention: Union[None, Unset, str]
+        if isinstance(self.mask_convention, Unset):
+            mask_convention = UNSET
+        elif isinstance(self.mask_convention, MaskConvention):
+            mask_convention = self.mask_convention.value
+        else:
+            mask_convention = self.mask_convention
 
         max_duration_seconds: Union[None, Unset, float]
         if isinstance(self.max_duration_seconds, Unset):
@@ -93,6 +112,22 @@ class ModelCapabilities:
         if not isinstance(self.output_formats, Unset):
             output_formats = self.output_formats
 
+        preserves_unmasked: Union[None, Unset, str]
+        if isinstance(self.preserves_unmasked, Unset):
+            preserves_unmasked = UNSET
+        elif isinstance(self.preserves_unmasked, PreservesUnmasked):
+            preserves_unmasked = self.preserves_unmasked.value
+        else:
+            preserves_unmasked = self.preserves_unmasked
+
+        region_input: Union[None, Unset, str]
+        if isinstance(self.region_input, Unset):
+            region_input = UNSET
+        elif isinstance(self.region_input, RegionInput):
+            region_input = self.region_input.value
+        else:
+            region_input = self.region_input
+
         supported_sizes: Union[Unset, List[str]] = UNSET
         if not isinstance(self.supported_sizes, Unset):
             supported_sizes = self.supported_sizes
@@ -110,6 +145,8 @@ class ModelCapabilities:
         supports_multiview_to_3d = self.supports_multiview_to_3d
 
         supports_pbr = self.supports_pbr
+
+        supports_region_edit = self.supports_region_edit
 
         supports_rig = self.supports_rig
 
@@ -133,6 +170,8 @@ class ModelCapabilities:
                 "supports_text_to_image": supports_text_to_image,
             }
         )
+        if mask_convention is not UNSET:
+            field_dict["mask_convention"] = mask_convention
         if max_duration_seconds is not UNSET:
             field_dict["max_duration_seconds"] = max_duration_seconds
         if max_images is not UNSET:
@@ -141,6 +180,10 @@ class ModelCapabilities:
             field_dict["max_polycount"] = max_polycount
         if output_formats is not UNSET:
             field_dict["output_formats"] = output_formats
+        if preserves_unmasked is not UNSET:
+            field_dict["preserves_unmasked"] = preserves_unmasked
+        if region_input is not UNSET:
+            field_dict["region_input"] = region_input
         if supported_sizes is not UNSET:
             field_dict["supported_sizes"] = supported_sizes
         if supports_first_frame is not UNSET:
@@ -157,6 +200,8 @@ class ModelCapabilities:
             field_dict["supports_multiview_to_3d"] = supports_multiview_to_3d
         if supports_pbr is not UNSET:
             field_dict["supports_pbr"] = supports_pbr
+        if supports_region_edit is not UNSET:
+            field_dict["supports_region_edit"] = supports_region_edit
         if supports_rig is not UNSET:
             field_dict["supports_rig"] = supports_rig
         if supports_source_model is not UNSET:
@@ -178,6 +223,23 @@ class ModelCapabilities:
         supports_image_to_image = d.pop("supports_image_to_image")
 
         supports_text_to_image = d.pop("supports_text_to_image")
+
+        def _parse_mask_convention(data: object) -> Union[MaskConvention, None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                mask_convention_type_1 = MaskConvention(data)
+
+                return mask_convention_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[MaskConvention, None, Unset], data)
+
+        mask_convention = _parse_mask_convention(d.pop("mask_convention", UNSET))
 
         def _parse_max_duration_seconds(data: object) -> Union[None, Unset, float]:
             if data is None:
@@ -203,6 +265,44 @@ class ModelCapabilities:
 
         output_formats = cast(List[str], d.pop("output_formats", UNSET))
 
+        def _parse_preserves_unmasked(
+            data: object,
+        ) -> Union[None, PreservesUnmasked, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                preserves_unmasked_type_1 = PreservesUnmasked(data)
+
+                return preserves_unmasked_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[None, PreservesUnmasked, Unset], data)
+
+        preserves_unmasked = _parse_preserves_unmasked(
+            d.pop("preserves_unmasked", UNSET)
+        )
+
+        def _parse_region_input(data: object) -> Union[None, RegionInput, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                region_input_type_1 = RegionInput(data)
+
+                return region_input_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[None, RegionInput, Unset], data)
+
+        region_input = _parse_region_input(d.pop("region_input", UNSET))
+
         supported_sizes = cast(List[str], d.pop("supported_sizes", UNSET))
 
         supports_first_frame = d.pop("supports_first_frame", UNSET)
@@ -218,6 +318,8 @@ class ModelCapabilities:
         supports_multiview_to_3d = d.pop("supports_multiview_to_3d", UNSET)
 
         supports_pbr = d.pop("supports_pbr", UNSET)
+
+        supports_region_edit = d.pop("supports_region_edit", UNSET)
 
         supports_rig = d.pop("supports_rig", UNSET)
 
@@ -239,10 +341,13 @@ class ModelCapabilities:
         model_capabilities = cls(
             supports_image_to_image=supports_image_to_image,
             supports_text_to_image=supports_text_to_image,
+            mask_convention=mask_convention,
             max_duration_seconds=max_duration_seconds,
             max_images=max_images,
             max_polycount=max_polycount,
             output_formats=output_formats,
+            preserves_unmasked=preserves_unmasked,
+            region_input=region_input,
             supported_sizes=supported_sizes,
             supports_first_frame=supports_first_frame,
             supports_image_to_3d=supports_image_to_3d,
@@ -251,6 +356,7 @@ class ModelCapabilities:
             supports_last_frame=supports_last_frame,
             supports_multiview_to_3d=supports_multiview_to_3d,
             supports_pbr=supports_pbr,
+            supports_region_edit=supports_region_edit,
             supports_rig=supports_rig,
             supports_source_model=supports_source_model,
             supports_text_to_3d=supports_text_to_3d,

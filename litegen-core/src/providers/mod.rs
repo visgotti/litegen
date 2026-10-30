@@ -272,9 +272,25 @@ pub struct ImageExtras {
     pub strength: Option<f64>,
     pub response_format: String,
     pub extra: Option<serde_json::Value>,
+    /// A partial edit (3D doc §4) after litegen checked and converted it: the
+    /// mask itself travels as the `mask` reference, in the vendor's
+    /// convention.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit: Option<ImageEdit>,
     /// Filled by adapters that poll: see [`VendorJobSink`].
     #[serde(skip)]
     pub vendor_job: VendorJobSink,
+}
+
+/// What a vendor needs of a partial edit beyond its mask.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct ImageEdit {
+    /// The box, for a model that takes a region as its own box: the region,
+    /// or the vendor's minimum window around it.
+    pub window: Option<crate::types::Region>,
+    /// The growth for a vendor that grows masks itself — sent explicitly,
+    /// even 0, because its default is not 0.
+    pub vendor_grow_px: Option<u32>,
 }
 
 /// Extra video-specific parameters extracted from a validated request.

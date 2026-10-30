@@ -63,7 +63,7 @@ models:
       provider_format: { form: multipart, field_map: { init: image, mask: mask } }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-        mask: { required: false, min_count: 0, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: transparent_edits }
     # background supports opaque and transparent for both 2.5 models;
     # output_format png|jpeg|webp; output_compression 0-100 (CreateImageRequest).
     extra_allowlist: [background, output_format, output_compression, moderation, user]
@@ -103,7 +103,7 @@ models:
       provider_format: { form: multipart, field_map: { init: image, mask: mask } }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-        mask: { required: false, min_count: 0, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: transparent_edits }
     extra_allowlist: [background, output_format, output_compression, moderation, user]
     tags: [text-to-image, image-to-image, inpainting, fast]
 
@@ -148,6 +148,6 @@ models:
       provider_format: { form: multipart, field_map: { init: image, mask: mask } }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-        mask: { required: false, min_count: 0, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: transparent_edits }
     extra_allowlist: [background, output_format, output_compression, moderation, user]
     tags: [text-to-image, image-to-image, inpainting]

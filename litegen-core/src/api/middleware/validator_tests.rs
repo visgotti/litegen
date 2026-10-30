@@ -39,7 +39,7 @@ models:
       provider_format: { form: url }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-        mask: { required: false, min_count: 0, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: white_edits }
 "#)]).unwrap()
     }
 
@@ -59,6 +59,7 @@ models:
             size: None, aspect_ratio: None, quality: None, style: None,
             steps: None, guidance_scale: None, strength: None,
             response_format: "url".into(),
+            region: None, mask_grow_px: None,
         }
     }
 

@@ -136,6 +136,39 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
+    // 3D doc §4: callers send white-edits masks and litegen converts, so
+    // every mask role names its vendor's own convention (P-R9). Only the
+    // mask role has a convention or a native growth.
+    if let Some(refs) = &m.ref_inputs {
+        for (name, role) in &refs.roles {
+            if name == "mask" {
+                if role.convention.is_none() {
+                    return Err(bad(format!(
+                        "model '{}' mask role names no convention (white_edits | black_edits | transparent_edits): the vendor's own", m.id
+                    )));
+                }
+            } else if role.convention.is_some() || role.native_grow {
+                return Err(bad(format!(
+                    "model '{}' role '{}' declares a mask convention or native_grow, which only the mask role has", m.id, name
+                )));
+            }
+        }
+    }
+    let edits_part = m.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("mask")) || m.params.contains_key("region");
+    if m.preserves_unmasked.is_some() && !edits_part {
+        return Err(bad(format!(
+            "model '{}' declares preserves_unmasked but takes neither a mask nor a region", m.id
+        )));
+    }
+    if let Some(ParamSpec::Region(r)) = m.params.get("region") {
+        if !m.ref_inputs.as_ref().is_some_and(|refs| refs.roles.contains_key("init")) {
+            return Err(bad(format!("model '{}' takes a region but no init image to take it from", m.id)));
+        }
+        if r.max_aspect.is_some_and(|a| a < 1.0) {
+            return Err(bad(format!("model '{}' region.max_aspect is below 1", m.id)));
+        }
+    }
+
     // 3D doc §3C: the clips an animate model makes.
     if let Some(spec) = m.params.get("animations") {
         let ParamSpec::AnimationList(a) = spec else {

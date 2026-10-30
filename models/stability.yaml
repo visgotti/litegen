@@ -146,6 +146,48 @@ models:
       provider_format: { form: multipart, field_map: { init: init_image, mask: mask_image } }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-        mask: { required: false, min_count: 0, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: white_edits }
     extra_allowlist: []
     tags: [text-to-image, image-to-image, inpainting]
+
+  # ─── Edits (PixelGenie 3D doc §4) ──────────────────────────────────────────
+  # @see https://api.stability.ai/v2alpha/openapi (2026-10-30), POST
+  #   /v2beta/stable-image/edit/inpaint: image and prompt required; mask ("a
+  #   black and white image that represents, at any pixel, the strength of
+  #   inpainting" — white is full strength); grow_mask 0–100, default 5
+  #   ("Grows the edges of the mask outward in all directions"); seed;
+  #   negative_prompt; output_format (jpeg | png | webp).
+  - id: stability/inpaint
+    provider: stability
+    media_type: image
+    display_name: Stable Image Inpaint
+    description: >-
+      Replaces the masked part of an image (Stability's Inpaint). The mask is
+      white-edits, Stability's own convention, and `mask_grow_px` goes to its
+      `grow_mask` (sent as 0 unless asked: Stability's default is 5). A
+      region is sent drawn as the mask.
+    docs_url: https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1inpaint/post
+    # @see https://platform.stability.ai/pricing (2026-10-30): "Inpaint — Use a
+    #   mask (or alpha channel) to replace anything in an image — 5" credits;
+    #   "1 credit equals $0.01" → $0.05.
+    pricing: { base_cost_usd: 0.05 }
+    capabilities: { text_to_image: false, image_to_image: true, inpainting: true }
+    prompt: { required: true }
+    preserves_unmasked: unspecified
+    params:
+      negative_prompt: { kind: string }
+      seed: { kind: seed, min: 0, max: 4294967294 }
+      region:
+        kind: region
+        input: mask
+        label: Region
+        description: The rectangle to edit, sent drawn as the mask.
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image, mask: mask } }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: white_edits, native_grow: true }
+    extra_allowlist: []
+    tags: [image-to-image, inpainting]

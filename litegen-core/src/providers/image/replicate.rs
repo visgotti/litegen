@@ -526,6 +526,7 @@ mod tests {
             guidance_scale: Some(3.5),
             strength: None,
             response_format: "url".to_string(),
+            edit: None,
             extra: None,
         }
     }

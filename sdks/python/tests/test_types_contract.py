@@ -79,6 +79,7 @@ MIRRORED = {
     "SceneSkin": t.SceneSkin,
     "SceneAnimation": t.SceneAnimation,
     "AnimationRequest": t.AnimationRequest,
+    "Region": t.Region,
 }
 
 
@@ -144,6 +145,9 @@ def test_model3d_params_cover_the_request_schema() -> None:
         ("Model3dSkeleton", t.Model3dSkeleton),
         ("Model3dJointNaming", t.Model3dJointNaming),
         ("Model3dAnimationPreset", t.Model3dAnimationPreset),
+        ("MaskConvention", t.MaskConvention),
+        ("RegionInput", t.RegionInput),
+        ("PreservesUnmasked", t.PreservesUnmasked),
         ("SourceKind", t.SourceKind),
     ],
 )

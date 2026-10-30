@@ -180,6 +180,10 @@ use utoipa::OpenApi;
         // both SDKs carry the vocabulary.
         crate::types::Model3dAnimationPreset,
         crate::types::AnimationRequest,
+        crate::types::Region,
+        crate::capabilities::MaskConvention,
+        crate::capabilities::RegionInput,
+        crate::capabilities::PreservesUnmasked,
         crate::capabilities::ModelTask,
         crate::types::ReferenceImage,
         crate::types::RefImageKind,
@@ -423,6 +427,25 @@ mod tests {
         }
         assert_eq!(s["InPlaceMode"]["enum"], json!(["litegen", "native"]));
         assert!(mentions(&s["ParamSpec"], "animation_list"), "the union names the new kind");
+    }
+
+    #[test]
+    fn an_image_edit_documents_its_region_and_the_catalog_its_conventions() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        let req = &s["ImageGenerationRequest"];
+        assert!(mentions(property(req, "region"), "#/components/schemas/Region"), "{}", property(req, "region"));
+        assert!(mentions(property(req, "mask_grow_px"), "integer"), "{}", property(req, "mask_grow_px"));
+        for f in ["x", "y", "w", "h"] {
+            property(&s["Region"], f);
+        }
+        assert_eq!(s["MaskConvention"]["enum"], json!(["white_edits", "black_edits", "transparent_edits"]));
+        assert_eq!(s["RegionInput"]["enum"], json!(["box", "mask"]));
+        assert_eq!(s["PreservesUnmasked"]["enum"], json!(["exact", "similar", "unspecified"]));
+        for f in ["supports_region_edit", "region_input", "preserves_unmasked", "mask_convention"] {
+            property(&s["ModelCapabilities"], f);
+        }
+        assert!(mentions(&s["ParamSpec"], "\"region\""), "the union names the region kind");
     }
 
     #[test]

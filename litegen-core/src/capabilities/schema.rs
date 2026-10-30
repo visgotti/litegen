@@ -288,6 +288,7 @@ pub enum ParamSpec {
     Seed(ParamSpecSeed),
     SourceModel(ParamSpecSourceModel),
     AnimationList(ParamSpecAnimationList),
+    Region(ParamSpecRegion),
 }
 
 /// The clips an `animate` model makes (`animations`, 3D doc §3C).
@@ -394,6 +395,63 @@ pub struct RefRoleSpec {
     #[serde(default)] pub required: bool,
     pub min_count: u32,
     pub max_count: u32,
+    /// The mask role's VENDOR convention: which pixels it edits. Callers
+    /// always send white-edits masks; litegen converts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub convention: Option<MaskConvention>,
+    /// The mask role's vendor grows masks itself (Stability's `grow_mask`):
+    /// `mask_grow_px` goes to it, explicitly, instead of litegen dilating.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native_grow: bool,
+}
+
+/// Which pixels of a mask mean "edit".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskConvention {
+    /// White (128 or more) edits, black keeps — the one callers send.
+    WhiteEdits,
+    /// Black edits, white keeps (Ideogram).
+    BlackEdits,
+    /// Fully transparent edits, opaque keeps (OpenAI).
+    TransparentEdits,
+}
+
+/// How a model receives a `region`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RegionInput {
+    /// Its own box field (Ideogram's `context_window`).
+    Box,
+    /// Drawn as the mask.
+    Mask,
+}
+
+/// `region` on a model (3D doc §4).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ParamSpecRegion {
+    pub input: RegionInput,
+    /// The vendor's smallest box side, in pixels. A smaller region gets a
+    /// window enlarged to it, with the exact region sent as the mask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_window_px: Option<u32>,
+    /// The vendor's largest box aspect ratio (6 for 1:6–6:1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_aspect: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
+}
+
+/// What a vendor promises about the pixels outside an edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PreservesUnmasked {
+    /// Copied exactly (Ideogram 4.5, Bria).
+    Exact,
+    /// Kept similar.
+    Similar,
+    /// The vendor says nothing.
+    Unspecified,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -440,6 +498,10 @@ pub struct ModelSchema {
     /// its manifest says `front: "unverified"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_orientation: Option<NativeOrientation>,
+    /// Image edits: what the vendor promises about pixels outside the edit
+    /// area, in its own words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserves_unmasked: Option<PreservesUnmasked>,
     pub display_name: String,
     #[serde(default)] pub description: String,
     /// The vendor's own API reference page for the endpoint this model calls —
@@ -561,6 +623,8 @@ pub const KNOWN_PARAMS: &[&str] = &[
     "height_m",
     // Animation (3D doc §3C); `fps` is shared with video.
     "animations",
+    // Partial image edits (3D doc §4).
+    "region",
 ];
 
 /// The `ParamSpec` kind(s) a canonical param may be declared with: exactly the
@@ -584,6 +648,7 @@ pub fn canonical_param_kinds(name: &str) -> &'static [&'static str] {
         "output_format" | "symmetry" | "topology" | "skeleton" | "joint_naming" => &["string"],
         "height_m" => &["float"],
         "animations" => &["animation_list"],
+        "region" => &["region"],
         "texture" | "pbr" | "rig" => &["bool"],
         "target_polycount" => &["int"],
         "source_model" => &["source_model"],
@@ -605,6 +670,7 @@ impl ParamSpec {
             ParamSpec::Seed(_) => "seed",
             ParamSpec::SourceModel(_) => "source_model",
             ParamSpec::AnimationList(_) => "animation_list",
+            ParamSpec::Region(_) => "region",
         }
     }
 }

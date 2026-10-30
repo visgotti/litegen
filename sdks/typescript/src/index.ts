@@ -116,6 +116,18 @@ export type Model3dAssetKind = (typeof Model3dAssetKind)[keyof typeof Model3dAss
 export type ImageGenerationRequest = components["schemas"]["ImageGenerationRequest"];
 export type ImageGenerationResponse = components["schemas"]["ImageGenerationResponse"];
 export type ImageResult = components["schemas"]["ImageResult"];
+/**
+ * A rectangle of the init image (`region`): pixels, top-left origin, ends
+ * exclusive. A box-native model receives it as its own box, a mask-only one
+ * drawn as its mask; with a `mask` too, the edit area is where they overlap.
+ */
+export type Region = components["schemas"]["Region"];
+/** Which pixels of a mask edit. Callers always send `white_edits`; litegen converts. */
+export type MaskConvention = components["schemas"]["MaskConvention"];
+/** How a model receives a `region`: its own `box`, or drawn as its `mask`. */
+export type RegionInput = components["schemas"]["RegionInput"];
+/** What a vendor promises about pixels outside an edit. */
+export type PreservesUnmasked = components["schemas"]["PreservesUnmasked"];
 export type VideoGenerationRequest = components["schemas"]["VideoGenerationRequest"];
 export type VideoGenerationResponse = components["schemas"]["VideoGenerationResponse"];
 export type Model3dGenerationRequest = components["schemas"]["Model3dGenerationRequest"];

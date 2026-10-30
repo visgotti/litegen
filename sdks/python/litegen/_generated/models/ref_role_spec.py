@@ -1,8 +1,17 @@
-from typing import Any, Dict, List, Type, TypeVar, Union
+from typing import (
+    Any,
+    Dict,
+    List,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.mask_convention import MaskConvention
 from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="RefRoleSpec")
@@ -14,11 +23,16 @@ class RefRoleSpec:
     Attributes:
         max_count (int):
         min_count (int):
+        convention (Union[MaskConvention, None, Unset]):
+        native_grow (Union[Unset, bool]): The mask role's vendor grows masks itself (Stability's `grow_mask`):
+            `mask_grow_px` goes to it, explicitly, instead of litegen dilating.
         required (Union[Unset, bool]):
     """
 
     max_count: int
     min_count: int
+    convention: Union[MaskConvention, None, Unset] = UNSET
+    native_grow: Union[Unset, bool] = UNSET
     required: Union[Unset, bool] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -26,6 +40,16 @@ class RefRoleSpec:
         max_count = self.max_count
 
         min_count = self.min_count
+
+        convention: Union[None, Unset, str]
+        if isinstance(self.convention, Unset):
+            convention = UNSET
+        elif isinstance(self.convention, MaskConvention):
+            convention = self.convention.value
+        else:
+            convention = self.convention
+
+        native_grow = self.native_grow
 
         required = self.required
 
@@ -37,6 +61,10 @@ class RefRoleSpec:
                 "min_count": min_count,
             }
         )
+        if convention is not UNSET:
+            field_dict["convention"] = convention
+        if native_grow is not UNSET:
+            field_dict["native_grow"] = native_grow
         if required is not UNSET:
             field_dict["required"] = required
 
@@ -49,11 +77,32 @@ class RefRoleSpec:
 
         min_count = d.pop("min_count")
 
+        def _parse_convention(data: object) -> Union[MaskConvention, None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                convention_type_1 = MaskConvention(data)
+
+                return convention_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[MaskConvention, None, Unset], data)
+
+        convention = _parse_convention(d.pop("convention", UNSET))
+
+        native_grow = d.pop("native_grow", UNSET)
+
         required = d.pop("required", UNSET)
 
         ref_role_spec = cls(
             max_count=max_count,
             min_count=min_count,
+            convention=convention,
+            native_grow=native_grow,
             required=required,
         )
 

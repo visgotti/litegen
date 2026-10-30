@@ -171,3 +171,59 @@ models:
         values: [[2048,2048],[1440,2880],[2880,1440],[1664,2496],[2496,1664],[1792,2240],[2240,1792],[1440,2560],[2560,1440],[1600,2560],[2560,1600],[1728,2304],[2304,1728],[1296,3168],[3168,1296],[1152,2944],[2944,1152],[1248,3328],[3328,1248],[1280,3072],[3072,1280],[1024,3072],[3072,1024],[1024,1024],[896,1120],[1120,896],[864,1152],[1152,864],[832,1248],[1248,832],[800,1280],[1280,800],[720,1280],[1280,720],[720,1440],[1440,720],[512,1536],[1536,512]]
     extra_allowlist: [enable_copyright_detection]
     tags: [text-to-image, quality]
+
+  # ─── Edits (PixelGenie 3D doc §4) ──────────────────────────────────────────
+  # @see https://developer.ideogram.ai/v2/api-reference/images/precise-edit/ideogram-4-5.md
+  #   (2026-10-30): "POST https://api.ideogram.ai/v2/image/precise-edit/ideogram-4-5
+  #   / Content-Type: multipart/form-data"; image (required; "pixels the edit
+  #   did not meaningfully change are copied exactly from it"), mask ("Black
+  #   marks the area to edit and white the area to keep"), context_window
+  #   (`y_min,x_min,y_max,x_max`, ends exclusive; "measure at least 256px on
+  #   each side … have an aspect ratio between 1:6 and 6:1"), quality
+  #   (very_low | low | medium | high, default medium), seed (0–2147483647).
+  # @see https://developer.ideogram.ai/openapi/ideogram-api-v2.json
+  - id: ideogram/ideogram-4-5-precise-edit
+    provider: ideogram
+    media_type: image
+    display_name: Ideogram 4.5 Precise Edit
+    description: >-
+      Edits part of an image, keeping its size: a region becomes Ideogram's
+      own box (`context_window`, at least 256 px a side within 1:6–6:1 —
+      litegen enlarges a smaller one and sends the exact area as the mask),
+      and a mask goes in Ideogram's black-edits convention. Pixels the edit
+      did not meaningfully change come back exactly.
+    docs_url: https://developer.ideogram.ai/v2/api-reference/images/precise-edit/ideogram-4-5
+    # @see https://ideogram.ai/pricing/?pricing_tab=api (rendered 2026-10-30):
+    #   "4.5 Precise Edit Very Low / Low / Medium / High" US $0.008 / $0.03 /
+    #   $0.06 / $0.22 (1K = 2K); "This is the only field that affects the
+    #   price" (quality). Default medium → $0.06.
+    pricing:
+      base_cost_usd: 0.06
+      variable_pricing: { quality: { very_low: 0.008, low: 0.03, medium: 0.06, high: 0.22 } }
+    capabilities: { text_to_image: false, image_to_image: true, inpainting: true }
+    prompt: { required: true, max_length: 10000 }
+    preserves_unmasked: exact
+    params:
+      quality:
+        kind: string
+        enum_values: [very_low, low, medium, high]
+        default: medium
+        label: Quality
+        description: The only setting that changes Ideogram's price.
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      region:
+        kind: region
+        input: box
+        min_window_px: 256
+        max_aspect: 6.0
+        label: Region
+        description: The rectangle to edit, as Ideogram's context_window.
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image, mask: mask } }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: black_edits }
+    extra_allowlist: []
+    tags: [image-to-image, inpainting, region-edit]

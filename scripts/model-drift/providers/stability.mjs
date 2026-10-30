@@ -1,16 +1,17 @@
-// Stability AI — the two OpenAPI specs the platform docs (a JS app) render:
-//  - openapi: https://api.stability.ai/v2alpha/openapi — the docs app's
-//    VITE_REST_API_SPEC_URL. Despite the path it is the "v2beta" spec with the
-//    Stable Image generate routes (sd3 / core / ultra).
-//  - docs-bundle: the "Version 1" spec (SDXL 1.0, /v1/generation/{engine}/…) is
-//    no longer served anywhere (the docs' VITE_LEGACY_REST_API_SPEC_URL,
-//    api.stability.ai/openapi.json, is 404); the docs app embeds it in its JS
-//    bundle and merges it in client-side. The bundle name is content-hashed and
-//    changes on every docs deploy, so the source `discover`s it from the
-//    `/assets/index-*.js` <script src> of the docs page; it fails loudly if the
-//    page stops linking a bundle like that.
-//  - release-notes: index: the deprecation/launch notices the same bundle
-//    embeds (headings and dates).
+// Stability AI — the API reference moved to docs.stability.ai (a Mintlify site)
+// in 2026-10: platform.stability.ai/docs/api-reference is now a stub ("The
+// Stability AI API reference has moved to https://docs.stability.ai/api-reference"),
+// so the old content-hashed docs bundle is gone. Sources (re-read 2026-10-30):
+//  - openapi: https://api.stability.ai/v2alpha/openapi — despite the path it is
+//    the "v2beta" spec with the Stable Image generate routes (sd3 / core /
+//    ultra). docs.stability.ai/openapi.json serves the same schemas.
+//  - openapi-v1: https://docs.stability.ai/openapi-v1.json — the "Version 1"
+//    spec (SDXL 1.0, /v1/generation/{engine}/…), which the old docs app only
+//    embedded in its JS bundle; llms.txt now lists it under "OpenAPI Specs".
+//  - release-notes: index: the markdown twin of the release notes, where
+//    Stability announces deprecations (SD3.0 on 2025-04-17; SD 1.6 and Stable
+//    Video on 2025-07-24). Each `**date**` line and the title under it, so a
+//    new notice shows up as a changed snapshot.
 //
 // Vendor ids: the sd3 route takes a `model` field (sd3.5-*), so its ids are
 // that field's values; core and ultra have no model field — the route selects
@@ -19,10 +20,13 @@
 // and `v2_endpoint`.
 import { openapiModelIds, openapiExcerpt } from '../extract.mjs';
 
-const DOCS_BUNDLE = { url: 'https://platform.stability.ai/docs/api-reference', pattern: /\/assets\/index-[\w-]+\.js/ };
-
 const GENERATE_ROUTE = /^\/v2beta\/stable-image\/generate\/([^/]+)$/;
-const V2_ENDPOINTS = ['/v2beta/stable-image/generate/sd3', '/v2beta/stable-image/generate/core', '/v2beta/stable-image/generate/ultra'];
+const V2_ENDPOINTS = [
+  '/v2beta/stable-image/generate/sd3',
+  '/v2beta/stable-image/generate/core',
+  '/v2beta/stable-image/generate/ultra',
+  '/v2beta/stable-image/edit/inpaint',
+];
 const V1_ENDPOINTS = [
   '/v1/generation/{engine_id}/text-to-image',
   '/v1/generation/{engine_id}/image-to-image',
@@ -48,41 +52,16 @@ function generateModels(spec) {
     const enumValues = openapiModelIds(spec, { paths: [path] });
     ids.push(...(enumValues.length ? [...enumValues, ...describedModels(spec, path)] : [route]));
   }
+  // The one carried edit route (the adapter calls no other).
+  if (spec.paths['/v2beta/stable-image/edit/inpaint']?.post) ids.push('edit/inpaint');
   return ids;
 }
 
-// A JS string literal's content, from just after its opening quote to the
-// first unescaped closing quote, with the JS-level escapes undone (the JSON
-// escapes inside stay, so the result is the JSON text the bundle parses).
-function jsLiteral(body, from, quote) {
-  let i = from;
-  while (i < body.length && body[i] !== quote) i += body[i] === '\\' ? 2 : 1;
-  if (i >= body.length) throw new Error('unterminated string literal in the docs bundle');
-  return body.slice(from, i).replace(/\\([\\`$'"])/g, '$1');
-}
-
-// The embedded Version 1 spec: `paths=JSON.parse(`{"/v1/generation/…`)` and
-// `components=JSON.parse('{"schemas":…')`, as esbuild inlines a JSON import.
-function v1Spec(body) {
-  const paths = body.match(/JSON\.parse\(([`'])(?=\{"\/v1\/generation\/)/);
-  if (!paths) throw new Error('the Version 1 (SDXL) OpenAPI spec is no longer embedded in the docs bundle');
-  const from = paths.index + paths[0].length;
-  const components = body.slice(from).match(/JSON\.parse\(([`'])(?=\{"schemas":)/);
-  if (!components) throw new Error('the Version 1 spec components are no longer embedded in the docs bundle');
-  const cFrom = from + components.index + components[0].length;
-  return {
-    paths: JSON.parse(jsLiteral(body, from, paths[1])),
-    components: JSON.parse(jsLiteral(body, cFrom, components[1])),
-  };
-}
-
 // Engine ids the v1 operations document (descriptions, code samples, and the
-// path parameters they reference). Not the whole bundle — its release notes
-// name long-retired engines — and not orphaned components: the spec still
+// path parameters they reference). Not orphaned components: the spec still
 // carries an unreferenced `upscaleEngineID` example (esrgan-v1-x2plus, retired
 // 2024-10-11 with its endpoint).
-function v1Engines(body) {
-  const spec = v1Spec(body);
+function v1Engines(spec) {
   const param = (p) => (p.$ref?.startsWith('#/components/parameters/') ? spec.components.parameters?.[p.$ref.split('/').pop()] : p);
   const text = Object.values(spec.paths)
     .flatMap((ops) => Object.values(ops))
@@ -91,24 +70,19 @@ function v1Engines(body) {
   return text.match(/\b(?:stable-diffusion|stable-inpainting|esrgan)-[a-z0-9][\w.-]*/g) ?? [];
 }
 
-// The platform release notes, which the docs app also embeds in the bundle
-// (`releaseNotes=`…``), are where Stability announces deprecations (SD3.0 on
-// 2025-04-17; SD 1.6 and Stable Video on 2025-07-24). Each `# heading` and its
-// date line (`_…_` or `<i>…</i>`) only, so a new notice shows up as a changed
-// snapshot.
-function releaseNotes(body) {
-  const m = body.match(/\breleaseNotes\s*=\s*`/);
-  if (!m) throw new Error('the release notes are no longer embedded in the docs bundle (`releaseNotes=`…``)');
-  const lines = jsLiteral(body, m.index + m[0].length, '`').split('\n');
+// release-notes.md: each entry opens with a bold date on its own line
+// (`**April 17, 2025**`) and a one-line title after it.
+const DATE_LINE = /^\*\*([A-Z][a-z]{2,8}\.? \d{1,2}(?:st|nd|rd|th)?,? \d{4})\*\*\s*$/;
+function releaseNotes(md) {
+  const lines = md.split('\n');
   const notes = [];
   lines.forEach((line, i) => {
-    const heading = line.match(/^#\s+(.+?)(?:\s*\{#[\w-]+\})?\s*$/)?.[1];
-    if (!heading) return;
-    const dated = lines.slice(i + 1).find((l) => l.trim())?.match(/^(?:_(.+)_|<i>(.+)<\/i>)\s*$/);
-    const date = dated?.[1] ?? dated?.[2];
-    notes.push(`${date ?? '(undated)'} · ${heading}`);
+    const date = line.match(DATE_LINE)?.[1];
+    if (!date) return;
+    const title = lines.slice(i + 1).find((l) => l.trim())?.trim().replace(/^#+\s*/, '');
+    notes.push(`${date} · ${title ?? '(untitled)'}`);
   });
-  if (notes.length === 0) throw new Error('the embedded release notes have no `# heading` entries — restructured');
+  if (notes.length === 0) throw new Error('release-notes.md has no `**date**` entries — restructured');
   return notes;
 }
 
@@ -121,6 +95,7 @@ export default {
     'stability/core': 'core',
     'stability/ultra': 'ultra',
     'stability/sdxl': 'stable-diffusion-xl-1024-v1-0',
+    'stability/inpaint': 'edit/inpaint',
   },
   sources: [
     {
@@ -133,26 +108,22 @@ export default {
         openapiExcerpt(spec, { paths: V2_ENDPOINTS, ours }),
     },
     {
-      key: 'docs-bundle',
-      discover: DOCS_BUNDLE,
-      expect: 'text',
-      extract: (_text, body) => v1Engines(body),
-      snapshot: (_text, body, { ours }) => {
-        const spec = v1Spec(body);
-        return (
-          `# v1 engine_id values the docs name\n${[...new Set(v1Engines(body))].sort().join('\n')}\n\n` +
-          `# v1 endpoints\n${Object.keys(spec.paths).sort().join('\n')}\n\n` +
-          openapiExcerpt(spec, { paths: V1_ENDPOINTS, ours })
-        );
-      },
+      key: 'openapi-v1',
+      url: 'https://docs.stability.ai/openapi-v1.json',
+      expect: 'json',
+      extract: (spec) => v1Engines(spec),
+      snapshot: (spec, _body, { ours }) =>
+        `# v1 engine_id values the docs name\n${[...new Set(v1Engines(spec))].sort().join('\n')}\n\n` +
+        `# v1 endpoints\n${Object.keys(spec.paths).sort().join('\n')}\n\n` +
+        openapiExcerpt(spec, { paths: V1_ENDPOINTS, ours }),
     },
     {
       key: 'release-notes',
       index: true,
-      discover: DOCS_BUNDLE,
+      url: 'https://docs.stability.ai/release-notes.md',
       expect: 'text',
-      extract: (_text, body) => releaseNotes(body),
-      snapshot: (_text, body) => releaseNotes(body).join('\n') + '\n',
+      extract: (md) => releaseNotes(md),
+      snapshot: (md) => releaseNotes(md).join('\n') + '\n',
     },
   ],
   acknowledged: [

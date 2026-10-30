@@ -40,6 +40,7 @@ pub fn validate_image(
     let strict = req.base.strict;
 
     check_prompt(schema, &mut req.base.prompt, strict, &mut dropped)?;
+    check_image_edit(schema, &mut req, strict, &mut dropped)?;
 
     macro_rules! check_param {
         ($field:expr, $key:literal, $variant:pat => $body:block) => {
@@ -801,6 +802,60 @@ fn check_prompt(
     }
     Ok(())
 }
+
+/// A partial edit's shape (3D doc §4): `region` where the model takes one,
+/// `mask_grow_px` where it takes a mask or a region, and an init image for
+/// either to apply to. Whether the region fits the init image needs the image
+/// itself, and is checked before the billed call (`proxy::image_edit`).
+fn check_image_edit(
+    schema: &ModelSchema,
+    req: &mut ImageGenerationRequest,
+    strict: bool,
+    dropped: &mut Vec<String>,
+) -> Result<(), ValidationError> {
+    if req.region.is_some() {
+        match schema.params.get("region") {
+            Some(ParamSpec::Region(_)) => {}
+            _ => {
+                if strict {
+                    return Err(ValidationError::new("param_unsupported", format!("region not supported by '{}'", schema.id), Some("region")));
+                }
+                dropped.push("region".into());
+                req.region = None;
+            }
+        }
+    }
+    let takes_mask = schema.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("mask"));
+    if let Some(grow) = req.mask_grow_px {
+        if !(takes_mask || schema.params.contains_key("region")) {
+            if strict {
+                return Err(ValidationError::new("param_unsupported", format!("mask_grow_px not supported by '{}'", schema.id), Some("mask_grow_px")));
+            }
+            dropped.push("mask_grow_px".into());
+            req.mask_grow_px = None;
+        } else if grow > MAX_MASK_GROW_PX {
+            return Err(ValidationError::new(
+                "param_out_of_range",
+                format!("mask_grow_px {grow} is above {MAX_MASK_GROW_PX}"),
+                Some("mask_grow_px"),
+            ));
+        }
+    }
+    let role = |r: &ReferenceImage, name: &str| r.role.as_deref() == Some(name);
+    let has_mask = req.base.reference_images.iter().any(|r| role(r, "mask"));
+    let has_init = req.base.reference_images.iter().any(|r| role(r, "init") || r.role.is_none());
+    if (req.region.is_some() || has_mask) && !has_init {
+        return Err(ValidationError::new(
+            "init_required",
+            "a mask or region edits an init image; send one with role init",
+            Some("reference_images"),
+        ));
+    }
+    Ok(())
+}
+
+/// The most a mask may grow: Stability's own `grow_mask` ceiling.
+pub const MAX_MASK_GROW_PX: u32 = 100;
 
 /// A clip list against the model's `animation_list` spec (3D doc §3C): every
 /// name unique and 1–64 of `[A-Za-z0-9_.-]`; each clip exactly one of a

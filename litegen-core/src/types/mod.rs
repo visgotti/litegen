@@ -42,6 +42,16 @@ pub struct BaseGenerationRequest {
 pub struct ImageGenerationRequest {
     #[serde(flatten)]
     pub base: BaseGenerationRequest,
+    /// Edit only this rectangle of the `init` image (3D doc §4). A box-native
+    /// model receives it as its own box; a mask-only one receives it drawn as
+    /// the mask. With a `mask` too, the edit area is where they overlap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<Region>,
+    /// Grow the edit area outward by this many pixels: the vendor's own
+    /// setting where it has one (sent explicitly, even as 0), else litegen
+    /// dilates the mask itself. Default 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask_grow_px: Option<u32>,
     #[serde(default)] pub size: Option<String>,
     #[serde(default)] pub aspect_ratio: Option<String>,
     #[serde(default)] pub quality: Option<String>,
@@ -418,6 +428,17 @@ impl Model3dAnimationPreset {
             Model3dAnimationPreset::Turn => "turn",
         }
     }
+}
+
+/// A rectangle of an image, in its pixels: top-left origin, ends exclusive
+/// (it covers `x..x+w` by `y..y+h`). Named keys, never arrays: vendors
+/// disagree on axis order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Region {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
 }
 
 /// One clip an `animate` request asks for (3D doc §3C).
@@ -964,6 +985,21 @@ pub struct ModelCapabilities {
     /// Upper bound of the model's `target_polycount` param, when it takes one.
     #[serde(default)]
     pub max_polycount: Option<u32>,
+    /// Takes `region` (3D doc §4).
+    #[serde(default)]
+    pub supports_region_edit: bool,
+    /// How the model receives a `region`: `box` (its own box) or `mask`
+    /// (drawn as its mask).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_input: Option<crate::capabilities::RegionInput>,
+    /// What the vendor promises about pixels outside the edit, in its own
+    /// words: `exact`, `similar` or `unspecified`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserves_unmasked: Option<crate::capabilities::PreservesUnmasked>,
+    /// The mask convention a caller sends: `white_edits` on every model that
+    /// takes a mask, whatever its vendor reads — litegen converts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask_convention: Option<crate::capabilities::MaskConvention>,
 }
 
 fn default_max_images() -> u32 {

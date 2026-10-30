@@ -66,6 +66,7 @@ from .limits_input import LimitsInput
 from .limits_list_response import LimitsListResponse
 from .liveness_response import LivenessResponse
 from .login_request import LoginRequest
+from .mask_convention import MaskConvention
 from .media_type import MediaType
 from .member_view import MemberView
 from .model_3d_animation_preset import Model3DAnimationPreset
@@ -119,6 +120,7 @@ from .param_spec_aspect_ratio import ParamSpecAspectRatio
 from .param_spec_bool import ParamSpecBool
 from .param_spec_float import ParamSpecFloat
 from .param_spec_int import ParamSpecInt
+from .param_spec_region import ParamSpecRegion
 from .param_spec_seed import ParamSpecSeed
 from .param_spec_source_model import ParamSpecSourceModel
 from .param_spec_string import ParamSpecString
@@ -129,6 +131,7 @@ from .password_reset_request_body import PasswordResetRequestBody
 from .patch_account_request import PatchAccountRequest
 from .patch_model_state_request import PatchModelStateRequest
 from .patch_user_request import PatchUserRequest
+from .preserves_unmasked import PreservesUnmasked
 from .prompt_spec import PromptSpec
 from .provider_catalog_entry import ProviderCatalogEntry
 from .provider_config import ProviderConfig
@@ -156,6 +159,8 @@ from .ref_provider_format_multipart import RefProviderFormatMultipart
 from .ref_provider_format_multipart_field_map import RefProviderFormatMultipartFieldMap
 from .ref_role_spec import RefRoleSpec
 from .reference_image import ReferenceImage
+from .region import Region
+from .region_input import RegionInput
 from .request_artifact import RequestArtifact
 from .request_log import RequestLog
 from .revoke_key_response import RevokeKeyResponse
@@ -266,6 +271,7 @@ __all__ = (
     "LimitsListResponse",
     "LivenessResponse",
     "LoginRequest",
+    "MaskConvention",
     "MediaType",
     "MemberView",
     "Model3DAnimationPreset",
@@ -311,6 +317,7 @@ __all__ = (
     "ParamSpecBool",
     "ParamSpecFloat",
     "ParamSpecInt",
+    "ParamSpecRegion",
     "ParamSpecSeed",
     "ParamSpecSourceModel",
     "ParamSpecString",
@@ -321,6 +328,7 @@ __all__ = (
     "PatchAccountRequest",
     "PatchModelStateRequest",
     "PatchUserRequest",
+    "PreservesUnmasked",
     "PromptSpec",
     "ProviderCatalogEntry",
     "ProviderConfig",
@@ -348,6 +356,8 @@ __all__ = (
     "RefProviderFormatMultipart",
     "RefProviderFormatMultipartFieldMap",
     "RefRoleSpec",
+    "Region",
+    "RegionInput",
     "RequestArtifact",
     "RequestLog",
     "RevokeKeyResponse",

@@ -146,13 +146,19 @@ pub async fn generate_image(
         Ok(r) => r,
         Err(e) => return reference_error_response(&e, &validated.schema.id),
     };
-    let materialized = match state.materializer.materialize(
+    let mut materialized = match state.materializer.materialize(
         &validated.schema,
         refs,
         &validated.ctx,
     ).await {
         Ok(m) => m,
         Err(e) => return validation_rejection_response(&e.to_string(), 400, &validated.schema.id),
+    };
+    // A partial edit is checked against its init image and turned into the
+    // model's own form here, before anything is reserved or billed.
+    let edit = match apply_image_edit(&validated.schema, &validated.request, &mut materialized).await {
+        Ok(e) => e,
+        Err(resp) => return resp,
     };
 
     let extras = ImageExtras {
@@ -165,6 +171,7 @@ pub async fn generate_image(
         guidance_scale: validated.request.guidance_scale,
         strength: validated.request.strength,
         response_format: validated.request.response_format.clone(),
+        edit,
         extra: validated.request.base.extra.clone(),
     };
 
@@ -1734,6 +1741,11 @@ pub(crate) fn served_model_schema(
 }
 
 fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
+    let region = match s.params.get("region") {
+        Some(crate::capabilities::ParamSpec::Region(r)) => Some(r),
+        _ => None,
+    };
+    let takes_mask = s.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("mask"));
     ModelInfo {
         id: s.id.clone(),
         name: s.display_name.clone(),
@@ -1749,7 +1761,8 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             task: s.task,
             supports_text_to_image: s.capabilities.text_to_image,
             supports_image_to_image: s.capabilities.image_to_image,
-            supports_inpainting: s.capabilities.inpainting,
+            // "Takes a mask" (3D doc §4), read the way the validator reads it.
+            supports_inpainting: takes_mask,
             supports_text_to_video: s.capabilities.text_to_video,
             supports_image_to_video: s.capabilities.image_to_video,
             supports_first_frame: s.ref_inputs.as_ref().is_some_and(|ri| ri.roles.contains_key("first_frame")),
@@ -1768,6 +1781,10 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             supports_source_model: matches!(s.params.get("source_model"), Some(crate::capabilities::ParamSpec::SourceModel(_))),
             output_formats: extract_output_formats(s),
             max_polycount: extract_max_polycount(s),
+            supports_region_edit: region.is_some(),
+            region_input: region.map(|r| r.input),
+            preserves_unmasked: s.preserves_unmasked,
+            mask_convention: takes_mask.then_some(crate::capabilities::MaskConvention::WhiteEdits),
         },
         pricing: Some(ModelPricing {
             base_cost_usd: s.pricing.base_cost_usd,
@@ -4092,6 +4109,105 @@ async fn resolve_source_model(
         delivered: Default::default(),
     };
     Ok((input, record))
+}
+
+/// The largest init or mask litegen downloads to check a partial edit.
+const MAX_EDIT_IMAGE_BYTES: usize = 50 * 1024 * 1024;
+
+/// One reference's bytes, whatever form the materializer gave it.
+async fn materialized_bytes(form: &crate::proxy::materializer::MaterializedRefForm) -> Result<Vec<u8>, String> {
+    use crate::proxy::materializer::MaterializedRefForm;
+    use base64::Engine;
+    let b64 = |s: &str| base64::engine::general_purpose::STANDARD.decode(s.trim()).map_err(|e| format!("not base64: {e}"));
+    match form {
+        MaterializedRefForm::Base64(s) => b64(s.rsplit_once(',').map_or(s.as_str(), |(_, d)| d)),
+        MaterializedRefForm::MultipartField { bytes, .. } => Ok(bytes.to_vec()),
+        MaterializedRefForm::Url(u) if u.starts_with("data:") => b64(u.split_once(',').map_or("", |(_, d)| d)),
+        MaterializedRefForm::Url(u) => {
+            crate::util::ssrf::check_public_url(u).await.map_err(|e| format!("the image URL was refused: {e:?}"))?;
+            let resp = reqwest::get(u).await.map_err(|e| format!("the image could not be fetched: {}", e.without_url()))?;
+            if !resp.status().is_success() {
+                return Err(format!("the image URL answered HTTP {}", resp.status()));
+            }
+            let bytes = resp.bytes().await.map_err(|e| format!("the image could not be fetched: {}", e.without_url()))?;
+            if bytes.len() > MAX_EDIT_IMAGE_BYTES {
+                return Err(format!("the image is over {MAX_EDIT_IMAGE_BYTES} bytes"));
+            }
+            Ok(bytes.to_vec())
+        }
+    }
+}
+
+/// A partial edit (3D doc §4): the init image and mask read from the
+/// materialized references, checked (`proxy::image_edit::prepare`), and the
+/// mask replaced — or, for a region drawn as one, added — in the model's own
+/// convention and form. The box and the vendor's growth travel in the
+/// returned `ImageEdit`. An error is the caller's answer, before billing.
+async fn apply_image_edit(
+    schema: &crate::capabilities::ModelSchema,
+    req: &ImageGenerationRequest,
+    materialized: &mut crate::proxy::materializer::MaterializedRequest,
+) -> Result<Option<crate::providers::ImageEdit>, axum::response::Response> {
+    use crate::capabilities::{MaskConvention, ParamSpec, RefProviderFormat, RegionInput};
+    use crate::proxy::image_edit::{prepare, EditError, EditRequest, EditTarget, RegionTarget};
+    use crate::proxy::materializer::{MaterializedRef, MaterializedRefForm};
+    let has_mask = materialized.refs.iter().any(|r| r.role == "mask");
+    if req.region.is_none() && !has_mask {
+        return Ok(None);
+    }
+    let refuse = |e: EditError| {
+        let status = StatusCode::from_u16(e.status()).unwrap_or(StatusCode::BAD_REQUEST);
+        (status, Json(crate::api::middleware::validator::err_body(e.code(), &e.message(), Some(e.param()), &schema.id))).into_response()
+    };
+    let refs = schema.ref_inputs.as_ref();
+    let mask_role = refs.and_then(|r| r.roles.get("mask"));
+    let target = EditTarget {
+        convention: mask_role.and_then(|r| r.convention).unwrap_or(MaskConvention::WhiteEdits),
+        native_grow: mask_role.is_some_and(|r| r.native_grow),
+        region: match schema.params.get("region") {
+            Some(ParamSpec::Region(r)) if r.input == RegionInput::Box => Some(RegionTarget {
+                min_window_px: r.min_window_px.unwrap_or(1),
+                max_aspect: r.max_aspect.unwrap_or(f64::INFINITY),
+                takes_mask: mask_role.is_some(),
+            }),
+            _ => None,
+        },
+    };
+    let default_role = refs.and_then(|r| r.default_role.as_deref()).unwrap_or("init");
+    let Some(init_ref) = materialized.refs.iter().find(|r| r.role == "init" || r.role == default_role) else {
+        return Err(refuse(EditError::ImageUnreadable("a mask or region edits an init image; send one with role init".into())));
+    };
+    let init = materialized_bytes(&init_ref.form).await.map_err(|m| refuse(EditError::ImageUnreadable(format!("the init image could not be read: {m}"))))?;
+    let mask = match materialized.refs.iter().find(|r| r.role == "mask") {
+        Some(m) => Some(materialized_bytes(&m.form).await.map_err(|e| refuse(EditError::ImageUnreadable(format!("the mask could not be read: {e}"))))?),
+        None => None,
+    };
+    let (region, grow_px) = (req.region, req.mask_grow_px.unwrap_or(0));
+    let prepared = tokio::task::spawn_blocking(move || {
+        prepare(&EditRequest { init: &init, mask: mask.as_deref(), region, grow_px }, &target)
+    })
+    .await
+    .map_err(|e| refuse(EditError::ImageUnreadable(format!("the edit could not be prepared: {e}"))))?
+    .map_err(refuse)?;
+    if let Some(png) = prepared.mask_png {
+        use base64::Engine;
+        let form = match refs.map(|r| &r.provider_format) {
+            Some(RefProviderFormat::Multipart(m)) => MaterializedRefForm::MultipartField {
+                field_name: m.field_map.get("mask").cloned().unwrap_or_else(|| "mask".into()),
+                bytes: bytes::Bytes::from(png),
+                content_type: "image/png".into(),
+            },
+            Some(RefProviderFormat::Url) => {
+                MaterializedRefForm::Url(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&png)))
+            }
+            _ => MaterializedRefForm::Base64(base64::engine::general_purpose::STANDARD.encode(&png)),
+        };
+        match materialized.refs.iter_mut().find(|r| r.role == "mask") {
+            Some(r) => r.form = form,
+            None => materialized.refs.push(MaterializedRef { role: "mask".into(), form }),
+        }
+    }
+    Ok(Some(crate::providers::ImageEdit { window: prepared.window, vendor_grow_px: prepared.vendor_grow_px }))
 }
 
 /// The error answer for a generation the router could not run, marked as
