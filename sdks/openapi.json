@@ -9162,6 +9162,13 @@
                                 },
                                 "description": "The clips to make, in order: one glTF animation per entry, named\nexactly its `name`."
                             },
+                            "center": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ],
+                                "description": "Centre the mesh's bounds on x and z (3D doc \u00a73D). litegen applies it\non delivery, to any model's mesh."
+                            },
                             "fps": {
                                 "type": [
                                     "integer",
@@ -9171,13 +9178,20 @@
                                 "description": "Frames per second of the delivered clips.",
                                 "minimum": 0
                             },
+                            "ground": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ],
+                                "description": "Put the mesh's lowest point at y = 0 (3D doc \u00a73D). litegen applies it\non delivery, to any model's mesh."
+                            },
                             "height_m": {
                                 "type": [
                                     "number",
                                     "null"
                                 ],
                                 "format": "double",
-                                "description": "The character's height in metres, for a vendor that scales its rig."
+                                "description": "The delivered mesh's height in metres (3D doc \u00a73D): litegen scales\nany mesh it delivers to it, and a rig model whose vendor takes a\nheight gets it too. At most 10,000 m, or within a model's own\n`height_m` range."
                             },
                             "joint_naming": {
                                 "oneOf": [
@@ -9587,6 +9601,10 @@
                     "supports_pbr": {
                         "type": "boolean",
                         "description": "Takes the `pbr` param."
+                    },
+                    "supports_placement": {
+                        "type": "boolean",
+                        "description": "Takes `ground`, `center` and `height_m`, which litegen applies to every\nmesh it delivers: true on every 3D model."
                     },
                     "supports_region_edit": {
                         "type": "boolean",

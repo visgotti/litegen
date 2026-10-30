@@ -19,6 +19,14 @@ describe("3D operation types", () => {
     expect(request.texture_resolution).toBe(1024);
   });
 
+  it("types opt-in placement on every 3D request", () => {
+    expectTypeOf<Model3dGenerationRequest["ground"]>().toEqualTypeOf<boolean | null | undefined>();
+    expectTypeOf<Model3dGenerationRequest["center"]>().toEqualTypeOf<boolean | null | undefined>();
+    expectTypeOf<ModelCapabilities["supports_placement"]>().toEqualTypeOf<boolean | undefined>();
+    const request: Model3dGenerationRequest = { model: "mock/mesh-3d", prompt: "a crate", ground: true, center: true, height_m: 1.8 };
+    expect(request.height_m).toBe(1.8);
+  });
+
   it("types a segmented mesh's parts", () => {
     expectTypeOf<SceneManifest["parts"]>().toEqualTypeOf<ScenePart[] | null | undefined>();
     const part: ScenePart = { name: "part_1", node: 1, triangle_count: 6 };

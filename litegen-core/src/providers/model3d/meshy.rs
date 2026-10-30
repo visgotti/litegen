@@ -470,6 +470,7 @@ mod tests {
             skeleton: None, joint_naming: None, height_m: None, animations: Vec::new(), fps: None,
             extra: None, source: Some(src), preflight: None,
             texture_resolution: None, keep_uvs: None,
+            ground: None, center: None,
         }
     }
 

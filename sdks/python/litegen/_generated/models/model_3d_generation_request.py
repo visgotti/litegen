@@ -52,8 +52,15 @@ class Model3DGenerationRequest:
             animations (Union[List['AnimationRequest'], None, Unset]): The clips to make, in order: one glTF animation per
                 entry, named
                 exactly its `name`.
+            center (Union[None, Unset, bool]): Centre the mesh's bounds on x and z (3D doc §3D). litegen applies it
+                on delivery, to any model's mesh.
             fps (Union[None, Unset, int]): Frames per second of the delivered clips.
-            height_m (Union[None, Unset, float]): The character's height in metres, for a vendor that scales its rig.
+            ground (Union[None, Unset, bool]): Put the mesh's lowest point at y = 0 (3D doc §3D). litegen applies it
+                on delivery, to any model's mesh.
+            height_m (Union[None, Unset, float]): The delivered mesh's height in metres (3D doc §3D): litegen scales
+                any mesh it delivers to it, and a rig model whose vendor takes a
+                height gets it too. At most 10,000 m, or within a model's own
+                `height_m` range.
             joint_naming (Union[Model3DJointNaming, None, Unset]):
             keep_uvs (Union[None, Unset, bool]): Paint the source's own UV layout rather than a new one.
             output_format (Union[Unset, Model3DGenerationRequestOutputFormat]): Superseded by `output_formats`. A lone value
@@ -93,7 +100,9 @@ class Model3DGenerationRequest:
     seed: Union[None, Unset, int] = UNSET
     strict: Union[Unset, bool] = UNSET
     animations: Union[List["AnimationRequest"], None, Unset] = UNSET
+    center: Union[None, Unset, bool] = UNSET
     fps: Union[None, Unset, int] = UNSET
+    ground: Union[None, Unset, bool] = UNSET
     height_m: Union[None, Unset, float] = UNSET
     joint_naming: Union[Model3DJointNaming, None, Unset] = UNSET
     keep_uvs: Union[None, Unset, bool] = UNSET
@@ -156,11 +165,23 @@ class Model3DGenerationRequest:
         else:
             animations = self.animations
 
+        center: Union[None, Unset, bool]
+        if isinstance(self.center, Unset):
+            center = UNSET
+        else:
+            center = self.center
+
         fps: Union[None, Unset, int]
         if isinstance(self.fps, Unset):
             fps = UNSET
         else:
             fps = self.fps
+
+        ground: Union[None, Unset, bool]
+        if isinstance(self.ground, Unset):
+            ground = UNSET
+        else:
+            ground = self.ground
 
         height_m: Union[None, Unset, float]
         if isinstance(self.height_m, Unset):
@@ -285,8 +306,12 @@ class Model3DGenerationRequest:
             field_dict["strict"] = strict
         if animations is not UNSET:
             field_dict["animations"] = animations
+        if center is not UNSET:
+            field_dict["center"] = center
         if fps is not UNSET:
             field_dict["fps"] = fps
+        if ground is not UNSET:
+            field_dict["ground"] = ground
         if height_m is not UNSET:
             field_dict["height_m"] = height_m
         if joint_naming is not UNSET:
@@ -388,6 +413,15 @@ class Model3DGenerationRequest:
 
         animations = _parse_animations(d.pop("animations", UNSET))
 
+        def _parse_center(data: object) -> Union[None, Unset, bool]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, bool], data)
+
+        center = _parse_center(d.pop("center", UNSET))
+
         def _parse_fps(data: object) -> Union[None, Unset, int]:
             if data is None:
                 return data
@@ -396,6 +430,15 @@ class Model3DGenerationRequest:
             return cast(Union[None, Unset, int], data)
 
         fps = _parse_fps(d.pop("fps", UNSET))
+
+        def _parse_ground(data: object) -> Union[None, Unset, bool]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, bool], data)
+
+        ground = _parse_ground(d.pop("ground", UNSET))
 
         def _parse_height_m(data: object) -> Union[None, Unset, float]:
             if data is None:
@@ -591,7 +634,9 @@ class Model3DGenerationRequest:
             seed=seed,
             strict=strict,
             animations=animations,
+            center=center,
             fps=fps,
+            ground=ground,
             height_m=height_m,
             joint_naming=joint_naming,
             keep_uvs=keep_uvs,

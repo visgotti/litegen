@@ -714,16 +714,15 @@ pub fn validate_model3d(
                     ));
                 }
             }
+            // 3D doc §3D: placement — litegen scales any mesh it delivers.
             Some(_) | None => {
-                if strict {
+                if !v.is_finite() || v <= 0.0 || v > MAX_PLACEMENT_HEIGHT_M {
                     return Err(ValidationError::new(
-                        "param_unsupported",
-                        format!("height_m not supported by '{}'", schema.id),
+                        "param_out_of_range",
+                        format!("height_m {v}: litegen scales a mesh to a height above 0 and at most {MAX_PLACEMENT_HEIGHT_M} m"),
                         Some("height_m"),
                     ));
                 }
-                dropped.push("height_m".into());
-                req.height_m = None;
             }
         }
     }
@@ -1072,6 +1071,10 @@ fn check_views(
     }
     Ok(())
 }
+
+/// The tallest `height_m` litegen scales a mesh to where the model declares
+/// no range of its own.
+pub const MAX_PLACEMENT_HEIGHT_M: f64 = 10_000.0;
 
 /// The most a mask may grow: Stability's own `grow_mask` ceiling.
 pub const MAX_MASK_GROW_PX: u32 = 100;

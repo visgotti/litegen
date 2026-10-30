@@ -72,6 +72,20 @@ pub struct DeliveryPlan {
     /// the manifest.
     #[serde(default)]
     pub parts: bool,
+    /// Opt-in placement (3D doc §3D), applied after orientation.
+    #[serde(default)]
+    pub placement: Option<PlacementPlan>,
+}
+
+/// Where the request asked its mesh to be (3D doc §3D).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PlacementPlan {
+    #[serde(default)]
+    pub ground: bool,
+    #[serde(default)]
+    pub center: bool,
+    #[serde(default)]
+    pub height_m: Option<f64>,
 }
 
 impl DeliveryPlan {
@@ -103,6 +117,14 @@ impl DeliveryPlan {
                 .collect(),
             fps: extras.fps,
             parts: schema.task == crate::capabilities::ModelTask::Segment,
+            placement: {
+                let p = PlacementPlan {
+                    ground: extras.ground == Some(true),
+                    center: extras.center == Some(true),
+                    height_m: extras.height_m,
+                };
+                (p.ground || p.center || p.height_m.is_some()).then_some(p)
+            },
             ..Default::default()
         }
     }
@@ -308,6 +330,12 @@ pub fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
                 Err(e) => return Delivered { fatal: Some(format!("the model's declared orientation is unusable: {e}")), ..Default::default() },
             },
             _ => return Delivered { fatal: Some(format!("the model's declared orientation {}/{} is not a pair of axes", o.up, o.front)), ..Default::default() },
+        }
+    }
+    if let Some(p) = &plan.placement {
+        match normalize::place(&mut scene, p.ground, p.center, p.height_m) {
+            Ok(placed) => changed |= placed,
+            Err(e) => return Delivered { fatal: Some(format!("the mesh could not be placed: {e}")), ..Default::default() },
         }
     }
     if plan.parts {
@@ -538,6 +566,7 @@ mod tests {
             extra: None, source: None, preflight: None,
             animations: Vec::new(), fps: None,
             texture_resolution: None, keep_uvs: None,
+            ground: None, center: None,
         };
         let plan = DeliveryPlan::for_request(&schema, &extras);
         assert_eq!(plan.skeleton.as_deref(), Some("quadruped"));

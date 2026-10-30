@@ -56,6 +56,7 @@ fn req(strict: bool) -> Model3dGenerationRequest {
         source_model: None,
         animations: None, fps: None,
         texture_resolution: None, keep_uvs: None,
+        ground: None, center: None,
     }
 }
 
@@ -540,6 +541,14 @@ fn every_3d_param_is_refused_in_strict_and_dropped_in_lax_where_undeclared() {
     let schema = real("fal/trellis");
     for (param, set, is_set) in every_3d_param() {
         assert!(!schema.params.contains_key(param), "fixture assumption: trellis does not declare {param}");
+        if param == "height_m" {
+            // 3D doc §3D: placement, which litegen applies to any mesh.
+            let mut r = valid_for(&schema, true);
+            set(&mut r);
+            let out = validate_model3d(&schema, r).expect("height_m is placement on every model");
+            assert!(is_set(&out.request) && out.dropped.is_empty());
+            continue;
+        }
 
         let mut r = valid_for(&schema, true);
         set(&mut r);

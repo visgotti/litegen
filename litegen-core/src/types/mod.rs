@@ -789,9 +789,20 @@ pub struct Model3dGenerationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Model3dJointNaming>)]
     pub joint_naming: Option<String>,
-    /// The character's height in metres, for a vendor that scales its rig.
+    /// The delivered mesh's height in metres (3D doc §3D): litegen scales
+    /// any mesh it delivers to it, and a rig model whose vendor takes a
+    /// height gets it too. At most 10,000 m, or within a model's own
+    /// `height_m` range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height_m: Option<f64>,
+    /// Put the mesh's lowest point at y = 0 (3D doc §3D). litegen applies it
+    /// on delivery, to any model's mesh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ground: Option<bool>,
+    /// Centre the mesh's bounds on x and z (3D doc §3D). litegen applies it
+    /// on delivery, to any model's mesh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub center: Option<bool>,
     /// The clips to make, in order: one glTF animation per entry, named
     /// exactly its `name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1328,6 +1339,10 @@ pub struct ModelCapabilities {
     /// Takes `keep_uvs`.
     #[serde(default)]
     pub supports_keep_uvs: bool,
+    /// Takes `ground`, `center` and `height_m`, which litegen applies to every
+    /// mesh it delivers: true on every 3D model.
+    #[serde(default)]
+    pub supports_placement: bool,
     /// Serves `POST /v1/images/segmentations` (PixelGenie L7).
     #[serde(default)]
     pub supports_segmentation: bool,

@@ -480,6 +480,9 @@ pub struct Model3dExtras {
     pub texture_resolution: Option<u32>,
     /// Paint the source's own UV layout.
     pub keep_uvs: Option<bool>,
+    /// Opt-in placement (3D doc §3D), applied by litegen on delivery.
+    pub ground: Option<bool>,
+    pub center: Option<bool>,
     /// The clips to make, in order (3D doc §3C), presets resolved to the
     /// model's own ids.
     pub animations: Vec<AnimationClip>,

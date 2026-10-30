@@ -456,6 +456,18 @@ mod tests {
     }
 
     #[test]
+    fn placement_is_three_request_fields_and_a_listed_capability() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        let req = &s["Model3dGenerationRequest"];
+        for f in ["ground", "center"] {
+            assert!(mentions(property(req, f), "boolean"), "{f}: {}", property(req, f));
+        }
+        assert!(mentions(property(req, "height_m"), "number"));
+        assert!(mentions(property(&s["ModelCapabilities"], "supports_placement"), "boolean"));
+    }
+
+    #[test]
     fn texture_remesh_and_segment_document_their_params_and_the_parts() {
         let d = doc();
         let s = &d["components"]["schemas"];

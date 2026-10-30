@@ -216,6 +216,10 @@ reference image, with `pbr`, `texture_resolution` and `keep_uvs`), `remesh` (`ta
 `topology`) and `segment`. A segmented mesh's manifest lists its `parts`, one glTF node each, named
 with the vendor's label or `part_<n>`.
 
+Any 3D request may also ask litegen to place the delivered mesh (`supports_placement`): `ground: true`
+puts its lowest point at y = 0, `center: true` centres its bounds on x and z, and `height_m` scales it
+to that height — one root-node transform, so skins and clips are unchanged.
+
 > The built-in mocks need no key: `mock/mesh-3d` and `mock/all-params-3d` emit a real glTF 2.0
 > binary cube, while `mock/fail-3d` emits no mesh at all — it terminates `failed`, by design, to
 > exercise the error path. Vendor 3D models are listed under [Supported Providers](#supported-providers).

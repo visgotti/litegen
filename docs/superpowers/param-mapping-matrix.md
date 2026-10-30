@@ -556,6 +556,21 @@ SDKs: TS `3D operation types`, Python `ScenePart` mirrored and
 Tripo `/v3/models/texture`, `/v3/mesh/decimate` and `/v3/mesh/segment`, and
 Tencent's texture edit, smart topology and HY 3D Part. ⬜ vendor.
 
+### Opt-in placement (3D doc §3D)
+
+`ground: true` (lowest point at y = 0), `center: true` (bounds centred on x
+and z) and `height_m` (that tall at rest) are request fields on every 3D
+model, listed as `supports_placement`: litegen applies them on delivery,
+after orientation, as one new root node (`litegen_placement`) over the whole
+scene — a uniform scale about the origin, then the move — so skins, clips and
+the vendor's own file (kept as `original`) are untouched. A rig model that
+declares `height_m` still sends it to its vendor too; elsewhere `height_m`
+must be above 0 and at most 10,000 m (`param_out_of_range`).
+
+| field | rule | proof | status |
+|---|---|---|---|
+| `ground`, `center`, `height_m` | one root transform; bounds measured at rest (a skinned mesh's bind pose); a mesh already placed is left alone | unit `placement_scales_grounds_and_centres_through_one_new_root_and_leaves_skins_and_clips_alone`; HTTP `ground_center_and_height_place_the_mesh_and_keep_the_vendors_file`, `height_m_scales_a_rigged_animated_mesh_without_touching_its_skin_or_clips`, `placement_is_offered_on_every_3d_model_and_a_height_must_be_one`; validator `every_3d_param_is_refused_in_strict_and_dropped_in_lax_where_undeclared` (height_m passes as placement); OpenAPI `placement_is_three_request_fields_and_a_listed_capability` | ✅ |
+
 ### Normalised delivery (3D doc §2 rule 3, §3D)
 
 One step, `proxy::model3d_deliver::deliver`, runs on a finished job's files at

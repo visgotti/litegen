@@ -56,6 +56,8 @@ class ModelCapabilities:
         supports_loop (Union[Unset, bool]): Takes `loop: true`.
         supports_multiview_to_3d (Union[Unset, bool]): Accepts several `view-*` reference images (multiview-to-3D).
         supports_pbr (Union[Unset, bool]): Takes the `pbr` param.
+        supports_placement (Union[Unset, bool]): Takes `ground`, `center` and `height_m`, which litegen applies to every
+            mesh it delivers: true on every 3D model.
         supports_region_edit (Union[Unset, bool]): Takes `region` (3D doc §4).
         supports_rig (Union[Unset, bool]): Takes the `rig` param.
         supports_segmentation (Union[Unset, bool]): Serves `POST /v1/images/segmentations` (PixelGenie L7).
@@ -108,6 +110,7 @@ class ModelCapabilities:
     supports_loop: Union[Unset, bool] = UNSET
     supports_multiview_to_3d: Union[Unset, bool] = UNSET
     supports_pbr: Union[Unset, bool] = UNSET
+    supports_placement: Union[Unset, bool] = UNSET
     supports_region_edit: Union[Unset, bool] = UNSET
     supports_rig: Union[Unset, bool] = UNSET
     supports_segmentation: Union[Unset, bool] = UNSET
@@ -226,6 +229,8 @@ class ModelCapabilities:
 
         supports_pbr = self.supports_pbr
 
+        supports_placement = self.supports_placement
+
         supports_region_edit = self.supports_region_edit
 
         supports_rig = self.supports_rig
@@ -312,6 +317,8 @@ class ModelCapabilities:
             field_dict["supports_multiview_to_3d"] = supports_multiview_to_3d
         if supports_pbr is not UNSET:
             field_dict["supports_pbr"] = supports_pbr
+        if supports_placement is not UNSET:
+            field_dict["supports_placement"] = supports_placement
         if supports_region_edit is not UNSET:
             field_dict["supports_region_edit"] = supports_region_edit
         if supports_rig is not UNSET:
@@ -492,6 +499,8 @@ class ModelCapabilities:
 
         supports_pbr = d.pop("supports_pbr", UNSET)
 
+        supports_placement = d.pop("supports_placement", UNSET)
+
         supports_region_edit = d.pop("supports_region_edit", UNSET)
 
         supports_rig = d.pop("supports_rig", UNSET)
@@ -549,6 +558,7 @@ class ModelCapabilities:
             supports_loop=supports_loop,
             supports_multiview_to_3d=supports_multiview_to_3d,
             supports_pbr=supports_pbr,
+            supports_placement=supports_placement,
             supports_region_edit=supports_region_edit,
             supports_rig=supports_rig,
             supports_segmentation=supports_segmentation,

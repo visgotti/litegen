@@ -1036,6 +1036,7 @@ mod poller_tests {
             animations: Vec::new(), fps: None,
             skeleton: None, joint_naming: None, height_m: None, preflight: None,
             texture_resolution: None, keep_uvs: None,
+            ground: None, center: None,
         };
         p.generate(&schema, &base, &extras, &Default::default()).await.unwrap().provider_job_id
     }
@@ -1172,6 +1173,7 @@ mod poller_tests {
             animations: Vec::new(), fps: None,
             skeleton: None, joint_naming: None, height_m: None, preflight: None,
             texture_resolution: None, keep_uvs: None,
+            ground: None, center: None,
         };
         let resp = router.generate_model3d(&staged_schema(), &base, &extras, &Default::default(), None).await.unwrap();
         db.insert_generation(&resp.id, None, "mock/staged-3d", "mock", "model3d", Some("staged-job"), 0.0, None, None).await.unwrap();
@@ -1293,6 +1295,7 @@ mod poller_tests {
             animations: Vec::new(), fps: None,
             skeleton: None, joint_naming: None, height_m: None, preflight: None,
             texture_resolution: None, keep_uvs: None,
+            ground: None, center: None,
         };
         let plan = crate::proxy::model3d_deliver::DeliveryPlan::for_request(&schema, &extras);
 

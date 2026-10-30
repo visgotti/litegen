@@ -2732,13 +2732,26 @@ export interface components {
              */
             animations?: components["schemas"]["AnimationRequest"][] | null;
             /**
+             * @description Centre the mesh's bounds on x and z (3D doc §3D). litegen applies it
+             *     on delivery, to any model's mesh.
+             */
+            center?: boolean | null;
+            /**
              * Format: int32
              * @description Frames per second of the delivered clips.
              */
             fps?: number | null;
             /**
+             * @description Put the mesh's lowest point at y = 0 (3D doc §3D). litegen applies it
+             *     on delivery, to any model's mesh.
+             */
+            ground?: boolean | null;
+            /**
              * Format: double
-             * @description The character's height in metres, for a vendor that scales its rig.
+             * @description The delivered mesh's height in metres (3D doc §3D): litegen scales
+             *     any mesh it delivers to it, and a rig model whose vendor takes a
+             *     height gets it too. At most 10,000 m, or within a model's own
+             *     `height_m` range.
              */
             height_m?: number | null;
             joint_naming?: null | components["schemas"]["Model3dJointNaming"];
@@ -2918,6 +2931,11 @@ export interface components {
             supports_multiview_to_3d?: boolean;
             /** @description Takes the `pbr` param. */
             supports_pbr?: boolean;
+            /**
+             * @description Takes `ground`, `center` and `height_m`, which litegen applies to every
+             *     mesh it delivers: true on every 3D model.
+             */
+            supports_placement?: boolean;
             /** @description Takes `region` (3D doc §4). */
             supports_region_edit?: boolean;
             /** @description Takes the `rig` param. */

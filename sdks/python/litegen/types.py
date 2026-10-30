@@ -338,7 +338,12 @@ class Model3dGenerateParams(TypedDict, total=False):
     joint_naming: Model3dJointNaming | None
     """The joint names to deliver the rig with (rig models)."""
     height_m: float | None
-    """The character's height in metres, where the rig model takes one."""
+    """The delivered mesh's height in metres: LiteGen scales any mesh to it,
+    and a rig model that takes a height gets it too."""
+    ground: bool | None
+    """Put the mesh's lowest point at y = 0 (applied by LiteGen on delivery)."""
+    center: bool | None
+    """Centre the mesh's bounds on x and z (applied by LiteGen on delivery)."""
     animations: list[AnimationRequest] | None
     """The clips an ``animate`` model makes, in order."""
     fps: int | None

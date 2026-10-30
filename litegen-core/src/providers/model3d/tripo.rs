@@ -718,6 +718,7 @@ mod tests {
             animations: Vec::new(), fps: None,
             preflight: None,
             texture_resolution: None, keep_uvs: None,
+            ground: None, center: None,
         }
     }
 

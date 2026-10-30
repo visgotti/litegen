@@ -124,6 +124,39 @@ pub fn unique_node_names(scene: &mut Scene) -> bool {
     changed
 }
 
+/// Opt-in placement (3D doc §3D) as one new root transform over everything:
+/// a uniform scale about the origin to `height_m` tall at rest, then a move
+/// putting the lowest point at y = 0 (`ground`) and the bounds' middle on
+/// x = z = 0 (`center`). Skins and clips are untouched. Whether anything
+/// moved.
+pub fn place(scene: &mut Scene, ground: bool, center: bool, height_m: Option<f64>) -> Result<bool, MeshError> {
+    let Some((lo, hi)) = super::pose::flatten(scene)?.bounds() else { return Ok(false) };
+    let (lo, hi) = (lo.map(f64::from), hi.map(f64::from));
+    let tall = hi[1] - lo[1];
+    let scale = match height_m {
+        Some(h) if tall > 1e-9 => h / tall,
+        _ => 1.0,
+    };
+    let translation = [
+        if center { -scale * (lo[0] + hi[0]) / 2.0 } else { 0.0 },
+        if ground { -scale * lo[1] } else { 0.0 },
+        if center { -scale * (lo[2] + hi[2]) / 2.0 } else { 0.0 },
+    ];
+    // Bounds are read in f32: a mesh already placed is left alone.
+    let extent = (hi[0] - lo[0]).max(tall).max(hi[2] - lo[2]).max(1.0) * scale;
+    if (scale - 1.0).abs() < 1e-5 && translation.iter().all(|t| t.abs() < 1e-5 * extent) {
+        return Ok(false);
+    }
+    let children = std::mem::take(&mut scene.roots);
+    scene.add_root(Node {
+        name: Some("litegen_placement".into()),
+        transform: Transform::Trs { translation, rotation: [0.0, 0.0, 0.0, 1.0], scale: [scale; 3] },
+        children,
+        ..Default::default()
+    });
+    Ok(true)
+}
+
 /// A segmented mesh's parts (3D doc §3F) are its mesh-bearing nodes, each
 /// named: the vendor's label, else `part_<n>` for the n-th part in node
 /// order. Whether any was named.
@@ -519,5 +552,31 @@ mod tests {
         let names: Vec<Option<&str>> = scene.nodes.iter().map(|n| n.name.as_deref()).collect();
         assert_eq!(names, [Some("visor"), Some("part_1"), Some("part_2"), None], "a node without a mesh is no part");
         assert!(!name_parts(&mut scene), "nothing left to name");
+    }
+
+    #[test]
+    fn placement_scales_grounds_and_centres_through_one_new_root_and_leaves_skins_and_clips_alone() {
+        use super::super::scene::Transform;
+        let world = |scene: &Scene| super::super::pose::flatten(scene).unwrap().bounds().unwrap();
+        let mut scene = super::super::fixtures::cube();
+        for r in scene.roots.clone() {
+            scene.nodes[r].transform = Transform::Trs { translation: [3.0, 5.0, -1.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] };
+        }
+        let nodes = scene.nodes.len();
+        assert!(place(&mut scene, true, true, Some(2.0)).unwrap());
+        assert_eq!((scene.nodes.len(), scene.roots.len()), (nodes + 1, 1), "one new root over everything");
+        let (lo, hi) = world(&scene);
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(close(lo[1], 0.0) && close(hi[1] - lo[1], 2.0), "{lo:?} {hi:?}");
+        assert!(close(lo[0] + hi[0], 0.0) && close(lo[2] + hi[2], 0.0), "{lo:?} {hi:?}");
+        assert!(!place(&mut scene, true, true, Some(2.0)).unwrap(), "already placed: nothing moves");
+
+        let mut rigged = super::super::fixtures::skinned();
+        let (skins, clips) = (rigged.skins.clone(), rigged.animations.clone());
+        let (lo, hi) = world(&rigged);
+        assert!(place(&mut rigged, false, false, Some(f64::from(hi[1] - lo[1]) * 3.0)).unwrap());
+        let (nlo, nhi) = world(&rigged);
+        assert!(close(nhi[1] - nlo[1], (hi[1] - lo[1]) * 3.0) && close(nlo[1], lo[1] * 3.0), "scaled about the origin");
+        assert_eq!((rigged.skins, rigged.animations), (skins, clips), "skins and clips untouched");
     }
 }
