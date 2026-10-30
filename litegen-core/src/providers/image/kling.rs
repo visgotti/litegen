@@ -232,6 +232,8 @@ impl ImageProvider for KlingImageProvider {
             provider_error: Some(submit.clone()),
             retryable: false,
         })?;
+        // Accepted: from here on a failure must not re-send the job (L1).
+        extras.vendor_job.record(task_id);
 
         let result = self.poll_task(task_id).await?;
         let image_url = result["data"]["task_result"]["images"][0]["url"].as_str().ok_or_else(|| ProviderError::RequestFailed {
@@ -332,6 +334,7 @@ mod tests {
 
     fn make_extras() -> ImageExtras {
         ImageExtras {
+            vendor_job: Default::default(),
             size: None, aspect_ratio: Some("16:9".to_string()), quality: None, style: None,
             steps: None, guidance_scale: None, strength: None, response_format: "url".to_string(), extra: None,
         }
@@ -370,6 +373,8 @@ mod tests {
         let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
+        // The vendor accepted the job before the poll: the router must never re-send it.
+        assert_eq!(extras.vendor_job.get().as_deref(), Some("kl-1"));
         assert!(result.is_ok(), "generate failed: {:?}", result.err());
         assert_eq!(result.unwrap().data, b"KLINGPNG");
 

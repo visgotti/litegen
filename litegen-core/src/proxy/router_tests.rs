@@ -53,6 +53,7 @@ mod tests {
 
     fn make_image_extras() -> ImageExtras {
         ImageExtras {
+            vendor_job: Default::default(),
             size: None,
             aspect_ratio: None,
             quality: None,
@@ -210,7 +211,14 @@ mod tests {
         ) -> Result<GenerationOutput, ProviderError> {
             let attempt = self.counter.fetch_add(1, Ordering::SeqCst);
             if attempt < self.fail_count as usize {
-                Err(ProviderError::Timeout { timeout_ms: 100 })
+                // A refused submit (the vendor took nothing), the one kind of
+                // retryable failure litegen re-sends. A timeout never is.
+                Err(ProviderError::RequestFailed {
+                    message: "503 from the vendor at submit".into(),
+                    status_code: Some(503),
+                    provider_error: None,
+                    retryable: true,
+                })
             } else {
                 Ok(GenerationOutput {
                     data: vec![0u8; 4],
@@ -748,5 +756,148 @@ mod tests {
         assert!(r.is_ok(), "Third call should succeed immediately via fallback (breaker open): {:?}", r.err());
         let resp = r.unwrap();
         assert_eq!(resp.provider, "mock", "Should route to mock (always-failing breaker is open)");
+    }
+
+    // ─── L1: a vendor call is never re-sent once it may have been billed ─────
+
+    /// Records the vendor's job id (as a submit-then-poll adapter does the
+    /// moment the vendor accepts) and then fails retryably: a poll that broke
+    /// after the vendor took the job.
+    struct AcceptsThenFails {
+        counter: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ImageProvider for AcceptsThenFails {
+        fn name(&self) -> &str { "mock" }
+        fn configure(&mut self, _config: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+        async fn generate(
+            &self,
+            _model: &ModelSchema,
+            _base: &BaseGenerationRequest,
+            extras: &ImageExtras,
+            _materialized: &MaterializedRequest,
+        ) -> Result<GenerationOutput, ProviderError> {
+            self.counter.fetch_add(1, Ordering::SeqCst);
+            extras.vendor_job.record("vendor-job-7");
+            Err(ProviderError::RequestFailed {
+                message: "poll failed".into(),
+                status_code: Some(502),
+                provider_error: None,
+                retryable: true,
+            })
+        }
+        async fn estimate_cost(&self, model: &ModelSchema, _r: &ImageGenerationRequest) -> Result<CostEstimate, ProviderError> {
+            Ok(build_cost_estimate(model.pricing.base_cost_usd, 0.0, CostSource::Estimated, None))
+        }
+        async fn health_check(&self) -> HealthCheckResult {
+            HealthCheckResult { healthy: true, message: "ok".into(), latency_ms: None }
+        }
+    }
+
+    /// Never answers within any test's vendor timeout.
+    struct NeverAnswers {
+        name: &'static str,
+        counter: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ImageProvider for NeverAnswers {
+        fn name(&self) -> &str { self.name }
+        fn configure(&mut self, _config: ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+        async fn generate(
+            &self,
+            _model: &ModelSchema,
+            _base: &BaseGenerationRequest,
+            extras: &ImageExtras,
+            _materialized: &MaterializedRequest,
+        ) -> Result<GenerationOutput, ProviderError> {
+            self.counter.fetch_add(1, Ordering::SeqCst);
+            extras.vendor_job.record("vendor-job-slow");
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            unreachable!("the router gives up first")
+        }
+        async fn estimate_cost(&self, model: &ModelSchema, _r: &ImageGenerationRequest) -> Result<CostEstimate, ProviderError> {
+            Ok(build_cost_estimate(model.pricing.base_cost_usd, 0.0, CostSource::Estimated, None))
+        }
+        async fn health_check(&self) -> HealthCheckResult {
+            HealthCheckResult { healthy: true, message: "ok".into(), latency_ms: None }
+        }
+    }
+
+    fn one_second_timeout() -> Arc<AppConfig> {
+        let mut c = AppConfig::default();
+        c.server.vendor_timeout_secs = Some(1);
+        Arc::new(c)
+    }
+
+    #[tokio::test]
+    async fn a_job_the_vendor_accepted_is_never_sent_again() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_mock_image(Arc::new(AcceptsThenFails { counter: counter.clone() })).await;
+        let router = ProxyRouter::new(
+            registry,
+            Arc::new(GenerationCache::new(&CacheGlobalConfig::default())),
+            Arc::new(AppConfig::default()),
+            Arc::new(LocalStore),
+        );
+        let err = router
+            .generate_image(&shipped_schema("mock/image-gen"), &make_base("x", "mock/image-gen"), &make_image_extras(), &empty_materialized(), None, None, None)
+            .await
+            .expect_err("the poll failed");
+        assert_eq!(counter.load(Ordering::SeqCst), 1, "retryable, but the vendor already took the job");
+        assert!(err.to_string().contains("vendor-job-7"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_attempt_is_never_sent_again() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_mock_image(Arc::new(NeverAnswers { name: "mock", counter: counter.clone() })).await;
+        let router = ProxyRouter::new(
+            registry,
+            Arc::new(GenerationCache::new(&CacheGlobalConfig::default())),
+            one_second_timeout(),
+            Arc::new(LocalStore),
+        );
+        let err = router
+            .generate_image(&shipped_schema("mock/image-gen"), &make_base("x", "mock/image-gen"), &make_image_extras(), &empty_materialized(), None, None, None)
+            .await
+            .expect_err("timed out");
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert_eq!(err.status_code(), 504, "{err}");
+        assert!(matches!(&err, crate::proxy::router::ProxyError::VendorTimeout { vendor_job_id: Some(j), .. } if j == "vendor-job-slow"), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn a_deployment_that_timed_out_does_not_fall_through_to_the_next() {
+        let slow = Arc::new(AtomicUsize::new(0));
+        let (fast, fast_count) = CountingProvider::new("fast");
+        let config = Arc::new(AppConfig {
+            model_routes: vec![ModelRouteConfig {
+                model: "mock/image-gen".to_string(),
+                deployments: vec![
+                    DeploymentConfig { provider: "slow".into(), weight: 1, max_retries: 2, timeout_seconds: 1, rpm_limit: 0 },
+                    DeploymentConfig { provider: "fast".into(), weight: 1, max_retries: 0, timeout_seconds: 30, rpm_limit: 0 },
+                ],
+                strategy: Some("fallback".to_string()),
+                cache: None,
+            }],
+            ..AppConfig::default()
+        });
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_image_provider_named("slow", Arc::new(NeverAnswers { name: "slow", counter: slow.clone() })).await;
+        registry.register_image_provider_named("fast", Arc::new(fast)).await;
+        let router = ProxyRouter::new(registry, Arc::new(GenerationCache::new(&CacheGlobalConfig::default())), config, Arc::new(LocalStore));
+        let err = router
+            .generate_image(&shipped_schema("mock/image-gen"), &make_base("x", "mock/image-gen"), &make_image_extras(), &empty_materialized(), None, None, None)
+            .await
+            .expect_err("the first deployment may still bill its job");
+        assert_eq!(err.status_code(), 504, "{err}");
+        assert_eq!(slow.load(Ordering::SeqCst), 1, "not retried on its own deployment");
+        assert_eq!(fast_count.load(Ordering::SeqCst), 0, "nor sent to the next");
     }
 }

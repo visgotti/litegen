@@ -274,6 +274,7 @@ fn reject(status: StatusCode, code: &str, message: String, param: Option<&str>) 
                 provider_error: None,
                 param: param.map(str::to_string),
                 model: None,
+                vendor_job_id: None,
             },
         }),
     )

@@ -170,6 +170,16 @@ def _clean(req: Mapping[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in req.items() if v is not None}
 
 
+def _idempotency(key: str | None) -> dict[str, str] | None:
+    """The ``Idempotency-Key`` header for a paid request, when a key is given.
+
+    The same key with the same request within 24 hours gets the first
+    response back (``Idempotent-Replayed: true``) and is billed nothing; the
+    same key with a different request is a 409 ``idempotency_key_reused``.
+    """
+    return {"Idempotency-Key": key} if key else None
+
+
 # Mesh conversion names what the file lost (uvs, materials, …) in this header,
 # comma-joined, on its 200 — and omits it when nothing was lost.
 _CONVERSION_LOSSES_HEADER = "x-litegen-conversion-losses"
@@ -212,8 +222,12 @@ class _ImagesNamespace:
     def __init__(self, client: LiteGenClient) -> None:
         self._c = client
 
-    def generate(self, **req: Any) -> Any:
-        return self._c._request("POST", "/v1/images/generations", json=_clean(req))
+    def generate(self, *, idempotency_key: str | None = None, **req: Any) -> Any:
+        """Generate images (``POST /v1/images/generations``). ``idempotency_key``
+        is sent as the ``Idempotency-Key`` header, never in the body."""
+        return self._c._request_with_headers(
+            "POST", "/v1/images/generations", json=_clean(req), headers=_idempotency(idempotency_key)
+        )[0]
 
     def estimate_cost(self, **req: Any) -> Any:
         return self._c._request("POST", "/v1/images/cost", json=_clean(req))
@@ -319,9 +333,10 @@ class _VideosNamespace:
         """
         interval = req.pop("interval", 2.0)
         timeout = req.pop("timeout", 300.0)
+        headers = _idempotency(req.pop("idempotency_key", None))
         body = _clean(req)
         return VideoJob(
-            lambda: self._c._request_with_headers("POST", "/v1/videos/generations", json=body),
+            lambda: self._c._request_with_headers("POST", "/v1/videos/generations", json=body, headers=headers),
             self.get_status,
             interval=interval,
             timeout=timeout,
@@ -468,6 +483,7 @@ class _Models3dNamespace:
         *,
         interval: float = 2.0,
         timeout: float = MODEL3D_DEFAULT_TIMEOUT,
+        idempotency_key: str | None = None,
         **req: Unpack[Model3dGenerateParams],
     ) -> Model3dJob:
         """Submit a 3D job (``POST /v1/models3d/generations``), returning a :class:`Model3dJob`.
@@ -476,11 +492,13 @@ class _Models3dNamespace:
         to stream progress. ``interval`` / ``timeout`` (seconds) tune the
         polling and are never sent. The timeout defaults to 30 minutes rather
         than video's 5 because vendor 3D jobs routinely take longer; hitting it
-        stops the polling, not the job.
+        stops the polling, not the job. ``idempotency_key`` is sent as the
+        submit's ``Idempotency-Key`` header.
         """
         body = _clean(req)
+        headers = _idempotency(idempotency_key)
         return Model3dJob(
-            lambda: self._c._request_with_headers("POST", "/v1/models3d/generations", json=body),
+            lambda: self._c._request_with_headers("POST", "/v1/models3d/generations", json=body, headers=headers),
             self.get_status,
             interval=interval,
             timeout=timeout,

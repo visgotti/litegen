@@ -443,6 +443,7 @@ mod tests {
 
     fn make_extras() -> ImageExtras {
         ImageExtras {
+            vendor_job: Default::default(),
             size: None,
             aspect_ratio: Some("16:9".to_string()),
             quality: None,

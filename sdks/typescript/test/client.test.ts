@@ -296,3 +296,43 @@ describe("LiteGenClient.keys", () => {
     expect(keys[0]?.name).toBe("k1");
   });
 });
+
+describe("Idempotency-Key", () => {
+  // One key per paid request: a retry after a crash with the same key gets
+  // the first response back and is billed nothing.
+  function capture(responseBody: unknown) {
+    const seen: CapturedRequest[] = [];
+    const fetchImpl = mockFetch(async (req) => {
+      seen.push(req);
+      return new Response(JSON.stringify(responseBody), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    return { seen, client: new LiteGenClient({ apiKey: "lg", fetch: fetchImpl }) };
+  }
+
+  it("is sent on images.generate", async () => {
+    const { seen, client } = capture({ created: 1, data: [], model: "m", provider: "p", id: "litegen-img-1" });
+    await client.images.generate({ model: "mock/image-gen", prompt: "x" }, { idempotencyKey: "ledger-1" });
+    expect(seen[0]!.headers["idempotency-key"]).toBe("ledger-1");
+  });
+
+  it("is sent on models3d.generate and videos.generate submits only", async () => {
+    const job = { id: "litegen-3d-1", status: "completed", model: "m", provider: "p", progress: 100, created: 1, assets: [{ kind: "mesh", url: "https://x/model.glb", format: "glb" }] };
+    const { seen, client } = capture(job);
+    await client.models3d.generate({ model: "mock/mesh-3d", prompt: "x" }, { idempotencyKey: "ledger-3d", intervalMs: 1 });
+    expect(seen[0]!.headers["idempotency-key"]).toBe("ledger-3d");
+    for (const r of seen.slice(1)) expect(r.headers["idempotency-key"]).toBeUndefined();
+
+    const vid = capture({ id: "litegen-vid-1", status: "completed", model: "m", provider: "p", progress: 100, created: 1, video_url: "https://x.mp4" });
+    await vid.client.videos.generate({ model: "mock/video-gen", prompt: "x" }, { idempotencyKey: "ledger-vid", intervalMs: 1 });
+    expect(vid.seen[0]!.headers["idempotency-key"]).toBe("ledger-vid");
+  });
+
+  it("is not sent when not given", async () => {
+    const { seen, client } = capture({ created: 1, data: [], model: "m", provider: "p", id: "litegen-img-1" });
+    await client.images.generate({ model: "mock/image-gen", prompt: "x" });
+    expect(seen[0]!.headers["idempotency-key"]).toBeUndefined();
+  });
+});

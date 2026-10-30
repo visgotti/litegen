@@ -57,6 +57,11 @@ pub async fn app_with_mock_3d() -> (Router, Arc<SqliteDatabase>) {
 /// Like [`app_with_mock_3d`], with stored assets kept in `asset_dir` — two apps
 /// over one directory are a process before and after a restart.
 pub async fn app_with_mock_3d_assets_in(asset_dir: &std::path::Path) -> (Router, Arc<SqliteDatabase>) {
+    app_with(asset_dir, |_| {}).await
+}
+
+/// The full app, with `tweak` applied to its config before anything is built.
+pub async fn app_with(asset_dir: &std::path::Path, tweak: impl FnOnce(&mut AppConfig)) -> (Router, Arc<SqliteDatabase>) {
     let db = Arc::new(
         SqliteDatabase::connect("sqlite::memory:")
             .await
@@ -64,6 +69,7 @@ pub async fn app_with_mock_3d_assets_in(asset_dir: &std::path::Path) -> (Router,
     );
 
     let mut app_config = AppConfig::default();
+    tweak(&mut app_config);
     app_config.providers.insert(
         "mock".to_string(),
         serde_json::from_value(serde_json::json!({ "enabled": true }))

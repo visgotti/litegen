@@ -78,6 +78,28 @@ the wire shape both SDKs type.
 |---|---|---|---|---|
 | `task` | `ModelSchema.task`, `ModelCapabilities.task` (`ModelTask`) | One per model, from its modality's list (3D: `generate` \| `rig` \| `animate` \| `texture` \| `remesh` \| `segment`; image: `generate` \| `multiview` \| `background_swap`; video: `generate` \| `extend` \| `retake` \| `video_edit`). Omitted in yaml means `generate`. The `*_to_3d` flags are refused on anything but a 3D `generate` model. | loader: `task_defaults_to_generate`, `loads_a_3d_operation_task`, `rejects_a_task_from_another_modality`, `rejects_to_3d_flags_on_a_non_generate_task`, `rejects_an_unknown_task`. conformance: `every_model_declares_a_task_its_modality_has`. wire: `model_task_is_a_named_enum_on_the_schema_and_the_capabilities`, `the_listing_carries_each_models_task`. SDKs: `test_literal_values_match_the_schema_enum[ModelTask]` (Python), `names every catalog task` (TS type test). | ✅ |
 
+## Request headers
+
+Headers every billed POST (`/v1/images/generations`, `/v1/videos/generations`,
+`/v1/models3d/generations`) honours, whatever the model. They reach no vendor.
+
+| header | rule | proof | status |
+|---|---|---|---|
+| `Idempotency-Key` | 1–255 visible ASCII characters, scoped to the caller's org, app and key. Same key + same request (method, path, canonical body) within 24 h: the stored response, byte for byte, with `Idempotent-Replayed: true`, and nothing runs or bills. Same key + another request: 409 `idempotency_key_reused`. Same request still running: 409 `idempotency_request_in_progress` with `Retry-After`. A request refused before any vendor call (validation, auth, quota, unconfigured provider) does not spend the key. A record left `in_progress` for 15 min is abandoned. | HTTP: `tests/idempotency_api.rs` (all three families replay with one vendor job and one log row; conflict; unspent key on a validation error; malformed key; a timed-out call replayed as its 504). storage: `a_finished_request_replays_and_a_new_body_conflicts`, `a_released_key_can_run_again`, `a_record_older_than_a_day_is_forgotten_and_a_stale_run_abandoned`, `racing_first_requests_start_exactly_once`, Postgres `idempotency_records_against_postgres`. hashing: `a_json_body_hashes_the_same_whatever_its_layout`, `a_multipart_body_hashes_the_same_whatever_its_boundary`, `keys_belong_to_their_owner`. wire: `every_billed_post_documents_its_idempotency_key`. SDKs: `idempotencyKey` (TS `Idempotency-Key` tests), `idempotency_key` (Python, sync and async). | ✅ |
+
+**Vendor calls are never re-sent once they may have been billed** (L1). A call
+that ran past `server.vendor_timeout_secs` (default 120) answers 504
+`vendor_timeout` with the vendor's job id when it had accepted one, and is
+neither retried nor handed to the next deployment; a failure after an adapter
+recorded the vendor's job id is not retried either. Proof:
+`a_timed_out_attempt_is_never_sent_again`,
+`a_deployment_that_timed_out_does_not_fall_through_to_the_next`,
+`a_job_the_vendor_accepted_is_never_sent_again`, and
+`a_timed_out_vendor_call_is_never_resent` over HTTP with `mock/slow-image`
+(one vendor call). Every image adapter that polls records the job id the moment
+the vendor accepts it — bfl, kling, hunyuan, leonardo, luma, replicate, runway —
+each asserted in its own polling test.
+
 ## Image / Video
 
 Row inventory generated 2026-08-27 via:

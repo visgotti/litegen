@@ -14,6 +14,7 @@ from .client import (
     _OCTET_STREAM,
     _clean,
     _conversion,
+    _idempotency,
     _drop_none,
     _parse_dropped_params,
     _q,
@@ -126,8 +127,14 @@ class _AsyncImages:
     def __init__(self, c: AsyncLiteGenClient) -> None:
         self._c = c
 
-    async def generate(self, **req: Any) -> Any:
-        return await self._c._request("POST", "/v1/images/generations", json=_clean(req))
+    async def generate(self, *, idempotency_key: str | None = None, **req: Any) -> Any:
+        """Generate images (``POST /v1/images/generations``). ``idempotency_key``
+        is sent as the ``Idempotency-Key`` header, never in the body."""
+        return (
+            await self._c._request_with_headers(
+                "POST", "/v1/images/generations", json=_clean(req), headers=_idempotency(idempotency_key)
+            )
+        )[0]
 
     async def estimate_cost(self, **req: Any) -> Any:
         return await self._c._request("POST", "/v1/images/cost", json=_clean(req))
@@ -237,11 +244,12 @@ class _AsyncVideos:
         """
         interval = req.pop("interval", 2.0)
         timeout = req.pop("timeout", 300.0)
+        headers = _idempotency(req.pop("idempotency_key", None))
         body = _clean(req)
 
         async def _submit() -> tuple[dict[str, Any], httpx.Headers]:
             return await self._c._request_with_headers(
-                "POST", "/v1/videos/generations", json=body
+                "POST", "/v1/videos/generations", json=body, headers=headers
             )
 
         return AsyncVideoJob(
@@ -379,6 +387,7 @@ class _AsyncModels3d:
         *,
         interval: float = 2.0,
         timeout: float = MODEL3D_DEFAULT_TIMEOUT,
+        idempotency_key: str | None = None,
         **req: Unpack[Model3dGenerateParams],
     ) -> AsyncModel3dJob:
         """Submit a 3D job (``POST /v1/models3d/generations``), returning an
@@ -390,10 +399,11 @@ class _AsyncModels3d:
         polling, not the job.
         """
         body = _clean(req)
+        headers = _idempotency(idempotency_key)
 
         async def _submit() -> tuple[Model3dGenerationResponse, httpx.Headers]:
             return await self._c._request_with_headers(
-                "POST", "/v1/models3d/generations", json=body
+                "POST", "/v1/models3d/generations", json=body, headers=headers
             )
 
         return AsyncModel3dJob(

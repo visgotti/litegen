@@ -947,6 +947,10 @@ pub struct ErrorDetail {
     /// The model the rejected request named. Validation errors only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// On `vendor_timeout`: the job the vendor had accepted when litegen
+    /// stopped waiting, if it had. The job was not re-sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor_job_id: Option<String>,
 }
 
 // ─── Generations (DB-backed polling) ───────────────────────────────────────

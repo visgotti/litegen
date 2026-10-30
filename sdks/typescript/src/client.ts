@@ -621,8 +621,9 @@ export class LiteGenClient {
     path: string,
     body?: unknown,
     signal?: AbortSignal,
+    extraHeaders?: Record<string, string>,
   ): Promise<T> {
-    return (await this.requestWithHeaders<T>(method, path, body, signal)).body;
+    return (await this.requestWithHeaders<T>(method, path, body, signal, extraHeaders)).body;
   }
 
   /**
@@ -636,8 +637,9 @@ export class LiteGenClient {
     path: string,
     body?: unknown,
     signal?: AbortSignal,
+    extraHeaders?: Record<string, string>,
   ): Promise<{ body: T; headers: Headers }> {
-    const res = await this.fetchOk(method, path, body, signal);
+    const res = await this.fetchOk(method, path, body, signal, extraHeaders);
     // 204 No Content and similar empty responses — return undefined cast to T.
     if (res.status === 204 || res.headers.get("content-length") === "0") {
       return { body: undefined as unknown as T, headers: res.headers };
@@ -662,10 +664,36 @@ export class LiteGenClient {
   }
 }
 
+/**
+ * An `Idempotency-Key` for a paid request. The same key with the same request
+ * within 24 hours gets the first response back (`Idempotent-Replayed: true`)
+ * and is billed nothing; the same key with a different request is a 409
+ * `idempotency_key_reused`. Use one key per logical request, e.g. a hash of
+ * it, and send the same key when retrying it.
+ */
+export interface IdempotencyOptions {
+  idempotencyKey?: string;
+}
+
+/** Options for `images.generate`. */
+export interface ImageGenerateOptions extends IdempotencyOptions {
+  signal?: AbortSignal;
+}
+
+/** Options for `videos.generate` and `models3d.generate`: polling, plus the submit's key. */
+export type JobGenerateOptions = WaitForCompletionOptions & IdempotencyOptions;
+
+function idempotencyHeaders(opts?: IdempotencyOptions): Record<string, string> | undefined {
+  return opts?.idempotencyKey ? { "Idempotency-Key": opts.idempotencyKey } : undefined;
+}
+
 class ImagesNamespace {
   constructor(private readonly client: LiteGenClient) {}
-  generate(req: ImageRequest, signal?: AbortSignal): Promise<ImageResponse> {
-    return this.client.request("POST", "/v1/images/generations", req, signal);
+  /** `opts` may also be a bare `AbortSignal`, as before the options object existed. */
+  generate(req: ImageRequest, opts?: AbortSignal | ImageGenerateOptions): Promise<ImageResponse> {
+    const o: ImageGenerateOptions =
+      typeof AbortSignal !== "undefined" && opts instanceof AbortSignal ? { signal: opts } : ((opts as ImageGenerateOptions) ?? {});
+    return this.client.request("POST", "/v1/images/generations", req, o.signal, idempotencyHeaders(o));
   }
   estimateCost(req: ImageRequest, signal?: AbortSignal): Promise<CostEstimate> {
     return this.client.request("POST", "/v1/images/cost", req, signal);
@@ -780,7 +808,7 @@ class VideosNamespace {
    * {@link VideoJob} is awaitable (resolves to the finished job) and
    * async-iterable (streams progress).
    */
-  generate(req: VideoRequest, opts?: WaitForCompletionOptions): VideoJob {
+  generate(req: VideoRequest, opts?: JobGenerateOptions): VideoJob {
     return new VideoJob(
       () =>
         withDroppedParams(
@@ -789,6 +817,7 @@ class VideosNamespace {
             "/v1/videos/generations",
             req,
             opts?.signal,
+            idempotencyHeaders(opts),
           ),
         ),
       (id) => pollVideo(id, (vid) => this.getStatus(vid, opts?.signal), opts),
@@ -850,7 +879,7 @@ class Models3dNamespace {
    * format, too many formats for the model, a missing required reference
    * image — reject before the provider is called, so they cost nothing.
    */
-  generate(req: Model3dRequest, opts?: WaitForCompletionOptions): Model3dJob {
+  generate(req: Model3dRequest, opts?: JobGenerateOptions): Model3dJob {
     return new Model3dJob(
       () =>
         withDroppedParams(
@@ -859,6 +888,7 @@ class Models3dNamespace {
             "/v1/models3d/generations",
             req,
             opts?.signal,
+            idempotencyHeaders(opts),
           ),
         ),
       (id) => poll3d(id, (jid) => this.getStatus(jid, opts?.signal), opts),

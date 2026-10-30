@@ -373,6 +373,8 @@ impl ImageProvider for ReplicateProvider {
                 retryable: false,
             })?
             .to_string();
+        // Accepted: from here on a failure must not re-send the job (L1).
+        extras.vendor_job.record(prediction_id.clone());
 
         // If already succeeded (webhooks / fast models), skip polling
         let final_result = if prediction["status"].as_str() == Some("succeeded") {
@@ -515,6 +517,7 @@ mod tests {
 
     fn make_extras() -> ImageExtras {
         ImageExtras {
+            vendor_job: Default::default(),
             size: None,
             aspect_ratio: Some("1:1".to_string()),
             quality: None,
@@ -573,6 +576,8 @@ mod tests {
         let materialized = empty_materialized();
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
+        // The vendor accepted the job before the poll: the router must never re-send it.
+        assert_eq!(extras.vendor_job.get().as_deref(), Some("pred123"));
         assert!(result.is_ok(), "generate failed: {:?}", result.err());
         let output = result.unwrap();
         assert_eq!(output.data, b"FAKEPNGDATA");
@@ -710,6 +715,7 @@ mod tests {
         let schema = ref_schema("replicate/flux-1.1-pro");
         let base = make_base("a lighthouse at dusk", "replicate/flux-1.1-pro");
         let extras = ImageExtras {
+            vendor_job: Default::default(),
             steps: None,
             guidance_scale: None,
             ..make_extras()

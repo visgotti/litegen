@@ -668,6 +668,7 @@ mod tests {
 
     fn make_extras(size: Option<&str>, quality: Option<&str>, style: Option<&str>) -> ImageExtras {
         ImageExtras {
+            vendor_job: Default::default(),
             size: size.map(|s| s.to_string()),
             aspect_ratio: None,
             quality: quality.map(|s| s.to_string()),

@@ -319,6 +319,7 @@ mod tests {
 
     fn make_extras() -> ImageExtras {
         ImageExtras {
+            vendor_job: Default::default(),
             size: Some("1024x1024".to_string()), aspect_ratio: None, quality: Some("standard".to_string()), style: None,
             steps: None, guidance_scale: Some(6.5), strength: None, response_format: "url".to_string(), extra: None,
         }

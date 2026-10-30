@@ -115,11 +115,19 @@ where
     post,
     path = "/v1/images/generations",
     request_body = ImageGenerationRequest,
+    params(
+        ("Idempotency-Key" = Option<String>, Header, description = "1–255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key."),
+    ),
     responses(
         (status = 200, description = "Image generated successfully", body = ImageGenerationResponse,
-            headers(("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped."))),
+            headers(
+                ("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped."),
+                ("Idempotent-Replayed" = String, description = "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."),
+            )),
         (status = 400, description = "Bad request", body = ErrorResponse),
         (status = 502, description = "Provider error", body = ErrorResponse),
+        (status = 409, description = "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).", body = ErrorResponse),
+        (status = 504, description = "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.", body = ErrorResponse),
     ),
     tag = "Images"
 )]
@@ -144,6 +152,7 @@ pub async fn generate_image(
     };
 
     let extras = ImageExtras {
+        vendor_job: Default::default(),
         size: validated.request.size.clone(),
         aspect_ratio: validated.request.aspect_ratio.clone(),
         quality: validated.request.quality.clone(),
@@ -266,6 +275,7 @@ pub async fn generate_image(
                 }
             });
             let mut resp = (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response();
+            resp.extensions_mut().insert(crate::api::middleware::idempotency::VendorAttempted);
             if let Some((k, v)) = dropped_header(&validated.dropped) {
                 resp.headers_mut().insert(k, v);
             }
@@ -277,7 +287,6 @@ pub async fn generate_image(
             settle_quota(&state, charge_key, reserved, 0.0).await;
             limits.settle(&state, 0.0).await;
             let latency = start.elapsed().as_millis() as i64;
-            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             error!(error = %e, "Image generation failed");
             // Log failure + error artifact
             let db = state.db.clone();
@@ -312,7 +321,7 @@ pub async fn generate_image(
                     tracing::warn!(error = %e, "Failed to store error artifact");
                 }
             });
-            (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
+            generation_error_response(&e)
         }
     }
 }
@@ -356,10 +365,18 @@ pub async fn estimate_image_cost(
     post,
     path = "/v1/videos/generations",
     request_body = VideoGenerationRequest,
+    params(
+        ("Idempotency-Key" = Option<String>, Header, description = "1–255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key."),
+    ),
     responses(
         (status = 200, description = "Video generation started", body = VideoGenerationResponse,
-            headers(("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped."))),
+            headers(
+                ("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped."),
+                ("Idempotent-Replayed" = String, description = "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."),
+            )),
         (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 409, description = "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).", body = ErrorResponse),
+        (status = 504, description = "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.", body = ErrorResponse),
     ),
     tag = "Videos"
 )]
@@ -493,6 +510,7 @@ pub async fn generate_video(
                 }
             });
             let mut resp = (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response();
+            resp.extensions_mut().insert(crate::api::middleware::idempotency::VendorAttempted);
             if let Some((k, v)) = dropped_header(&validated.dropped) {
                 resp.headers_mut().insert(k, v);
             }
@@ -502,9 +520,8 @@ pub async fn generate_video(
             // Nothing was delivered — release the reservation.
             settle_quota(&state, charge_key, reserved, 0.0).await;
             limits.settle(&state, 0.0).await;
-            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             error!(error = %e, "Video generation failed");
-            (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
+            generation_error_response(&e)
         }
     }
 }
@@ -659,10 +676,18 @@ pub async fn estimate_video_cost(
     post,
     path = "/v1/models3d/generations",
     request_body = Model3dGenerationRequest,
+    params(
+        ("Idempotency-Key" = Option<String>, Header, description = "1–255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key."),
+    ),
     responses(
         (status = 200, description = "3D generation started", body = Model3dGenerationResponse,
-            headers(("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped."))),
+            headers(
+                ("X-Litegen-Dropped-Params" = String, description = "Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped."),
+                ("Idempotent-Replayed" = String, description = "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."),
+            )),
         (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 409, description = "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).", body = ErrorResponse),
+        (status = 504, description = "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.", body = ErrorResponse),
     ),
     tag = "Models3D"
 )]
@@ -827,6 +852,7 @@ pub async fn generate_3d(
             });
 
             let mut resp = (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response();
+            resp.extensions_mut().insert(crate::api::middleware::idempotency::VendorAttempted);
             if let Some((k, v)) = dropped_header(&validated.dropped) {
                 resp.headers_mut().insert(k, v);
             }
@@ -835,9 +861,8 @@ pub async fn generate_3d(
         Err(e) => {
             settle_quota(&state, charge_key, reserved, 0.0).await;
             limits.settle(&state, 0.0).await;
-            let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             error!(error = %e, "3D generation failed");
-            (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
+            generation_error_response(&e)
         }
     }
 }
@@ -2799,13 +2824,16 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
     let csrf_state = state.clone();
 
     // Generate routes — require Scope::Generate
+    // Every billed POST honours an `Idempotency-Key`. Layered per route, so it
+    // runs inside authentication and sees whose key it is.
+    let idempotent = || middleware::from_fn_with_state(state.clone(), super::middleware::idempotency::idempotency_middleware);
     let generate_routes = axum::Router::new()
-        .route("/v1/images/generations", post(generate_image))
+        .route("/v1/images/generations", post(generate_image).route_layer(idempotent()))
         .route("/v1/images/cost", post(estimate_image_cost))
-        .route("/v1/videos/generations", post(generate_video))
+        .route("/v1/videos/generations", post(generate_video).route_layer(idempotent()))
         .route("/v1/videos/cost", post(estimate_video_cost))
         .route("/v1/videos/{id}", get(get_video_status))
-        .route("/v1/models3d/generations", post(generate_3d))
+        .route("/v1/models3d/generations", post(generate_3d).route_layer(idempotent()))
         .route("/v1/models3d/cost", post(estimate_3d_cost))
         // Registered after the two literal-segment routes above so they win the
         // match; axum/matchit gives static segments precedence over a capture
@@ -3385,6 +3413,30 @@ fn error_response(message: &str, code: u16) -> serde_json::Value {
             "code": code
         }
     })
+}
+
+/// The error answer for a generation the router could not run, marked as
+/// having reached a vendor when it did — which is what an `Idempotency-Key`
+/// records and replays. A vendor timeout names the vendor's job, when it had
+/// accepted one, and is never re-sent.
+fn generation_error_response(e: &crate::proxy::router::ProxyError) -> axum::response::Response {
+    let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let body = match e {
+        crate::proxy::router::ProxyError::VendorTimeout { vendor_job_id, .. } => serde_json::json!({
+            "error": {
+                "message": e.to_string(),
+                "type": "vendor_timeout",
+                "code": "vendor_timeout",
+                "vendor_job_id": vendor_job_id,
+            }
+        }),
+        _ => error_response(&e.to_string(), status.as_u16()),
+    };
+    let mut resp = (status, Json(body)).into_response();
+    if e.reached_vendor() {
+        resp.extensions_mut().insert(crate::api::middleware::idempotency::VendorAttempted);
+    }
+    resp
 }
 
 /// 400 body for a model whose provider has neither a per-app BYO credential nor a

@@ -1528,4 +1528,74 @@ mod tests {
         db.update_generation_if_active("g-term", "cancelled", 0, None, None, Some(chrono::Utc::now()), None).await.unwrap();
         assert!(!db.claim_generation_stage("g-term", "rig", "poller").await.unwrap());
     }
+
+    // ─── Idempotency-Key records ────────────────────────────────────────────
+
+    use crate::db::{IdempotencyBegin, StoredResponse};
+
+    fn stored(status: u16, body: &str) -> StoredResponse {
+        StoredResponse {
+            status,
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_finished_request_replays_and_a_new_body_conflicts() {
+        let db = in_memory_db().await;
+        assert!(matches!(db.idempotency_begin("org:a", "k1", "hash-1").await.unwrap(), IdempotencyBegin::Started));
+        assert!(matches!(db.idempotency_begin("org:a", "k1", "hash-1").await.unwrap(), IdempotencyBegin::InProgress));
+        db.idempotency_complete("org:a", "k1", &stored(200, r#"{"id":"litegen-3d-x"}"#)).await.unwrap();
+        match db.idempotency_begin("org:a", "k1", "hash-1").await.unwrap() {
+            IdempotencyBegin::Replay(r) => {
+                assert_eq!(r.status, 200);
+                assert_eq!(r.body, br#"{"id":"litegen-3d-x"}"#.to_vec());
+                assert_eq!(r.headers, vec![("content-type".to_string(), "application/json".to_string())]);
+            }
+            other => panic!("expected a replay, got {other:?}"),
+        }
+        assert!(matches!(db.idempotency_begin("org:a", "k1", "hash-2").await.unwrap(), IdempotencyBegin::Conflict));
+        // Another owner's key of the same spelling is its own record.
+        assert!(matches!(db.idempotency_begin("org:b", "k1", "hash-2").await.unwrap(), IdempotencyBegin::Started));
+    }
+
+    #[tokio::test]
+    async fn a_released_key_can_run_again() {
+        let db = in_memory_db().await;
+        assert!(matches!(db.idempotency_begin("s", "k", "h").await.unwrap(), IdempotencyBegin::Started));
+        db.idempotency_release("s", "k").await.unwrap();
+        assert!(matches!(db.idempotency_begin("s", "k", "h2").await.unwrap(), IdempotencyBegin::Started));
+    }
+
+    #[tokio::test]
+    async fn a_record_older_than_a_day_is_forgotten_and_a_stale_run_abandoned() {
+        let db = in_memory_db().await;
+        db.idempotency_begin("s", "old", "h").await.unwrap();
+        db.idempotency_complete("s", "old", &stored(200, "{}")).await.unwrap();
+        db.idempotency_begin("s", "stuck", "h").await.unwrap();
+        let day_ago = chrono::Utc::now() - chrono::Duration::hours(25);
+        let quarter_ago = chrono::Utc::now() - chrono::Duration::minutes(16);
+        sqlx::query("UPDATE idempotency_keys SET created_at = ? WHERE idem_key = 'old'").bind(day_ago).execute(db.pool()).await.unwrap();
+        sqlx::query("UPDATE idempotency_keys SET created_at = ? WHERE idem_key = 'stuck'").bind(quarter_ago).execute(db.pool()).await.unwrap();
+        // Past 24 h the key is free again, whatever body comes with it.
+        assert!(matches!(db.idempotency_begin("s", "old", "another").await.unwrap(), IdempotencyBegin::Started));
+        // A run that never finished within 15 minutes died with its process.
+        assert!(matches!(db.idempotency_begin("s", "stuck", "h").await.unwrap(), IdempotencyBegin::Started));
+    }
+
+    #[tokio::test]
+    async fn racing_first_requests_start_exactly_once() {
+        let db = std::sync::Arc::new(in_memory_db().await);
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let db = db.clone();
+            tasks.push(tokio::spawn(async move { db.idempotency_begin("s", "race", "h").await.unwrap() }));
+        }
+        let mut started = 0;
+        for t in tasks {
+            if matches!(t.await.unwrap(), IdempotencyBegin::Started) { started += 1; }
+        }
+        assert_eq!(started, 1);
+    }
 }

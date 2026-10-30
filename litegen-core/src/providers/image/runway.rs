@@ -316,6 +316,8 @@ impl ImageProvider for RunwayImageProvider {
             provider_error: Some(submit.clone()),
             retryable: false,
         })?;
+        // Accepted: from here on a failure must not re-send the job (L1).
+        extras.vendor_job.record(id);
 
         let final_result = self.poll_task(id).await?;
         let image_url = match &final_result["output"] {
@@ -415,6 +417,7 @@ mod tests {
 
     fn make_extras() -> ImageExtras {
         ImageExtras {
+            vendor_job: Default::default(),
             size: None,
             aspect_ratio: Some("16:9".to_string()),
             quality: None,
@@ -457,6 +460,8 @@ mod tests {
         let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
+        // The vendor accepted the job before the poll: the router must never re-send it.
+        assert_eq!(extras.vendor_job.get().as_deref(), Some("task_1"));
         assert!(result.is_ok(), "generate failed: {:?}", result.err());
         assert_eq!(result.unwrap().data, b"RUNWAYPNG");
 
@@ -475,6 +480,7 @@ mod tests {
     #[test]
     fn resolve_ratio_only_ever_returns_enum_members() {
         let mk = |ar: Option<&str>, size: Option<&str>| ImageExtras {
+            vendor_job: Default::default(),
             size: size.map(str::to_string),
             aspect_ratio: ar.map(str::to_string),
             quality: None,

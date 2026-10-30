@@ -245,9 +245,10 @@ impl ProxyRouter {
                         "Retrying image generation"
                     );
                 }
+                extras.vendor_job.clear();
                 let attempt_start = Instant::now();
                 match tokio::time::timeout(
-                    std::time::Duration::from_secs(120),
+                    self.config.server.vendor_timeout(),
                     provider.generate(schema, base, extras, materialized),
                 ).await {
                     Ok(Ok(o)) => {
@@ -255,19 +256,23 @@ impl ProxyRouter {
                         output = Some(o);
                         break;
                     }
-                    Ok(Err(e)) => {
-                        let retryable = e.is_retryable();
-                        last_error = Some(e);
-                        if !retryable { break; }
+                    Ok(Err(ProviderError::Timeout { .. })) | Err(_) => {
+                        return Err(ProxyError::VendorTimeout {
+                            model: schema.id.clone(),
+                            provider: schema.provider.clone(),
+                            vendor_job_id: extras.vendor_job.get(),
+                        });
                     }
-                    Err(_) => {
-                        last_error = Some(ProviderError::Timeout { timeout_ms: 120_000 });
+                    Ok(Err(e)) => {
+                        let resend = may_resend(&e, extras.vendor_job.get().is_some());
+                        last_error = Some(e);
+                        if !resend { break; }
                     }
                 }
             }
 
             let o = output.ok_or_else(|| {
-                let err_str = last_error.map(|e| e.to_string());
+                let err_str = last_error.map(|e| with_vendor_job(e.to_string(), extras.vendor_job.get()));
                 ProxyError::AllDeploymentsFailed {
                     model: schema.id.clone(),
                     last_error: err_str,
@@ -390,6 +395,7 @@ impl ProxyRouter {
                         "Retrying image generation"
                     );
                 }
+                extras.vendor_job.clear();
                 let attempt_start = Instant::now();
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(deployment.timeout_seconds),
@@ -400,6 +406,21 @@ impl ProxyRouter {
                         self.circuit_breaker.record_success(&deployment.provider).await;
                         return Ok((deployment.provider.clone(), output));
                     }
+                    Ok(Err(ProviderError::Timeout { .. })) | Err(_) => {
+                        warn!(
+                            provider = %deployment.provider,
+                            timeout_s = deployment.timeout_seconds,
+                            "Image request timed out; not re-sent"
+                        );
+                        self.circuit_breaker.record_failure(&deployment.provider).await;
+                        // Neither retried nor handed to the next deployment:
+                        // this one may still run, and bill, the job.
+                        return Err(ProxyError::VendorTimeout {
+                            model: schema.id.clone(),
+                            provider: deployment.provider.clone(),
+                            vendor_job_id: extras.vendor_job.get(),
+                        });
+                    }
                     Ok(Err(e)) => {
                         warn!(
                             provider = %deployment.provider,
@@ -408,22 +429,19 @@ impl ProxyRouter {
                             "Image provider error"
                         );
                         self.circuit_breaker.record_failure(&deployment.provider).await;
-                        if !e.is_retryable() {
-                            last_error = Some(e);
+                        if let Some(job) = extras.vendor_job.get() {
+                            // The vendor took the job: no other deployment may
+                            // be sent it too.
+                            return Err(ProxyError::AllDeploymentsFailed {
+                                model: schema.id.clone(),
+                                last_error: Some(with_vendor_job(e.to_string(), Some(job))),
+                            });
+                        }
+                        let resend = may_resend(&e, false);
+                        last_error = Some(e);
+                        if !resend {
                             break; // Skip to next deployment
                         }
-                        last_error = Some(e);
-                    }
-                    Err(_) => {
-                        warn!(
-                            provider = %deployment.provider,
-                            timeout_s = deployment.timeout_seconds,
-                            "Image request timed out"
-                        );
-                        self.circuit_breaker.record_failure(&deployment.provider).await;
-                        last_error = Some(ProviderError::Timeout {
-                            timeout_ms: deployment.timeout_seconds * 1000,
-                        });
                     }
                 }
             }
@@ -583,7 +601,7 @@ impl ProxyRouter {
                 }
                 let attempt_start = Instant::now();
                 match tokio::time::timeout(
-                    std::time::Duration::from_secs(120),
+                    self.config.server.vendor_timeout(),
                     provider.generate(schema, base, extras, materialized),
                 ).await {
                     Ok(Ok(h)) => {
@@ -591,13 +609,19 @@ impl ProxyRouter {
                         handle = Some(h);
                         break;
                     }
-                    Ok(Err(e)) => {
-                        let retryable = e.is_retryable();
-                        last_error = Some(e);
-                        if !retryable { break; }
+                    // A submit that timed out may have been accepted: a second
+                    // one would queue (and bill) a job nothing tracks.
+                    Ok(Err(ProviderError::Timeout { .. })) | Err(_) => {
+                        return Err(ProxyError::VendorTimeout {
+                            model: schema.id.clone(),
+                            provider: schema.provider.clone(),
+                            vendor_job_id: None,
+                        });
                     }
-                    Err(_) => {
-                        last_error = Some(ProviderError::Timeout { timeout_ms: 120_000 });
+                    Ok(Err(e)) => {
+                        let resend = may_resend(&e, false);
+                        last_error = Some(e);
+                        if !resend { break; }
                     }
                 }
             }
@@ -1075,6 +1099,16 @@ impl ProxyRouter {
                         self.circuit_breaker.record_success(&deployment.provider).await;
                         return Ok((deployment.provider.clone(), handle));
                     }
+                    // A submit that timed out may have been accepted: neither
+                    // this deployment nor the next is sent it again.
+                    Ok(Err(ProviderError::Timeout { .. })) | Err(_) => {
+                        self.circuit_breaker.record_failure(&deployment.provider).await;
+                        return Err(ProxyError::VendorTimeout {
+                            model: schema.id.clone(),
+                            provider: deployment.provider.clone(),
+                            vendor_job_id: None,
+                        });
+                    }
                     Ok(Err(e)) => {
                         warn!(
                             provider = %deployment.provider,
@@ -1082,17 +1116,11 @@ impl ProxyRouter {
                             "Video provider error"
                         );
                         self.circuit_breaker.record_failure(&deployment.provider).await;
-                        if !e.is_retryable() {
-                            last_error = Some(e);
+                        let resend = may_resend(&e, false);
+                        last_error = Some(e);
+                        if !resend {
                             break;
                         }
-                        last_error = Some(e);
-                    }
-                    Err(_) => {
-                        self.circuit_breaker.record_failure(&deployment.provider).await;
-                        last_error = Some(ProviderError::Timeout {
-                            timeout_ms: deployment.timeout_seconds * 1000,
-                        });
                     }
                 }
             }
@@ -1514,6 +1542,15 @@ pub enum ProxyError {
 
     #[error("Not found: {0}")]
     NotFound(String),
+
+    /// The vendor did not answer in time. Never re-sent: it may still run the
+    /// job, and bill it. Carries the vendor's job id when it had accepted one.
+    #[error("{} did not answer for model {model} in time{}", provider, vendor_job_id.as_ref().map(|j| format!(" (vendor job {j})")).unwrap_or_default())]
+    VendorTimeout {
+        model: String,
+        provider: String,
+        vendor_job_id: Option<String>,
+    },
 }
 
 impl ProxyError {
@@ -1531,7 +1568,40 @@ impl ProxyError {
             }
             Self::Internal(_) => 500,
             Self::NotFound(_) => 404,
+            Self::VendorTimeout { .. } => 504,
         }
+    }
+
+    /// Whether this failure happened after a vendor was called — i.e. whether
+    /// the vendor may have done (and billed) work. An `Idempotency-Key`
+    /// records such an outcome; a refusal before any vendor call does not
+    /// spend the key.
+    pub fn reached_vendor(&self) -> bool {
+        match self {
+            Self::ModelNotFound { .. } | Self::ProviderNotConfigured(_) | Self::NoDeployments { .. } => false,
+            Self::AllDeploymentsFailed { .. } | Self::ProviderError { .. } | Self::VendorTimeout { .. } => true,
+            Self::Internal(_) | Self::NotFound(_) => false,
+        }
+    }
+}
+
+/// Whether a failed vendor attempt may be sent again, to the same deployment
+/// or the next one (PixelGenie L1).
+///
+/// Never after a timeout: dropping the future withdraws nothing, and the
+/// vendor may still run and bill the job. Never once the vendor accepted the
+/// job, which an adapter that polls says by recording its id
+/// ([`crate::providers::VendorJobSink`]): a failure from then on is a broken
+/// poll, not a rejected submit. Otherwise, whatever the provider error says.
+fn may_resend(err: &ProviderError, vendor_accepted: bool) -> bool {
+    err.is_retryable() && !vendor_accepted && !matches!(err, ProviderError::Timeout { .. })
+}
+
+/// `last_error`'s text, naming the vendor job when one was accepted.
+fn with_vendor_job(error: String, vendor_job_id: Option<String>) -> String {
+    match vendor_job_id {
+        Some(j) => format!("{error} (vendor job {j})"),
+        None => error,
     }
 }
 

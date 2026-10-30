@@ -2983,6 +2983,20 @@
                 ],
                 "summary": "POST /v1/images/generations \u2014 Generate images (OpenAI-compatible).",
                 "operationId": "generate_image",
+                "parameters": [
+                    {
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "description": "1\u2013255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key.",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        }
+                    }
+                ],
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -2997,6 +3011,12 @@
                     "200": {
                         "description": "Image generated successfully",
                         "headers": {
+                            "Idempotent-Replayed": {
+                                "schema": {
+                                    "type": "string"
+                                },
+                                "description": "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."
+                            },
                             "X-Litegen-Dropped-Params": {
                                 "schema": {
                                     "type": "string"
@@ -3022,8 +3042,28 @@
                             }
                         }
                     },
+                    "409": {
+                        "description": "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
                     "502": {
                         "description": "Provider error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "504": {
+                        "description": "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3947,6 +3987,20 @@
                 ],
                 "summary": "POST /v1/models3d/generations \u2014 Start a 3D (mesh) generation.",
                 "operationId": "generate_3d",
+                "parameters": [
+                    {
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "description": "1\u2013255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key.",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        }
+                    }
+                ],
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -3961,6 +4015,12 @@
                     "200": {
                         "description": "3D generation started",
                         "headers": {
+                            "Idempotent-Replayed": {
+                                "schema": {
+                                    "type": "string"
+                                },
+                                "description": "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."
+                            },
                             "X-Litegen-Dropped-Params": {
                                 "schema": {
                                     "type": "string"
@@ -3978,6 +4038,26 @@
                     },
                     "400": {
                         "description": "Bad request",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "504": {
+                        "description": "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -6181,6 +6261,20 @@
                 ],
                 "summary": "POST /v1/videos/generations \u2014 Start video generation.",
                 "operationId": "generate_video",
+                "parameters": [
+                    {
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "description": "1\u2013255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key.",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        }
+                    }
+                ],
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -6195,6 +6289,12 @@
                     "200": {
                         "description": "Video generation started",
                         "headers": {
+                            "Idempotent-Replayed": {
+                                "schema": {
+                                    "type": "string"
+                                },
+                                "description": "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."
+                            },
                             "X-Litegen-Dropped-Params": {
                                 "schema": {
                                     "type": "string"
@@ -6212,6 +6312,26 @@
                     },
                     "400": {
                         "description": "Bad request",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "504": {
+                        "description": "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -7599,6 +7719,13 @@
                     "type": {
                         "type": "string",
                         "description": "The error's family, e.g. `validation_error`, `authentication_error`,\n`quota_exceeded`, `provider_not_configured`."
+                    },
+                    "vendor_job_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "On `vendor_timeout`: the job the vendor had accepted when litegen\nstopped waiting, if it had. The job was not re-sent."
                     }
                 }
             },

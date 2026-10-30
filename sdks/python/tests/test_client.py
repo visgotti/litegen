@@ -444,3 +444,61 @@ async def test_async_wait_for_completion() -> None:
     async with AsyncLiteGenClient() as client:
         final = await client.videos.wait_for_completion("vid-2", interval=0.01, timeout=5.0)
     assert final["status"] == "completed"
+
+
+# ─── Idempotency-Key ──────────────────────────────────────────────────────────
+# One key per paid request: a retry after a crash with the same key gets the
+# first response back and is billed nothing. Sent on the submit only.
+
+_JOB_3D = {"id": "litegen-3d-1", "status": "completed", "model": "m", "provider": "p",
+           "progress": 100, "created": 1,
+           "assets": [{"kind": "mesh", "url": "https://x/model.glb", "format": "glb"}]}
+_JOB_VID = {"id": "litegen-vid-1", "status": "completed", "model": "m", "provider": "p",
+            "progress": 100, "created": 1, "video_url": "https://x.mp4"}
+
+
+@respx.mock
+def test_idempotency_key_is_sent_on_every_generate_submit() -> None:
+    img = respx.post("http://localhost:4000/v1/images/generations").mock(
+        return_value=Response(200, json={"created": 1, "data": [], "model": "m", "provider": "p", "id": "i"})
+    )
+    m3d = respx.post("http://localhost:4000/v1/models3d/generations").mock(return_value=Response(200, json=_JOB_3D))
+    vid = respx.post("http://localhost:4000/v1/videos/generations").mock(return_value=Response(200, json=_JOB_VID))
+    respx.get("http://localhost:4000/v1/models3d/litegen-3d-1").mock(return_value=Response(200, json=_JOB_3D))
+    respx.get("http://localhost:4000/v1/videos/litegen-vid-1").mock(return_value=Response(200, json=_JOB_VID))
+    client = LiteGenClient()
+    client.images.generate(model="mock/image-gen", prompt="x", idempotency_key="ledger-img")
+    client.models3d.generate(model="mock/mesh-3d", prompt="x", idempotency_key="ledger-3d", interval=0).result()
+    client.videos.generate(model="mock/video-gen", prompt="x", idempotency_key="ledger-vid", interval=0).result()
+    assert img.calls[0].request.headers["idempotency-key"] == "ledger-img"
+    assert m3d.calls[0].request.headers["idempotency-key"] == "ledger-3d"
+    assert vid.calls[0].request.headers["idempotency-key"] == "ledger-vid"
+    for route in (img, m3d, vid):
+        assert b"idempotency" not in route.calls[0].request.content, "never part of the body"
+
+
+@respx.mock
+def test_no_idempotency_key_header_unless_given() -> None:
+    img = respx.post("http://localhost:4000/v1/images/generations").mock(
+        return_value=Response(200, json={"created": 1, "data": [], "model": "m", "provider": "p", "id": "i"})
+    )
+    LiteGenClient().images.generate(model="mock/image-gen", prompt="x")
+    assert "idempotency-key" not in img.calls[0].request.headers
+
+
+@respx.mock
+async def test_async_idempotency_key_is_sent_on_every_generate_submit() -> None:
+    img = respx.post("http://localhost:4000/v1/images/generations").mock(
+        return_value=Response(200, json={"created": 1, "data": [], "model": "m", "provider": "p", "id": "i"})
+    )
+    m3d = respx.post("http://localhost:4000/v1/models3d/generations").mock(return_value=Response(200, json=_JOB_3D))
+    vid = respx.post("http://localhost:4000/v1/videos/generations").mock(return_value=Response(200, json=_JOB_VID))
+    respx.get("http://localhost:4000/v1/models3d/litegen-3d-1").mock(return_value=Response(200, json=_JOB_3D))
+    respx.get("http://localhost:4000/v1/videos/litegen-vid-1").mock(return_value=Response(200, json=_JOB_VID))
+    async with AsyncLiteGenClient() as client:
+        await client.images.generate(model="mock/image-gen", prompt="x", idempotency_key="a-img")
+        await client.models3d.generate(model="mock/mesh-3d", prompt="x", idempotency_key="a-3d", interval=0)
+        await client.videos.generate(model="mock/video-gen", prompt="x", idempotency_key="a-vid", interval=0)
+    assert img.calls[0].request.headers["idempotency-key"] == "a-img"
+    assert m3d.calls[0].request.headers["idempotency-key"] == "a-3d"
+    assert vid.calls[0].request.headers["idempotency-key"] == "a-vid"

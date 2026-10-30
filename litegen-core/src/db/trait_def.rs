@@ -89,6 +89,35 @@ pub fn stage_claim_record(claimant: &str) -> serde_json::Value {
     serde_json::json!({ "by": claimant, "at": chrono::Utc::now().to_rfc3339() })
 }
 
+/// How long an `Idempotency-Key` record answers for its request.
+pub const IDEMPOTENCY_TTL: chrono::Duration = chrono::Duration::hours(24);
+
+/// How long a request may hold its key `in_progress`. Longer than any request
+/// litegen serves (three vendor timeouts at most); a record still running past
+/// it belongs to a process that died, and the key is free again.
+pub const IDEMPOTENCY_IN_PROGRESS_STALE: chrono::Duration = chrono::Duration::minutes(15);
+
+/// A response stored under an `Idempotency-Key`, replayed byte for byte.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+/// What claiming an `Idempotency-Key` found.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IdempotencyBegin {
+    /// No live record: this request runs, and records its response.
+    Started,
+    /// The same request already finished: replay this.
+    Replay(StoredResponse),
+    /// The key was used for a different request.
+    Conflict,
+    /// The same request is still running.
+    InProgress,
+}
+
 /// Trait defining the database operations. Implementations exist for SQLite and PostgreSQL.
 #[async_trait]
 #[allow(clippy::too_many_arguments)] // DB trait methods need many params; would need wrapper structs to reduce
@@ -240,6 +269,28 @@ pub trait DatabaseStore: Send + Sync {
         claims[stage] = stage_claim_record(claimant);
         self.update_generation_metadata(id, &merge_metadata(g.metadata.as_ref(), &serde_json::json!({ "stage_claims": claims }))).await?;
         Ok(true)
+    }
+
+    // ─── Idempotency keys ───────────────────────────────────────────────
+
+    /// Claim `key` for the request hashing to `request_hash`, within `scope`
+    /// (the owner: one org, app and key). The first caller gets `Started` and
+    /// must later call [`idempotency_complete`](Self::idempotency_complete) or
+    /// [`idempotency_release`](Self::idempotency_release). Records older than
+    /// [`IDEMPOTENCY_TTL`], and runs older than [`IDEMPOTENCY_IN_PROGRESS_STALE`],
+    /// are forgotten. The default (test doubles) keeps nothing.
+    async fn idempotency_begin(&self, _scope: &str, _key: &str, _request_hash: &str) -> Result<IdempotencyBegin, sqlx::Error> {
+        Ok(IdempotencyBegin::Started)
+    }
+
+    /// Store the response of the request that holds `key`.
+    async fn idempotency_complete(&self, _scope: &str, _key: &str, _response: &StoredResponse) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
+
+    /// Forget `key`: its request was refused before it ran anything.
+    async fn idempotency_release(&self, _scope: &str, _key: &str) -> Result<(), sqlx::Error> {
+        Ok(())
     }
 
     /// Fetch a generation by its local ID.

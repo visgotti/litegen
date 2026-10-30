@@ -22,6 +22,8 @@ class ErrorDetail:
             `reference_images`, `extra.<key>` — so a caller can tell which one to fix
             without parsing `message`. Validation errors only.
         provider_error (Union[Unset, Any]):
+        vendor_job_id (Union[None, Unset, str]): On `vendor_timeout`: the job the vendor had accepted when litegen
+            stopped waiting, if it had. The job was not re-sent.
     """
 
     message: str
@@ -30,6 +32,7 @@ class ErrorDetail:
     model: Union[None, Unset, str] = UNSET
     param: Union[None, Unset, str] = UNSET
     provider_error: Union[Unset, Any] = UNSET
+    vendor_job_id: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -57,6 +60,12 @@ class ErrorDetail:
 
         provider_error = self.provider_error
 
+        vendor_job_id: Union[None, Unset, str]
+        if isinstance(self.vendor_job_id, Unset):
+            vendor_job_id = UNSET
+        else:
+            vendor_job_id = self.vendor_job_id
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -73,6 +82,8 @@ class ErrorDetail:
             field_dict["param"] = param
         if provider_error is not UNSET:
             field_dict["provider_error"] = provider_error
+        if vendor_job_id is not UNSET:
+            field_dict["vendor_job_id"] = vendor_job_id
 
         return field_dict
 
@@ -112,6 +123,15 @@ class ErrorDetail:
 
         provider_error = d.pop("provider_error", UNSET)
 
+        def _parse_vendor_job_id(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        vendor_job_id = _parse_vendor_job_id(d.pop("vendor_job_id", UNSET))
+
         error_detail = cls(
             message=message,
             type=type,
@@ -119,6 +139,7 @@ class ErrorDetail:
             model=model,
             param=param,
             provider_error=provider_error,
+            vendor_job_id=vendor_job_id,
         )
 
         error_detail.additional_properties = d

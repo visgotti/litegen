@@ -235,6 +235,8 @@ impl HunyuanImageProvider {
                 provider_error: Some(submit_resp.clone()),
                 retryable: false,
             })?;
+        // Accepted: from here on a failure must not re-send the job (L1).
+        extras.vendor_job.record(job_id);
 
         // JobStatusCode: 1 queued, 2 running, 4 failed, 5 done. Prompt
         // rewriting (Revise, on by default) adds about 20 s.
@@ -353,6 +355,8 @@ impl ImageProvider for HunyuanImageProvider {
             provider_error: Some(submit_resp.clone()),
             retryable: false,
         })?;
+        // Accepted: from here on a failure must not re-send the job (L1).
+        extras.vendor_job.record(job_id);
 
         // Poll QueryHunyuanImageJob until JobStatusCode 5 (done) / 4 (failed).
         let max_attempts = 90;
@@ -470,6 +474,7 @@ mod tests {
 
     fn make_extras() -> ImageExtras {
         ImageExtras {
+            vendor_job: Default::default(),
             size: Some("1024x1024".to_string()), aspect_ratio: None, quality: None, style: None,
             steps: None, guidance_scale: None, strength: None, response_format: "url".to_string(), extra: None,
         }
@@ -507,6 +512,8 @@ mod tests {
         let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
+        // The vendor accepted the job before the poll: the router must never re-send it.
+        assert_eq!(extras.vendor_job.get().as_deref(), Some("hy-1"));
         assert!(result.is_ok(), "generate failed: {:?}", result.err());
         assert_eq!(result.unwrap().data, b"HUNYUANPNG");
 

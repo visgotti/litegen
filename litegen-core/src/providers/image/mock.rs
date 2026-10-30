@@ -10,6 +10,21 @@ use crate::providers::{
 use crate::types::*;
 use super::visual_mock::generate_visual_image_png;
 
+/// The model that answers slower than any vendor timeout litegen waits for.
+const SLOW_MODEL: &str = "mock/slow-image";
+
+/// How long `mock/slow-image` takes: longer than any test's vendor timeout.
+const SLOW_MODEL_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+
+static SLOW_IMAGE_CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// How many times `mock/slow-image` has been called in this process: one per
+/// vendor attempt, which is what PixelGenie L1 counts. A timed-out call is
+/// never re-sent, so each request that reaches it adds exactly one.
+pub fn slow_image_calls() -> u32 {
+    SLOW_IMAGE_CALLS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 fn should_render_visual_image(model_id: &str) -> bool {
     matches!(model_id,
         "mock/visual-image-gen" |
@@ -86,6 +101,10 @@ impl ImageProvider for MockProvider {
         _extras: &ImageExtras,
         _materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
+        if model.id == SLOW_MODEL {
+            SLOW_IMAGE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(SLOW_MODEL_DELAY).await;
+        }
         let mut metadata = HashMap::new();
         metadata.insert("prompt".to_string(), serde_json::Value::String(base.prompt.clone()));
         metadata.insert("provider".to_string(), serde_json::Value::String("mock".to_string()));
@@ -167,6 +186,7 @@ mod tests {
 
     fn make_extras() -> ImageExtras {
         ImageExtras {
+            vendor_job: Default::default(),
             size: None,
             aspect_ratio: None,
             quality: None,

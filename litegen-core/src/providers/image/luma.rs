@@ -262,6 +262,8 @@ impl ImageProvider for LumaImageProvider {
             provider_error: Some(submit.clone()),
             retryable: false,
         })?;
+        // Accepted: from here on a failure must not re-send the job (L1).
+        extras.vendor_job.record(id);
 
         let final_result = self.poll_generation(id).await?;
         let image_url = final_result["assets"]["image"].as_str().ok_or_else(|| ProviderError::RequestFailed {
@@ -380,6 +382,7 @@ mod tests {
 
     fn make_extras() -> ImageExtras {
         ImageExtras {
+            vendor_job: Default::default(),
             size: None,
             aspect_ratio: Some("16:9".to_string()),
             quality: None,
@@ -427,6 +430,8 @@ mod tests {
         };
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
+        // The vendor accepted the job before the poll: the router must never re-send it.
+        assert_eq!(extras.vendor_job.get().as_deref(), Some("luma_img_1"));
         assert!(result.is_ok(), "generate failed: {:?}", result.err());
         assert_eq!(result.unwrap().data, b"LUMAJPEG");
 

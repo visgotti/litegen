@@ -237,6 +237,8 @@ impl ImageProvider for BflProvider {
         }
 
         let id = submit["id"].as_str().unwrap_or_default().to_string();
+        // Accepted: from here on a failure must not re-send the job (L1).
+        extras.vendor_job.record(id.clone());
         // Prefer the returned polling_url; fall back to the documented path.
         let polling_url = submit["polling_url"]
             .as_str()
@@ -335,6 +337,7 @@ mod tests {
 
     fn make_extras() -> ImageExtras {
         ImageExtras {
+            vendor_job: Default::default(),
             size: Some("1024x1024".to_string()),
             aspect_ratio: None,
             quality: None,
@@ -381,6 +384,8 @@ mod tests {
         let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
+        // The vendor accepted the job before the poll: the router must never re-send it.
+        assert_eq!(extras.vendor_job.get().as_deref(), Some("bfl-1"));
         assert!(result.is_ok(), "generate failed: {:?}", result.err());
         assert_eq!(result.unwrap().data, b"FLUXPNG");
 

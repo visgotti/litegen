@@ -8,14 +8,17 @@ from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
 from ...models.video_generation_request import VideoGenerationRequest
 from ...models.video_generation_response import VideoGenerationResponse
-from ...types import Response
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     *,
     body: VideoGenerationRequest,
+    idempotency_key: Union[None, Unset, str] = UNSET,
 ) -> Dict[str, Any]:
     headers: Dict[str, Any] = {}
+    if not isinstance(idempotency_key, Unset):
+        headers["Idempotency-Key"] = idempotency_key
 
     _kwargs: Dict[str, Any] = {
         "method": "post",
@@ -42,6 +45,14 @@ def _parse_response(
         response_400 = ErrorResponse.from_dict(response.json())
 
         return response_400
+    if response.status_code == 409:
+        response_409 = ErrorResponse.from_dict(response.json())
+
+        return response_409
+    if response.status_code == 504:
+        response_504 = ErrorResponse.from_dict(response.json())
+
+        return response_504
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -63,10 +74,12 @@ def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: VideoGenerationRequest,
+    idempotency_key: Union[None, Unset, str] = UNSET,
 ) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
     """POST /v1/videos/generations — Start video generation.
 
     Args:
+        idempotency_key (Union[None, Unset, str]):
         body (VideoGenerationRequest):
 
     Raises:
@@ -79,6 +92,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         body=body,
+        idempotency_key=idempotency_key,
     )
 
     response = client.get_httpx_client().request(
@@ -92,10 +106,12 @@ def sync(
     *,
     client: Union[AuthenticatedClient, Client],
     body: VideoGenerationRequest,
+    idempotency_key: Union[None, Unset, str] = UNSET,
 ) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
     """POST /v1/videos/generations — Start video generation.
 
     Args:
+        idempotency_key (Union[None, Unset, str]):
         body (VideoGenerationRequest):
 
     Raises:
@@ -109,6 +125,7 @@ def sync(
     return sync_detailed(
         client=client,
         body=body,
+        idempotency_key=idempotency_key,
     ).parsed
 
 
@@ -116,10 +133,12 @@ async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: VideoGenerationRequest,
+    idempotency_key: Union[None, Unset, str] = UNSET,
 ) -> Response[Union[ErrorResponse, VideoGenerationResponse]]:
     """POST /v1/videos/generations — Start video generation.
 
     Args:
+        idempotency_key (Union[None, Unset, str]):
         body (VideoGenerationRequest):
 
     Raises:
@@ -132,6 +151,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         body=body,
+        idempotency_key=idempotency_key,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -143,10 +163,12 @@ async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
     body: VideoGenerationRequest,
+    idempotency_key: Union[None, Unset, str] = UNSET,
 ) -> Optional[Union[ErrorResponse, VideoGenerationResponse]]:
     """POST /v1/videos/generations — Start video generation.
 
     Args:
+        idempotency_key (Union[None, Unset, str]):
         body (VideoGenerationRequest):
 
     Raises:
@@ -161,5 +183,6 @@ async def asyncio(
         await asyncio_detailed(
             client=client,
             body=body,
+            idempotency_key=idempotency_key,
         )
     ).parsed

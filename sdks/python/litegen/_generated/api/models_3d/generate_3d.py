@@ -8,14 +8,17 @@ from ...client import AuthenticatedClient, Client
 from ...models.error_response import ErrorResponse
 from ...models.model_3d_generation_request import Model3DGenerationRequest
 from ...models.model_3d_generation_response import Model3DGenerationResponse
-from ...types import Response
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     *,
     body: Model3DGenerationRequest,
+    idempotency_key: Union[None, Unset, str] = UNSET,
 ) -> Dict[str, Any]:
     headers: Dict[str, Any] = {}
+    if not isinstance(idempotency_key, Unset):
+        headers["Idempotency-Key"] = idempotency_key
 
     _kwargs: Dict[str, Any] = {
         "method": "post",
@@ -42,6 +45,14 @@ def _parse_response(
         response_400 = ErrorResponse.from_dict(response.json())
 
         return response_400
+    if response.status_code == 409:
+        response_409 = ErrorResponse.from_dict(response.json())
+
+        return response_409
+    if response.status_code == 504:
+        response_504 = ErrorResponse.from_dict(response.json())
+
+        return response_504
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -63,10 +74,12 @@ def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: Model3DGenerationRequest,
+    idempotency_key: Union[None, Unset, str] = UNSET,
 ) -> Response[Union[ErrorResponse, Model3DGenerationResponse]]:
     """POST /v1/models3d/generations — Start a 3D (mesh) generation.
 
     Args:
+        idempotency_key (Union[None, Unset, str]):
         body (Model3DGenerationRequest): Request body for `POST /v1/models3d/generations` and
             `POST /v1/models3d/cost`.
 
@@ -89,6 +102,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         body=body,
+        idempotency_key=idempotency_key,
     )
 
     response = client.get_httpx_client().request(
@@ -102,10 +116,12 @@ def sync(
     *,
     client: Union[AuthenticatedClient, Client],
     body: Model3DGenerationRequest,
+    idempotency_key: Union[None, Unset, str] = UNSET,
 ) -> Optional[Union[ErrorResponse, Model3DGenerationResponse]]:
     """POST /v1/models3d/generations — Start a 3D (mesh) generation.
 
     Args:
+        idempotency_key (Union[None, Unset, str]):
         body (Model3DGenerationRequest): Request body for `POST /v1/models3d/generations` and
             `POST /v1/models3d/cost`.
 
@@ -129,6 +145,7 @@ def sync(
     return sync_detailed(
         client=client,
         body=body,
+        idempotency_key=idempotency_key,
     ).parsed
 
 
@@ -136,10 +153,12 @@ async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: Model3DGenerationRequest,
+    idempotency_key: Union[None, Unset, str] = UNSET,
 ) -> Response[Union[ErrorResponse, Model3DGenerationResponse]]:
     """POST /v1/models3d/generations — Start a 3D (mesh) generation.
 
     Args:
+        idempotency_key (Union[None, Unset, str]):
         body (Model3DGenerationRequest): Request body for `POST /v1/models3d/generations` and
             `POST /v1/models3d/cost`.
 
@@ -162,6 +181,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         body=body,
+        idempotency_key=idempotency_key,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -173,10 +193,12 @@ async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
     body: Model3DGenerationRequest,
+    idempotency_key: Union[None, Unset, str] = UNSET,
 ) -> Optional[Union[ErrorResponse, Model3DGenerationResponse]]:
     """POST /v1/models3d/generations — Start a 3D (mesh) generation.
 
     Args:
+        idempotency_key (Union[None, Unset, str]):
         body (Model3DGenerationRequest): Request body for `POST /v1/models3d/generations` and
             `POST /v1/models3d/cost`.
 
@@ -201,5 +223,6 @@ async def asyncio(
         await asyncio_detailed(
             client=client,
             body=body,
+            idempotency_key=idempotency_key,
         )
     ).parsed

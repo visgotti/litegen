@@ -234,6 +234,32 @@ impl ProviderError {
     }
 }
 
+/// Where an adapter that submits a job and then waits for it records the
+/// vendor's job id, the moment the vendor accepts it.
+///
+/// The router reads it after a failure. A job the vendor accepted is never
+/// sent again, since the vendor may bill it, and a timeout reports its id.
+/// Adapters whose call is a single request-response leave it empty.
+#[derive(Debug, Clone, Default)]
+pub struct VendorJobSink(Arc<std::sync::Mutex<Option<String>>>);
+
+impl VendorJobSink {
+    /// The vendor accepted job `id`.
+    pub fn record(&self, id: impl Into<String>) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(id.into());
+    }
+
+    /// The job id recorded since the last [`clear`](Self::clear), if any.
+    pub fn get(&self) -> Option<String> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Forget the recorded id, before a fresh attempt.
+    pub fn clear(&self) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+}
+
 /// Extra image-specific parameters extracted from a validated request.
 #[derive(serde::Serialize)]
 pub struct ImageExtras {
@@ -246,6 +272,9 @@ pub struct ImageExtras {
     pub strength: Option<f64>,
     pub response_format: String,
     pub extra: Option<serde_json::Value>,
+    /// Filled by adapters that poll: see [`VendorJobSink`].
+    #[serde(skip)]
+    pub vendor_job: VendorJobSink,
 }
 
 /// Extra video-specific parameters extracted from a validated request.

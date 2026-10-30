@@ -6,7 +6,10 @@ mod trait_def;
 
 pub use postgres::PostgresDatabase;
 pub use sqlite::SqliteDatabase;
-pub use trait_def::{merge_metadata, stage_claim_record, DatabaseStore, GenerationWrite, RequestLogFilter, TenantAuditFilter};
+pub use trait_def::{
+    merge_metadata, stage_claim_record, DatabaseStore, GenerationWrite, IdempotencyBegin, RequestLogFilter,
+    StoredResponse, TenantAuditFilter, IDEMPOTENCY_IN_PROGRESS_STALE, IDEMPOTENCY_TTL,
+};
 
 /// Connect to the appropriate database backend based on the URL scheme.
 ///

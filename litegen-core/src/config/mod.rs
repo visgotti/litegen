@@ -199,6 +199,11 @@ pub struct ServerConfig {
     /// `http://{host}:{port}`, which is correct for local dev and CI.
     #[serde(default)]
     pub public_base_url: Option<String>,
+    /// Seconds one vendor call may take before litegen stops waiting
+    /// (default 120). A call that ran out of time is answered 504 and never
+    /// sent again: the vendor may still finish, and bill, the job.
+    #[serde(default)]
+    pub vendor_timeout_secs: Option<u64>,
 }
 
 impl Default for ServerConfig {
@@ -208,11 +213,20 @@ impl Default for ServerConfig {
             port: default_port(),
             request_timeout_seconds: default_request_timeout(),
             public_base_url: None,
+            vendor_timeout_secs: None,
         }
     }
 }
 
+/// How long a direct vendor call may take when the config does not say.
+pub const DEFAULT_VENDOR_TIMEOUT_SECS: u64 = 120;
+
 impl ServerConfig {
+    /// The per-call vendor timeout.
+    pub fn vendor_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.vendor_timeout_secs.unwrap_or(DEFAULT_VENDOR_TIMEOUT_SECS).max(1))
+    }
+
     /// The absolute origin to mint client-facing URLs from.
     ///
     /// `host` is a BIND address, not an origin, and the two are only

@@ -307,3 +307,42 @@ async fn metadata_merge_and_stage_claims_against_postgres() {
     assert_eq!(late, crate::db::GenerationWrite::AlreadyTerminal);
     assert!(!db.claim_generation_stage(&id, "refine", "poller").await.unwrap());
 }
+
+/// Idempotency-Key records in their Postgres spelling (BYTEA body, `$n`
+/// placeholders, TIMESTAMPTZ ages): claim, replay, conflict, release and
+/// racing first requests.
+#[tokio::test]
+async fn idempotency_records_against_postgres() {
+    use crate::db::{IdempotencyBegin, StoredResponse};
+    let Ok(url) = std::env::var("LITEGEN_PG_TEST_URL") else {
+        eprintln!(
+            "skipping idempotency_records_against_postgres: \
+             set LITEGEN_PG_TEST_URL to a throwaway Postgres database to run"
+        );
+        return;
+    };
+    let db = std::sync::Arc::new(PostgresDatabase::connect(&url).await.expect("connect + migrate"));
+    let scope = format!("org:{}", Uuid::new_v4());
+
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let (db, scope) = (db.clone(), scope.clone());
+        tasks.push(tokio::spawn(async move { db.idempotency_begin(&scope, "k", "h").await.unwrap() }));
+    }
+    let mut started = 0;
+    for t in tasks {
+        if matches!(t.await.unwrap(), IdempotencyBegin::Started) {
+            started += 1;
+        }
+    }
+    assert_eq!(started, 1);
+
+    let stored = StoredResponse { status: 504, headers: vec![("content-type".into(), "application/json".into())], body: b"{\"x\":1}".to_vec() };
+    db.idempotency_complete(&scope, "k", &stored).await.unwrap();
+    assert_eq!(db.idempotency_begin(&scope, "k", "h").await.unwrap(), IdempotencyBegin::Replay(stored));
+    assert_eq!(db.idempotency_begin(&scope, "k", "other").await.unwrap(), IdempotencyBegin::Conflict);
+
+    assert_eq!(db.idempotency_begin(&scope, "fresh", "h").await.unwrap(), IdempotencyBegin::Started);
+    db.idempotency_release(&scope, "fresh").await.unwrap();
+    assert_eq!(db.idempotency_begin(&scope, "fresh", "h2").await.unwrap(), IdempotencyBegin::Started);
+}

@@ -2163,6 +2163,11 @@ export interface components {
              *     `quota_exceeded`, `provider_not_configured`.
              */
             type: string;
+            /**
+             * @description On `vendor_timeout`: the job the vendor had accepted when litegen
+             *     stopped waiting, if it had. The job was not re-sent.
+             */
+            vendor_job_id?: string | null;
         };
         ErrorResponse: {
             error: components["schemas"]["ErrorDetail"];
@@ -5927,7 +5932,10 @@ export interface operations {
     generate_image: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description 1–255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key. */
+                "Idempotency-Key"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -5940,6 +5948,8 @@ export interface operations {
             /** @description Image generated successfully */
             200: {
                 headers: {
+                    /** @description `true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise. */
+                    "Idempotent-Replayed"?: string;
                     /** @description Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped. */
                     "X-Litegen-Dropped-Params"?: string;
                     [name: string]: unknown;
@@ -5957,8 +5967,26 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description `idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Provider error */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one. */
+            504: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6638,7 +6666,10 @@ export interface operations {
     generate_3d: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description 1–255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key. */
+                "Idempotency-Key"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -6651,6 +6682,8 @@ export interface operations {
             /** @description 3D generation started */
             200: {
                 headers: {
+                    /** @description `true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise. */
+                    "Idempotent-Replayed"?: string;
                     /** @description Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped. */
                     "X-Litegen-Dropped-Params"?: string;
                     [name: string]: unknown;
@@ -6661,6 +6694,24 @@ export interface operations {
             };
             /** @description Bad request */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one. */
+            504: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8166,7 +8217,10 @@ export interface operations {
     generate_video: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description 1–255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key. */
+                "Idempotency-Key"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -8179,6 +8233,8 @@ export interface operations {
             /** @description Video generation started */
             200: {
                 headers: {
+                    /** @description `true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise. */
+                    "Idempotent-Replayed"?: string;
                     /** @description Comma-separated names of params this request sent that the model does not support, dropped instead of refused because `strict` was false. Absent when nothing was dropped. */
                     "X-Litegen-Dropped-Params"?: string;
                     [name: string]: unknown;
@@ -8189,6 +8245,24 @@ export interface operations {
             };
             /** @description Bad request */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one. */
+            504: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -439,6 +439,22 @@ mod tests {
     }
 
     #[test]
+    fn every_billed_post_documents_its_idempotency_key() {
+        let d = doc();
+        for path in ["/v1/images/generations", "/v1/videos/generations", "/v1/models3d/generations"] {
+            let op = &d["paths"][path]["post"];
+            let params = op["parameters"].as_array().cloned().unwrap_or_default();
+            let key = params.iter().find(|p| p["name"] == "Idempotency-Key").unwrap_or_else(|| panic!("{path}: no Idempotency-Key"));
+            assert_eq!(key["in"], "header", "{path}");
+            assert_ne!(key["required"], json!(true), "{path}: the key is optional");
+            assert!(op["responses"]["409"].is_object(), "{path} does not document 409");
+            assert!(op["responses"]["504"].is_object(), "{path} does not document 504");
+            assert!(op["responses"]["200"]["headers"]["Idempotent-Replayed"].is_object(), "{path}");
+        }
+        assert!(d["components"]["schemas"]["ErrorDetail"]["properties"]["vendor_job_id"].is_object());
+    }
+
+    #[test]
     fn every_generation_post_documents_the_dropped_params_header() {
         let d = doc();
         for path in ["/v1/images/generations", "/v1/videos/generations", "/v1/models3d/generations"] {

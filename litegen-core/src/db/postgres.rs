@@ -165,6 +165,91 @@ impl DatabaseStore for PostgresDatabase {
         Ok(())
     }
 
+    async fn idempotency_begin(&self, scope: &str, key: &str, request_hash: &str) -> Result<crate::db::IdempotencyBegin, sqlx::Error> {
+        use crate::db::IdempotencyBegin;
+        let now = chrono::Utc::now();
+        // Opportunistic purge: the index on created_at keeps this cheap.
+        sqlx::query("DELETE FROM idempotency_keys WHERE created_at < $1")
+            .bind(now - crate::db::IDEMPOTENCY_TTL)
+            .execute(&self.pool)
+            .await?;
+        for _ in 0..4 {
+            let inserted = sqlx::query(
+                "INSERT INTO idempotency_keys (scope, idem_key, request_hash, state, created_at) \
+                 VALUES ($1, $2, $3, 'in_progress', $4) ON CONFLICT (scope, idem_key) DO NOTHING",
+            )
+            .bind(scope)
+            .bind(key)
+            .bind(request_hash)
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+            if inserted.rows_affected() > 0 {
+                return Ok(IdempotencyBegin::Started);
+            }
+            let row: Option<(String, String, Option<i64>, Option<String>, Option<Vec<u8>>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+                "SELECT request_hash, state, CAST(response_status AS BIGINT), response_headers, response_body, created_at \
+                 FROM idempotency_keys WHERE scope = $1 AND idem_key = $2",
+            )
+            .bind(scope)
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+            let Some((hash, state, status, headers, body, created_at)) = row else { continue };
+            let expired = now - created_at > crate::db::IDEMPOTENCY_TTL
+                || (state == "in_progress" && now - created_at > crate::db::IDEMPOTENCY_IN_PROGRESS_STALE);
+            if expired {
+                // Only the record we looked at: a fresh one a racer just made stays.
+                sqlx::query("DELETE FROM idempotency_keys WHERE scope = $1 AND idem_key = $2 AND created_at = $3")
+                    .bind(scope)
+                    .bind(key)
+                    .bind(created_at)
+                    .execute(&self.pool)
+                    .await?;
+                continue;
+            }
+            if hash != request_hash {
+                return Ok(IdempotencyBegin::Conflict);
+            }
+            if state != "completed" {
+                return Ok(IdempotencyBegin::InProgress);
+            }
+            let headers: Vec<(String, String)> = headers
+                .and_then(|h| serde_json::from_str(&h).ok())
+                .unwrap_or_default();
+            return Ok(IdempotencyBegin::Replay(crate::db::StoredResponse {
+                status: status.unwrap_or(200).clamp(100, 599) as u16,
+                headers,
+                body: body.unwrap_or_default(),
+            }));
+        }
+        Err(sqlx::Error::Protocol(format!("idempotency key {key} kept changing under four claim attempts")))
+    }
+
+    async fn idempotency_complete(&self, scope: &str, key: &str, response: &crate::db::StoredResponse) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE idempotency_keys SET state = 'completed', response_status = $1, response_headers = $2, response_body = $3 \
+             WHERE scope = $4 AND idem_key = $5",
+        )
+        .bind(i32::from(response.status))
+        .bind(serde_json::to_string(&response.headers).unwrap_or_else(|_| "[]".into()))
+        .bind(&response.body)
+        .bind(scope)
+        .bind(key)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn idempotency_release(&self, scope: &str, key: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM idempotency_keys WHERE scope = $1 AND idem_key = $2 AND state = 'in_progress'")
+            .bind(scope)
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn merge_generation_metadata_if_active(
         &self,
         id: &str,

@@ -1,4 +1,5 @@
 pub mod backpressure;
+pub mod idempotency;
 pub mod rate_limit;
 pub mod validator;
 #[cfg(test)] mod validator_tests;

@@ -613,6 +613,7 @@ mod tests {
 
     fn make_extras() -> ImageExtras {
         ImageExtras {
+            vendor_job: Default::default(),
             size: None,
             aspect_ratio: Some("1:1".to_string()),
             quality: None,

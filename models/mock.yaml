@@ -215,6 +215,21 @@ models:
 
   # ─── Extended video mock models ──────────────────────────────────────────────
 
+  - id: mock/slow-image
+    provider: mock
+    media_type: image
+    display_name: Mock Slow Image
+    description: >-
+      Answers after 30 seconds, longer than any vendor timeout a test sets
+      (server.vendor_timeout_secs), so the first attempt always times out. A
+      timed-out vendor call is never sent again: the request is answered 504
+      vendor_timeout and the mock counts exactly one call. Use with an
+      Idempotency-Key to see the 504 replayed.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    tags: [mock, test, idempotency]
+
   - id: mock/keyframe-video
     provider: mock
     media_type: video

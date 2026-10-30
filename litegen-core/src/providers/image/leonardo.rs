@@ -349,6 +349,8 @@ impl ImageProvider for LeonardoImageProvider {
             provider_error: Some(submit.clone()),
             retryable: false,
         })?;
+        // Accepted: from here on a failure must not re-send the job (L1).
+        extras.vendor_job.record(gen_id);
 
         let result = self.poll_generation(gen_id).await?;
         let image_url = result["generations_by_pk"]["generated_images"][0]["url"]
@@ -450,6 +452,7 @@ mod tests {
 
     fn make_extras() -> ImageExtras {
         ImageExtras {
+            vendor_job: Default::default(),
             size: Some("1024x768".to_string()), aspect_ratio: None, quality: None, style: None,
             steps: None, guidance_scale: None, strength: None, response_format: "url".to_string(), extra: None,
         }
@@ -488,6 +491,8 @@ mod tests {
         let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
 
         let result = provider.generate(&schema, &base, &extras, &materialized).await;
+        // The vendor accepted the job before the poll: the router must never re-send it.
+        assert_eq!(extras.vendor_job.get().as_deref(), Some("leo-gen-1"));
         assert!(result.is_ok(), "generate failed: {:?}", result.err());
         assert_eq!(result.unwrap().data, b"LEOPNG");
 
