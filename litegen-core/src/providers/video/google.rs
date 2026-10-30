@@ -340,11 +340,11 @@ mod tests {
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    /// The Gemini API's Veo 3.1 previews left the catalog at their shutdown
+    /// (2026-10-22); their last catalog rows are kept as test fixtures.
     fn ref_schema(id: &str) -> crate::capabilities::ModelSchema {
-        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        p.pop();
-        p.push("models");
-        let r = crate::capabilities::CapabilityRegistry::from_dir(&p).expect("load");
+        let yaml = include_str!("../../../tests/fixtures/retired-models.yaml");
+        let r = crate::capabilities::CapabilityRegistry::from_yaml_strs(&[("retired-models.yaml", yaml)]).expect("load");
         r.get(id).expect("model").clone()
     }
 
@@ -501,7 +501,8 @@ mod tests {
         );
     }
 
-    /// Veo 2.0 / 3.0 / 3.0-fast were shut down on 2026-06-30.
+    /// Veo 2.0 / 3.0 / 3.0-fast were shut down on 2026-06-30, and the Veo 3.1
+    /// previews on 2026-10-22.
     /// @see <https://ai.google.dev/gemini-api/docs/deprecations>
     #[test]
     fn catalog_ships_no_retired_veo_models() {
@@ -513,10 +514,13 @@ mod tests {
             "google/veo-2.0-generate-001",
             "google/veo-3.0-generate-001",
             "google/veo-3.0-fast-generate-001",
+            "google/veo-3.1-generate-preview",
+            "google/veo-3.1-fast-generate-preview",
+            "google/veo-3.1-lite-generate-preview",
         ] {
             assert!(
                 r.get(dead).is_none(),
-                "{dead} was shut down on 2026-06-30 and must not be advertised"
+                "{dead} was shut down and must not be advertised"
             );
         }
     }

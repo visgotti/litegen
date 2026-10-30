@@ -147,10 +147,10 @@ test('the real models/ directory derives a sane catalog', () => {
   const models = deriveModels(all);
   assert.ok(models.length >= 50, `expected a substantial catalog, got ${models.length}`);
 
-  // openai/dall-e-3 was retired by OpenAI on 2026-05-12; gpt-image-1 is the
-  // replacement and carries the three standard GPT-image sizes.
-  const gptImage1 = models.find((m) => m.id === 'openai/gpt-image-1');
-  assert.ok(gptImage1, 'openai/gpt-image-1 should be present');
-  assert.deepEqual(gptImage1.sizes, ['1024x1024', '1536x1024', '1024x1536']);
-  assert.equal(gptImage1.capabilities.textToImage, true);
+  // openai/dall-e-3 was retired by OpenAI on 2026-05-12 and gpt-image-1 on
+  // 2026-10-23; GPT Image 2.5 Sunburst is the replacement OpenAI recommends.
+  const sunburst = models.find((m) => m.id === 'openai/gpt-image-2.5-sunburst');
+  assert.ok(sunburst, 'openai/gpt-image-2.5-sunburst should be present');
+  assert.equal(sunburst.capabilities.textToImage, true);
+  assert.equal(models.find((m) => m.id === 'openai/gpt-image-1'), undefined, 'gpt-image-1 is shut down');
 });

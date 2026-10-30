@@ -2,8 +2,8 @@ models:
   # DALL-E 2 and DALL-E 3 were shut down on 2026-05-12. OpenAI's stated
   # replacements are "gpt-image-2, gpt-image-1, or gpt-image-1-mini".
   # gpt-image-1-mini / gpt-image-1.5 / chatgpt-image-latest are themselves
-  # scheduled for shutdown on 2026-12-01, and gpt-image-1 on 2026-10-23
-  # (replacement gpt-image-2.5-sunburst or -flare). GPT Image 2.5 (Sunburst,
+  # scheduled for shutdown on 2026-12-01; gpt-image-1 was shut down on
+  # 2026-10-23 (replacement gpt-image-2.5-sunburst or -flare). GPT Image 2.5 (Sunburst,
   # Flare; released 2026-09-08) is what OpenAI recommends for new integrations.
   # Sora 2 and the Videos API were shut down on 2026-09-24, so OpenAI has no
   # video model here.
@@ -138,40 +138,6 @@ models:
         min_height: 480
         max_height: 3840
         multiple_of: 16
-      quality:
-        kind: string
-        enum_values: [auto, low, medium, high]
-        default: auto
-    ref_inputs:
-      max_total: 2
-      default_role: init
-      provider_format: { form: multipart, field_map: { init: image, mask: mask } }
-      roles:
-        init: { required: false, min_count: 0, max_count: 1 }
-        mask: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [background, output_format, output_compression, moderation, user]
-    tags: [text-to-image, image-to-image, inpainting]
-
-  - id: openai/gpt-image-1
-    provider: openai
-    media_type: image
-    display_name: GPT Image 1
-    # Shutdown announced for 2026-10-23, replacement gpt-image-2.5-sunburst or -flare.
-    # @see https://developers.openai.com/api/docs/deprecations (2026-10-12)
-    description: "DEPRECATED: OpenAI shuts gpt-image-1 down on 2026-10-23
-      (replacement gpt-image-2.5-sunburst or gpt-image-2.5-flare). OpenAI GPT Image 1. Text-to-image plus
-      prompt-driven editing and inpainting via the images/edits endpoint."
-    pricing: { base_cost_usd: 0.04 }
-    capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
-    prompt: { required: true, max_length: 32000 }
-    params:
-      size:
-        kind: size
-        mode: enum
-        values:
-          - [1024, 1024]
-          - [1536, 1024]
-          - [1024, 1536]
       quality:
         kind: string
         enum_values: [auto, low, medium, high]

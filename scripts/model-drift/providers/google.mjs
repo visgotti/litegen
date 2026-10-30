@@ -164,9 +164,6 @@ export default {
     'google/gemini-3.1-flash-lite-image': 'gemini-3.1-flash-lite-image',
     'google/gemini-2.5-flash-image': 'gemini-2.5-flash-image',
     'google/gemini-3-pro-image': 'gemini-3-pro-image',
-    'google/veo-3.1-generate-preview': 'veo-3.1-generate-preview',
-    'google/veo-3.1-fast-generate-preview': 'veo-3.1-fast-generate-preview',
-    'google/veo-3.1-lite-generate-preview': 'veo-3.1-lite-generate-preview',
   },
   sources: [
     {

@@ -116,7 +116,7 @@ describe("spend", () => {
       keyId: "k1",
       userId: "u1",
       endUser: "c1",
-      model: "openai/gpt-image-1",
+      model: "openai/gpt-image-2",
       provider: "openai",
       tag: "beta",
     });
@@ -129,7 +129,7 @@ describe("spend", () => {
       key_id: "k1",
       user_id: "u1",
       end_user: "c1",
-      model: "openai/gpt-image-1",
+      model: "openai/gpt-image-2",
       provider: "openai",
       tag: "beta",
     });

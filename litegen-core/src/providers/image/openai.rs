@@ -699,8 +699,8 @@ mod tests {
             .await;
 
         let provider = make_provider_with_base(&format!("{}/v1/images/generations", server.uri()));
-        let schema = ref_schema("openai/gpt-image-1");
-        let base = make_base("a beautiful landscape", "openai/gpt-image-1");
+        let schema = ref_schema("openai/gpt-image-2");
+        let base = make_base("a beautiful landscape", "openai/gpt-image-2");
         let extras = make_extras(Some("1024x1024"), Some("high"), None);
         let materialized = empty_materialized();
 
@@ -718,7 +718,7 @@ mod tests {
         let received = server.received_requests().await.unwrap();
         assert_eq!(received.len(), 1);
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
-        assert_eq!(body["model"], "gpt-image-1");
+        assert_eq!(body["model"], "gpt-image-2");
         assert_eq!(body["prompt"], "a beautiful landscape");
         assert_eq!(body["size"], "1024x1024");
         assert_eq!(body["quality"], "high");
@@ -993,7 +993,7 @@ mod tests {
     #[test]
     fn catalog_quality_values_match_the_gpt_image_enum() {
         let r = registry();
-        for id in ["openai/gpt-image-2", "openai/gpt-image-1"] {
+        for id in ["openai/gpt-image-2"] {
             let schema = r.get(id).unwrap_or_else(|| panic!("{id} missing from catalog"));
             let values = match schema.params.get("quality") {
                 Some(crate::capabilities::schema::ParamSpec::String(s)) => s.enum_values.clone(),
@@ -1024,8 +1024,8 @@ mod tests {
             .await;
 
         let provider = make_provider_with_base(&format!("{}/v1/images/generations", server.uri()));
-        let schema = ref_schema("openai/gpt-image-1");
-        let base = make_base("put a hat on the cat", "openai/gpt-image-1");
+        let schema = ref_schema("openai/gpt-image-2");
+        let base = make_base("put a hat on the cat", "openai/gpt-image-2");
         let extras = make_extras(Some("1024x1024"), None, None);
         let materialized = crate::proxy::materializer::MaterializedRequest {
             refs: vec![crate::proxy::materializer::MaterializedRef {

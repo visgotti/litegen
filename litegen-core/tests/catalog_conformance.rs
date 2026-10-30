@@ -104,6 +104,14 @@ fn no_retired_model_ids_are_advertised() {
         // https://docs.aws.amazon.com/bedrock/latest/userguide/model-lifecycle-legacy.md: "Models that have reached EOL"
         ("bedrock/amazon.nova-canvas-v1:0", "Bedrock EOL 2026-09-30; no Amazon successor"),
         ("bedrock/amazon.nova-reel-v1:1", "Bedrock EOL 2026-09-30; no Amazon successor"),
+        // Scheduled shutdowns that took effect (2026-10-30 build): OpenAI's
+        // deprecations page, and Google's for the Gemini API's Veo previews.
+        // @see https://developers.openai.com/api/docs/deprecations
+        // @see https://ai.google.dev/gemini-api/docs/deprecations
+        ("openai/gpt-image-1", "OpenAI shut down gpt-image-1 2026-10-23; replacement openai/gpt-image-2.5-sunburst or -flare"),
+        ("google/veo-3.1-generate-preview", "Google shut down the Veo 3.1 previews 2026-10-22; successor gemini-omni-1.1-flash (Interactions API, not carried)"),
+        ("google/veo-3.1-fast-generate-preview", "Google shut down the Veo 3.1 previews 2026-10-22; successor gemini-omni-1.1-flash (Interactions API, not carried)"),
+        ("google/veo-3.1-lite-generate-preview", "Google shut down the Veo 3.1 previews 2026-10-22; successor gemini-omni-1.1-flash (Interactions API, not carried)"),
     ];
     let mut still_present = Vec::new();
     for (id, why) in retired {
@@ -126,14 +134,9 @@ fn no_retired_model_ids_are_advertised() {
 /// `no_retired_model_ids_are_advertised`. The weekly `/model-drift` run adds
 /// entries here as vendors announce shutdowns.
 const SCHEDULED_SHUTDOWNS: &[(&str, &str, &str)] = &[
-    // @see https://developers.openai.com/api/docs/deprecations
-    ("openai/gpt-image-1", "2026-10-23", "OpenAI shuts down gpt-image-1; replacement openai/gpt-image-2.5-sunburst or -flare"),
     // @see https://ai.google.dev/gemini-api/docs/deprecations
     // Google moved this shutdown from 2026-10-02 to 2027-03-15 (deprecations page, 2026-10-12).
     ("google/gemini-2.5-flash-image", "2027-03-15", "Google shuts down gemini-2.5-flash-image; successor google/gemini-3.1-flash-lite-image"),
-    ("google/veo-3.1-generate-preview", "2026-10-22", "Google shuts down the Veo 3.1 previews; successor gemini-omni-1.1-flash (Interactions API, not carried)"),
-    ("google/veo-3.1-fast-generate-preview", "2026-10-22", "Google shuts down the Veo 3.1 previews; successor gemini-omni-1.1-flash (Interactions API, not carried)"),
-    ("google/veo-3.1-lite-generate-preview", "2026-10-22", "Google shuts down the Veo 3.1 previews; successor gemini-omni-1.1-flash (Interactions API, not carried)"),
 ];
 
 /// Strictly after the shutdown date: on the date itself the vendor still serves it.
@@ -194,7 +197,8 @@ fn replacement_models_are_advertised() {
     let reg = registry();
     for id in [
         "openai/gpt-image-2",
-        "openai/gpt-image-1",
+        "openai/gpt-image-2.5-sunburst",
+        "openai/gpt-image-2.5-flare",
         "google/gemini-3.1-flash-image",
         "google/gemini-3-pro-image",
         "runway/gen4-turbo",
@@ -266,7 +270,7 @@ fn stability_aspect_ratios_are_in_the_v2_enum() {
 #[test]
 fn openai_image_quality_values_are_the_gpt_image_enum() {
     let reg = registry();
-    for id in ["openai/gpt-image-2", "openai/gpt-image-1"] {
+    for id in ["openai/gpt-image-2"] {
         for q in enum_values(&reg, id, "quality") {
             assert!(
                 ["auto", "low", "medium", "high"].contains(&q.as_str()),
@@ -638,25 +642,6 @@ fn openai_gpt_image_2_advertises_editing_and_inpainting() {
             assert_eq!(mp.field_map.get("mask").map(String::as_str), Some("mask"));
         }
         other => panic!("images/edits is multipart; gpt-image-2 provider_format is {other:?}"),
-    }
-}
-
-/// Carried models whose vendor shutdown is announced but not yet past carry a
-/// `DEPRECATED:` description naming the date.
-/// @see <https://developers.openai.com/api/docs/deprecations> (2026-09-11)
-#[test]
-fn openai_models_with_an_announced_shutdown_are_marked_deprecated() {
-    let reg = registry();
-    // (catalog id, announced shutdown date)
-    for (id, date) in [
-        ("openai/gpt-image-1", "2026-10-23"),
-    ] {
-        let schema = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
-        assert!(
-            schema.description.starts_with("DEPRECATED") && schema.description.contains(date),
-            "{id} shuts down {date}; its description should say so: {:?}",
-            schema.description
-        );
     }
 }
 

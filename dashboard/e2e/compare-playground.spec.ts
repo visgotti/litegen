@@ -20,20 +20,21 @@ test('compare mode: unified params from diverse schemas + multi-model generation
   await page.getByTestId('pg-mode-compare').click();
   await expect(page.getByTestId('pg-model-picker')).toBeVisible();
 
-  // (A) Unified panel from diverse REAL catalog schemas:
-  //   openai/gpt-image-1 → params {quality, size}
-  //   bfl/flux-pro-1.1   → params {seed, size}
-  // (was openai/dall-e-3 + bfl/flux-pro; OpenAI retired DALL-E on 2026-05-12 and
-  // BFL removed the /v1/flux-pro endpoint, so both left the catalog.)
-  // Their providers aren't configured here, but GET /v1/models/{id} still serves
-  // the schema, so the unified panel builds from them.
-  await page.getByTestId('pg-model-openai/gpt-image-1').locator('input').check();
+  // (A) Unified panel from diverse catalog schemas:
+  //   mock/all-params-image → params {quality, size (enum), seed, …}
+  //   bfl/flux-pro-1.1      → params {seed, size (freeform)}
+  // (was openai/gpt-image-1, and before it openai/dall-e-3 + bfl/flux-pro. OpenAI
+  // shut gpt-image-1 down on 2026-10-23 and no carried OpenAI model has an enum
+  // `size` beside `quality`, so the mock stands in for that shape.)
+  // flux's provider isn't configured here, but GET /v1/models/{id} still serves
+  // the schema, so the unified panel builds from it.
+  await page.getByTestId('pg-model-mock/all-params-image').locator('input').check();
   await page.getByTestId('pg-model-bfl/flux-pro-1.1').locator('input').check();
   await expect(page.getByTestId('pg-selected-count')).toContainText('2 selected');
 
-  // size is shared by both → "all"; quality only gpt-image-1.
+  // size is shared by both → "all"; quality only all-params-image.
   await expect(page.getByTestId('pg-param-size-applies')).toContainText('all');
-  await expect(page.getByTestId('pg-param-quality-applies')).toContainText('gpt-image-1');
+  await expect(page.getByTestId('pg-param-quality-applies')).toContainText('all-params-image');
   // seed has a dedicated control, not a merged row: flux-pro-1.1 declares `seed`, but
   // it must NOT surface as a merged param row (no `pg-param-seed` input nor
   // `pg-param-seed-applies` row) — instead the dedicated `pg-seed` control renders.
@@ -47,7 +48,7 @@ test('compare mode: unified params from diverse schemas + multi-model generation
     await page.getByTestId('pg-view-requests').click();
     const reqs = JSON.parse(await page.getByTestId('pg-requests-json').innerText());
     return {
-      gptImage: reqs.find((r: { modelId: string }) => r.modelId === 'openai/gpt-image-1').request,
+      gptImage: reqs.find((r: { modelId: string }) => r.modelId === 'mock/all-params-image').request,
       flux: reqs.find((r: { modelId: string }) => r.modelId === 'bfl/flux-pro-1.1').request,
     };
   };
@@ -60,10 +61,10 @@ test('compare mode: unified params from diverse schemas + multi-model generation
   expect('size' in flux).toBe(false);
 
   // Once set, each param goes only to the models that declare it.
-  await page.getByTestId('pg-param-quality').selectOption('high');
+  await page.getByTestId('pg-param-quality').selectOption('hd');
   await page.getByTestId('pg-param-size').selectOption('1024x1024');
   ({ gptImage, flux } = await requestsFor());
-  expect(gptImage.quality).toBe('high'); // gpt-image-1 declares quality
+  expect(gptImage.quality).toBe('hd'); // all-params-image declares quality
   expect('quality' in flux).toBe(false);  // flux does NOT → dropped
   expect(gptImage.size).toBe('1024x1024');
   expect(flux.size).toBe('1024x1024');
@@ -74,7 +75,7 @@ test('compare mode: unified params from diverse schemas + multi-model generation
   expect('quality' in gptImage).toBe(false);
 
   // (B) Generation with MOCK models (runnable here) → one tile per model with an image.
-  await page.getByTestId('pg-model-openai/gpt-image-1').locator('input').uncheck();
+  await page.getByTestId('pg-model-mock/all-params-image').locator('input').uncheck();
   await page.getByTestId('pg-model-bfl/flux-pro-1.1').locator('input').uncheck();
   await page.getByTestId('pg-model-filter').fill('mock');
   await page.getByTestId('pg-model-mock/visual-image-gen').locator('input').check();

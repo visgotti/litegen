@@ -251,16 +251,6 @@ async fn live_hunyuan_image() {
 // ─── Video providers ──────────────────────────────────────────────────────
 
 #[tokio::test]
-#[ignore = "live: set GOOGLE_API_KEY"]
-async fn live_google_veo_video() {
-    skip_if_missing!("GOOGLE_API_KEY");
-    let mut p = litegen::providers::video::google::GoogleVideoProvider::new();
-    p.configure(api_key_cfg(&env("GOOGLE_API_KEY").unwrap()));
-    let h = p.generate(&schema("google/veo-3.1-generate-preview"), &base("a cat surfing a wave", "google/veo-3.1-generate-preview"), &vid_extras(), &empty_mat()).await.expect("veo submit");
-    assert!(drive_video(&p, h).await.is_some());
-}
-
-#[tokio::test]
 #[ignore = "live: set LUMA_API_KEY"]
 async fn live_luma_video() {
     skip_if_missing!("LUMA_API_KEY");
