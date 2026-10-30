@@ -218,6 +218,36 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
+    // 3D doc §5 (P2): every video task but generate works on a source clip,
+    // and only those take one; a retake takes a window, and an extend says
+    // what it returns.
+    if m.media_type == MediaType::Video {
+        let source = match m.params.get("source_video") {
+            Some(ParamSpec::SourceVideo(s)) => Some(s),
+            _ => None,
+        };
+        match (m.task, source) {
+            (ModelTask::Generate, Some(_)) => {
+                return Err(bad(format!("model '{}' takes source_video, which only video operations take", m.id)));
+            }
+            (ModelTask::Generate, None) => {}
+            (task, None) => {
+                return Err(bad(format!("model '{}' is a video '{}' operation but declares no params.source_video", m.id, task.as_str())));
+            }
+            (task, Some(s)) => {
+                if s.formats.is_empty() {
+                    return Err(bad(format!("model '{}' source_video declares no formats", m.id)));
+                }
+                if task == ModelTask::Extend && s.extend_output.is_none() {
+                    return Err(bad(format!("model '{}' is an extend model: say its extend_output (full | added)", m.id)));
+                }
+                if task == ModelTask::Retake && !matches!(m.params.get("time_range"), Some(ParamSpec::TimeRange(_))) {
+                    return Err(bad(format!("model '{}' is a retake model: declare the time_range it takes", m.id)));
+                }
+            }
+        }
+    }
+
     // 3D doc §4 (P2): a background swap redraws an init image's background
     // from a prompt.
     if m.task == ModelTask::BackgroundSwap {

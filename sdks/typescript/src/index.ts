@@ -127,6 +127,11 @@ export type Expand = components["schemas"]["Expand"];
 /** One box of a text-to-image layout, in canvas fractions: an object (`prompt`) or words (`text`). */
 export type LayoutItem = components["schemas"]["LayoutItem"];
 export type LayoutKind = components["schemas"]["LayoutKind"];
+/** A window of a clip, in seconds (`retake`, `video_edit`). */
+export type TimeRange = components["schemas"]["TimeRange"];
+/** One stretch of a video operation's clip: from the source or generated. */
+export type VideoSegment = components["schemas"]["VideoSegment"];
+export type ExtendOutput = components["schemas"]["ExtendOutput"];
 /** `POST /v1/images/segmentations` (PixelGenie L7): an image and what to select in it. */
 export type ImageSegmentationRequest = components["schemas"]["ImageSegmentationRequest"];
 /** One mask per object selected, best first. */

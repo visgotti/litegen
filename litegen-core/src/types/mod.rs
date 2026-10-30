@@ -125,6 +125,19 @@ pub struct VideoGenerationRequest {
     /// `true` for a clip whose last frame is its first (`supports_loop`).
     #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
     pub r#loop: Option<bool>,
+    /// The clip an operation (`extend`, `retake`, `video_edit`) works on (3D
+    /// doc §5): a litegen generation id, a URL or base64, as `source_model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_video: Option<SourceRef>,
+    /// An `extend`: add before (`backward`) or after (`forward`) the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<String>,
+    /// A `retake`'s window, or a `video_edit`'s where the model takes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_range: Option<TimeRange>,
+    /// A `retake`'s track: `video`, `audio` or `both`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace: Option<String>,
 }
 
 /// A video's camera (PixelGenie L10): `fixed` holds the shot still.
@@ -295,6 +308,10 @@ pub struct VideoGenerationResponse {
     /// What came back, read from the finished video (PixelGenie L10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<VideoMedia>,
+    /// An operation's clip, stretch by stretch: from the source or generated
+    /// (3D doc §5). Absent on a plain generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segments: Option<Vec<VideoSegment>>,
 }
 
 // ─── 3D Model Generation ──────────────────────────────────────────────────
@@ -621,6 +638,29 @@ impl ImageView {
     pub fn parse(s: &str) -> Option<ImageView> {
         Self::ALL.into_iter().find(|v| v.as_str() == s)
     }
+}
+
+/// A window of a clip, in seconds from its start (3D doc §5).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct TimeRange {
+    pub start_s: f64,
+    pub end_s: f64,
+}
+
+/// Where a stretch of a finished clip came from (3D doc §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SegmentOrigin {
+    Source,
+    Generated,
+}
+
+/// One stretch of a finished operation's clip, in its own seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct VideoSegment {
+    pub start_s: f64,
+    pub end_s: f64,
+    pub origin: SegmentOrigin,
 }
 
 /// Where a layout box sits, as fractions of the canvas (0 to 1, top-left
@@ -1425,6 +1465,15 @@ pub struct ModelCapabilities {
     /// mask or a region (3D doc §4).
     #[serde(default)]
     pub supports_preserve_unmasked: bool,
+    /// Works on a `source_video` (3D doc §5).
+    #[serde(default)]
+    pub supports_source_video: bool,
+    /// An `extend` model's answer: the whole clip or only the added part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extend_output: Option<crate::capabilities::ExtendOutput>,
+    /// Takes `time_range`.
+    #[serde(default)]
+    pub supports_time_range: bool,
     /// Serves `POST /v1/images/segmentations` (PixelGenie L7).
     #[serde(default)]
     pub supports_segmentation: bool,

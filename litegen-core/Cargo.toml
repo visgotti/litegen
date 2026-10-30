@@ -102,6 +102,8 @@ rand = "0.8"
 # glTF may not require an extension to read, so they are transcoded to PNG.
 # jpeg: partial image edits read the caller's init image, often a JPEG.
 image = { version = "0.25", default-features = false, features = ["png", "gif", "webp", "jpeg"] }
+# Frame-exact GIF copying for the video operation mocks (the version image uses).
+gif = "0.14"
 
 # Multipart parsing
 multer = "3"

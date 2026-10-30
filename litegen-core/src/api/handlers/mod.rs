@@ -535,7 +535,20 @@ pub async fn generate_video(
         Err(e) => return validation_rejection_response(&e.to_string(), 400, &validated.schema.id),
     };
 
+    // 3D doc §5: a video operation's source, read and measured before
+    // anything is reserved.
+    let source = match validated.request.source_video.as_ref() {
+        Some(src) => match resolve_source_video(&state, key_ctx.as_ref(), &validated.schema, src, validated.request.time_range).await {
+            Ok(s) => Some(s),
+            Err(resp) => return resp,
+        },
+        None => None,
+    };
     let extras = VideoExtras {
+        source,
+        direction: validated.request.direction.clone(),
+        time_range: validated.request.time_range,
+        replace: validated.request.replace.clone(),
         duration_seconds: crate::api::middleware::validator::resolve_duration_seconds(
             &validated.schema,
             validated.request.duration_seconds,
@@ -587,8 +600,10 @@ pub async fn generate_video(
     };
     let attributed = limits.attribution();
 
+    let segments = plan_segments(&validated.schema, &extras);
     match state.router.generate_video(&validated.schema, &validated.request.base, &extras, &materialized, app_creds).await {
-        Ok(response) => {
+        Ok(mut response) => {
+            response.segments = segments.clone();
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
 
@@ -664,7 +679,11 @@ pub async fn generate_video(
                         org_id.as_deref(),
                         app_id.as_deref(),
                     ).await?;
-                    if let Err(e) = db.merge_generation_metadata_if_active(&id, &serde_json::json!({ "request": request })).await {
+                    let mut recorded = serde_json::json!({ "request": request });
+                    if let Some(segments) = &segments {
+                        recorded["segments"] = serde_json::json!(segments);
+                    }
+                    if let Err(e) = db.merge_generation_metadata_if_active(&id, &recorded).await {
                         tracing::warn!(generation_id = %id, error = %e, "failed to record the video request on its row");
                     }
                     Ok::<(), sqlx::Error>(())
@@ -763,9 +782,11 @@ pub async fn get_video_status(
     };
     match state.router.get_video_status(&id, app_store, app_prefix.as_deref()).await {
         Ok((mut resp, assets)) => {
-            // `created` is when the job was submitted, on every read: the row's.
+            // `created` is when the job was submitted, on every read: the row's;
+            // an operation's segments are its plan, recorded at submit.
             if let Some(row) = row.as_ref() {
                 resp.created = row.created_at.timestamp();
+                resp.segments = row.metadata.as_ref().and_then(|m| serde_json::from_value(m.get("segments")?.clone()).ok());
             }
             // A terminal answer is persisted here as well as by the poller, so
             // it reads the same however often it is read: the router has let
@@ -832,7 +853,143 @@ fn video_response_from_row(gen: &crate::types::Generation) -> VideoGenerationRes
         usage: Some(usage_from_row_cost(gen.cost_usd)),
         created: gen.created_at.timestamp(),
         media: gen.metadata.as_ref().and_then(crate::types::VideoMedia::from_assets),
+        segments: gen.metadata.as_ref().and_then(|m| serde_json::from_value(m.get("segments")?.clone()).ok()),
     }
+}
+
+/// What a video operation's finished clip will hold, stretch by stretch,
+/// from the request and its source (3D doc §5): litegen splices nothing, so
+/// this is what the model's documented behaviour makes.
+fn plan_segments(schema: &crate::capabilities::ModelSchema, extras: &VideoExtras) -> Option<Vec<crate::types::VideoSegment>> {
+    use crate::capabilities::{ExtendOutput, ModelTask, ParamSpec};
+    use crate::types::{SegmentOrigin::*, VideoSegment};
+    let source = extras.source.as_ref()?;
+    let d = source.duration_s;
+    let seg = |start_s: f64, end_s: f64, origin| VideoSegment { start_s, end_s, origin };
+    let window = |r: crate::types::TimeRange| {
+        [seg(0.0, r.start_s, Source), seg(r.start_s, r.end_s, Generated), seg(r.end_s, d, Source)]
+            .into_iter()
+            .filter(|s| s.end_s > s.start_s)
+            .collect::<Vec<_>>()
+    };
+    match schema.task {
+        ModelTask::Extend => {
+            let add = extras.duration_seconds;
+            let full = !matches!(schema.params.get("source_video"), Some(ParamSpec::SourceVideo(s)) if s.extend_output == Some(ExtendOutput::Added));
+            Some(match (full, extras.direction.as_deref()) {
+                (false, _) => vec![seg(0.0, add, Generated)],
+                (true, Some("backward")) => vec![seg(0.0, add, Generated), seg(add, add + d, Source)],
+                (true, _) => vec![seg(0.0, d, Source), seg(d, d + add, Generated)],
+            })
+        }
+        ModelTask::Retake => extras.time_range.map(window),
+        ModelTask::VideoEdit => Some(extras.time_range.map(window).unwrap_or_else(|| vec![seg(0.0, d, Generated)])),
+        _ => None,
+    }
+}
+
+/// Read a video operation's `source_video` (3D doc §5): a generation after
+/// the same access check `GET /v1/generations/{id}` makes, a URL fetched as a
+/// public one, or base64; then measured, and refused before billing when the
+/// model cannot take it — another account's clip where only the vendor's own
+/// chain (`source_not_chainable`), a clip litegen cannot read or longer than
+/// the model takes, or a `time_range` past its end.
+async fn resolve_source_video(
+    state: &Arc<AppState>,
+    key_ctx: Option<&crate::api::middleware::KeyContext>,
+    schema: &crate::capabilities::ModelSchema,
+    src: &crate::types::SourceRef,
+    time_range: Option<crate::types::TimeRange>,
+) -> Result<crate::providers::VideoSource, axum::response::Response> {
+    use crate::proxy::model3d_source::SourceError;
+    use crate::types::SourceKind;
+    let refuse = |e: SourceError| {
+        let status = StatusCode::from_u16(e.status()).unwrap_or(StatusCode::UNPROCESSABLE_ENTITY);
+        (status, Json(crate::api::middleware::validator::err_body(e.code(), &e.message(), Some("source_video"), &schema.id))).into_response()
+    };
+    let spec = match schema.params.get("source_video") {
+        Some(crate::capabilities::ParamSpec::SourceVideo(s)) => s,
+        _ => return Err(refuse(SourceError::FormatUnsupported("this model takes no source_video".into()))),
+    };
+    let (bytes, content_type, vendor_job_id) = match src.kind {
+        SourceKind::Generation => {
+            let gen = readable_generation(state, key_ctx, &src.value)
+                .await
+                .map_err(|_| refuse(SourceError::NotFound(format!("generation {} is not one you can read", src.value))))?;
+            if gen.media_type != "video" {
+                return Err(refuse(SourceError::NotFound(format!("generation {} is not a video", gen.id))));
+            }
+            if gen.status != GenerationStatus::Completed {
+                return Err(refuse(SourceError::NotReady(format!("generation {} has not finished", gen.id))));
+            }
+            if spec.own_generations_only && gen.provider != schema.provider {
+                let msg = format!("'{}' extends only its own vendor's generations; {} was made by {}", schema.id, gen.id, gen.provider);
+                return Err((StatusCode::BAD_REQUEST, Json(crate::api::middleware::validator::err_body("source_not_chainable", &msg, Some("source_video"), &schema.id))).into_response());
+            }
+            let asset = generation_assets(&gen)
+                .into_iter()
+                .find(|a| a.kind == "video")
+                .ok_or_else(|| refuse(SourceError::NotFound(format!("generation {} has no stored video", gen.id))))?;
+            let mut stores = vec![state.router.model3d_store.clone()];
+            if let Some(app) = gen.app_id.as_deref() {
+                if let Some((store, _)) = resolve_app_model3d_store(&state.db, state.secrets_key, app).await {
+                    stores.insert(0, store);
+                }
+            }
+            let mut found = None;
+            for store in &stores {
+                if let Some(key) = store.key_of(&asset.url) {
+                    found = store.get(&key).await.ok().flatten();
+                    break;
+                }
+            }
+            let (bytes, ct) = found.ok_or_else(|| refuse(SourceError::NotFound(format!("generation {}'s video is no longer stored", gen.id))))?;
+            let vendor_job = (gen.provider == schema.provider).then(|| gen.provider_job_id.clone()).flatten();
+            (bytes::Bytes::from(bytes), ct, vendor_job)
+        }
+        SourceKind::Base64 => {
+            use base64::Engine;
+            let b64 = src.value.split_once(";base64,").map(|(_, b)| b).unwrap_or(&src.value);
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(b64.trim())
+                .map_err(|e| refuse(SourceError::FormatUnsupported(format!("source_video is not base64: {e}"))))?;
+            (bytes::Bytes::from(bytes), video_content_type(src.format.as_deref()), None)
+        }
+        SourceKind::Url => {
+            crate::util::ssrf::validate_public_url(&src.value).await.map_err(|e| refuse(SourceError::Fetch(e)))?;
+            let client = crate::util::ssrf::no_redirect_download_client(std::time::Duration::from_secs(120), std::time::Duration::from_secs(30));
+            let resp = client.get(&src.value).send().await.map_err(|e| refuse(SourceError::Fetch(format!("source_video could not be fetched: {}", e.without_url()))))?;
+            if !resp.status().is_success() {
+                return Err(refuse(SourceError::Fetch(format!("source_video answered HTTP {}", resp.status()))));
+            }
+            let bytes = resp.bytes().await.map_err(|e| refuse(SourceError::Fetch(format!("source_video could not be read: {}", e.without_url()))))?;
+            (bytes, video_content_type(src.format.as_deref()), None)
+        }
+    };
+    let media = crate::proxy::video_probe::probe(&bytes);
+    let duration_s = media
+        .duration_s
+        .filter(|d| *d > 0.0)
+        .ok_or_else(|| refuse(SourceError::FormatUnsupported("litegen cannot read the source clip's length".into())))?;
+    if let Some(max) = spec.max_duration_s.filter(|max| duration_s > *max + 1e-6) {
+        return Err(refuse(SourceError::FormatUnsupported(format!("the source is {duration_s} s; this model takes at most {max} s"))));
+    }
+    if let Some(r) = time_range.filter(|r| r.end_s > duration_s + 1e-6) {
+        let msg = format!("time_range ends at {} s; the source is {duration_s} s long", r.end_s);
+        return Err((StatusCode::BAD_REQUEST, Json(crate::api::middleware::validator::err_body("param_out_of_range", &msg, Some("time_range"), &schema.id))).into_response());
+    }
+    Ok(crate::providers::VideoSource { bytes, content_type, duration_s, fps: media.fps, vendor_job_id })
+}
+
+/// A video container's content type from its format name.
+fn video_content_type(format: Option<&str>) -> String {
+    match format.map(str::to_ascii_lowercase).as_deref() {
+        Some("gif") => "image/gif",
+        Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
+        _ => "video/mp4",
+    }
+    .to_string()
 }
 
 /// GET /v1/generations/{id} — Poll DB-backed generation status.
@@ -2002,6 +2159,12 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             },
             supports_mask_prompt: matches!(s.params.get("mask_prompt"), Some(crate::capabilities::ParamSpec::String(_))),
             supports_preserve_unmasked: takes_mask || region.is_some(),
+            supports_source_video: matches!(s.params.get("source_video"), Some(crate::capabilities::ParamSpec::SourceVideo(_))),
+            extend_output: match s.params.get("source_video") {
+                Some(crate::capabilities::ParamSpec::SourceVideo(v)) if s.task == crate::capabilities::ModelTask::Extend => v.extend_output,
+                _ => None,
+            },
+            supports_time_range: matches!(s.params.get("time_range"), Some(crate::capabilities::ParamSpec::TimeRange(_))),
             // PixelGenie L7, read the way the segmentation endpoint reads it.
             supports_segmentation: segmentation_prompts(s).is_some(),
             segmentation_prompts: segmentation_prompts(s).map(|p| p.types.clone()).unwrap_or_default(),

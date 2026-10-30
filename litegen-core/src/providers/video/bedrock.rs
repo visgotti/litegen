@@ -332,7 +332,7 @@ mod tests {
     }
 
     fn make_extras() -> VideoExtras {
-        VideoExtras { duration_seconds: 6.0, aspect_ratio: None, resolution: Some("1280x720".to_string()), fps: Some(24), extra: None, camera: None, audio: None, r#loop: None }
+        VideoExtras { duration_seconds: 6.0, aspect_ratio: None, resolution: Some("1280x720".to_string()), fps: Some(24), extra: None, camera: None, audio: None, r#loop: None, source: None, direction: None, time_range: None, replace: None }
     }
 
     #[tokio::test]
@@ -384,7 +384,7 @@ mod tests {
         let schema = ref_schema("bedrock/amazon.nova-reel-v1:1");
         let base = make_base("a lighthouse at dusk", "bedrock/amazon.nova-reel-v1:1");
         // Caller sent neither fps nor resolution.
-        let extras = VideoExtras { duration_seconds: 6.0, aspect_ratio: None, resolution: None, fps: None, extra: None, camera: None, audio: None, r#loop: None };
+        let extras = VideoExtras { duration_seconds: 6.0, aspect_ratio: None, resolution: None, fps: None, extra: None, camera: None, audio: None, r#loop: None, source: None, direction: None, time_range: None, replace: None };
         // Base64 of a JPEG begins with "/9j/".
         let materialized = MaterializedRequest {
             refs: vec![crate::proxy::materializer::MaterializedRef {

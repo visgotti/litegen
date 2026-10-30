@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Type, TypeVar, Union, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.extend_output import ExtendOutput
 from ..models.keyframe_timing import KeyframeTiming
 from ..models.layout_kind import LayoutKind
 from ..models.mask_convention import MaskConvention
@@ -23,6 +24,7 @@ class ModelCapabilities:
         supports_text_to_image (bool):
         duration_values (Union[Unset, List[float]]): The only `duration_seconds` values the model takes; empty when it
             takes its range.
+        extend_output (Union[ExtendOutput, None, Unset]):
         keyframe_timing (Union[KeyframeTiming, None, Unset]):
         layout_kinds (Union[Unset, List[LayoutKind]]): What its layout boxes may hold; empty when it takes no layout.
         lossy_only (Union[Unset, bool]): Returns only lossy containers (no PNG).
@@ -70,9 +72,11 @@ class ModelCapabilities:
         supports_rig (Union[Unset, bool]): Takes the `rig` param.
         supports_segmentation (Union[Unset, bool]): Serves `POST /v1/images/segmentations` (PixelGenie L7).
         supports_source_model (Union[Unset, bool]): Takes `source_model`: an operation on an existing mesh.
+        supports_source_video (Union[Unset, bool]): Works on a `source_video` (3D doc §5).
         supports_text_to_3d (Union[Unset, bool]): Accepts a prompt with no reference images (text-to-3D).
         supports_text_to_video (Union[Unset, bool]):
         supports_texture (Union[Unset, bool]): Takes the `texture` param.
+        supports_time_range (Union[Unset, bool]): Takes `time_range`.
         supports_transparent_background (Union[Unset, bool]): Takes `background: transparent` (PixelGenie L9).
         task (Union[Unset, ModelTask]): What a catalog model does.
 
@@ -92,6 +96,7 @@ class ModelCapabilities:
     supports_image_to_image: bool
     supports_text_to_image: bool
     duration_values: Union[Unset, List[float]] = UNSET
+    extend_output: Union[ExtendOutput, None, Unset] = UNSET
     keyframe_timing: Union[KeyframeTiming, None, Unset] = UNSET
     layout_kinds: Union[Unset, List[LayoutKind]] = UNSET
     lossy_only: Union[Unset, bool] = UNSET
@@ -128,9 +133,11 @@ class ModelCapabilities:
     supports_rig: Union[Unset, bool] = UNSET
     supports_segmentation: Union[Unset, bool] = UNSET
     supports_source_model: Union[Unset, bool] = UNSET
+    supports_source_video: Union[Unset, bool] = UNSET
     supports_text_to_3d: Union[Unset, bool] = UNSET
     supports_text_to_video: Union[Unset, bool] = UNSET
     supports_texture: Union[Unset, bool] = UNSET
+    supports_time_range: Union[Unset, bool] = UNSET
     supports_transparent_background: Union[Unset, bool] = UNSET
     task: Union[Unset, ModelTask] = UNSET
     texture_resolutions: Union[Unset, List[int]] = UNSET
@@ -144,6 +151,14 @@ class ModelCapabilities:
         duration_values: Union[Unset, List[float]] = UNSET
         if not isinstance(self.duration_values, Unset):
             duration_values = self.duration_values
+
+        extend_output: Union[None, Unset, str]
+        if isinstance(self.extend_output, Unset):
+            extend_output = UNSET
+        elif isinstance(self.extend_output, ExtendOutput):
+            extend_output = self.extend_output.value
+        else:
+            extend_output = self.extend_output
 
         keyframe_timing: Union[None, Unset, str]
         if isinstance(self.keyframe_timing, Unset):
@@ -267,11 +282,15 @@ class ModelCapabilities:
 
         supports_source_model = self.supports_source_model
 
+        supports_source_video = self.supports_source_video
+
         supports_text_to_3d = self.supports_text_to_3d
 
         supports_text_to_video = self.supports_text_to_video
 
         supports_texture = self.supports_texture
+
+        supports_time_range = self.supports_time_range
 
         supports_transparent_background = self.supports_transparent_background
 
@@ -293,6 +312,8 @@ class ModelCapabilities:
         )
         if duration_values is not UNSET:
             field_dict["duration_values"] = duration_values
+        if extend_output is not UNSET:
+            field_dict["extend_output"] = extend_output
         if keyframe_timing is not UNSET:
             field_dict["keyframe_timing"] = keyframe_timing
         if layout_kinds is not UNSET:
@@ -365,12 +386,16 @@ class ModelCapabilities:
             field_dict["supports_segmentation"] = supports_segmentation
         if supports_source_model is not UNSET:
             field_dict["supports_source_model"] = supports_source_model
+        if supports_source_video is not UNSET:
+            field_dict["supports_source_video"] = supports_source_video
         if supports_text_to_3d is not UNSET:
             field_dict["supports_text_to_3d"] = supports_text_to_3d
         if supports_text_to_video is not UNSET:
             field_dict["supports_text_to_video"] = supports_text_to_video
         if supports_texture is not UNSET:
             field_dict["supports_texture"] = supports_texture
+        if supports_time_range is not UNSET:
+            field_dict["supports_time_range"] = supports_time_range
         if supports_transparent_background is not UNSET:
             field_dict["supports_transparent_background"] = (
                 supports_transparent_background
@@ -390,6 +415,23 @@ class ModelCapabilities:
         supports_text_to_image = d.pop("supports_text_to_image")
 
         duration_values = cast(List[float], d.pop("duration_values", UNSET))
+
+        def _parse_extend_output(data: object) -> Union[ExtendOutput, None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                extend_output_type_1 = ExtendOutput(data)
+
+                return extend_output_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[ExtendOutput, None, Unset], data)
+
+        extend_output = _parse_extend_output(d.pop("extend_output", UNSET))
 
         def _parse_keyframe_timing(data: object) -> Union[KeyframeTiming, None, Unset]:
             if data is None:
@@ -562,11 +604,15 @@ class ModelCapabilities:
 
         supports_source_model = d.pop("supports_source_model", UNSET)
 
+        supports_source_video = d.pop("supports_source_video", UNSET)
+
         supports_text_to_3d = d.pop("supports_text_to_3d", UNSET)
 
         supports_text_to_video = d.pop("supports_text_to_video", UNSET)
 
         supports_texture = d.pop("supports_texture", UNSET)
+
+        supports_time_range = d.pop("supports_time_range", UNSET)
 
         supports_transparent_background = d.pop(
             "supports_transparent_background", UNSET
@@ -585,6 +631,7 @@ class ModelCapabilities:
             supports_image_to_image=supports_image_to_image,
             supports_text_to_image=supports_text_to_image,
             duration_values=duration_values,
+            extend_output=extend_output,
             keyframe_timing=keyframe_timing,
             layout_kinds=layout_kinds,
             lossy_only=lossy_only,
@@ -621,9 +668,11 @@ class ModelCapabilities:
             supports_rig=supports_rig,
             supports_segmentation=supports_segmentation,
             supports_source_model=supports_source_model,
+            supports_source_video=supports_source_video,
             supports_text_to_3d=supports_text_to_3d,
             supports_text_to_video=supports_text_to_video,
             supports_texture=supports_texture,
+            supports_time_range=supports_time_range,
             supports_transparent_background=supports_transparent_background,
             task=task,
             texture_resolutions=texture_resolutions,

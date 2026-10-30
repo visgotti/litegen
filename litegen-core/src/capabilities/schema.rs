@@ -338,6 +338,51 @@ pub enum ParamSpec {
     SegmentationPrompts(ParamSpecSegmentationPrompts),
     Expand(ParamSpecExpand),
     Layout(ParamSpecLayout),
+    SourceVideo(ParamSpecSourceVideo),
+    TimeRange(ParamSpecTimeRange),
+}
+
+/// `source_video` on a video operation (3D doc §5): the clips it works on.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ParamSpecSourceVideo {
+    /// Containers the vendor accepts: `mp4`, `mov`, `webm`, `gif`.
+    #[serde(default)]
+    pub formats: Vec<String>,
+    /// The longest source it takes, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_duration_s: Option<f64>,
+    /// Only the vendor's own earlier generations, on the same account (Luma,
+    /// Kling): any other source is `source_not_chainable`.
+    #[serde(default)]
+    pub own_generations_only: bool,
+    /// An `extend` model's answer: the whole clip, or only the added part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extend_output: Option<ExtendOutput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
+}
+
+/// What an `extend` model returns (3D doc §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ExtendOutput {
+    /// The source and the added part, as one clip.
+    Full,
+    /// Only the added part.
+    Added,
+}
+
+/// `time_range` on a video operation (3D doc §5): the windows it takes.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ParamSpecTimeRange {
+    /// The shortest window, in seconds (LTX's 2 s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_window_s: Option<f64>,
+    /// Starts and ends fall on whole seconds (Runway).
+    #[serde(default)]
+    pub whole_seconds: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
 
 /// `layout` on a text-to-image model (3D doc §4): the boxes it composes.
@@ -862,6 +907,11 @@ pub const KNOWN_PARAMS: &[&str] = &[
     // Per-box prompts and masks named in text (3D doc §4).
     "layout",
     "mask_prompt",
+    // Video operations (3D doc §5).
+    "source_video",
+    "direction",
+    "time_range",
+    "replace",
 ];
 
 /// The `ParamSpec` kind(s) a canonical param may be declared with: exactly the
@@ -894,7 +944,9 @@ pub fn canonical_param_kinds(name: &str) -> &'static [&'static str] {
         "prompts" => &["segmentation_prompts"],
         "expand" => &["expand"],
         "layout" => &["layout"],
-        "mask_prompt" => &["string"],
+        "mask_prompt" | "direction" | "replace" => &["string"],
+        "source_video" => &["source_video"],
+        "time_range" => &["time_range"],
         _ => &[],
     }
 }
@@ -917,6 +969,8 @@ impl ParamSpec {
             ParamSpec::SegmentationPrompts(_) => "segmentation_prompts",
             ParamSpec::Expand(_) => "expand",
             ParamSpec::Layout(_) => "layout",
+            ParamSpec::SourceVideo(_) => "source_video",
+            ParamSpec::TimeRange(_) => "time_range",
         }
     }
 }

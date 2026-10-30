@@ -9,6 +9,7 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.usage_info import UsageInfo
     from ..models.video_media import VideoMedia
+    from ..models.video_segment import VideoSegment
 
 
 T = TypeVar("T", bound="VideoGenerationResponse")
@@ -27,6 +28,9 @@ class VideoGenerationResponse:
         status (GenerationStatus):
         error (Union[None, Unset, str]): Error message if failed.
         media (Union['VideoMedia', None, Unset]):
+        segments (Union[List['VideoSegment'], None, Unset]): An operation's clip, stretch by stretch: from the source or
+            generated
+            (3D doc §5). Absent on a plain generation.
         usage (Union['UsageInfo', None, Unset]):
         video_url (Union[None, Unset, str]): Video URL when completed.
     """
@@ -39,6 +43,7 @@ class VideoGenerationResponse:
     status: GenerationStatus
     error: Union[None, Unset, str] = UNSET
     media: Union["VideoMedia", None, Unset] = UNSET
+    segments: Union[List["VideoSegment"], None, Unset] = UNSET
     usage: Union["UsageInfo", None, Unset] = UNSET
     video_url: Union[None, Unset, str] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -73,6 +78,18 @@ class VideoGenerationResponse:
         else:
             media = self.media
 
+        segments: Union[List[Dict[str, Any]], None, Unset]
+        if isinstance(self.segments, Unset):
+            segments = UNSET
+        elif isinstance(self.segments, list):
+            segments = []
+            for segments_type_0_item_data in self.segments:
+                segments_type_0_item = segments_type_0_item_data.to_dict()
+                segments.append(segments_type_0_item)
+
+        else:
+            segments = self.segments
+
         usage: Union[Dict[str, Any], None, Unset]
         if isinstance(self.usage, Unset):
             usage = UNSET
@@ -103,6 +120,8 @@ class VideoGenerationResponse:
             field_dict["error"] = error
         if media is not UNSET:
             field_dict["media"] = media
+        if segments is not UNSET:
+            field_dict["segments"] = segments
         if usage is not UNSET:
             field_dict["usage"] = usage
         if video_url is not UNSET:
@@ -114,6 +133,7 @@ class VideoGenerationResponse:
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         from ..models.usage_info import UsageInfo
         from ..models.video_media import VideoMedia
+        from ..models.video_segment import VideoSegment
 
         d = src_dict.copy()
         created = d.pop("created")
@@ -154,6 +174,30 @@ class VideoGenerationResponse:
 
         media = _parse_media(d.pop("media", UNSET))
 
+        def _parse_segments(data: object) -> Union[List["VideoSegment"], None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                segments_type_0 = []
+                _segments_type_0 = data
+                for segments_type_0_item_data in _segments_type_0:
+                    segments_type_0_item = VideoSegment.from_dict(
+                        segments_type_0_item_data
+                    )
+
+                    segments_type_0.append(segments_type_0_item)
+
+                return segments_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[List["VideoSegment"], None, Unset], data)
+
+        segments = _parse_segments(d.pop("segments", UNSET))
+
         def _parse_usage(data: object) -> Union["UsageInfo", None, Unset]:
             if data is None:
                 return data
@@ -189,6 +233,7 @@ class VideoGenerationResponse:
             status=status,
             error=error,
             media=media,
+            segments=segments,
             usage=usage,
             video_url=video_url,
         )

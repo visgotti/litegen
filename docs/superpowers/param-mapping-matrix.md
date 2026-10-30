@@ -461,6 +461,43 @@ even where provider evidence is strong.
 | `negative_prompt` | String | max_length | 3 | validator: none. provider: setters exist in `kling.rs`, `pixverse.rs` — **zero assertions**. conformance: n/a. | 🟡 |
 | `fps` | Int | range | 3 | validator: none. provider: `bedrock.rs` sets `video_config["fps"]` — **zero assertions anywhere in the suite**. conformance: n/a. | 🟡 |
 
+### Video operations (3D doc §5, P2)
+
+`extend`, `retake` and `video_edit` models (their `task`) work on a
+**`source_video`** — `{type: generation | url | base64, value, format?}`, as
+`source_model` — which litegen reads and measures before anything is
+reserved: a generation after the same access check `GET /v1/generations/{id}`
+makes (finished, with a stored video), a URL fetched as a public one, or
+base64 with its `format`. Its row's `params.source_video` lists the containers
+it takes, its longest source, whether it chains only its own vendor's
+generations (`own_generations_only`, refused otherwise with
+`source_not_chainable`; Luma and Kling work so) and, for an extend model, its
+`extend_output` (`full` | `added`). litegen splices nothing: the finished job
+reports **`segments: [{start_s, end_s, origin: source | generated}]`**, the
+plan recorded at submit from the request, the source's length and the row's
+`extend_output`, on the live poll and the row answer alike.
+
+| task | request | mock | proof | status |
+|---|---|---|---|---|
+| `extend` | `source_video`, `direction` (`forward` \| `backward`), `duration_seconds` (the length to add), `prompt` | `mock/extend-video`: GIF sources, the whole clip back, every source frame copied byte-for-byte (the `gif` crate, no re-quantising) | HTTP `extending_forward_keeps_the_source_frames_first_and_says_so`, `extending_backward_puts_the_new_frames_first` | ✅ mock |
+| `retake` | `source_video`, `time_range: {start_s, end_s}` (required), `replace` (`video` \| `audio` \| `both`), `prompt`; the row's `time_range` spec sets `min_window_s` (LTX's 2 s) and `whole_seconds` (Runway) | `mock/retake-video`: regenerates every frame starting in the window (at least 0.5 s), copies the rest | HTTP `a_retake_regenerates_only_its_window`; validator `a_window_off_a_whole_second_grid_is_refused_where_the_model_keeps_one` | ✅ mock |
+| `video_edit` | `source_video`, `prompt`, `reference_images`, `time_range` where the model takes one; strength stays in `extra` | — (segments: the window, or the whole clip, generated) | loader `every_video_operation_names_its_source_and_only_those_do` | ✅ catalog |
+
+Refused before billing (HTTP `an_operation_the_source_or_model_cannot_serve_is_refused_before_billing`,
+no log): no `source_video` on an operation (`source_video_required`), a value
+outside `direction`/`replace` or a container the row lacks
+(`param_enum_mismatch`), a retake without a window (`param_required`), a window
+too short, off-grid, not a window or past the source's end
+(`param_out_of_range`), a source the caller cannot read (404
+`source_not_found`), unfinished (409 `source_not_ready`), unreadable or too
+long (422), `source_video` on a plain generation (`param_unsupported`). The
+loader requires `params.source_video` of every video task but `generate` (and
+refuses it there), `extend_output` of an extend and `time_range` of a retake.
+OpenAPI `video_operations_document_their_source_window_and_segments`; SDKs TS
+`video operation types`, Python `TimeRange` and `VideoSegment` mirrored.
+Vendors (LTX, Luma `ray-3.2`, Runway `aleph2`, Veo 3.1, PixVerse v6, Seedance
+2.x, Wan 2.7) are §5's candidates; none is wired.
+
 ### Video controls for sprites (L10)
 
 `camera` (`fixed` | `auto`), `audio` (bool) and `loop` (bool) are request

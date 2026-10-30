@@ -167,6 +167,12 @@ use utoipa::OpenApi;
         crate::capabilities::ParamSpecSegmentationPrompts,
         crate::capabilities::ParamSpecExpand,
         crate::capabilities::ParamSpecLayout,
+        crate::capabilities::ParamSpecSourceVideo,
+        crate::capabilities::ParamSpecTimeRange,
+        crate::capabilities::ExtendOutput,
+        crate::types::TimeRange,
+        crate::types::VideoSegment,
+        crate::types::SegmentOrigin,
         crate::capabilities::LayoutKind,
         crate::types::LayoutItem,
         crate::types::LayoutBox,
@@ -459,6 +465,33 @@ mod tests {
             property(&s["ModelCapabilities"], f);
         }
         assert!(mentions(&s["ParamSpec"], "\"region\""), "the union names the region kind");
+    }
+
+    #[test]
+    fn video_operations_document_their_source_window_and_segments() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        let req = &s["VideoGenerationRequest"];
+        assert!(mentions(property(req, "source_video"), "#/components/schemas/SourceRef"));
+        assert!(mentions(property(req, "time_range"), "#/components/schemas/TimeRange"));
+        for f in ["direction", "replace"] {
+            property(req, f);
+        }
+        assert!(mentions(property(&s["VideoGenerationResponse"], "segments"), "#/components/schemas/VideoSegment"));
+        for f in ["start_s", "end_s", "origin"] {
+            property(&s["VideoSegment"], f);
+        }
+        assert_eq!(s["SegmentOrigin"]["enum"], json!(["source", "generated"]));
+        assert_eq!(s["ExtendOutput"]["enum"], json!(["full", "added"]));
+        for f in ["supports_source_video", "extend_output", "supports_time_range"] {
+            property(&s["ModelCapabilities"], f);
+        }
+        for f in ["formats", "max_duration_s", "own_generations_only", "extend_output"] {
+            property(&s["ParamSpecSourceVideo"], f);
+        }
+        for f in ["min_window_s", "whole_seconds"] {
+            property(&s["ParamSpecTimeRange"], f);
+        }
     }
 
     #[test]

@@ -25,6 +25,90 @@ fn ref_bytes_for_role(materialized: &MaterializedRequest, role: &str) -> Option<
         })
 }
 
+/// The video operation mocks (3D doc §5).
+const EXTEND_MODEL: &str = "mock/extend-video";
+const RETAKE_MODEL: &str = "mock/retake-video";
+
+/// A GIF's frames as the `gif` crate reads them — indexed, each with the
+/// palette it was drawn with — so they can be written back exactly.
+fn gif_frames(bytes: &[u8]) -> Result<(u16, u16, Vec<gif::Frame<'static>>), ProviderError> {
+    let unreadable = |e: gif::DecodingError| ProviderError::InvalidRequest(format!("the mock reads GIF sources only: {e}"));
+    let mut opts = gif::DecodeOptions::new();
+    opts.set_color_output(gif::ColorOutput::Indexed);
+    let mut decoder = opts.read_info(std::io::Cursor::new(bytes)).map_err(unreadable)?;
+    let (w, h) = (decoder.width(), decoder.height());
+    let global = decoder.global_palette().map(<[u8]>::to_vec);
+    let mut frames = Vec::new();
+    while let Some(frame) = decoder.read_next_frame().map_err(unreadable)? {
+        let mut frame = frame.clone();
+        if frame.palette.is_none() {
+            frame.palette = global.clone();
+        }
+        frames.push(frame);
+    }
+    Ok((w, h, frames))
+}
+
+/// `n` new full frames, each a solid colour no source frame of the mocks
+/// has, `delay` hundredths of a second apiece.
+fn generated_frames(w: u16, h: u16, n: usize, delay: u16) -> Vec<gif::Frame<'static>> {
+    (0..n)
+        .map(|i| {
+            let shade = (40 + (i * 37) % 180) as u8;
+            let mut rgba: Vec<u8> = std::iter::repeat_n([shade, 0x10, 0xd0, 0xff], usize::from(w) * usize::from(h)).flatten().collect();
+            let mut frame = gif::Frame::from_rgba_speed(w, h, &mut rgba, 10);
+            frame.delay = delay;
+            frame
+        })
+        .collect()
+}
+
+fn write_gif(w: u16, h: u16, frames: &[gif::Frame<'static>]) -> Result<Vec<u8>, ProviderError> {
+    let failed = |e: gif::EncodingError| ProviderError::InvalidRequest(format!("the mock could not write its clip: {e}"));
+    let mut out = Vec::new();
+    {
+        let mut encoder = gif::Encoder::new(&mut out, w, h, &[]).map_err(failed)?;
+        encoder.set_repeat(gif::Repeat::Infinite).map_err(failed)?;
+        for frame in frames {
+            encoder.write_frame(frame).map_err(failed)?;
+        }
+    }
+    Ok(out)
+}
+
+/// `mock/extend-video` and `mock/retake-video`: the source's frames copied
+/// exactly where the plan keeps them, new frames where it generates. An
+/// extend adds `duration_seconds` of frames after (`forward`, the default) or
+/// before (`backward`) the source and returns the whole clip; a retake
+/// regenerates every frame starting inside `time_range`.
+fn operate_on_source(model_id: &str, extras: &VideoExtras) -> Result<Vec<u8>, ProviderError> {
+    let source = extras.source.as_ref().ok_or_else(|| ProviderError::InvalidRequest(format!("{model_id} needs a source_video")))?;
+    let (w, h, frames) = gif_frames(&source.bytes)?;
+    let delay = frames.first().map_or(10, |f| f.delay.max(1));
+    let out = if model_id == EXTEND_MODEL {
+        let added = generated_frames(w, h, (extras.duration_seconds * 100.0 / f64::from(delay)).round() as usize, delay);
+        match extras.direction.as_deref() {
+            Some("backward") => [added, frames].concat(),
+            _ => [frames, added].concat(),
+        }
+    } else {
+        let r = extras.time_range.ok_or_else(|| ProviderError::InvalidRequest(format!("{model_id} needs a time_range")))?;
+        let mut t = 0.0;
+        let mut out = Vec::with_capacity(frames.len());
+        for frame in frames {
+            let starts = t;
+            t += f64::from(frame.delay) / 100.0;
+            if starts + 1e-9 >= r.start_s && starts + 1e-9 < r.end_s {
+                out.extend(generated_frames(w, h, 1, frame.delay));
+            } else {
+                out.push(frame);
+            }
+        }
+        out
+    };
+    write_gif(w, h, &out)
+}
+
 fn should_render_visual_video(model_id: &str) -> bool {
     matches!(model_id,
         "mock/visual-video-gen" |
@@ -33,7 +117,9 @@ fn should_render_visual_video(model_id: &str) -> bool {
         "mock/strict-duration-video" |
         "mock/expensive-video" |
         "mock/priced-video" |
-        "mock/sprite-video"
+        "mock/sprite-video" |
+        EXTEND_MODEL |
+        RETAKE_MODEL
     )
 }
 
@@ -83,6 +169,11 @@ impl VideoProvider for MockVideoProvider {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
     ) -> Result<VideoGenerationHandle, ProviderError> {
+        if model.id == EXTEND_MODEL || model.id == RETAKE_MODEL {
+            let job_id = uuid::Uuid::new_v4().to_string();
+            global_store().put(job_id.clone(), operate_on_source(&model.id, extras)?).await;
+            return Ok(VideoGenerationHandle { provider_job_id: job_id, provider: "mock".to_string(), model: model.id.clone() });
+        }
         if should_render_visual_video(&model.id) {
             let job_id = uuid::Uuid::new_v4().to_string();
 
@@ -238,6 +329,7 @@ mod tests {
             fps: None,
             extra: None,
             camera: None, audio: None, r#loop: None,
+            source: None, direction: None, time_range: None, replace: None,
         }
     }
 

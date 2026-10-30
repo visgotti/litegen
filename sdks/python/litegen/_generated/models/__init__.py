@@ -46,6 +46,7 @@ from .entity_type import EntityType
 from .error_detail import ErrorDetail
 from .error_response import ErrorResponse
 from .expand import Expand
+from .extend_output import ExtendOutput
 from .gateway_settings import GatewaySettings
 from .gateway_settings_view import GatewaySettingsView
 from .generation import Generation
@@ -137,8 +138,10 @@ from .param_spec_region import ParamSpecRegion
 from .param_spec_seed import ParamSpecSeed
 from .param_spec_segmentation_prompts import ParamSpecSegmentationPrompts
 from .param_spec_source_model import ParamSpecSourceModel
+from .param_spec_source_video import ParamSpecSourceVideo
 from .param_spec_string import ParamSpecString
 from .param_spec_string_array import ParamSpecStringArray
+from .param_spec_time_range import ParamSpecTimeRange
 from .password_reset import PasswordReset
 from .password_reset_confirm_body import PasswordResetConfirmBody
 from .password_reset_request_body import PasswordResetRequestBody
@@ -193,6 +196,7 @@ from .scene_material import SceneMaterial
 from .scene_part import ScenePart
 from .scene_skin import SceneSkin
 from .scene_skin_humanoid_type_0 import SceneSkinHumanoidType0
+from .segment_origin import SegmentOrigin
 from .segmentation_mask import SegmentationMask
 from .segmentation_prompt_type import SegmentationPromptType
 from .segmentation_prompt_type_0 import SegmentationPromptType0
@@ -216,6 +220,7 @@ from .spend_logs_response import SpendLogsResponse
 from .spend_report_response import SpendReportResponse
 from .spend_report_row import SpendReportRow
 from .text_to_motion_spec import TextToMotionSpec
+from .time_range import TimeRange
 from .transfer_owner_request import TransferOwnerRequest
 from .update_api_key_request import UpdateApiKeyRequest
 from .update_app_request import UpdateAppRequest
@@ -229,6 +234,7 @@ from .video_camera import VideoCamera
 from .video_generation_request import VideoGenerationRequest
 from .video_generation_response import VideoGenerationResponse
 from .video_media import VideoMedia
+from .video_segment import VideoSegment
 from .webhook_delivery import WebhookDelivery
 from .webhook_test_result import WebhookTestResult
 
@@ -279,6 +285,7 @@ __all__ = (
     "ErrorDetail",
     "ErrorResponse",
     "Expand",
+    "ExtendOutput",
     "GatewaySettings",
     "GatewaySettingsView",
     "Generation",
@@ -362,8 +369,10 @@ __all__ = (
     "ParamSpecSeed",
     "ParamSpecSegmentationPrompts",
     "ParamSpecSourceModel",
+    "ParamSpecSourceVideo",
     "ParamSpecString",
     "ParamSpecStringArray",
+    "ParamSpecTimeRange",
     "PasswordReset",
     "PasswordResetConfirmBody",
     "PasswordResetRequestBody",
@@ -426,6 +435,7 @@ __all__ = (
     "SegmentationPromptType1Type",
     "SegmentationPromptType2",
     "SegmentationPromptType2Type",
+    "SegmentOrigin",
     "Session",
     "SessionInfo",
     "SetAppModelAccessRequest",
@@ -441,6 +451,7 @@ __all__ = (
     "SpendReportResponse",
     "SpendReportRow",
     "TextToMotionSpec",
+    "TimeRange",
     "TransferOwnerRequest",
     "UpdateApiKeyRequest",
     "UpdateAppRequest",
@@ -454,6 +465,7 @@ __all__ = (
     "VideoGenerationRequest",
     "VideoGenerationResponse",
     "VideoMedia",
+    "VideoSegment",
     "WebhookDelivery",
     "WebhookTestResult",
 )

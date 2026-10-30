@@ -478,6 +478,7 @@ pub fn validate_video(
     }
 
     check_video_controls(schema, &mut req, strict, &mut dropped)?;
+    check_video_operation(schema, &mut req, strict, &mut dropped)?;
     check_refs(schema, &mut req.base.reference_images, strict, &mut dropped)?;
     check_video_request(schema, &req)?;
     check_keyframes(schema, &mut req)?;
@@ -1424,6 +1425,86 @@ fn check_image_request(schema: &ModelSchema, req: &ImageGenerationRequest) -> Re
             format!("'{}' does not take an init image", schema.id),
             Some("reference_images"),
         ));
+    }
+    Ok(())
+}
+
+/// Video operations (3D doc §5, P2): a source for every task but `generate`;
+/// `direction` and `replace` from the model's lists; a `time_range` the model
+/// takes, a `retake` always — a window with a length, at least the model's
+/// minimum, on its whole-second grid where it keeps one. A window past the
+/// source's end is refused once the source is read, still before billing.
+fn check_video_operation(
+    schema: &ModelSchema,
+    req: &mut VideoGenerationRequest,
+    strict: bool,
+    dropped: &mut Vec<String>,
+) -> Result<(), ValidationError> {
+    let undeclared = |name: &str| ValidationError::new("param_unsupported", format!("{name} not supported by '{}'", schema.id), Some(name));
+    match (&req.source_video, schema.params.get("source_video")) {
+        (Some(src), Some(ParamSpec::SourceVideo(spec))) => {
+            if src.kind != SourceKind::Generation {
+                let format = src.format.as_deref().map(str::to_ascii_lowercase);
+                if !format.as_ref().is_some_and(|f| spec.formats.iter().any(|v| v == f)) {
+                    return Err(ValidationError::new(
+                        "param_enum_mismatch",
+                        format!("source_video format {:?}: '{}' takes {:?}", src.format, schema.id, spec.formats),
+                        Some("source_video"),
+                    ));
+                }
+            }
+        }
+        (Some(_), _) => {
+            if strict {
+                return Err(undeclared("source_video"));
+            }
+            dropped.push("source_video".into());
+            req.source_video = None;
+        }
+        (None, Some(ParamSpec::SourceVideo(_))) if schema.task != ModelTask::Generate => {
+            return Err(ValidationError::new(
+                "source_video_required",
+                format!("'{}' is a {} operation and needs source_video: the clip to work on", schema.id, schema.task.as_str()),
+                Some("source_video"),
+            ));
+        }
+        _ => {}
+    }
+    for (field, name) in [(&mut req.direction, "direction"), (&mut req.replace, "replace")] {
+        let Some(v) = field.as_deref() else { continue };
+        match schema.params.get(name) {
+            Some(ParamSpec::String(s)) => check_string(v, &s.enum_values, s.max_length, name)?,
+            _ if strict => return Err(undeclared(name)),
+            _ => {
+                dropped.push(name.into());
+                *field = None;
+            }
+        }
+    }
+    match (req.time_range, schema.params.get("time_range")) {
+        (Some(r), Some(ParamSpec::TimeRange(spec))) => {
+            let bad = |msg: String| Err(ValidationError::new("param_out_of_range", msg, Some("time_range")));
+            if !(r.start_s.is_finite() && r.end_s.is_finite()) || r.start_s < 0.0 || r.end_s <= r.start_s {
+                return bad(format!("time_range {}–{} s is not a window", r.start_s, r.end_s));
+            }
+            if let Some(min) = spec.min_window_s.filter(|min| r.end_s - r.start_s < *min - 1e-9) {
+                return bad(format!("'{}' retakes windows of at least {min} s", schema.id));
+            }
+            if spec.whole_seconds && (r.start_s.fract() != 0.0 || r.end_s.fract() != 0.0) {
+                return bad(format!("'{}' takes windows on whole seconds", schema.id));
+            }
+        }
+        (Some(_), _) => {
+            if strict {
+                return Err(undeclared("time_range"));
+            }
+            dropped.push("time_range".into());
+            req.time_range = None;
+        }
+        (None, _) if schema.task == ModelTask::Retake => {
+            return Err(ValidationError::new("param_required", format!("'{}' retakes a window: send time_range", schema.id), Some("time_range")));
+        }
+        _ => {}
     }
     Ok(())
 }

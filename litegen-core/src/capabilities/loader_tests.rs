@@ -994,4 +994,39 @@ models:
             assert!(err.contains("background_swap"), "{prompt} {init}: {err}");
         }
     }
+
+    // ─── Video operations (3D doc §5, P2) ─────────────────────────────────────
+
+    #[test]
+    fn every_video_operation_names_its_source_and_only_those_do() {
+        let row = |task: &str, params: &str| yaml(&format!(r#"
+models:
+  - id: x/vop
+    provider: x
+    media_type: video
+{task}
+    display_name: Vop
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ text_to_video: true }}
+    prompt: {{ required: true }}
+    params:
+{params}
+"#));
+        const SRC: &str = "      source_video: { kind: source_video, formats: [mp4] }";
+        const EXTEND_SRC: &str = "      source_video: { kind: source_video, formats: [mp4], extend_output: added }";
+        const WINDOW: &str = "      time_range: { kind: time_range, min_window_s: 2 }";
+        assert!(row("    task: extend", EXTEND_SRC).is_ok());
+        assert!(row("    task: retake", &format!("{SRC}\n{WINDOW}")).is_ok());
+        assert!(row("    task: video_edit", SRC).is_ok());
+        for (task, params, needle) in [
+            ("    task: extend", "      seed: { kind: seed, min: 0, max: 9 }", "source_video"),
+            ("    task: extend", SRC, "extend_output"),
+            ("    task: retake", SRC, "time_range"),
+            ("", SRC, "source_video"),
+            ("    task: video_edit", "      source_video: { kind: source_video, formats: [] }", "formats"),
+        ] {
+            let err = row(task, params).unwrap_err().to_string();
+            assert!(err.contains(needle), "{task} {params}: {err}");
+        }
+    }
 }

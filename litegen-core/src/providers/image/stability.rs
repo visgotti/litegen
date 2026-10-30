@@ -697,6 +697,7 @@ impl Default for ModelCapabilities {
             texture_resolutions: Vec::new(), supports_keep_uvs: false, supports_placement: false, supports_expand: false,
             supports_layout: false, layout_kinds: Vec::new(), supports_mask_prompt: false,
             supports_preserve_unmasked: false,
+            supports_source_video: false, extend_output: None, supports_time_range: false,
         }
     }
 }

@@ -738,6 +738,7 @@ impl ProxyRouter {
             usage: usage_info,
             created: chrono::Utc::now().timestamp(),
             media: None,
+            segments: None,
         })
     }
 
@@ -814,6 +815,7 @@ impl ProxyRouter {
                 usage,
                 created: chrono::Utc::now().timestamp(),
                 media,
+                segments: None,
             },
             assets,
         ))
@@ -1305,6 +1307,7 @@ impl ProxyRouter {
             resolution: extras.resolution.clone(),
             fps: extras.fps,
             camera: None, audio: None, r#loop: None,
+            source_video: None, direction: None, time_range: None, replace: None,
         };
         let mut cost_sorted: Vec<(f64, &Deployment)> = Vec::new();
         for d in deployments {

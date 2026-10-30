@@ -217,6 +217,28 @@ class SegmentationMask(TypedDict):
     """The smallest box around the white pixels, measured by LiteGen."""
 
 
+SegmentOrigin = Literal["source", "generated"]
+"""Where a stretch of a video operation's clip came from."""
+
+ExtendOutput = Literal["full", "added"]
+"""What an ``extend`` model returns: the whole clip, or only the added part."""
+
+
+class TimeRange(TypedDict):
+    """A window of a clip, in seconds from its start (``retake``, ``video_edit``)."""
+
+    start_s: float
+    end_s: float
+
+
+class VideoSegment(TypedDict):
+    """One stretch of a finished video operation's clip, in its own seconds."""
+
+    start_s: float
+    end_s: float
+    origin: SegmentOrigin
+
+
 LayoutKind = Literal["object", "text"]
 """What a layout box holds: an object (its ``prompt``) or words (its ``text``)."""
 

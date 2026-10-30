@@ -777,4 +777,45 @@ models:
         req.mask_prompt = Some("x".repeat(51));
         assert_eq!(validate_image(m, req).unwrap_err().param.as_deref(), Some("mask_prompt"), "the model's own length limit");
     }
+
+    // ─── Video operations (3D doc §5, P2) ─────────────────────────────────────
+
+    #[test]
+    fn a_window_off_a_whole_second_grid_is_refused_where_the_model_keeps_one() {
+        let r = CapabilityRegistry::from_yaml_strs(&[("t.yaml", r#"
+models:
+  - id: t/retake
+    provider: t
+    media_type: video
+    task: retake
+    display_name: Retake
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: {}
+    prompt: { required: true, max_length: 100 }
+    params:
+      source_video: { kind: source_video, formats: [mp4] }
+      time_range: { kind: time_range, min_window_s: 2, whole_seconds: true }
+"#)]).unwrap();
+        let m = r.get("t/retake").unwrap();
+        let ask = |start_s: f64, end_s: f64| {
+            let req: VideoGenerationRequest = serde_json::from_value(serde_json::json!({
+                "model": "t/retake", "prompt": "x",
+                "source_video": { "type": "url", "value": "https://example.com/a.mp4", "format": "mp4" },
+                "time_range": { "start_s": start_s, "end_s": end_s },
+            }))
+            .unwrap();
+            validate_video(m, req)
+        };
+        assert!(ask(1.0, 3.0).is_ok());
+        for (s, e) in [(1.5, 3.5), (1.0, 2.0), (3.0, 1.0)] {
+            let err = ask(s, e).unwrap_err();
+            assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_out_of_range", Some("time_range")), "{s}–{e}");
+        }
+        let req: VideoGenerationRequest = serde_json::from_value(serde_json::json!({
+            "model": "t/retake", "prompt": "x", "time_range": { "start_s": 1.0, "end_s": 3.0 },
+            "source_video": { "type": "url", "value": "https://example.com/a.webm", "format": "webm" },
+        }))
+        .unwrap();
+        assert_eq!(validate_video(m, req).unwrap_err().code, "param_enum_mismatch", "a container the model does not take");
+    }
 }

@@ -351,6 +351,7 @@ mod tests {
             // Provide a pre-existing imageId so the test skips the upload step.
             extra: Some(json!({ "imageId": "init-123", "imageType": "UPLOADED" })),
             camera: None, audio: None, r#loop: None,
+            source: None, direction: None, time_range: None, replace: None,
         }
     }
 

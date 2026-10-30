@@ -184,6 +184,11 @@ curl -X POST http://localhost:4000/v1/videos/generations \
   }'
 ```
 
+Video operations are models too: an `extend`, `retake` or `video_edit` model works on a
+`source_video` (a generation id, a URL or base64) — `direction` and `duration_seconds` to extend,
+`time_range` and `replace` to retake a window — and the finished job reports `segments`, which
+stretches came from the source and which were generated.
+
 A model whose listing says `supports_keyframes` (`pixverse/v5-multi-transition`) takes `keyframe`
 reference images, each with `time_s` — seconds from the start of the clip — and passes through each
 at its time; `first_frame` and `last_frame` still name 0 s and the end. `keyframe_timing` says

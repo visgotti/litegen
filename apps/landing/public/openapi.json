@@ -8103,6 +8103,14 @@
                     }
                 }
             },
+            "ExtendOutput": {
+                "type": "string",
+                "description": "What an `extend` model returns (3D doc \u00a75).",
+                "enum": [
+                    "full",
+                    "added"
+                ]
+            },
             "GatewaySettings": {
                 "type": "object",
                 "description": "Gateway-wide settings editable at runtime.",
@@ -9599,6 +9607,17 @@
                         },
                         "description": "The only `duration_seconds` values the model takes; empty when it\ntakes its range."
                     },
+                    "extend_output": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/ExtendOutput",
+                                "description": "An `extend` model's answer: the whole clip or only the added part."
+                            }
+                        ]
+                    },
                     "keyframe_timing": {
                         "oneOf": [
                             {
@@ -9798,6 +9817,10 @@
                         "type": "boolean",
                         "description": "Takes `source_model`: an operation on an existing mesh."
                     },
+                    "supports_source_video": {
+                        "type": "boolean",
+                        "description": "Works on a `source_video` (3D doc \u00a75)."
+                    },
                     "supports_text_to_3d": {
                         "type": "boolean",
                         "description": "Accepts a prompt with no reference images (text-to-3D)."
@@ -9811,6 +9834,10 @@
                     "supports_texture": {
                         "type": "boolean",
                         "description": "Takes the `texture` param."
+                    },
+                    "supports_time_range": {
+                        "type": "boolean",
+                        "description": "Takes `time_range`."
                     },
                     "supports_transparent_background": {
                         "type": "boolean",
@@ -11084,6 +11111,48 @@
                                 }
                             }
                         ]
+                    },
+                    {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/ParamSpecSourceVideo"
+                            },
+                            {
+                                "type": "object",
+                                "required": [
+                                    "kind"
+                                ],
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                            "source_video"
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/ParamSpecTimeRange"
+                            },
+                            {
+                                "type": "object",
+                                "required": [
+                                    "kind"
+                                ],
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                            "time_range"
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
                     }
                 ]
             },
@@ -11512,6 +11581,54 @@
                     }
                 }
             },
+            "ParamSpecSourceVideo": {
+                "type": "object",
+                "description": "`source_video` on a video operation (3D doc \u00a75): the clips it works on.",
+                "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "extend_output": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/ExtendOutput",
+                                "description": "An `extend` model's answer: the whole clip, or only the added part."
+                            }
+                        ]
+                    },
+                    "formats": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Containers the vendor accepts: `mp4`, `mov`, `webm`, `gif`."
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "max_duration_s": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "The longest source it takes, in seconds."
+                    },
+                    "own_generations_only": {
+                        "type": "boolean",
+                        "description": "Only the vendor's own earlier generations, on the same account (Luma,\nKling): any other source is `source_not_chainable`."
+                    }
+                }
+            },
             "ParamSpecString": {
                 "type": "object",
                 "properties": {
@@ -11598,6 +11715,36 @@
                         ],
                         "description": "For `output_formats`: how many VENDOR jobs one request may need \u2014 not\nhow many members it may name. Every member of `derivable_values` comes\nout of one source container, so a request costs\n`|requested \\ derivable_values| + (requested \u2229 derivable_values \u2260 \u2205 ? 1 : 0)`\njobs, and more than `max_items` is refused with `param_too_many`.\n`None` means no limit.",
                         "minimum": 0
+                    }
+                }
+            },
+            "ParamSpecTimeRange": {
+                "type": "object",
+                "description": "`time_range` on a video operation (3D doc \u00a75): the windows it takes.",
+                "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "min_window_s": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "The shortest window, in seconds (LTX's 2 s)."
+                    },
+                    "whole_seconds": {
+                        "type": "boolean",
+                        "description": "Starts and ends fall on whole seconds (Runway)."
                     }
                 }
             },
@@ -13200,6 +13347,14 @@
                     }
                 }
             },
+            "SegmentOrigin": {
+                "type": "string",
+                "description": "Where a stretch of a finished clip came from (3D doc \u00a75).",
+                "enum": [
+                    "source",
+                    "generated"
+                ]
+            },
             "SegmentationMask": {
                 "type": "object",
                 "description": "One selected object.",
@@ -13872,6 +14027,24 @@
                     }
                 }
             },
+            "TimeRange": {
+                "type": "object",
+                "description": "A window of a clip, in seconds from its start (3D doc \u00a75).",
+                "required": [
+                    "start_s",
+                    "end_s"
+                ],
+                "properties": {
+                    "end_s": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "start_s": {
+                        "type": "number",
+                        "format": "double"
+                    }
+                }
+            },
             "TransferOwnerRequest": {
                 "type": "object",
                 "required": [
@@ -14131,6 +14304,13 @@
                                     }
                                 ]
                             },
+                            "direction": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ],
+                                "description": "An `extend`: add before (`backward`) or after (`forward`) the source."
+                            },
                             "duration_seconds": {
                                 "type": [
                                     "number",
@@ -14154,10 +14334,39 @@
                                 ],
                                 "description": "`true` for a clip whose last frame is its first (`supports_loop`)."
                             },
+                            "replace": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ],
+                                "description": "A `retake`'s track: `video`, `audio` or `both`."
+                            },
                             "resolution": {
                                 "type": [
                                     "string",
                                     "null"
+                                ]
+                            },
+                            "source_video": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/SourceRef",
+                                        "description": "The clip an operation (`extend`, `retake`, `video_edit`) works on (3D\ndoc \u00a75): a litegen generation id, a URL or base64, as `source_model`."
+                                    }
+                                ]
+                            },
+                            "time_range": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/TimeRange",
+                                        "description": "A `retake`'s window, or a `video_edit`'s where the model takes one."
+                                    }
                                 ]
                             }
                         }
@@ -14216,6 +14425,16 @@
                     "provider": {
                         "type": "string",
                         "description": "The provider."
+                    },
+                    "segments": {
+                        "type": [
+                            "array",
+                            "null"
+                        ],
+                        "items": {
+                            "$ref": "#/components/schemas/VideoSegment"
+                        },
+                        "description": "An operation's clip, stretch by stretch: from the source or generated\n(3D doc \u00a75). Absent on a plain generation."
                     },
                     "status": {
                         "$ref": "#/components/schemas/GenerationStatus",
@@ -14280,6 +14499,28 @@
                         ],
                         "format": "int32",
                         "minimum": 0
+                    }
+                }
+            },
+            "VideoSegment": {
+                "type": "object",
+                "description": "One stretch of a finished operation's clip, in its own seconds.",
+                "required": [
+                    "start_s",
+                    "end_s",
+                    "origin"
+                ],
+                "properties": {
+                    "end_s": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "origin": {
+                        "$ref": "#/components/schemas/SegmentOrigin"
+                    },
+                    "start_s": {
+                        "type": "number",
+                        "format": "double"
                     }
                 }
             },

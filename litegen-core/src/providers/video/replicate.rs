@@ -509,6 +509,7 @@ mod tests {
             fps: None,
             extra: None,
             camera: None, audio: None, r#loop: None,
+            source: None, direction: None, time_range: None, replace: None,
         }
     }
 

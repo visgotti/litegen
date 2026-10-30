@@ -710,6 +710,55 @@ models:
       background: { kind: string, enum_values: [transparent, opaque] }
     tags: [mock, test, formats]
 
+  # ─── Video operations (PixelGenie 3D doc §5, P2) ──────────────────────────
+  - id: mock/extend-video
+    provider: mock
+    media_type: video
+    task: extend
+    display_name: Mock Extend Video
+    description: >-
+      Adds `duration_seconds` of new frames after (`forward`) or before
+      (`backward`) a GIF source and returns the whole clip, every source frame
+      copied exactly, at the source's frame rate.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: {}
+    prompt: { required: true, max_length: 1000 }
+    params:
+      source_video:
+        kind: source_video
+        formats: [gif]
+        max_duration_s: 60
+        extend_output: full
+        label: Source clip
+        description: The clip to extend.
+      direction: { kind: string, enum_values: [forward, backward], default: forward, label: Direction, description: Add after the source or before it. }
+      duration_seconds: { kind: float, min: 0.5, max: 10, default: 2, label: Added (s), description: The length to add. }
+    extra_allowlist: []
+    tags: [mock, test, extend]
+
+  - id: mock/retake-video
+    provider: mock
+    media_type: video
+    task: retake
+    display_name: Mock Retake Video
+    description: >-
+      Regenerates every frame of a GIF source that starts inside `time_range`
+      (at least 0.5 s long), copying every other frame exactly.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: {}
+    prompt: { required: true, max_length: 1000 }
+    params:
+      source_video:
+        kind: source_video
+        formats: [gif]
+        max_duration_s: 60
+        label: Source clip
+        description: The clip to retake a window of.
+      time_range: { kind: time_range, min_window_s: 0.5, label: Window, description: The seconds to regenerate. }
+      replace: { kind: string, enum_values: [video, audio, both], default: video, label: Replace, description: The track to regenerate. }
+    extra_allowlist: []
+    tags: [mock, test, retake]
+
   # ─── Preservation and background swap (PixelGenie 3D doc §4, P2) ──────────
   - id: mock/sloppy-edit-image
     provider: mock

@@ -2293,6 +2293,11 @@ export interface components {
             /** Format: int32 */
             top?: number;
         };
+        /**
+         * @description What an `extend` model returns (3D doc §5).
+         * @enum {string}
+         */
+        ExtendOutput: "full" | "added";
         /** @description Gateway-wide settings editable at runtime. */
         GatewaySettings: {
             /** @description URL that receives budget alerts (soft budget crossed, hard budget hit). */
@@ -2939,6 +2944,7 @@ export interface components {
              *     takes its range.
              */
             duration_values?: number[];
+            extend_output?: null | components["schemas"]["ExtendOutput"];
             keyframe_timing?: null | components["schemas"]["KeyframeTiming"];
             /** @description What its layout boxes may hold; empty when it takes no layout. */
             layout_kinds?: components["schemas"]["LayoutKind"][];
@@ -3033,12 +3039,16 @@ export interface components {
             supports_segmentation?: boolean;
             /** @description Takes `source_model`: an operation on an existing mesh. */
             supports_source_model?: boolean;
+            /** @description Works on a `source_video` (3D doc §5). */
+            supports_source_video?: boolean;
             /** @description Accepts a prompt with no reference images (text-to-3D). */
             supports_text_to_3d?: boolean;
             supports_text_to_image: boolean;
             supports_text_to_video?: boolean;
             /** @description Takes the `texture` param. */
             supports_texture?: boolean;
+            /** @description Takes `time_range`. */
+            supports_time_range?: boolean;
             /** @description Takes `background: transparent` (PixelGenie L9). */
             supports_transparent_background?: boolean;
             /**
@@ -3437,6 +3447,12 @@ export interface components {
         }) | (components["schemas"]["ParamSpecLayout"] & {
             /** @enum {string} */
             kind: "layout";
+        }) | (components["schemas"]["ParamSpecSourceVideo"] & {
+            /** @enum {string} */
+            kind: "source_video";
+        }) | (components["schemas"]["ParamSpecTimeRange"] & {
+            /** @enum {string} */
+            kind: "time_range";
         });
         /** @description The clips an `animate` model makes (`animations`, 3D doc §3C). */
         ParamSpecAnimationList: {
@@ -3596,6 +3612,24 @@ export interface components {
             /** @description The source must be textured. */
             requires_texture?: boolean;
         };
+        /** @description `source_video` on a video operation (3D doc §5): the clips it works on. */
+        ParamSpecSourceVideo: {
+            description?: string | null;
+            extend_output?: null | components["schemas"]["ExtendOutput"];
+            /** @description Containers the vendor accepts: `mp4`, `mov`, `webm`, `gif`. */
+            formats?: string[];
+            label?: string | null;
+            /**
+             * Format: double
+             * @description The longest source it takes, in seconds.
+             */
+            max_duration_s?: number | null;
+            /**
+             * @description Only the vendor's own earlier generations, on the same account (Luma,
+             *     Kling): any other source is `source_not_chainable`.
+             */
+            own_generations_only?: boolean;
+        };
         ParamSpecString: {
             default?: string | null;
             description?: string | null;
@@ -3655,6 +3689,18 @@ export interface components {
              *     `None` means no limit.
              */
             max_items?: number | null;
+        };
+        /** @description `time_range` on a video operation (3D doc §5): the windows it takes. */
+        ParamSpecTimeRange: {
+            description?: string | null;
+            label?: string | null;
+            /**
+             * Format: double
+             * @description The shortest window, in seconds (LTX's 2 s).
+             */
+            min_window_s?: number | null;
+            /** @description Starts and ends fall on whole seconds (Runway). */
+            whole_seconds?: boolean;
         };
         PasswordReset: {
             /** Format: date-time */
@@ -4190,6 +4236,11 @@ export interface components {
              */
             skeleton?: string | null;
         };
+        /**
+         * @description Where a stretch of a finished clip came from (3D doc §5).
+         * @enum {string}
+         */
+        SegmentOrigin: "source" | "generated";
         /** @description One selected object. */
         SegmentationMask: {
             /** @description The smallest box around the white pixels, measured by litegen. */
@@ -4406,6 +4457,13 @@ export interface components {
             /** Format: double */
             min_duration_s: number;
         };
+        /** @description A window of a clip, in seconds from its start (3D doc §5). */
+        TimeRange: {
+            /** Format: double */
+            end_s: number;
+            /** Format: double */
+            start_s: number;
+        };
         TransferOwnerRequest: {
             new_owner_id: string;
         };
@@ -4490,6 +4548,8 @@ export interface components {
              */
             audio?: boolean | null;
             camera?: null | components["schemas"]["VideoCamera"];
+            /** @description An `extend`: add before (`backward`) or after (`forward`) the source. */
+            direction?: string | null;
             /**
              * Format: double
              * @description Absent means the model's own `duration_seconds` default (resolved by
@@ -4502,7 +4562,11 @@ export interface components {
             fps?: number | null;
             /** @description `true` for a clip whose last frame is its first (`supports_loop`). */
             loop?: boolean | null;
+            /** @description A `retake`'s track: `video`, `audio` or `both`. */
+            replace?: string | null;
             resolution?: string | null;
+            source_video?: null | components["schemas"]["SourceRef"];
+            time_range?: null | components["schemas"]["TimeRange"];
         };
         /** @description Video generation can be async — this is the initial response. */
         VideoGenerationResponse: {
@@ -4525,6 +4589,11 @@ export interface components {
             progress: number;
             /** @description The provider. */
             provider: string;
+            /**
+             * @description An operation's clip, stretch by stretch: from the source or generated
+             *     (3D doc §5). Absent on a plain generation.
+             */
+            segments?: components["schemas"]["VideoSegment"][] | null;
             /** @description Current status. */
             status: components["schemas"]["GenerationStatus"];
             usage?: null | components["schemas"]["UsageInfo"];
@@ -4542,6 +4611,14 @@ export interface components {
             height?: number | null;
             /** Format: int32 */
             width?: number | null;
+        };
+        /** @description One stretch of a finished operation's clip, in its own seconds. */
+        VideoSegment: {
+            /** Format: double */
+            end_s: number;
+            origin: components["schemas"]["SegmentOrigin"];
+            /** Format: double */
+            start_s: number;
         };
         /** @description One row in the `webhook_deliveries` table. */
         WebhookDelivery: {

@@ -327,9 +327,32 @@ pub struct ImageEdit {
     pub preserve: Option<crate::proxy::preserve::Preserve>,
 }
 
+/// A video operation's source clip (3D doc §5).
+#[derive(Debug, Clone)]
+pub struct VideoSource {
+    pub bytes: bytes::Bytes,
+    pub content_type: String,
+    /// Read from the bytes.
+    pub duration_s: f64,
+    pub fps: Option<f64>,
+    /// The vendor's own job id, when the source is one of its generations on
+    /// the same account (Luma and Kling chain only those).
+    pub vendor_job_id: Option<String>,
+}
+
 /// Extra video-specific parameters extracted from a validated request.
 #[derive(serde::Serialize)]
 pub struct VideoExtras {
+    /// The clip an operation works on, read and measured before billing
+    /// (3D doc §5); never serialised.
+    #[serde(skip)]
+    pub source: Option<VideoSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direction: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_range: Option<crate::types::TimeRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replace: Option<String>,
     pub duration_seconds: f64,
     pub aspect_ratio: Option<String>,
     pub resolution: Option<String>,
