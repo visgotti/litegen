@@ -23,6 +23,7 @@ status with an inline comment explaining why — assertions are never weakened.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib
 import io
 import pkgutil
@@ -124,6 +125,8 @@ from litegen._generated.api.dashboard import (
 from litegen._generated.api.generations import (
     cancel_generation,
     get_generation,
+    get_generation_asset,
+    list_generation_assets,
     list_generations,
 )
 from litegen._generated.api.images import estimate_image_cost, generate_image
@@ -388,6 +391,23 @@ def test_generations(owner):
 
     _ok(get_generation.sync_detailed(client=owner.bearer, id=gen_id), 200)
     EXERCISED.add("get_generation")
+
+    # The kept files of a finished image: listed with hashes, streamed back.
+    img = _ok(
+        generate_image.sync_detailed(
+            client=owner.bearer,
+            body=ImageGenerationRequest(model=IMG_MODEL, prompt="for keeping", response_format="b64_json"),
+        ),
+        200,
+    )
+    listed = _ok(list_generation_assets.sync_detailed(client=owner.bearer, id=img.parsed.id), 200)
+    assert listed.parsed.generation_id == img.parsed.id
+    assert listed.parsed.data and listed.parsed.data[0].kind == "image"
+    EXERCISED.add("list_generation_assets")
+    streamed = get_generation_asset.sync_detailed(client=owner.bearer, id=img.parsed.id, index=0)
+    assert streamed.status_code == 200, f"get_generation_asset: {streamed.status_code} {streamed.content!r}"
+    assert hashlib.sha256(streamed.content).hexdigest() == listed.parsed.data[0].sha256
+    EXERCISED.add("get_generation_asset")
 
     # Cancel the throwaway generation. Already-finished mock jobs may be
     # rejected (409/400/404); a pending one cancels (200). Accept both.
@@ -1261,9 +1281,9 @@ def test_every_generated_endpoint_is_covered(base_url):
 
     Compares EXERCISED (populated by every other test) against the discovered
     universe of endpoint module names, and independently asserts the raw module
-    file count is 129. Both `transfer_owner` modules are exercised
+    file count is 131. Both `transfer_owner` modules are exercised
     (organizations + users); they share a bare name, so the deduped name set has
-    128 entries while the file count is 129.
+    130 entries while the file count is 131.
 
     Takes `base_url` only so it skips with the rest of the suite when the binary
     isn't built: without the binary nothing populates EXERCISED, and this would
@@ -1277,6 +1297,6 @@ def test_every_generated_endpoint_is_covered(base_url):
     unexpected = EXERCISED - discovered
     assert not missing, f"{len(missing)} endpoint(s) never exercised: {sorted(missing)}"
     assert not unexpected, f"recorded names not found in generated API: {sorted(unexpected)}"
-    # 129 endpoint module files in total (128 unique names + duplicate transfer_owner).
-    assert file_count == 129, f"expected 129 endpoint module files, found {file_count}"
-    assert len(discovered) == 128, f"expected 128 unique names, found {len(discovered)}"
+    # 131 endpoint module files in total (130 unique names + duplicate transfer_owner).
+    assert file_count == 131, f"expected 131 endpoint module files, found {file_count}"
+    assert len(discovered) == 130, f"expected 130 unique names, found {len(discovered)}"

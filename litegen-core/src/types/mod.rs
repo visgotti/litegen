@@ -394,6 +394,48 @@ pub struct Model3dAsset {
     /// Pixel height, on textures and previews whose vendor reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
+    /// Lowercase hex SHA-256 of the stored file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+/// One stored file of a generation of any kind, as
+/// `GET /v1/generations/{id}/assets` lists it. litegen keeps every result for
+/// at least 7 days; `GET /v1/generations/{id}/assets/{index}` streams it with
+/// a litegen key alone, whatever the vendor's own URL did.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct GenerationAsset {
+    /// Position in the list; the `{index}` that streams this file.
+    pub index: u32,
+    /// `image`, `video`, `mesh`, `texture`, `preview` or `original`. A plain
+    /// string so a client tolerates a kind added later.
+    pub kind: String,
+    /// Lowercase container or image format, without a dot.
+    pub format: String,
+    /// Where the file is served from: absolute, and litegen's own storage.
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    /// Lowercase hex SHA-256 of the stored file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// Videos: length in seconds, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_s: Option<f64>,
+    /// Videos: frames per second, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fps: Option<f64>,
+}
+
+/// `GET /v1/generations/{id}/assets`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct GenerationAssetList {
+    pub generation_id: String,
+    pub data: Vec<GenerationAsset>,
 }
 
 /// A 3D generation's state — both the submit response and every poll

@@ -2935,6 +2935,117 @@
                 }
             }
         },
+        "/v1/generations/{id}/assets": {
+            "get": {
+                "tags": [
+                    "Generations"
+                ],
+                "summary": "GET /v1/generations/{id}/assets \u2014 Every file litegen kept for a generation.",
+                "operationId": "list_generation_assets",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Generation ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The generation's stored files, in order. Kept for at least 7 days.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/GenerationAssetList"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/generations/{id}/assets/{index}": {
+            "get": {
+                "tags": [
+                    "Generations"
+                ],
+                "summary": "GET /v1/generations/{id}/assets/{index} \u2014 The bytes of one stored file.",
+                "operationId": "get_generation_asset",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Generation ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "index",
+                        "in": "path",
+                        "description": "The asset's `index` in `GET /v1/generations/{id}/assets`",
+                        "required": true,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int32",
+                            "minimum": 0
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The file, with its content type"
+                    },
+                    "307": {
+                        "description": "The file is held by storage litegen does not read back (an S3 image store); follow `Location`"
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "No such generation or asset",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v1/images/cost": {
             "post": {
                 "tags": [
@@ -7909,6 +8020,102 @@
                     }
                 }
             },
+            "GenerationAsset": {
+                "type": "object",
+                "description": "One stored file of a generation of any kind, as\n`GET /v1/generations/{id}/assets` lists it. litegen keeps every result for\nat least 7 days; `GET /v1/generations/{id}/assets/{index}` streams it with\na litegen key alone, whatever the vendor's own URL did.",
+                "required": [
+                    "index",
+                    "kind",
+                    "format",
+                    "url"
+                ],
+                "properties": {
+                    "duration_s": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "Videos: length in seconds, when known."
+                    },
+                    "format": {
+                        "type": "string",
+                        "description": "Lowercase container or image format, without a dot."
+                    },
+                    "fps": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "Videos: frames per second, when known."
+                    },
+                    "height": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "index": {
+                        "type": "integer",
+                        "format": "int32",
+                        "description": "Position in the list; the `{index}` that streams this file.",
+                        "minimum": 0
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "`image`, `video`, `mesh`, `texture`, `preview` or `original`. A plain\nstring so a client tolerates a kind added later."
+                    },
+                    "sha256": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Lowercase hex SHA-256 of the stored file."
+                    },
+                    "size_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Where the file is served from: absolute, and litegen's own storage."
+                    },
+                    "width": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "minimum": 0
+                    }
+                }
+            },
+            "GenerationAssetList": {
+                "type": "object",
+                "description": "`GET /v1/generations/{id}/assets`.",
+                "required": [
+                    "generation_id",
+                    "data"
+                ],
+                "properties": {
+                    "data": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/GenerationAsset"
+                        }
+                    },
+                    "generation_id": {
+                        "type": "string"
+                    }
+                }
+            },
             "GenerationStatus": {
                 "type": "string",
                 "enum": [
@@ -8413,6 +8620,13 @@
                         "format": "int32",
                         "description": "Triangle count, on meshes whose vendor reports one. A container litegen\nderived carries its source's count \u2014 conversion keeps every triangle.",
                         "minimum": 0
+                    },
+                    "sha256": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Lowercase hex SHA-256 of the stored file."
                     },
                     "size_bytes": {
                         "type": [

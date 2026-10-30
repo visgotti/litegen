@@ -258,6 +258,13 @@ pub async fn generate_image(
                 }
             };
 
+            // Keep the images and give the result a row (L3): a client can
+            // then read it back by id, chain it as a reference, and download it
+            // for 7 days with a litegen key. Awaited, so the row exists when the
+            // response does; but the caller already holds the image, so a
+            // failed write is logged rather than failing the request.
+            keep_image_result(&state, key_ctx.as_ref(), &response, &validated, cost).await;
+
             // Log request + artifact async
             let db = state.db.clone();
             let id = response.id.clone();
@@ -602,26 +609,86 @@ pub async fn get_video_status(
         // `cancelled`. Release the router entry too, as the 3D path does.
         if gen.media_type == "video" && gen.status.is_terminal() {
             state.router.forget_video_job(&id).await;
-            let resp = VideoGenerationResponse {
-                id: gen.id.clone(),
-                status: gen.status,
-                model: gen.model.clone(),
-                provider: gen.provider.clone(),
-                video_url: gen.result_url.clone(),
-                progress: gen.progress.clamp(0, 100) as u8,
-                error: gen.error_message.clone(),
-                usage: Some(usage_from_row_cost(gen.cost_usd)),
-                created: gen.created_at.timestamp(),
-            };
-            return (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response();
+            return (StatusCode::OK, Json(serde_json::to_value(video_response_from_row(&gen)).unwrap())).into_response();
         }
     }
-    match state.router.get_video_status(&id).await {
-        Ok(resp) => (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response(),
+    // Keep a finished video in the tenant's own bucket, as the poller does.
+    let row = state.db.get_generation(&id).await.ok().flatten();
+    let app_id = row.as_ref()
+        .and_then(|g| g.app_id.clone())
+        .or_else(|| key_ctx.as_ref().and_then(|c| c.app_id.clone()));
+    let (app_store, app_prefix) = match app_id.as_deref() {
+        Some(app_id) => resolve_app_model3d_store(&state.db, state.secrets_key, app_id)
+            .await
+            .map_or((None, None), |(s, p)| (Some(s), p)),
+        None => (None, None),
+    };
+    match state.router.get_video_status(&id, app_store, app_prefix.as_deref()).await {
+        Ok((resp, assets)) => {
+            // A terminal answer is persisted here as well as by the poller, so
+            // it reads the same however often it is read: the router has let
+            // go of the job, and the row is what answers from now on (L3).
+            if resp.status.is_terminal() {
+                let written = state.db.update_generation_if_active(
+                    &id, &resp.status.to_string(), resp.progress as i32,
+                    resp.video_url.as_deref(), resp.error.as_deref(), Some(chrono::Utc::now()),
+                    assets.as_ref(),
+                ).await;
+                match written {
+                    Ok(w) if w == crate::db::GenerationWrite::Written => {
+                        if let Err(e) = state.db.update_request_log_status(&id, &resp.status.to_string(), resp.error.as_deref()).await {
+                            tracing::warn!(generation_id = %id, error = %e, "failed to settle the video request log");
+                        }
+                        if let Some(row) = row.as_ref() {
+                            let gen = crate::types::Generation {
+                                status: resp.status,
+                                progress: resp.progress as i32,
+                                result_url: resp.video_url.clone(),
+                                error_message: resp.error.clone(),
+                                completed_at: Some(chrono::Utc::now()),
+                                metadata: assets.clone().or_else(|| row.metadata.clone()),
+                                ..row.clone()
+                            };
+                            crate::proxy::poller::dispatch_terminal_webhook(
+                                &state.db, &crate::util::ssrf::no_redirect_client(), state.mode, gen,
+                            ).await;
+                        }
+                    }
+                    Ok(crate::db::GenerationWrite::AlreadyTerminal) => {
+                        // Another observer decided first: that is the answer.
+                        if let Ok(Some(gen)) = state.db.get_generation(&id).await {
+                            return (StatusCode::OK, Json(serde_json::to_value(video_response_from_row(&gen)).unwrap())).into_response();
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(generation_id = %id, error = %e, "failed to persist the video outcome"),
+                }
+            }
+            (StatusCode::OK, Json(serde_json::to_value(resp).unwrap())).into_response()
+        }
         Err(e) => {
+            if let Some(gen) = row.filter(|g| g.media_type == "video") {
+                return (StatusCode::OK, Json(serde_json::to_value(video_response_from_row(&gen)).unwrap())).into_response();
+            }
             let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             (status, Json(error_response(&e.to_string(), status.as_u16()))).into_response()
         }
+    }
+}
+
+/// A video generation answered from its row: the decided outcome, once the
+/// router has let go of the job.
+fn video_response_from_row(gen: &crate::types::Generation) -> VideoGenerationResponse {
+    VideoGenerationResponse {
+        id: gen.id.clone(),
+        status: gen.status,
+        model: gen.model.clone(),
+        provider: gen.provider.clone(),
+        video_url: gen.result_url.clone(),
+        progress: gen.progress.clamp(0, 100) as u8,
+        error: gen.error_message.clone(),
+        usage: Some(usage_from_row_cost(gen.cost_usd)),
+        created: gen.created_at.timestamp(),
     }
 }
 
@@ -668,6 +735,175 @@ pub async fn get_generation(
             (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response()
         }
     }
+}
+
+/// A generation the caller may read — the same checks as
+/// `GET /v1/generations/{id}` — or the answer to send instead.
+async fn readable_generation(
+    state: &Arc<AppState>,
+    key_ctx: Option<&crate::api::middleware::KeyContext>,
+    id: &str,
+) -> Result<crate::types::Generation, axum::response::Response> {
+    let Some(ctx_org) = key_ctx.and_then(|c| c.org_id.as_deref()) else {
+        return Err(forbidden_no_org());
+    };
+    match state.db.get_generation(id).await {
+        Ok(Some(gen)) if gen.org_id.as_deref() == Some(ctx_org) => {
+            authorize_generation_for_session(
+                state, key_ctx, &gen,
+                crate::auth::permissions::Permission::GenerationReadAny,
+                crate::auth::permissions::Permission::GenerationReadOwn,
+                "generation:read:own",
+            ).await?;
+            Ok(gen)
+        }
+        Ok(_) => Err((StatusCode::NOT_FOUND, Json(error_response("Generation not found", 404))).into_response()),
+        Err(e) => {
+            error!(error = %e, "Failed to get generation");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, Json(error_response(&e.to_string(), 500))).into_response())
+        }
+    }
+}
+
+/// Every stored file of a generation, in order. A 3D row goes through the
+/// same guards its `GET /v1/models3d/{id}` answer does, so a generation that
+/// failed (or never delivered a promised container) lists nothing; any other
+/// row lists what it recorded once `completed`.
+pub(crate) fn generation_assets(gen: &crate::types::Generation) -> Vec<crate::types::GenerationAsset> {
+    use crate::types::GenerationAsset;
+    if gen.media_type == "model3d" {
+        return model3d_response_from_row(gen)
+            .assets
+            .into_iter()
+            .enumerate()
+            .map(|(i, a)| GenerationAsset {
+                index: i as u32,
+                kind: serde_json::to_value(a.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+                format: a.format,
+                url: a.url,
+                size_bytes: a.size_bytes,
+                sha256: a.sha256,
+                width: a.width,
+                height: a.height,
+                duration_s: None,
+                fps: None,
+            })
+            .collect();
+    }
+    if gen.status != GenerationStatus::Completed {
+        return Vec::new();
+    }
+    let recorded: Vec<GenerationAsset> = gen.metadata.as_ref()
+        .and_then(|m| m.get("assets"))
+        .and_then(|a| serde_json::from_value(a.clone()).ok())
+        .unwrap_or_default();
+    if recorded.is_empty() {
+        // A row written before litegen kept results: its one result URL.
+        return gen.result_url.iter().map(|url| GenerationAsset {
+            index: 0,
+            kind: gen.media_type.clone(),
+            format: url.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default(),
+            url: url.clone(),
+            size_bytes: None,
+            sha256: None,
+            width: None,
+            height: None,
+            duration_s: None,
+            fps: None,
+        }).collect();
+    }
+    recorded.into_iter().enumerate().map(|(i, a)| GenerationAsset { index: i as u32, ..a }).collect()
+}
+
+/// GET /v1/generations/{id}/assets — Every file litegen kept for a generation.
+#[utoipa::path(
+    get,
+    path = "/v1/generations/{id}/assets",
+    params(("id" = String, Path, description = "Generation ID")),
+    responses(
+        (status = 200, description = "The generation's stored files, in order. Kept for at least 7 days.", body = GenerationAssetList),
+        (status = 403, description = "Forbidden", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+    ),
+    tag = "Generations"
+)]
+pub async fn list_generation_assets(
+    State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match readable_generation(&state, key_ctx.as_ref(), &id).await {
+        Ok(gen) => {
+            let list = crate::types::GenerationAssetList { generation_id: gen.id.clone(), data: generation_assets(&gen) };
+            (StatusCode::OK, Json(serde_json::to_value(list).unwrap())).into_response()
+        }
+        Err(resp) => resp,
+    }
+}
+
+/// GET /v1/generations/{id}/assets/{index} — The bytes of one stored file.
+#[utoipa::path(
+    get,
+    path = "/v1/generations/{id}/assets/{index}",
+    params(
+        ("id" = String, Path, description = "Generation ID"),
+        ("index" = u32, Path, description = "The asset's `index` in `GET /v1/generations/{id}/assets`"),
+    ),
+    responses(
+        (status = 200, description = "The file, with its content type"),
+        (status = 307, description = "The file is held by storage litegen does not read back (an S3 image store); follow `Location`"),
+        (status = 403, description = "Forbidden", body = ErrorResponse),
+        (status = 404, description = "No such generation or asset", body = ErrorResponse),
+    ),
+    tag = "Generations"
+)]
+pub async fn get_generation_asset(
+    State(state): State<Arc<AppState>>,
+    OptionalKeyContext(key_ctx): OptionalKeyContext,
+    Path((id, index)): Path<(String, usize)>,
+) -> impl IntoResponse {
+    let gen = match readable_generation(&state, key_ctx.as_ref(), &id).await {
+        Ok(g) => g,
+        Err(resp) => return resp,
+    };
+    let Some(asset) = generation_assets(&gen).into_iter().nth(index) else {
+        return (StatusCode::NOT_FOUND, Json(error_response("Asset not found", 404))).into_response();
+    };
+    // Read it back through whichever store minted its URL: the app's own
+    // bucket when it has one, else litegen's.
+    let mut stores = vec![state.router.model3d_store.clone()];
+    if let Some(app) = gen.app_id.as_deref() {
+        if let Some((s, _)) = resolve_app_model3d_store(&state.db, state.secrets_key, app).await {
+            stores.insert(0, s);
+        }
+    }
+    for store in &stores {
+        let Some(key) = store.key_of(&asset.url) else { continue };
+        match store.get(&key).await {
+            Ok(Some((bytes, content_type))) => {
+                return (
+                    StatusCode::OK,
+                    [
+                        (axum::http::header::CONTENT_TYPE, content_type),
+                        (axum::http::header::CACHE_CONTROL, "private, max-age=86400".to_string()),
+                    ],
+                    bytes,
+                )
+                    .into_response();
+            }
+            Ok(None) => {
+                return (StatusCode::NOT_FOUND, Json(error_response("The asset is no longer stored", 404))).into_response();
+            }
+            Err(e) => {
+                error!(generation_id = %id, error = %e, "failed to read a stored asset");
+                return (StatusCode::BAD_GATEWAY, Json(error_response("The asset could not be read from storage", 502))).into_response();
+            }
+        }
+    }
+    if asset.url.starts_with("https://") || asset.url.starts_with("http://") {
+        return (StatusCode::TEMPORARY_REDIRECT, [(axum::http::header::LOCATION, asset.url)]).into_response();
+    }
+    (StatusCode::NOT_FOUND, Json(error_response("Asset not found", 404))).into_response()
 }
 
 /// POST /v1/videos/cost — Estimate cost for video generation.
@@ -2920,6 +3156,8 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/generations", get(list_generations))
         .route("/v1/generations/{id}", get(get_generation))
         .route("/v1/generations/{id}", patch(cancel_generation))
+        .route("/v1/generations/{id}/assets", get(list_generation_assets))
+        .route("/v1/generations/{id}/assets/{index}", get(get_generation_asset))
         .layer(middleware::from_fn(|req: axum::extract::Request, next: middleware::Next| async {
             check_scope(Scope::Read, req, next).await
         }))
@@ -3532,6 +3770,95 @@ fn error_response(message: &str, code: u16) -> serde_json::Value {
             "code": code
         }
     })
+}
+
+/// Store an image response's images and record it as a `completed` generation
+/// (PixelGenie L3). Inline (`b64_json`) images are written to litegen's asset
+/// store, the app's own bucket when it has one; an image already returned by
+/// URL (an S3 image store) is recorded by that URL. Best-effort: the caller
+/// already has the images.
+async fn keep_image_result(
+    state: &Arc<AppState>,
+    key_ctx: Option<&crate::api::middleware::KeyContext>,
+    response: &ImageGenerationResponse,
+    validated: &ValidatedImage,
+    cost: f64,
+) {
+    use base64::Engine;
+    let app_id = key_ctx.and_then(|c| c.app_id.clone());
+    let org_id = key_ctx.and_then(|c| c.org_id.clone());
+    let (store, prefix) = match app_id.as_deref() {
+        Some(app) => resolve_app_model3d_store(&state.db, state.secrets_key, app)
+            .await
+            .unwrap_or_else(|| (state.router.model3d_store.clone(), None)),
+        None => (state.router.model3d_store.clone(), None),
+    };
+    let mut assets: Vec<crate::types::GenerationAsset> = Vec::new();
+    for (i, img) in response.data.iter().enumerate() {
+        let format = match img.content_type.split(';').next().unwrap_or("").trim() {
+            "image/jpeg" | "image/jpg" => "jpg",
+            "image/webp" => "webp",
+            "image/gif" => "gif",
+            _ => "png",
+        };
+        let asset = if let Some(b64) = img.b64_json.as_deref() {
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else { continue };
+            let key = format!(
+                "{}/{}/image_{i}.{format}",
+                prefix.as_deref().unwrap_or(crate::proxy::storage::IMAGE_RESULT_PATH_PREFIX).trim_matches('/'),
+                response.id
+            );
+            match store.put(&key, &bytes::Bytes::from(bytes.clone()), &img.content_type).await {
+                Ok(url) => crate::types::GenerationAsset {
+                    index: i as u32,
+                    kind: "image".into(),
+                    format: format.into(),
+                    url,
+                    size_bytes: Some(bytes.len() as u64),
+                    sha256: Some(crate::proxy::router::sha256_hex(&bytes)),
+                    width: None,
+                    height: None,
+                    duration_s: None,
+                    fps: None,
+                },
+                Err(e) => {
+                    tracing::warn!(generation_id = %response.id, error = %e, "could not keep an image result");
+                    continue;
+                }
+            }
+        } else if let Some(url) = img.url.as_deref() {
+            crate::types::GenerationAsset {
+                index: i as u32,
+                kind: "image".into(),
+                format: format.into(),
+                url: url.to_string(),
+                size_bytes: None,
+                sha256: None,
+                width: None,
+                height: None,
+                duration_s: None,
+                fps: None,
+            }
+        } else {
+            continue;
+        };
+        assets.push(asset);
+    }
+    let key_id = key_ctx.and_then(|c| c.key_id);
+    if let Err(e) = state.db.insert_generation(
+        &response.id, key_id.as_ref(), &response.model, &response.provider, "image", None, cost,
+        org_id.as_deref(), app_id.as_deref(),
+    ).await {
+        tracing::warn!(generation_id = %response.id, error = %e, "could not record the image result");
+        return;
+    }
+    let request = request_record(&validated.request.base, None, &validated.ctx);
+    if let Err(e) = state.db.update_generation_if_active(
+        &response.id, "completed", 100, assets.first().map(|a| a.url.as_str()), None, Some(chrono::Utc::now()),
+        Some(&serde_json::json!({ "assets": assets, "request": request })),
+    ).await {
+        tracing::warn!(generation_id = %response.id, error = %e, "could not complete the image result's row");
+    }
 }
 
 /// The error answer for a generation the router could not run, marked as

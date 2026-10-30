@@ -189,6 +189,8 @@ class Model3dAsset(TypedDict):
     """Textures and previews only, in pixels."""
     height: NotRequired[int | None]
     """Textures and previews only, in pixels."""
+    sha256: NotRequired[str | None]
+    """Lowercase hex SHA-256 of the stored file."""
 
 
 class Model3dGenerationResponse(TypedDict):
@@ -214,6 +216,29 @@ class Model3dGenerationResponse(TypedDict):
     error: NotRequired[str | None]
     """Why the job failed."""
     usage: NotRequired[UsageInfo | None]
+
+
+class GenerationAsset(TypedDict):
+    """One file litegen kept for a generation (``GET /v1/generations/{id}/assets``).
+    ``index`` is what :meth:`download_asset` takes."""
+
+    index: int
+    kind: str
+    format: str
+    url: str
+    size_bytes: NotRequired[int | None]
+    sha256: NotRequired[str | None]
+    width: NotRequired[int | None]
+    height: NotRequired[int | None]
+    duration_s: NotRequired[float | None]
+    fps: NotRequired[float | None]
+
+
+class GenerationAssetList(TypedDict):
+    """``GET /v1/generations/{id}/assets``: every file kept, in order."""
+
+    generation_id: str
+    data: list[GenerationAsset]
 
 
 class Generation(TypedDict):

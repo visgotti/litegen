@@ -160,6 +160,12 @@ pub trait ImageStorage: Send + Sync {
     async fn get(&self, _key: &str) -> Result<Option<(bytes::Bytes, String)>, ImageStoreError> {
         Ok(None)
     }
+    /// The key a URL this store minted was put under, or `None` for a URL it
+    /// did not mint. Lets a stored asset be read back from the URL its
+    /// generation row records.
+    fn key_of(&self, _url: &str) -> Option<String> {
+        None
+    }
 }
 
 /// LocalStorage: put/delete are no-ops (returns a fake URL for local dev).
@@ -255,6 +261,10 @@ impl ImageStorage for S3Storage {
             code => Err(ImageStoreError::UploadFailed(format!("S3 GET returned HTTP {code}"))),
         }
     }
+    fn key_of(&self, url: &str) -> Option<String> {
+        let base = self.object_url("");
+        url.strip_prefix(&base).filter(|k| !k.is_empty()).map(str::to_string)
+    }
 }
 
 /// Build the appropriate image store from configuration.
@@ -282,6 +292,12 @@ pub fn build_image_store(config: &ImageStorageConfig) -> Arc<dyn ImageStore> {
 /// Default key prefix for 3D outputs. Distinct from images' `litegen/images` so
 /// a shared bucket keeps the two modalities apart.
 pub const MODEL3D_PATH_PREFIX: &str = "litegen/3d";
+
+/// Default key prefix for re-hosted videos.
+pub const VIDEO_PATH_PREFIX: &str = "litegen/video";
+
+/// Default key prefix for kept image results.
+pub const IMAGE_RESULT_PATH_PREFIX: &str = "litegen/image-results";
 
 /// Build the storage key for one file of a 3D generation.
 ///
@@ -338,6 +354,10 @@ pub fn model3d_content_type<'a>(format: &str, provider_value: &'a str) -> &'a st
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
+        "gif" => "image/gif",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
         _ => provider_value,
     }
 }
@@ -423,6 +443,11 @@ impl ImageStorage for LocalModel3dStorage {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(ImageStoreError::UploadFailed(format!("local read failed: {e}"))),
         }
+    }
+    fn key_of(&self, url: &str) -> Option<String> {
+        url.strip_prefix(&format!("{}/v1/models3d/assets/", self.public_base_url))
+            .filter(|k| self.path_for(k).is_ok())
+            .map(str::to_string)
     }
 }
 

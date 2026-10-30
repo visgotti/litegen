@@ -37,6 +37,10 @@ type AuthResponse = Schemas["AuthResponse"];
 type CsrfResponse = Schemas["CsrfResponse"];
 /** Public auth-method discovery (`GET /v1/auth/config`). */
 export type AuthConfigResponse = Schemas["AuthConfigResponse"];
+/** One file litegen kept for a generation; see `generations.assets`. */
+export type GenerationAsset = Schemas["GenerationAsset"];
+/** `GET /v1/generations/{id}/assets`. */
+export type GenerationAssetList = Schemas["GenerationAssetList"];
 type PasswordResetRequestBody = Schemas["PasswordResetRequestBody"];
 type PasswordResetConfirmBody = Schemas["PasswordResetConfirmBody"];
 type InvitationView = Schemas["InvitationView"];
@@ -1346,6 +1350,33 @@ class GenerationsNamespace {
       "GET",
       `/v1/generations/${encodeURIComponent(id)}`,
       undefined,
+      signal,
+    );
+  }
+
+  /**
+   * Every file litegen kept for a generation (`GET /v1/generations/{id}/assets`):
+   * its images, its video, its meshes, textures and previews, each with its
+   * URL, size and SHA-256. Kept for at least 7 days, whatever happens to the
+   * vendor's own URLs.
+   */
+  assets(id: string, signal?: AbortSignal): Promise<GenerationAssetList> {
+    return this.client.request(
+      "GET",
+      `/v1/generations/${encodeURIComponent(id)}/assets`,
+      undefined,
+      signal,
+    );
+  }
+
+  /**
+   * The bytes of one kept file (`GET /v1/generations/{id}/assets/{index}`),
+   * with only a litegen key. `index` is the asset's `index` in {@link assets}.
+   */
+  downloadAsset(id: string, index: number, signal?: AbortSignal): Promise<Blob> {
+    return this.client.requestBlob(
+      "GET",
+      `/v1/generations/${encodeURIComponent(id)}/assets/${index}`,
       signal,
     );
   }

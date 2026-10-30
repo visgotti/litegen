@@ -800,6 +800,40 @@ export interface paths {
         patch: operations["cancel_generation"];
         trace?: never;
     };
+    "/v1/generations/{id}/assets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/generations/{id}/assets — Every file litegen kept for a generation. */
+        get: operations["list_generation_assets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/generations/{id}/assets/{index}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/generations/{id}/assets/{index} — The bytes of one stored file. */
+        get: operations["get_generation_asset"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/images/cost": {
         parameters: {
             query?: never;
@@ -2233,6 +2267,51 @@ export interface components {
             result_url?: string | null;
             status: components["schemas"]["GenerationStatus"];
         };
+        /**
+         * @description One stored file of a generation of any kind, as
+         *     `GET /v1/generations/{id}/assets` lists it. litegen keeps every result for
+         *     at least 7 days; `GET /v1/generations/{id}/assets/{index}` streams it with
+         *     a litegen key alone, whatever the vendor's own URL did.
+         */
+        GenerationAsset: {
+            /**
+             * Format: double
+             * @description Videos: length in seconds, when known.
+             */
+            duration_s?: number | null;
+            /** @description Lowercase container or image format, without a dot. */
+            format: string;
+            /**
+             * Format: double
+             * @description Videos: frames per second, when known.
+             */
+            fps?: number | null;
+            /** Format: int32 */
+            height?: number | null;
+            /**
+             * Format: int32
+             * @description Position in the list; the `{index}` that streams this file.
+             */
+            index: number;
+            /**
+             * @description `image`, `video`, `mesh`, `texture`, `preview` or `original`. A plain
+             *     string so a client tolerates a kind added later.
+             */
+            kind: string;
+            /** @description Lowercase hex SHA-256 of the stored file. */
+            sha256?: string | null;
+            /** Format: int64 */
+            size_bytes?: number | null;
+            /** @description Where the file is served from: absolute, and litegen's own storage. */
+            url: string;
+            /** Format: int32 */
+            width?: number | null;
+        };
+        /** @description `GET /v1/generations/{id}/assets`. */
+        GenerationAssetList: {
+            data: components["schemas"]["GenerationAsset"][];
+            generation_id: string;
+        };
         /** @enum {string} */
         GenerationStatus: "pending" | "processing" | "completed" | "failed" | "cancelled";
         /** @description Response for `GET /health`. */
@@ -2409,6 +2488,8 @@ export interface components {
              *     derived carries its source's count — conversion keeps every triangle.
              */
             polycount?: number | null;
+            /** @description Lowercase hex SHA-256 of the stored file. */
+            sha256?: string | null;
             /**
              * Format: int64
              * @description Size of the stored file.
@@ -5889,6 +5970,95 @@ export interface operations {
             };
             /** @description Not in a cancellable state */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_generation_assets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Generation ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The generation's stored files, in order. Kept for at least 7 days. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenerationAssetList"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_generation_asset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Generation ID */
+                id: string;
+                /** @description The asset's `index` in `GET /v1/generations/{id}/assets` */
+                index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The file, with its content type */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The file is held by storage litegen does not read back (an S3 image store); follow `Location` */
+            307: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description No such generation or asset */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

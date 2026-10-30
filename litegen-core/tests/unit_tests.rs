@@ -535,6 +535,7 @@ mod tests {
                 polycount: Some(12),
                 width: None,
                 height: None,
+                sha256: None,
             }],
             status: GenerationStatus::Completed,
             progress: 100,

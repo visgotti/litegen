@@ -359,6 +359,14 @@ field name — but it is what makes the family behave the same on every model:
   one at the vendor); and the row's `metadata.request` records the request —
   prompt, params, `extra` and each reference as SHA-256 + size or URL, never
   its bytes.
+- `litegen-core/tests/assets_api.rs` (L3) — litegen keeps every result: a
+  finished video is re-hosted by whichever observer sees it finish (from the
+  vendor's inline bytes, or an SSRF-checked download of its URL) and reads the
+  same however often it is read; an image result gets a `completed` row and
+  its inline images are stored; `GET /v1/generations/{id}/assets` lists every
+  kept file with its size and SHA-256, and `…/assets/{index}` streams it with
+  a litegen key alone, 404 to another org. The poller's half:
+  `poll_once_keeps_a_finished_video_on_litegen_storage`.
 - `proxy::storage::model3d_storage_tests` — the local backend keeps assets on
   disk (`a_store_over_the_same_dir_serves_what_an_earlier_one_stored`), refuses
   keys that would leave its directory, sweeps only what is past retention, and

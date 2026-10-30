@@ -117,13 +117,15 @@ impl VideoProvider for MockVideoProvider {
         handle: &VideoGenerationHandle,
     ) -> Result<VideoGenerationPollResult, ProviderError> {
         if should_render_visual_video(&handle.model) {
-            // Return a local URL pointing to the stashed GIF bytes.
+            // Return a local URL pointing to the stashed GIF bytes, and the
+            // bytes themselves, which litegen keeps (as with a vendor whose
+            // result litegen downloads).
             let result_url = format!("/mock/video/{}", handle.provider_job_id);
             return Ok(VideoGenerationPollResult {
                 status: GenerationStatus::Completed,
                 progress: 100,
                 video_url: Some(result_url),
-                video_data: None,
+                video_data: global_store().get(&handle.provider_job_id).await,
                 content_type: Some("image/gif".into()),
                 error: None,
                 metadata: HashMap::from([
@@ -133,13 +135,14 @@ impl VideoProvider for MockVideoProvider {
                 ]),
             });
         }
-        // Always return completed with a placeholder
+        // Always return completed with a placeholder: a tiny animated GIF,
+        // inline, so litegen keeps a real file without any download.
         Ok(VideoGenerationPollResult {
             status: GenerationStatus::Completed,
             progress: 100,
             video_url: Some("https://example.com/mock-video.mp4".into()),
-            video_data: None,
-            content_type: Some("video/mp4".into()),
+            video_data: Some(generate_visual_video_gif(&handle.model)),
+            content_type: Some("image/gif".into()),
             error: None,
             metadata: HashMap::from([
                 ("mock".to_string(), serde_json::json!(true)),

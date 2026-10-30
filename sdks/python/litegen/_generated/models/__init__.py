@@ -46,6 +46,8 @@ from .error_response import ErrorResponse
 from .gateway_settings import GatewaySettings
 from .gateway_settings_view import GatewaySettingsView
 from .generation import Generation
+from .generation_asset import GenerationAsset
+from .generation_asset_list import GenerationAssetList
 from .generation_status import GenerationStatus
 from .health_response import HealthResponse
 from .image_generation_request import ImageGenerationRequest
@@ -226,6 +228,8 @@ __all__ = (
     "GatewaySettings",
     "GatewaySettingsView",
     "Generation",
+    "GenerationAsset",
+    "GenerationAssetList",
     "GenerationStatus",
     "HealthResponse",
     "ImageGenerationRequest",

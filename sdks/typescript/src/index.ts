@@ -17,6 +17,8 @@ export {
   type AuditLogEntry,
   type PaginatedResponse,
   type Generation,
+  type GenerationAsset,
+  type GenerationAssetList,
   type RequestArtifact,
   type WebhookDelivery,
   type TestWebhookResponse,

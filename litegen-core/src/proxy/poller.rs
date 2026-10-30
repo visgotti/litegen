@@ -165,13 +165,45 @@ pub(crate) async fn poll_once(
                     }
                 };
 
-                Some(PollOutcome {
-                    status: poll.status,
-                    progress: poll.progress,
-                    result_url: poll.video_url,
-                    error: poll.error,
-                    assets: None,
-                })
+                // Keep a finished video on litegen storage now, in the tick that
+                // saw it finish: the vendor's URL may expire within the hour.
+                if poll.status == GenerationStatus::Completed {
+                    let (store, prefix) = match gen.app_id.as_deref() {
+                        Some(app_id) => crate::api::handlers::resolve_app_model3d_store(db, secrets_key, app_id)
+                            .await
+                            .unwrap_or_else(|| (model3d_store.clone(), None)),
+                        None => (model3d_store.clone(), None),
+                    };
+                    match crate::proxy::router::rehost_video(
+                        &store, prefix.as_deref(), &gen.id,
+                        poll.video_data.clone(), poll.video_url.as_deref(), poll.content_type.as_deref(),
+                    ).await {
+                        Ok(stored) => Some(PollOutcome {
+                            status: poll.status,
+                            progress: poll.progress,
+                            result_url: Some(stored.url),
+                            error: poll.error,
+                            assets: Some(serde_json::json!({ "assets": [stored.asset] })),
+                        }),
+                        Err(e) => {
+                            if over_age {
+                                warn!(generation_id = %gen.id, error = %e, "poller: video still could not be kept past max age, reaping");
+                                reap_generation(db, &gen.id, &format!("the video finished but could not be kept: {e}")).await;
+                            } else {
+                                warn!(generation_id = %gen.id, error = %e, "poller: finished video could not be kept, will retry");
+                            }
+                            continue;
+                        }
+                    }
+                } else {
+                    Some(PollOutcome {
+                        status: poll.status,
+                        progress: poll.progress,
+                        result_url: poll.video_url,
+                        error: poll.error,
+                        assets: None,
+                    })
+                }
             }
             "model3d" => {
                 let provider = match registry
@@ -382,9 +414,15 @@ pub(crate) async fn poll_once(
                 }
             }
             other => {
-                // Only video and 3D are async today. An `image` row here means
-                // something upstream is wrong; log and skip rather than reap.
-                warn!(generation_id = %gen.id, media_type = %other, "poller: no async provider for media type, skipping");
+                // Only video and 3D are async. An image row is written
+                // `completed` at once; one still active here lost that write,
+                // and past max age it is reaped rather than skipped forever.
+                if over_age {
+                    warn!(generation_id = %gen.id, media_type = %other, "poller: a row with no async provider is past max age, reaping");
+                    reap_generation(db, &gen.id, "no async provider drives this generation").await;
+                } else {
+                    warn!(generation_id = %gen.id, media_type = %other, "poller: no async provider for media type, skipping");
+                }
                 continue;
             }
         };
@@ -1268,6 +1306,29 @@ mod poller_tests {
         let assets = meta["assets"].as_array().unwrap();
         assert_eq!(assets.iter().filter(|a| a["kind"] == "mesh").count(), 1);
         assert!(assets.iter().any(|a| a["kind"] == "preview"));
+    }
+
+    /// L3: a finished video is kept on litegen storage in the tick that saw
+    /// it finish — the vendor's URL may expire within the hour.
+    #[tokio::test]
+    async fn poll_once_keeps_a_finished_video_on_litegen_storage() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let registry = make_registry().await; // video mock
+        let store = test_3d_store();
+        db.insert_generation(
+            "litegen-vid-kept", None, "mock/video-gen", "mock", "video",
+            Some("mock-video-job-1"), 0.0, None, None,
+        ).await.unwrap();
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &store).await;
+        let row = db.get_generation("litegen-vid-kept").await.unwrap().unwrap();
+        assert_eq!(row.status, crate::types::GenerationStatus::Completed);
+        let url = row.result_url.expect("a result url");
+        assert!(url.starts_with("https://assets.test/"), "litegen's copy, not the vendor's: {url}");
+        let asset = &row.metadata.expect("metadata")["assets"][0];
+        assert_eq!(asset["kind"], "video", "{asset}");
+        let key = store.key_of(&url).expect("our own url");
+        let (bytes, _) = store.get(&key).await.unwrap().expect("stored");
+        assert_eq!(asset["sha256"], crate::proxy::router::sha256_hex(&bytes));
     }
 
     #[tokio::test]

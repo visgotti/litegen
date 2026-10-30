@@ -41,6 +41,8 @@ use utoipa::OpenApi;
         // Generations (DB-backed list / get / cancel) + log artifact
         crate::api::handlers::list_generations,
         crate::api::handlers::get_generation,
+        crate::api::handlers::list_generation_assets,
+        crate::api::handlers::get_generation_asset,
         crate::api::handlers::cancel_generation,
         crate::api::handlers::get_log_artifact,
         // Auth — config + password
@@ -163,6 +165,8 @@ use utoipa::OpenApi;
         crate::types::Model3dGenerationResponse,
         crate::types::Model3dAsset,
         crate::types::Model3dAssetKind,
+        crate::types::GenerationAsset,
+        crate::types::GenerationAssetList,
         // The closed 3D vocabularies. Documentation-only on the request (the
         // fields stay strings so validation owns the error), but named here so
         // both SDKs generate literal types instead of hand-copying them.

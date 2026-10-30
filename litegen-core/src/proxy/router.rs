@@ -670,8 +670,18 @@ impl ProxyRouter {
     }
 
     /// Look up an in-flight video generation by local ID and poll its provider.
-    #[tracing::instrument(skip(self), fields(id = %id))]
-    pub async fn get_video_status(&self, id: &str) -> Result<VideoGenerationResponse, ProxyError> {
+    #[tracing::instrument(skip(self, app_store), fields(id = %id))]
+    /// Poll an in-flight video by local id. A finished video is re-hosted in
+    /// the same call (`rehost_video`), into the app's own bucket when it has
+    /// one, so the answer names litegen's copy; the second value is what its
+    /// generation row records (`metadata.assets`). Until the copy is stored the
+    /// job stays tracked and the call answers a retryable error.
+    pub async fn get_video_status(
+        &self,
+        id: &str,
+        app_store: Option<Arc<dyn crate::proxy::storage::ImageStorage>>,
+        app_prefix: Option<&str>,
+    ) -> Result<(VideoGenerationResponse, Option<serde_json::Value>), ProxyError> {
         let job = {
             let jobs = self.video_jobs.read().await;
             jobs.get(id).cloned()
@@ -690,6 +700,26 @@ impl ProxyRouter {
             retryable: e.is_retryable(),
         })?;
 
+        let (video_url, assets) = if poll.status == GenerationStatus::Completed {
+            let stored = rehost_video(
+                app_store.as_ref().unwrap_or(&self.model3d_store),
+                app_prefix,
+                id,
+                poll.video_data.clone(),
+                poll.video_url.as_deref(),
+                poll.content_type.as_deref(),
+            )
+            .await
+            .map_err(|e| ProxyError::ProviderError {
+                provider: handle.provider.clone(),
+                error: format!("the video finished but could not be kept: {e}"),
+                retryable: true,
+            })?;
+            (Some(stored.url), Some(serde_json::json!({ "assets": [stored.asset] })))
+        } else {
+            (poll.video_url.clone(), None)
+        };
+
         if matches!(
             poll.status,
             GenerationStatus::Completed | GenerationStatus::Failed | GenerationStatus::Cancelled
@@ -697,19 +727,22 @@ impl ProxyRouter {
             self.video_jobs.write().await.remove(id);
         }
 
-        Ok(VideoGenerationResponse {
-            id: id.to_string(),
-            status: poll.status,
-            model: handle.model.clone(),
-            provider: handle.provider.clone(),
-            video_url: poll.video_url,
-            progress: poll.progress,
-            error: poll.error,
-            // The triple quoted at submit, not `None`: the consumer's cost path
-            // reads `usage` off the poll response it actually waits for.
-            usage,
-            created: chrono::Utc::now().timestamp(),
-        })
+        Ok((
+            VideoGenerationResponse {
+                id: id.to_string(),
+                status: poll.status,
+                model: handle.model.clone(),
+                provider: handle.provider.clone(),
+                video_url,
+                progress: poll.progress,
+                error: poll.error,
+                // The triple quoted at submit, not `None`: the consumer's cost path
+                // reads `usage` off the poll response it actually waits for.
+                usage,
+                created: chrono::Utc::now().timestamp(),
+            },
+            assets,
+        ))
     }
 
     // ─── 3D Model Generation ────────────────────────────────────────────
@@ -1468,9 +1501,99 @@ pub async fn rehost_model3d_files(
             polycount: f.polycount,
             width: f.width,
             height: f.height,
+            sha256: Some(sha256_hex(&f.bytes)),
         });
     }
     Ok(assets)
+}
+
+/// Lowercase hex SHA-256: what every stored asset reports, so a client can
+/// check what it downloaded.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+/// How a stored video was named, and what a generation row records about it.
+pub struct StoredVideo {
+    pub url: String,
+    pub asset: GenerationAsset,
+}
+
+/// Largest vendor video litegen downloads to keep.
+const MAX_VIDEO_BYTES: usize = 1024 * 1024 * 1024;
+
+/// Keep a finished video on litegen storage (PixelGenie L3): the vendor's own
+/// URL may expire within the hour (Replicate), need the vendor's key (Veo),
+/// or vanish with the job. Uses the bytes the adapter already downloaded when
+/// it has them, else fetches `url`, which must be a public http(s) URL.
+pub async fn rehost_video(
+    store: &Arc<dyn crate::proxy::storage::ImageStorage>,
+    path_prefix: Option<&str>,
+    generation_id: &str,
+    data: Option<Vec<u8>>,
+    url: Option<&str>,
+    content_type: Option<&str>,
+) -> Result<StoredVideo, String> {
+    let (bytes, ct) = match data {
+        Some(b) => (b, content_type.unwrap_or("video/mp4").to_string()),
+        None => {
+            let url = url.ok_or("the vendor returned neither the video nor its URL")?;
+            crate::util::ssrf::validate_public_url(url).await?;
+            let client = crate::util::ssrf::no_redirect_download_client(
+                std::time::Duration::from_secs(600),
+                std::time::Duration::from_secs(60),
+            );
+            let resp = client.get(url).send().await.map_err(|e| format!("download failed: {}", e.without_url()))?;
+            if !resp.status().is_success() {
+                return Err(format!("download answered HTTP {}", resp.status()));
+            }
+            if resp.content_length().is_some_and(|n| n as usize > MAX_VIDEO_BYTES) {
+                return Err("the video is larger than litegen keeps".into());
+            }
+            let ct = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+                .or_else(|| content_type.map(str::to_string))
+                .unwrap_or_else(|| "video/mp4".into());
+            let bytes = resp.bytes().await.map_err(|e| format!("download failed: {}", e.without_url()))?;
+            if bytes.len() > MAX_VIDEO_BYTES {
+                return Err("the video is larger than litegen keeps".into());
+            }
+            (bytes.to_vec(), ct)
+        }
+    };
+    let format = match ct.split(';').next().unwrap_or("").trim() {
+        "image/gif" => "gif",
+        "video/webm" => "webm",
+        "video/quicktime" => "mov",
+        _ => "mp4",
+    };
+    let key = format!(
+        "{}/{generation_id}/video.{format}",
+        path_prefix.unwrap_or(crate::proxy::storage::VIDEO_PATH_PREFIX).trim_matches('/')
+    );
+    let url = store
+        .put(&key, &bytes::Bytes::from(bytes.clone()), crate::proxy::storage::model3d_content_type(format, &ct))
+        .await
+        .map_err(|e| format!("could not store the video: {e}"))?;
+    Ok(StoredVideo {
+        asset: GenerationAsset {
+            index: 0,
+            kind: "video".into(),
+            format: format.into(),
+            url: url.clone(),
+            size_bytes: Some(bytes.len() as u64),
+            sha256: Some(sha256_hex(&bytes)),
+            width: None,
+            height: None,
+            duration_s: None,
+            fps: None,
+        },
+        url,
+    })
 }
 
 /// Demote a `completed` 3D response that is missing a container the caller was

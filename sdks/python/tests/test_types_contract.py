@@ -70,6 +70,8 @@ MIRRORED = {
     "Model3dConvertFormats": t.Model3dConvertFormats,
     "ReferenceImage": t.ReferenceImage,
     "PaginatedResponse_Generation": t.GenerationPage,
+    "GenerationAsset": t.GenerationAsset,
+    "GenerationAssetList": t.GenerationAssetList,
 }
 
 

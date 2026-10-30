@@ -674,7 +674,7 @@ mod tests {
         let image_store = Arc::new(LocalStore);
         let router = ProxyRouter::new(registry, cache, config, image_store);
 
-        let result = router.get_video_status("does-not-exist").await;
+        let result = router.get_video_status("does-not-exist", None, None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.status_code(), 404, "Expected 404 for unknown video id");

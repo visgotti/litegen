@@ -31,6 +31,7 @@ from .polling import (
 from .types import (
     CostEstimate,
     Generation,
+    GenerationAssetList,
     GenerationPage,
     MediaType,
     Model3dConversion,
@@ -484,6 +485,17 @@ class _AsyncGenerations:
         return await self._c._request(
             "GET", f"/v1/generations/{quote(generation_id, safe='')}"
         )
+
+    async def assets(self, generation_id: str) -> GenerationAssetList:
+        """Every file litegen kept for a generation (``GET /v1/generations/{id}/assets``):
+        its images, video, meshes, textures and previews, each with its URL, size
+        and SHA-256, kept for at least 7 days whatever the vendor's URLs do."""
+        return await self._c._request("GET", f"/v1/generations/{quote(generation_id, safe='')}/assets")
+
+    async def download_asset(self, generation_id: str, index: int) -> bytes:
+        """The bytes of one kept file (``GET /v1/generations/{id}/assets/{index}``),
+        with only a litegen key. ``index`` is the asset's ``index`` in :meth:`assets`."""
+        return await self._c._request("GET", f"/v1/generations/{quote(generation_id, safe='')}/assets/{int(index)}")
 
     async def cancel(self, generation_id: str) -> Generation:
         """Cancel a pending or processing job (``PATCH /v1/generations/{id}``).

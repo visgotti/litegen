@@ -29,6 +29,7 @@ class Model3DAsset:
             height (Union[None, Unset, int]): Pixel height, on textures and previews whose vendor reports it.
             polycount (Union[None, Unset, int]): Triangle count, on meshes whose vendor reports one. A container litegen
                 derived carries its source's count — conversion keeps every triangle.
+            sha256 (Union[None, Unset, str]): Lowercase hex SHA-256 of the stored file.
             size_bytes (Union[None, Unset, int]): Size of the stored file.
             width (Union[None, Unset, int]): Pixel width, on textures and previews whose vendor reports it.
     """
@@ -38,6 +39,7 @@ class Model3DAsset:
     url: str
     height: Union[None, Unset, int] = UNSET
     polycount: Union[None, Unset, int] = UNSET
+    sha256: Union[None, Unset, str] = UNSET
     size_bytes: Union[None, Unset, int] = UNSET
     width: Union[None, Unset, int] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -60,6 +62,12 @@ class Model3DAsset:
             polycount = UNSET
         else:
             polycount = self.polycount
+
+        sha256: Union[None, Unset, str]
+        if isinstance(self.sha256, Unset):
+            sha256 = UNSET
+        else:
+            sha256 = self.sha256
 
         size_bytes: Union[None, Unset, int]
         if isinstance(self.size_bytes, Unset):
@@ -86,6 +94,8 @@ class Model3DAsset:
             field_dict["height"] = height
         if polycount is not UNSET:
             field_dict["polycount"] = polycount
+        if sha256 is not UNSET:
+            field_dict["sha256"] = sha256
         if size_bytes is not UNSET:
             field_dict["size_bytes"] = size_bytes
         if width is not UNSET:
@@ -120,6 +130,15 @@ class Model3DAsset:
 
         polycount = _parse_polycount(d.pop("polycount", UNSET))
 
+        def _parse_sha256(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        sha256 = _parse_sha256(d.pop("sha256", UNSET))
+
         def _parse_size_bytes(data: object) -> Union[None, Unset, int]:
             if data is None:
                 return data
@@ -144,6 +163,7 @@ class Model3DAsset:
             url=url,
             height=height,
             polycount=polycount,
+            sha256=sha256,
             size_bytes=size_bytes,
             width=width,
         )
