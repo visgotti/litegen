@@ -965,4 +965,33 @@ models:
             assert!(err.contains("layout"), "{caps} {spec}: {err}");
         }
     }
+
+    // ─── Background swap (3D doc §4, P2) ──────────────────────────────────────
+
+    #[test]
+    fn a_background_swap_model_takes_an_init_image_and_a_prompt() {
+        let row = |prompt: &str, init: &str| yaml(&format!(r#"
+models:
+  - id: x/swap
+    provider: x
+    media_type: image
+    task: background_swap
+    display_name: Swap
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {{ image_to_image: true }}
+    prompt: {prompt}
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: {{ form: base64 }}
+      roles:
+        init: {init}
+"#));
+        const INIT: &str = "{ required: true, min_count: 1, max_count: 1 }";
+        assert!(row("{ required: true }", INIT).is_ok());
+        for (prompt, init) in [("{ required: false, max_length: 0 }", INIT), ("{ required: true }", "{ required: false, min_count: 0, max_count: 1 }")] {
+            let err = row(prompt, init).unwrap_err().to_string();
+            assert!(err.contains("background_swap"), "{prompt} {init}: {err}");
+        }
+    }
 }

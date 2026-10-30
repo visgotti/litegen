@@ -86,6 +86,33 @@ fn formatted_image(prompt: &str, format: Option<&str>, background: Option<&str>)
     Ok(out)
 }
 
+/// An edit mock that, like a vendor promising only "similar" pixels, nudges
+/// every pixel outside the edit area too (3D doc §4).
+const SLOPPY_MODEL: &str = "mock/sloppy-edit-image";
+
+/// The background-swap mock (3D doc §4): every exactly-#ff00ff pixel becomes
+/// sky blue, everything else stays.
+const BACKGROUND_SWAP_MODEL: &str = "mock/background-swap-image";
+
+fn swap_background(materialized: &MaterializedRequest) -> Result<Vec<u8>, ProviderError> {
+    use crate::proxy::materializer::MaterializedRefForm;
+    use base64::Engine;
+    let init = materialized.refs.iter().find(|r| r.role == "init").and_then(|r| match &r.form {
+        MaterializedRefForm::Base64(b) => base64::engine::general_purpose::STANDARD.decode(b).ok(),
+        MaterializedRefForm::MultipartField { bytes, .. } => Some(bytes.to_vec()),
+        MaterializedRefForm::Url(_) => None,
+    });
+    let init = init.ok_or_else(|| ProviderError::InvalidRequest(format!("{BACKGROUND_SWAP_MODEL} needs an init image")))?;
+    let unreadable = |e: image::ImageError| ProviderError::InvalidRequest(format!("{BACKGROUND_SWAP_MODEL}: {e}"));
+    let mut img = image::load_from_memory(&init).map_err(unreadable)?.to_rgba8();
+    for p in img.pixels_mut().filter(|p| p.0 == [0xff, 0x00, 0xff, 0xff]) {
+        p.0 = [0x87, 0xce, 0xeb, 0xff];
+    }
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).map_err(unreadable)?;
+    Ok(out)
+}
+
 /// The layout mock (3D doc §4).
 const LAYOUT_MODEL: &str = "mock/layout-image";
 
@@ -391,6 +418,21 @@ impl ImageProvider for MockProvider {
                 more: Vec::new(),
             });
         }
+        if model.id == BACKGROUND_SWAP_MODEL {
+            return Ok(GenerationOutput { data: swap_background(_materialized)?, content_type: "image/png".to_string(), metadata, more: Vec::new() });
+        }
+        if model.id == SLOPPY_MODEL {
+            let edited = fill_edit_area(INPAINTING_MODEL, _extras, _materialized)?
+                .ok_or_else(|| ProviderError::InvalidRequest(format!("{SLOPPY_MODEL} edits an init image")))?;
+            let unreadable = |e: image::ImageError| ProviderError::InvalidRequest(format!("{SLOPPY_MODEL}: {e}"));
+            let mut img = image::load_from_memory(&edited).map_err(unreadable)?.to_rgba8();
+            for p in img.pixels_mut().filter(|p| p.0 != EDIT_FILL) {
+                p.0[0] = p.0[0].wrapping_add(1);
+            }
+            let mut out = Vec::new();
+            img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).map_err(unreadable)?;
+            return Ok(GenerationOutput { data: out, content_type: "image/png".to_string(), metadata, more: Vec::new() });
+        }
         if model.id == LAYOUT_MODEL || model.id == MASK_PROMPT_MODEL {
             let data = if model.id == LAYOUT_MODEL { layout_canvas(_extras)? } else { fill_named_area(_materialized)? };
             return Ok(GenerationOutput { data, content_type: "image/png".to_string(), metadata, more: Vec::new() });
@@ -531,6 +573,7 @@ mod tests {
             output_format: None, background: None,
             expand: None,
             layout: None, mask_prompt: None,
+            preserve_unmasked: None, feather_px: None,
         }
     }
 
@@ -622,6 +665,7 @@ mod tests {
             output_format: None, background: None,
             expand: None,
             layout: None, mask_prompt: None,
+            preserve_unmasked: None, feather_px: None,
         };
         let cost = provider.estimate_cost(&schema, &req).await.unwrap();
         // mock/test-model has base_cost_usd: 0.0

@@ -139,6 +139,7 @@ pub fn validate_image(
     check_expand(schema, &mut req, strict, &mut dropped)?;
     check_layout(schema, &mut req, strict, &mut dropped)?;
     check_mask_prompt(schema, &mut req, strict, &mut dropped)?;
+    check_preserve(&req)?;
 
     macro_rules! check_param {
         ($field:expr, $key:literal, $variant:pat => $body:block) => {
@@ -1172,6 +1173,32 @@ fn check_mask_prompt(
     }
     Ok(())
 }
+
+/// `preserve_unmasked` and `feather_px` (3D doc §4, P2): a mask or region to
+/// keep outside of, a lossless container, and a feather only with it.
+fn check_preserve(req: &ImageGenerationRequest) -> Result<(), ValidationError> {
+    let preserve = req.preserve_unmasked == Some(true);
+    let conflict = |msg: &str, param: &str| Err(ValidationError::new("param_conflict", msg, Some(param)));
+    if req.feather_px.is_some() && !preserve {
+        return conflict("feather_px softens preserve_unmasked's edge; send it with preserve_unmasked: true", "feather_px");
+    }
+    if req.feather_px.is_some_and(|f| f > MAX_FEATHER_PX) {
+        return Err(ValidationError::new("param_out_of_range", format!("feather_px is at most {MAX_FEATHER_PX}"), Some("feather_px")));
+    }
+    if !preserve {
+        return Ok(());
+    }
+    if req.region.is_none() && !req.base.reference_images.iter().any(|r| r.role.as_deref() == Some("mask")) {
+        return conflict("preserve_unmasked keeps the pixels outside a mask or region; send one", "preserve_unmasked");
+    }
+    if req.output_format.as_deref() == Some("jpeg") {
+        return conflict("preserve_unmasked returns pixels byte-identical, which JPEG cannot; ask for png or webp", "output_format");
+    }
+    Ok(())
+}
+
+/// The widest `feather_px`.
+pub const MAX_FEATHER_PX: u32 = 256;
 
 /// `views` (3D doc §3E): views the model makes, each once, at least one.
 fn check_views(

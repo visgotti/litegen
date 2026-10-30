@@ -1,8 +1,9 @@
 // Recraft — three views of the generation endpoint our adapter calls (POST
 // /v1/images/generations, body `model`; GET /v1/users/me is only a health
-// check), plus the docs index. The one tool it calls, POST
-// /v1/images/removeBackground, is an id of its own (`images/removeBackground`,
-// present while the spec has the path) with its schema in the openapi excerpt:
+// check), plus the docs index. The tools it calls, POST
+// /v1/images/removeBackground and /v1/images/replaceBackground, are ids of
+// their own (`images/<tool>`, present while the spec has the path) with their
+// schemas in the openapi excerpt:
 //  • openapi: the OpenAPI spec the API host serves behind its Swagger UI
 //    (docs/api-reference/swagger → external.api.recraft.ai/doc →
 //    doc/ui/?spec=external-api.yaml → doc/spec/external-api.yaml). It is YAML,
@@ -23,7 +24,7 @@
 import { openapiModelIds, openapiExcerpt, parseYaml } from '../extract.mjs';
 
 const ENDPOINTS = ['/v1/images/generations'];
-const TOOLS = ['/v1/images/removeBackground'];
+const TOOLS = ['/v1/images/removeBackground', '/v1/images/replaceBackground'];
 const DOCS = 'https://www.recraft.ai/docs/api-reference';
 
 // Both callbacks of the openapi source parse the same body; parse it once.
@@ -122,6 +123,7 @@ export default {
     'recraft/recraftv4_1_pro_vector': 'recraftv4_1_pro_vector',
     'recraft/recraftv2_vector': 'recraftv2_vector',
     'recraft/remove-background': 'images/removeBackground',
+    'recraft/replace-background': 'images/replaceBackground',
   },
   sources: [
     {

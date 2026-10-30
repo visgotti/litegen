@@ -64,6 +64,16 @@ pub struct ImageGenerationRequest {
     /// (3D doc §4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask_prompt: Option<String>,
+    /// Paste the init image's pixels back outside the edit area (3D doc §4),
+    /// so they come back byte-identical from any vendor. Needs a mask or a
+    /// region, a lossless container and an output the init's size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserve_unmasked: Option<bool>,
+    /// With `preserve_unmasked`: blend from the init at the edit area's edge
+    /// to the vendor's pixels this many pixels inside it (0, a hard edge, by
+    /// default; at most 256).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feather_px: Option<u32>,
     /// Grow the edit area outward by this many pixels: the vendor's own
     /// setting where it has one (sent explicitly, even as 0), else litegen
     /// dilates the mask itself. Default 0.
@@ -1411,6 +1421,10 @@ pub struct ModelCapabilities {
     /// Takes `mask_prompt` (3D doc §4).
     #[serde(default)]
     pub supports_mask_prompt: bool,
+    /// Takes `preserve_unmasked`, which litegen applies to any model taking a
+    /// mask or a region (3D doc §4).
+    #[serde(default)]
+    pub supports_preserve_unmasked: bool,
     /// Serves `POST /v1/images/segmentations` (PixelGenie L7).
     #[serde(default)]
     pub supports_segmentation: bool,

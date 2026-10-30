@@ -3378,3 +3378,22 @@ fn recraft_v3_lays_out_single_words_and_stability_replaces_a_named_area() {
     assert!(s.prompt.required);
     assert!((s.pricing.base_cost_usd - 0.05).abs() < 1e-9);
 }
+
+// ─── Background swap (PixelGenie 3D doc §4, P2) ─────────────────────────────
+
+/// Recraft's Replace Background: "$0.04 / $0.08 per image, raster / vector";
+/// prompt "Up to 1,000 characters"; image_format webp | png
+/// (tools/background.md, 2026-10-30).
+#[test]
+fn recraft_replace_background_is_a_background_swap_at_the_raster_price() {
+    use litegen::capabilities::{ModelTask, ParamSpec};
+    let reg = registry();
+    let m = reg.get("recraft/replace-background").expect("the row");
+    assert_eq!(m.task, ModelTask::BackgroundSwap);
+    assert_eq!((m.prompt.required, m.prompt.max_length), (true, Some(1000)));
+    match m.params.get("output_format") {
+        Some(ParamSpec::String(f)) => assert_eq!(f.enum_values, ["png", "webp"]),
+        other => panic!("{other:?}"),
+    }
+    assert!((m.pricing.base_cost_usd - 0.04).abs() < 1e-9);
+}

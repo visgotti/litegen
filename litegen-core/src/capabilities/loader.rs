@@ -218,6 +218,15 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
+    // 3D doc §4 (P2): a background swap redraws an init image's background
+    // from a prompt.
+    if m.task == ModelTask::BackgroundSwap {
+        let init_required = m.ref_inputs.as_ref().and_then(|r| r.roles.get("init")).is_some_and(|r| r.required);
+        if !init_required || m.prompt.max_length == Some(0) {
+            return Err(bad(format!("model '{}' is a background_swap model: it takes a required init image and a prompt", m.id)));
+        }
+    }
+
     // 3D doc §4 (P2): a layout composes boxes on a new, text-to-image canvas.
     if let Some(ParamSpec::Layout(l)) = m.params.get("layout") {
         if m.media_type != MediaType::Image || !c.text_to_image {

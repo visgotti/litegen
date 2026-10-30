@@ -276,6 +276,13 @@ pub struct ImageExtras {
     /// The area an edit replaces, named in text (3D doc §4).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mask_prompt: Option<String>,
+    /// Paste the init back outside the edit area (3D doc §4); part of the
+    /// cache key, so a preserved answer is never served for an unpreserved
+    /// request or the other way round.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preserve_unmasked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feather_px: Option<u32>,
     pub size: Option<String>,
     pub aspect_ratio: Option<String>,
     pub quality: Option<String>,
@@ -315,6 +322,9 @@ pub struct ImageEdit {
     /// The growth for a vendor that grows masks itself — sent explicitly,
     /// even 0, because its default is not 0.
     pub vendor_grow_px: Option<u32>,
+    /// What `preserve_unmasked` pastes back (3D doc §4); never serialised.
+    #[serde(skip)]
+    pub preserve: Option<crate::proxy::preserve::Preserve>,
 }
 
 /// Extra video-specific parameters extracted from a validated request.

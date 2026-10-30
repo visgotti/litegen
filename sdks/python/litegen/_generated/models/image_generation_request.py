@@ -47,6 +47,9 @@ class ImageGenerationRequest:
         aspect_ratio (Union[None, Unset, str]):
         background (Union[ImageBackground, None, Unset]):
         expand (Union['Expand', None, Unset]):
+        feather_px (Union[None, Unset, int]): With `preserve_unmasked`: blend from the init at the edit area's edge
+            to the vendor's pixels this many pixels inside it (0, a hard edge, by
+            default; at most 256).
         guidance_scale (Union[None, Unset, float]):
         layout (Union[List['LayoutItem'], None, Unset]): Boxes for a text-to-image canvas (3D doc §4): objects and words
             placed by fractions of the canvas.
@@ -56,6 +59,10 @@ class ImageGenerationRequest:
         mask_prompt (Union[None, Unset, str]): The area an edit replaces, named in text rather than drawn as a mask
             (3D doc §4).
         output_format (Union[ImageOutputFormat, None, Unset]):
+        preserve_unmasked (Union[None, Unset, bool]): Paste the init image's pixels back outside the edit area (3D doc
+            §4),
+            so they come back byte-identical from any vendor. Needs a mask or a
+            region, a lossless container and an output the init's size.
         quality (Union[None, Unset, str]):
         region (Union['Region', None, Unset]):
         response_format (Union[Unset, str]):
@@ -79,11 +86,13 @@ class ImageGenerationRequest:
     aspect_ratio: Union[None, Unset, str] = UNSET
     background: Union[ImageBackground, None, Unset] = UNSET
     expand: Union["Expand", None, Unset] = UNSET
+    feather_px: Union[None, Unset, int] = UNSET
     guidance_scale: Union[None, Unset, float] = UNSET
     layout: Union[List["LayoutItem"], None, Unset] = UNSET
     mask_grow_px: Union[None, Unset, int] = UNSET
     mask_prompt: Union[None, Unset, str] = UNSET
     output_format: Union[ImageOutputFormat, None, Unset] = UNSET
+    preserve_unmasked: Union[None, Unset, bool] = UNSET
     quality: Union[None, Unset, str] = UNSET
     region: Union["Region", None, Unset] = UNSET
     response_format: Union[Unset, str] = UNSET
@@ -151,6 +160,12 @@ class ImageGenerationRequest:
         else:
             expand = self.expand
 
+        feather_px: Union[None, Unset, int]
+        if isinstance(self.feather_px, Unset):
+            feather_px = UNSET
+        else:
+            feather_px = self.feather_px
+
         guidance_scale: Union[None, Unset, float]
         if isinstance(self.guidance_scale, Unset):
             guidance_scale = UNSET
@@ -188,6 +203,12 @@ class ImageGenerationRequest:
             output_format = self.output_format.value
         else:
             output_format = self.output_format
+
+        preserve_unmasked: Union[None, Unset, bool]
+        if isinstance(self.preserve_unmasked, Unset):
+            preserve_unmasked = UNSET
+        else:
+            preserve_unmasked = self.preserve_unmasked
 
         quality: Union[None, Unset, str]
         if isinstance(self.quality, Unset):
@@ -270,6 +291,8 @@ class ImageGenerationRequest:
             field_dict["background"] = background
         if expand is not UNSET:
             field_dict["expand"] = expand
+        if feather_px is not UNSET:
+            field_dict["feather_px"] = feather_px
         if guidance_scale is not UNSET:
             field_dict["guidance_scale"] = guidance_scale
         if layout is not UNSET:
@@ -280,6 +303,8 @@ class ImageGenerationRequest:
             field_dict["mask_prompt"] = mask_prompt
         if output_format is not UNSET:
             field_dict["output_format"] = output_format
+        if preserve_unmasked is not UNSET:
+            field_dict["preserve_unmasked"] = preserve_unmasked
         if quality is not UNSET:
             field_dict["quality"] = quality
         if region is not UNSET:
@@ -387,6 +412,15 @@ class ImageGenerationRequest:
 
         expand = _parse_expand(d.pop("expand", UNSET))
 
+        def _parse_feather_px(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        feather_px = _parse_feather_px(d.pop("feather_px", UNSET))
+
         def _parse_guidance_scale(data: object) -> Union[None, Unset, float]:
             if data is None:
                 return data
@@ -452,6 +486,15 @@ class ImageGenerationRequest:
             return cast(Union[ImageOutputFormat, None, Unset], data)
 
         output_format = _parse_output_format(d.pop("output_format", UNSET))
+
+        def _parse_preserve_unmasked(data: object) -> Union[None, Unset, bool]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, bool], data)
+
+        preserve_unmasked = _parse_preserve_unmasked(d.pop("preserve_unmasked", UNSET))
 
         def _parse_quality(data: object) -> Union[None, Unset, str]:
             if data is None:
@@ -552,11 +595,13 @@ class ImageGenerationRequest:
             aspect_ratio=aspect_ratio,
             background=background,
             expand=expand,
+            feather_px=feather_px,
             guidance_scale=guidance_scale,
             layout=layout,
             mask_grow_px=mask_grow_px,
             mask_prompt=mask_prompt,
             output_format=output_format,
+            preserve_unmasked=preserve_unmasked,
             quality=quality,
             region=region,
             response_format=response_format,

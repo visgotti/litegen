@@ -710,6 +710,53 @@ models:
       background: { kind: string, enum_values: [transparent, opaque] }
     tags: [mock, test, formats]
 
+  # ─── Preservation and background swap (PixelGenie 3D doc §4, P2) ──────────
+  - id: mock/sloppy-edit-image
+    provider: mock
+    media_type: image
+    display_name: Mock Sloppy Edit Image
+    description: >-
+      Fills the edit area (mask, region or both) with #ffcd75 and, like a
+      vendor promising only similar pixels, adds 1 to the red of every other
+      pixel — the subject `preserve_unmasked` puts right.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { image_to_image: true, inpainting: true }
+    prompt: { required: true, max_length: 1000 }
+    preserves_unmasked: similar
+    params:
+      region: { kind: region, input: mask, label: Region, description: The rectangle to edit, sent drawn as the mask. }
+      size: { kind: size, mode: freeform, min_width: 16, max_width: 4096, min_height: 16, max_height: 4096 }
+      output_format: { kind: string, enum_values: [png, webp, jpeg], default: png }
+    ref_inputs:
+      max_total: 2
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image, mask: mask } }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+        mask: { required: false, min_count: 0, max_count: 1, convention: white_edits }
+    extra_allowlist: []
+    tags: [mock, test, inpainting]
+
+  - id: mock/background-swap-image
+    provider: mock
+    media_type: image
+    task: background_swap
+    display_name: Mock Background Swap Image
+    description: >-
+      Puts the init image's subject on a new background: every exactly #ff00ff
+      pixel becomes sky blue (#87ceeb), every other pixel stays.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { image_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: []
+    tags: [mock, test, background-swap]
+
   # ─── Per-box prompts and masks named in text (PixelGenie 3D doc §4, P2) ────
   - id: mock/layout-image
     provider: mock

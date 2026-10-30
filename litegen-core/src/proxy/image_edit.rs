@@ -57,6 +57,10 @@ pub struct PreparedEdit {
     /// The growth for a vendor that grows masks itself — explicit, even 0,
     /// because vendor defaults are not.
     pub vendor_grow_px: Option<u32>,
+    /// The final edit area at the init's size, grown however the vendor or
+    /// litegen grows it: what `preserve_unmasked` keeps the vendor's pixels
+    /// in (3D doc §4).
+    pub area: Option<(u32, u32, Vec<bool>)>,
 }
 
 /// Why an edit was refused. Every one is decided before anything is billed.
@@ -118,6 +122,7 @@ fn decode(bytes: &[u8], what: &str) -> Result<RgbaImage, EditError> {
 }
 
 /// The edit area as a bitmap: `true` edits.
+#[derive(Clone)]
 struct Area {
     w: u32,
     h: u32,
@@ -272,13 +277,20 @@ pub fn prepare(req: &EditRequest, target: &EditTarget) -> Result<PreparedEdit, E
         });
     }
     let Some(mut area) = area else {
-        return Ok(PreparedEdit { mask_png: None, window: None, vendor_grow_px: None });
+        return Ok(PreparedEdit { mask_png: None, window: None, vendor_grow_px: None, area: None });
     };
     let vendor_grow_px = if target.native_grow {
         Some(req.grow_px)
     } else {
         area.grow(req.grow_px);
         None
+    };
+    let kept = {
+        let mut kept = area.clone();
+        if target.native_grow {
+            kept.grow(req.grow_px);
+        }
+        Some((w, h, kept.on))
     };
     match (&target.region, req.region) {
         (Some(t), Some(r)) => {
@@ -296,9 +308,9 @@ pub fn prepare(req: &EditRequest, target: &EditTarget) -> Result<PreparedEdit, E
                     t.min_window_px
                 )));
             }
-            Ok(PreparedEdit { mask_png: (!exact).then(|| area.encode(target.convention)), window: Some(win), vendor_grow_px })
+            Ok(PreparedEdit { mask_png: (!exact).then(|| area.encode(target.convention)), window: Some(win), vendor_grow_px, area: kept })
         }
-        _ => Ok(PreparedEdit { mask_png: Some(area.encode(target.convention)), window: None, vendor_grow_px }),
+        _ => Ok(PreparedEdit { mask_png: Some(area.encode(target.convention)), window: None, vendor_grow_px, area: kept }),
     }
 }
 

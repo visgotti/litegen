@@ -462,6 +462,16 @@ mod tests {
     }
 
     #[test]
+    fn preservation_documents_its_two_fields_and_the_catalog_flag() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        let req = &s["ImageGenerationRequest"];
+        assert!(mentions(property(req, "preserve_unmasked"), "boolean"));
+        assert!(mentions(property(req, "feather_px"), "integer"));
+        assert!(mentions(property(&s["ModelCapabilities"], "supports_preserve_unmasked"), "boolean"));
+    }
+
+    #[test]
     fn layout_and_mask_prompt_document_their_boxes_and_the_catalog_flags() {
         let d = doc();
         let s = &d["components"]["schemas"];

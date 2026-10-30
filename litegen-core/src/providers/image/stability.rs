@@ -696,6 +696,7 @@ impl Default for ModelCapabilities {
             supports_background_removal: false, supports_segmentation: false, segmentation_prompts: Vec::new(),
             texture_resolutions: Vec::new(), supports_keep_uvs: false, supports_placement: false, supports_expand: false,
             supports_layout: false, layout_kinds: Vec::new(), supports_mask_prompt: false,
+            supports_preserve_unmasked: false,
         }
     }
 }
@@ -767,6 +768,7 @@ mod tests {
             output_format: None, background: None,
             expand: None,
             layout: None, mask_prompt: None,
+            preserve_unmasked: None, feather_px: None,
         }
     }
 

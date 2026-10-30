@@ -239,3 +239,36 @@ models:
         init: { required: true, min_count: 1, max_count: 1 }
     extra_allowlist: []
     tags: [background-removal]
+
+  # PixelGenie 3D doc §4 (P2), task background_swap. POST
+  # /v1/images/replaceBackground: image (multipart) or image_url, prompt
+  # (required, "Up to 1,000 characters"), model recraftv3 | recraftv3_vector,
+  # style, n, negative_prompt, response_format, image_format webp (lossless,
+  # the default) | png. Answers {created, credits, data: [{image_id, url |
+  # b64_json}]}.
+  # @see https://www.recraft.ai/docs/api-reference/tools/background.md (read 2026-10-30)
+  - id: recraft/replace-background
+    provider: recraft
+    media_type: image
+    task: background_swap
+    display_name: Recraft Replace Background
+    description: >-
+      Recraft's Replace Background: finds the init image's background and
+      redraws it from the prompt, keeping the subject.
+    docs_url: https://www.recraft.ai/docs/api-reference/tools/background
+    # "$0.04 / $0.08 per image, raster / vector" (read 2026-10-30); litegen
+    # asks for raster (recraftv3).
+    pricing: { base_cost_usd: 0.04 }
+    capabilities: { image_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      negative_prompt: { kind: string, max_length: 1000 }
+      output_format: { kind: string, enum_values: [png, webp], default: png }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image } }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: [style]
+    tags: [image-to-image, background-swap]

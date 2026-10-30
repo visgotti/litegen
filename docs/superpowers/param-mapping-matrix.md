@@ -285,6 +285,35 @@ listing serves `mask_convention: white_edits` for every model that takes one.
 
 Not verified live: no OpenAI, Stability or Ideogram key is available here.
 
+### Preservation and background swap (3D doc §4, P2)
+
+**`preserve_unmasked: true`** has litegen paste the init image's pixels back
+outside the edit area — the mask, the region, or where they overlap, grown as
+`mask_grow_px` grows it — before anything is stored, so those pixels come back
+byte-identical from any vendor, whatever its own `preserves_unmasked`
+promise. **`feather_px`** (0, a hard edge, by default; at most 256) blends from
+the init at the area's edge to the vendor's pixels that far inside it
+(chessboard distance), never outside. A vendor image of another size is
+resized to the init's first; the result is PNG, or lossless WebP when webp is
+asked. Every model taking a mask or region lists `supports_preserve_unmasked`.
+Refused before billing (`param_conflict`): no mask or region, `output_format`
+jpeg, a `size` other than the init's, `feather_px` without
+`preserve_unmasked`; a feather over 256 is `param_out_of_range`.
+
+A **`background_swap`** model (its own `task`) takes a required init image and
+a prompt for the new background (loader
+`a_background_swap_model_takes_an_init_image_and_a_prompt`).
+
+| row | behaviour | proof | status |
+|---|---|---|---|
+| core | composite, feather, resize | unit `outside_the_area_is_the_init_exactly_and_inside_is_the_vendors`, `a_feather_ramps_from_the_init_at_the_edge_to_the_vendor_inside`, `a_vendor_image_of_another_size_is_scaled_to_the_init_first` | ✅ |
+| `mock/sloppy-edit-image` | fills the edit area #ffcd75 and adds 1 to the red of every other pixel, as a "similar" vendor does | HTTP `preserved_pixels_come_back_byte_identical_from_a_sloppy_vendor`, `preservation_the_request_cannot_honour_is_refused_before_billing` (no log); OpenAPI `preservation_documents_its_two_fields_and_the_catalog_flag` | ✅ mock |
+| `mock/background-swap-image` | every exactly-#ff00ff pixel becomes #87ceeb, every other pixel stays | HTTP `a_background_swap_model_puts_the_subject_on_a_new_background` | ✅ mock |
+| `recraft/replace-background` | `POST /v1/images/replaceBackground` multipart `image`, `prompt` (≤ 1,000), `model: recraftv3`, `response_format: b64_json`, `image_format` png (webp when asked), `negative_prompt`; `style` an extra; answers `data[0]`; $0.04 | adapter `replace_background_uploads_the_image_and_the_new_backgrounds_prompt`; conformance `recraft_replace_background_is_a_background_swap_at_the_raster_price` | 🟡 wiremock |
+
+Ideogram, Bria and Stability (Replace Background and Relight, an async
+endpoint) are §4's other swap vendors; none is wired.
+
 ### Per-box prompts and masks named in text (3D doc §4, P2)
 
 **`layout: [{box: {x, y, w, h}, kind, prompt?, text?}]`** places objects

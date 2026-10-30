@@ -181,6 +181,8 @@ pub async fn generate_image(
         expand: validated.request.expand,
         layout: validated.request.layout.clone(),
         mask_prompt: validated.request.mask_prompt.clone(),
+        preserve_unmasked: validated.request.preserve_unmasked,
+        feather_px: validated.request.feather_px,
         extra: validated.request.base.extra.clone(),
         output_format: validated.request.output_format.clone(),
         background: validated.request.background.clone(),
@@ -1999,6 +2001,7 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
                 _ => Vec::new(),
             },
             supports_mask_prompt: matches!(s.params.get("mask_prompt"), Some(crate::capabilities::ParamSpec::String(_))),
+            supports_preserve_unmasked: takes_mask || region.is_some(),
             // PixelGenie L7, read the way the segmentation endpoint reads it.
             supports_segmentation: segmentation_prompts(s).is_some(),
             segmentation_prompts: segmentation_prompts(s).map(|p| p.types.clone()).unwrap_or_default(),
@@ -4437,6 +4440,7 @@ async fn apply_image_edit(
         None => None,
     };
     let (region, grow_px) = (req.region, req.mask_grow_px.unwrap_or(0));
+    let preserve_init = (req.preserve_unmasked == Some(true)).then(|| init.clone());
     let prepared = tokio::task::spawn_blocking(move || {
         prepare(&EditRequest { init: &init, mask: mask.as_deref(), region, grow_px }, &target)
     })
@@ -4461,7 +4465,28 @@ async fn apply_image_edit(
             None => materialized.refs.push(MaterializedRef { role: "mask".into(), form, time_s: None }),
         }
     }
-    Ok(Some(crate::providers::ImageEdit { window: prepared.window, vendor_grow_px: prepared.vendor_grow_px }))
+    // 3D doc §4: preservation pastes the init back, so the output must be the
+    // init's size — a `size` asking for another is refused before billing.
+    let preserve = match (preserve_init, prepared.area) {
+        (Some(init), Some((width, height, area))) => {
+            if let Some((w, h)) = req.size.as_deref().and_then(|s| s.split_once('x')).and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?))) {
+                if (w, h) != (width, height) {
+                    let msg = format!("preserve_unmasked keeps the init's {width}x{height}; size {w}x{h} would not");
+                    return Err((StatusCode::BAD_REQUEST, Json(crate::api::middleware::validator::err_body("param_conflict", &msg, Some("size"), &schema.id))).into_response());
+                }
+            }
+            Some(crate::proxy::preserve::Preserve {
+                init,
+                width,
+                height,
+                area,
+                feather_px: req.feather_px.unwrap_or(0),
+                webp: req.output_format.as_deref() == Some("webp"),
+            })
+        }
+        _ => None,
+    };
+    Ok(Some(crate::providers::ImageEdit { window: prepared.window, vendor_grow_px: prepared.vendor_grow_px, preserve }))
 }
 
 /// The error answer for a generation the router could not run, marked as

@@ -69,6 +69,78 @@ impl RecraftProvider {
 }
 
 impl RecraftProvider {
+    /// Replace background (3D doc §4, task background_swap): the image
+    /// uploaded as `image` with the prompt, raster (`recraftv3`), PNG unless
+    /// webp is asked, as base64; it answers a `data` array.
+    ///
+    /// @see <https://www.recraft.ai/docs/api-reference/tools/background.md> — `image`, `prompt` (required),
+    ///   `model`, `negative_prompt`, `response_format`, `image_format`, and the `{created, credits, data}` response
+    async fn replace_background(&self, base: &BaseGenerationRequest, extras: &ImageExtras, materialized: &MaterializedRequest) -> Result<GenerationOutput, ProviderError> {
+        use crate::proxy::materializer::MaterializedRefForm;
+        let creds = self.creds()?;
+        let (bytes, content_type) = materialized
+            .refs
+            .iter()
+            .find(|r| r.role == "init")
+            .and_then(|r| match &r.form {
+                MaterializedRefForm::MultipartField { bytes, content_type, .. } => Some((bytes.to_vec(), content_type.clone())),
+                _ => None,
+            })
+            .ok_or_else(|| ProviderError::InvalidRequest("a background swap needs an init image".into()))?;
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name("image")
+            .mime_str(&content_type)
+            .map_err(|e| ProviderError::InvalidRequest(format!("init image type {content_type}: {e}")))?;
+        let mut form = reqwest::multipart::Form::new()
+            .part("image", part)
+            .text("prompt", base.prompt.clone())
+            .text("model", "recraftv3")
+            .text("response_format", "b64_json")
+            .text("image_format", extras.output_format.clone().unwrap_or_else(|| "png".into()));
+        if let Some(np) = base.negative_prompt.as_deref() {
+            form = form.text("negative_prompt", np.to_string());
+        }
+        if let Some(Value::Object(extra)) = &extras.extra {
+            for (k, v) in extra {
+                form = form.text(k.clone(), v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
+            }
+        }
+        let url = format!("{}/images/replaceBackground", self.api_base());
+        let builder = crate::providers::auth::apply(&self.auth, &creds, self.client.post(&url).multipart(form))?;
+        let resp = crate::providers::inject_trace_headers(builder).send().await.map_err(|e| ProviderError::RequestFailed {
+            message: format!("Recraft request failed: {e}"),
+            status_code: e.status().map(|s| s.as_u16()),
+            provider_error: None,
+            retryable: e.is_timeout() || e.is_connect(),
+        })?;
+        let status = resp.status();
+        let data: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
+            message: format!("Failed to parse Recraft response: {e}"),
+            status_code: Some(status.as_u16()),
+            provider_error: None,
+            retryable: false,
+        })?;
+        if !status.is_success() {
+            return Err(ProviderError::RequestFailed {
+                message: format!("Recraft API error: {data}"),
+                status_code: Some(status.as_u16()),
+                provider_error: Some(data),
+                retryable: status.as_u16() >= 500,
+            });
+        }
+        let failed = |message: String| ProviderError::RequestFailed { message, status_code: None, provider_error: None, retryable: false };
+        let first = &data["data"][0];
+        let bytes = if let Some(b64) = first["b64_json"].as_str() {
+            B64.decode(b64).map_err(|e| failed(format!("Failed to decode Recraft b64_json: {e}")))?
+        } else if let Some(at) = first["url"].as_str() {
+            let r = self.client.get(at).send().await.map_err(|e| failed(format!("Failed to fetch Recraft image: {e}")))?;
+            r.bytes().await.map(|b| b.to_vec()).map_err(|e| failed(format!("Failed to read Recraft image: {e}")))?
+        } else {
+            return Err(ProviderError::RequestFailed { message: "Recraft response has no image".into(), status_code: None, provider_error: Some(data), retryable: false });
+        };
+        Ok(GenerationOutput { data: bytes, content_type: "image/png".into(), metadata: HashMap::new(), more: Vec::new() })
+    }
+
     /// Remove background (PixelGenie L8): the image uploaded as `file`, the
     /// result asked as base64 in `image_format` png (Recraft's default is
     /// lossless WebP) unless webp is asked. It answers one `image`, not a
@@ -170,6 +242,9 @@ impl ImageProvider for RecraftProvider {
     ) -> Result<GenerationOutput, ProviderError> {
         if model.capabilities.background_removal {
             return self.remove_background(extras, _materialized).await;
+        }
+        if model.task == crate::capabilities::ModelTask::BackgroundSwap {
+            return self.replace_background(base, extras, _materialized).await;
         }
         let creds = self.creds()?;
         let native = Self::resolve_model(&model.id);
@@ -419,6 +494,7 @@ mod tests {
             output_format: None, background: None,
             expand: None,
             layout: None, mask_prompt: None,
+            preserve_unmasked: None, feather_px: None,
         }
     }
 
@@ -571,6 +647,42 @@ mod tests {
         let close = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9;
         for (got, want) in pts.iter().zip([(0.3, 0.45), (0.6, 0.45), (0.6, 0.55), (0.3, 0.55)]) {
             assert!(close(*got, want), "{pts:?}");
+        }
+    }
+
+    /// Replace background (task background_swap) uploads the image as `image`
+    /// with the prompt, asks recraftv3 for PNG as base64, and reads `data[0]`.
+    /// @see <https://www.recraft.ai/docs/api-reference/tools/background.md>
+    #[tokio::test]
+    async fn replace_background_uploads_the_image_and_the_new_backgrounds_prompt() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/images/replaceBackground"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "created": 1, "credits": 40, "data": [{ "b64_json": B64.encode(b"SWAPPED") }] })))
+            .mount(&server)
+            .await;
+        let materialized = MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".to_string(),
+                form: crate::proxy::materializer::MaterializedRefForm::MultipartField {
+                    field_name: "image".to_string(),
+                    bytes: bytes::Bytes::from_static(b"src"),
+                    content_type: "image/png".to_string(),
+                },
+                time_s: None,
+            }],
+            cleanup: Cleanup::empty(),
+        };
+        let extras = ImageExtras { size: None, style: None, ..make_extras() };
+        let out = make_provider(&server.uri())
+            .generate(&ref_schema("recraft/replace-background"), &make_base("a beach at dusk", "recraft/replace-background"), &extras, &materialized)
+            .await
+            .expect("generate");
+        assert_eq!(out.data, b"SWAPPED");
+        let body = &server.received_requests().await.unwrap()[0].body;
+        assert!(String::from_utf8_lossy(body).contains("name=\"image\""), "the image part");
+        for (field, want) in [("prompt", "a beach at dusk"), ("model", "recraftv3"), ("response_format", "b64_json"), ("image_format", "png")] {
+            assert_eq!(multipart_field(body, field).as_deref(), Some(want), "{field}");
         }
     }
 }

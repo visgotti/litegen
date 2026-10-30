@@ -2416,6 +2416,13 @@ export interface components {
             aspect_ratio?: string | null;
             background?: null | components["schemas"]["ImageBackground"];
             expand?: null | components["schemas"]["Expand"];
+            /**
+             * Format: int32
+             * @description With `preserve_unmasked`: blend from the init at the edit area's edge
+             *     to the vendor's pixels this many pixels inside it (0, a hard edge, by
+             *     default; at most 256).
+             */
+            feather_px?: number | null;
             /** Format: double */
             guidance_scale?: number | null;
             /**
@@ -2436,6 +2443,12 @@ export interface components {
              */
             mask_prompt?: string | null;
             output_format?: null | components["schemas"]["ImageOutputFormat"];
+            /**
+             * @description Paste the init image's pixels back outside the edit area (3D doc §4),
+             *     so they come back byte-identical from any vendor. Needs a mask or a
+             *     region, a lossless container and an output the init's size.
+             */
+            preserve_unmasked?: boolean | null;
             quality?: string | null;
             region?: null | components["schemas"]["Region"];
             response_format?: string;
@@ -3007,6 +3020,11 @@ export interface components {
              *     mesh it delivers: true on every 3D model.
              */
             supports_placement?: boolean;
+            /**
+             * @description Takes `preserve_unmasked`, which litegen applies to any model taking a
+             *     mask or a region (3D doc §4).
+             */
+            supports_preserve_unmasked?: boolean;
             /** @description Takes `region` (3D doc §4). */
             supports_region_edit?: boolean;
             /** @description Takes the `rig` param. */

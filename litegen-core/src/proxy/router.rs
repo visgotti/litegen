@@ -279,6 +279,13 @@ impl ProxyRouter {
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
+        // 3D doc §4: the init pasted back outside the edit area, before any
+        // result is stored.
+        let output = match extras.edit.as_ref().and_then(|e| e.preserve.clone()) {
+            Some(p) => preserve_output(output, p, schema).await?,
+            None => output,
+        };
+
         // 3. Build the image results, then bill for the number actually
         //    produced. The proxy currently returns a single image per
         //    generation (GenerationOutput carries one image), so billing must
@@ -589,6 +596,7 @@ impl ProxyRouter {
             output_format: None, background: None,
             expand: extras.expand,
             layout: None, mask_prompt: None,
+            preserve_unmasked: None, feather_px: None,
         };
         for d in deployments {
             let cost = if let Some(p) = self.registry.image_provider_for_request(&d.provider, app_creds.clone()).await {
@@ -1536,6 +1544,32 @@ async fn build_image_results(
         });
     }
     results
+}
+
+/// Every image of a call with the init pasted back outside the edit area (3D
+/// doc §4); an image litegen cannot read fails the call as the vendor's.
+async fn preserve_output(mut output: GenerationOutput, p: crate::proxy::preserve::Preserve, schema: &ModelSchema) -> Result<GenerationOutput, ProxyError> {
+    let content_type = if p.webp { "image/webp" } else { "image/png" };
+    let joined = tokio::task::spawn_blocking(move || -> Result<GenerationOutput, image::ImageError> {
+        output.data = crate::proxy::preserve::composite(&output.data, &p)?;
+        output.content_type = content_type.into();
+        for more in &mut output.more {
+            more.data = crate::proxy::preserve::composite(&more.data, &p)?;
+            more.content_type = content_type.into();
+        }
+        Ok(output)
+    })
+    .await
+    .map_err(|e| ProxyError::Internal(format!("preservation stopped: {e}")))?;
+    joined.map_err(|e| {
+        let unreadable = ProviderError::RequestFailed {
+            message: format!("returned an image litegen cannot read to preserve: {e}"),
+            status_code: None,
+            provider_error: None,
+            retryable: false,
+        };
+        ProxyError::VendorFailed { model: schema.id.clone(), provider: schema.provider.clone(), vendor: VendorError::from_provider(&unreadable), vendor_job_id: None }
+    })
 }
 
 /// An image's content type read from its first bytes (PixelGenie L9): PNG,

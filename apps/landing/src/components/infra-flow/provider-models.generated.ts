@@ -20,7 +20,7 @@ export const PROVIDER_MODELS: Record<string, ProviderModels> = {
   "minimax": {"image":["MiniMax image-01"],"video":["MiniMax H3","MiniMax H3 Max","MiniMax Hailuo 02","MiniMax Hailuo 2.3","MiniMax Hailuo 2.3 Fast","MiniMax S2V-01","MiniMax T2V-01 Director"],"model3d":[]},
   "openai": {"image":["GPT Image 2","GPT Image 2.5 Flare","GPT Image 2.5 Sunburst"],"video":[],"model3d":[]},
   "pixverse": {"image":[],"video":["PixVerse C1","PixVerse v3.5","PixVerse v4.5","PixVerse v5","PixVerse v5 Multi-Transition","PixVerse V6"],"model3d":[]},
-  "recraft": {"image":["Recraft V2","Recraft V2 Vector","Recraft V3","Recraft V3 Vector","Recraft V4.1","Recraft V4.1 Pro","Recraft V4.1 Pro Vector","Recraft V4.1 Vector","Recraft Remove Background"],"video":[],"model3d":[]},
+  "recraft": {"image":["Recraft V2","Recraft V2 Vector","Recraft V3","Recraft V3 Vector","Recraft V4.1","Recraft V4.1 Pro","Recraft V4.1 Pro Vector","Recraft V4.1 Vector","Recraft Remove Background","Recraft Replace Background"],"video":[],"model3d":[]},
   "replicate": {"image":["Flux 1.1 Pro","Flux Dev","Flux Pro","Flux Schnell","SD3 on Replicate","SDXL on Replicate"],"video":["Replicate Video (generic)"],"model3d":[]},
   "runway": {"image":["Runway Gen-4 Image","Runway Gen-4 Image Turbo"],"video":["Runway Gen-4 Turbo","Runway Gen-4.5"],"model3d":[]},
   "stability": {"image":["Stable Image Core","Stable Image Inpaint","Stable Image Outpaint","Stable Image Remove Background","Stable Diffusion 3 Large","Stable Diffusion 3 Turbo","Stable Diffusion 3.5 Medium","Stable Diffusion XL","Stable Image Search and Replace","Stable Image Ultra"],"video":[],"model3d":[]},

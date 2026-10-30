@@ -8432,6 +8432,15 @@
                                     }
                                 ]
                             },
+                            "feather_px": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ],
+                                "format": "int32",
+                                "description": "With `preserve_unmasked`: blend from the init at the edit area's edge\nto the vendor's pixels this many pixels inside it (0, a hard edge, by\ndefault; at most 256).",
+                                "minimum": 0
+                            },
                             "guidance_scale": {
                                 "type": [
                                     "number",
@@ -8475,6 +8484,13 @@
                                         "description": "The image container to return (PixelGenie L9): one of the model's\n`capabilities.output_formats`. Omitted means the vendor's default."
                                     }
                                 ]
+                            },
+                            "preserve_unmasked": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ],
+                                "description": "Paste the init image's pixels back outside the edit area (3D doc \u00a74),\nso they come back byte-identical from any vendor. Needs a mask or a\nregion, a lossless container and an output the init's size."
                             },
                             "quality": {
                                 "type": [
@@ -9761,6 +9777,10 @@
                     "supports_placement": {
                         "type": "boolean",
                         "description": "Takes `ground`, `center` and `height_m`, which litegen applies to every\nmesh it delivers: true on every 3D model."
+                    },
+                    "supports_preserve_unmasked": {
+                        "type": "boolean",
+                        "description": "Takes `preserve_unmasked`, which litegen applies to any model taking a\nmask or a region (3D doc \u00a74)."
                     },
                     "supports_region_edit": {
                         "type": "boolean",

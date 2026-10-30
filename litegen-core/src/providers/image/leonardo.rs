@@ -475,6 +475,7 @@ mod tests {
             output_format: None, background: None,
             expand: None,
             layout: None, mask_prompt: None,
+            preserve_unmasked: None, feather_px: None,
         }
     }
 

@@ -6123,6 +6123,62 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://www.recraft.ai/docs/api-reference/tools/remove-background"
   },
   {
+    "id": "recraft/replace-background",
+    "provider": "recraft",
+    "displayName": "Recraft Replace Background",
+    "description": "Recraft's Replace Background: finds the init image's background and redraws it from the prompt, keeping the subject.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": true,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 1000
+    },
+    "params": [
+      {
+        "name": "negative_prompt",
+        "kind": "string"
+      },
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp"
+        ],
+        "default": "png"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.04
+    },
+    "tags": [
+      "image-to-image",
+      "background-swap"
+    ],
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/tools/background"
+  },
+  {
     "id": "replicate/flux-1.1-pro",
     "provider": "replicate",
     "displayName": "Flux 1.1 Pro",
