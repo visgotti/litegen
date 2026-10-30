@@ -6,7 +6,13 @@ models:
     media_type: video
     display_name: PixVerse v4.5
     description: PixVerse v4.5 text/image-to-video + first/last-frame transition.
-    pricing: { base_cost_usd: 0.45 }
+    # @see https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md (2026-10-30)
+    # "225 Credits = USD 1; 1 Credit ≈ USD 0.004444" (the earlier page, $10 per
+    # 1,000 credits, is gone).
+    # Not listed there any more ("no public rate is provided"); the 45 credits
+    # the 540p 5 s clip cost before are priced at that rate.
+    pricing:
+      base_cost_usd: 0.2
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
@@ -37,7 +43,19 @@ models:
     media_type: video
     display_name: PixVerse v5
     description: PixVerse v5 text/image-to-video.
-    pricing: { base_cost_usd: 0.45 }
+    # @see https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md (2026-10-30)
+    # "225 Credits = USD 1; 1 Credit ≈ USD 0.004444" (the earlier page, $10 per
+    # 1,000 credits, is gone).
+    # V5: "Fixed Credits per request for the selected duration" — 5 s at
+    # 360p/540p 45 credits, 720p 60, 1080p 120; 8 s 90, 90, 120, 240.
+    pricing:
+      base_cost_usd: 0.2
+      variable_pricing:
+        - { when: { duration_seconds: 8 }, usd: 0.4 }
+        - { when: { resolution: 720p }, usd: 0.2666667 }
+        - { when: { resolution: 720p, duration_seconds: 8 }, usd: 0.5333333 }
+        - { when: { resolution: 1080p }, usd: 0.5333333 }
+        - { when: { resolution: 1080p, duration_seconds: 8 }, usd: 1.0666667 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
@@ -72,8 +90,8 @@ models:
   #   (minItems 2) of { img_id, duration (integer ≥ 0), prompt (≤ 2048) },
   #   motion_mode (normal | fast). "Supply frames in order; each duration
   #   describes the segment leading to the next frame. For the final item,
-  #   omit duration or set it to 0." No maxItems is given; 16 keyframes span
-  #   the longest priced clip (15 s) at whole seconds.
+  #   omit duration or set it to 0." No maxItems is given; 31 keyframes span
+  #   the longest priced clip (30 s) at whole seconds.
   # @see https://docs.platform.pixverse.ai/model-capability-map-2394982m0.md (2026-10-30)
   #   Multi-Transition Video: V5 "Supported"; V6 Max, C1, V6 and V5.6 not.
   - id: pixverse/v5-multi-transition
@@ -81,7 +99,7 @@ models:
     media_type: video
     display_name: PixVerse v5 Multi-Transition
     description: >-
-      Keyframe-to-video on PixVerse v5. Two to sixteen `keyframe` images, the
+      Keyframe-to-video on PixVerse v5. Two to 31 `keyframe` images, the
       first at 0 s and each at a whole second, become one clip that passes
       through each in turn and ends on the last; the prompt describes every
       segment.
@@ -89,15 +107,55 @@ models:
     # @see https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md (2026-10-30)
     #   "Multi-Transition — Fixed duration tiers for motion_mode=normal"; "USD
     #   amounts use total Credits ÷ 225". 5 seconds at 360p / 540p: "45
-    #   Credits", US$0.200. The clip's length is the caller's, so the tiers
-    #   (540p credits: 1 s 23, 2 s 27, 3 s 32, 4 s 36, 5 s 45, 6 s 59, 7 s
-    #   72, 8 s 90, 9 s 95, 10 s 99, 15 s 135; 720p ×4/3; 1080p ×8/3) are
-    #   recorded for variable pricing.
+    #   Credits", US$0.200. One tier per listed length (1–10, 15, 20, 25 and
+    #   30 s) and resolution (360p and 540p share theirs; litegen sends 540p
+    #   when none is asked for); "For durations not listed, refer to the
+    #   current production pricing table" — those bill the 5 s price.
     pricing:
       base_cost_usd: 0.20
       variable_pricing:
-        credit_usd: 0.0044444
-        credits_by_seconds_540p: { "1": 23, "2": 27, "3": 32, "4": 36, "5": 45, "6": 59, "7": 72, "8": 90, "9": 95, "10": 99, "15": 135 }
+        - { when: { duration_seconds: 1 }, usd: 0.10222 }
+        - { when: { duration_seconds: 2 }, usd: 0.12 }
+        - { when: { duration_seconds: 3 }, usd: 0.14222 }
+        - { when: { duration_seconds: 4 }, usd: 0.16 }
+        - { when: { duration_seconds: 5 }, usd: 0.2 }
+        - { when: { duration_seconds: 6 }, usd: 0.26222 }
+        - { when: { duration_seconds: 7 }, usd: 0.32 }
+        - { when: { duration_seconds: 8 }, usd: 0.4 }
+        - { when: { duration_seconds: 9 }, usd: 0.42222 }
+        - { when: { duration_seconds: 10 }, usd: 0.44 }
+        - { when: { duration_seconds: 15 }, usd: 0.6 }
+        - { when: { duration_seconds: 20 }, usd: 0.8 }
+        - { when: { duration_seconds: 25 }, usd: 1.0 }
+        - { when: { duration_seconds: 30 }, usd: 1.2 }
+        - { when: { duration_seconds: 1, resolution: 720p }, usd: 0.13333 }
+        - { when: { duration_seconds: 2, resolution: 720p }, usd: 0.16 }
+        - { when: { duration_seconds: 3, resolution: 720p }, usd: 0.18667 }
+        - { when: { duration_seconds: 4, resolution: 720p }, usd: 0.21333 }
+        - { when: { duration_seconds: 5, resolution: 720p }, usd: 0.26667 }
+        - { when: { duration_seconds: 6, resolution: 720p }, usd: 0.34667 }
+        - { when: { duration_seconds: 7, resolution: 720p }, usd: 0.42667 }
+        - { when: { duration_seconds: 8, resolution: 720p }, usd: 0.53333 }
+        - { when: { duration_seconds: 9, resolution: 720p }, usd: 0.56 }
+        - { when: { duration_seconds: 10, resolution: 720p }, usd: 0.58667 }
+        - { when: { duration_seconds: 15, resolution: 720p }, usd: 0.8 }
+        - { when: { duration_seconds: 20, resolution: 720p }, usd: 1.06667 }
+        - { when: { duration_seconds: 25, resolution: 720p }, usd: 1.33333 }
+        - { when: { duration_seconds: 30, resolution: 720p }, usd: 1.6 }
+        - { when: { duration_seconds: 1, resolution: 1080p }, usd: 0.26667 }
+        - { when: { duration_seconds: 2, resolution: 1080p }, usd: 0.32 }
+        - { when: { duration_seconds: 3, resolution: 1080p }, usd: 0.37333 }
+        - { when: { duration_seconds: 4, resolution: 1080p }, usd: 0.42667 }
+        - { when: { duration_seconds: 5, resolution: 1080p }, usd: 0.53333 }
+        - { when: { duration_seconds: 6, resolution: 1080p }, usd: 0.69333 }
+        - { when: { duration_seconds: 7, resolution: 1080p }, usd: 0.85333 }
+        - { when: { duration_seconds: 8, resolution: 1080p }, usd: 1.06667 }
+        - { when: { duration_seconds: 9, resolution: 1080p }, usd: 1.12 }
+        - { when: { duration_seconds: 10, resolution: 1080p }, usd: 1.17333 }
+        - { when: { duration_seconds: 15, resolution: 1080p }, usd: 1.6 }
+        - { when: { duration_seconds: 20, resolution: 1080p }, usd: 2.13333 }
+        - { when: { duration_seconds: 25, resolution: 1080p }, usd: 2.66667 }
+        - { when: { duration_seconds: 30, resolution: 1080p }, usd: 3.2 }
     capabilities: { image_to_video: true }
     prompt: { required: true, max_length: 2048 }
     params:
@@ -105,14 +163,14 @@ models:
         kind: string
         enum_values: [360p, 540p, 720p, 1080p]
     ref_inputs:
-      max_total: 16
+      max_total: 31
       default_role: keyframe
       provider_format:
         form: multipart
         field_map:
           keyframe: image
       roles:
-        keyframe: { required: true, min_count: 2, max_count: 16, timing: any, time_step_s: 1.0 }
+        keyframe: { required: true, min_count: 2, max_count: 31, timing: any, time_step_s: 1.0 }
     # motion_mode fast doubles the price: it waits for variable pricing.
     extra_allowlist: []
     tags: [image-to-video, keyframes]
@@ -122,9 +180,13 @@ models:
     media_type: video
     display_name: PixVerse v3.5
     description: PixVerse v3.5 text/image-to-video + transition.
-    # 540p (the adapter's default quality), normal motion, 5s: 45 credits at
-    # $0.01 ($10 = 1,000 credits): https://docs.platform.pixverse.ai/pricing-796039m0.md (2026-09-11)
-    pricing: { base_cost_usd: 0.45 }
+    # @see https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md (2026-10-30)
+    # "225 Credits = USD 1; 1 Credit ≈ USD 0.004444" (the earlier page, $10 per
+    # 1,000 credits, is gone).
+    # Not listed there any more ("no public rate is provided"); the 45 credits
+    # the 540p 5 s clip cost before are priced at that rate.
+    pricing:
+      base_cost_usd: 0.2
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
@@ -160,10 +222,22 @@ models:
     media_type: video
     display_name: PixVerse V6
     description: PixVerse V6 text/image-to-video + first/last-frame transition, 1-15s, optional native audio.
-    # 540p (the adapter's default quality), 5s, no audio: 7 credits/s x 5 = 35
-    # credits at $0.01 ($10 = 1,000 credits):
-    # https://docs.platform.pixverse.ai/pricing-796039m0.md (2026-09-11)
-    pricing: { base_cost_usd: 0.35 }
+    # @see https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md (2026-10-30)
+    # "225 Credits = USD 1; 1 Credit ≈ USD 0.004444" (the earlier page, $10 per
+    # 1,000 credits, is gone).
+    # V6 is billed per second by resolution and audio: 7 credits/s at 540p (the
+    # default quality) without audio, so the default 5 s clip is 35 credits.
+    pricing:
+      base_cost_usd: 0.1555555
+      variable_pricing:
+        - { per_second_usd: 0.0311111 }
+        - { when: { resolution: 360p }, per_second_usd: 0.0222222 }
+        - { when: { resolution: 720p }, per_second_usd: 0.04 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.08 }
+        - { when: { extra.generate_audio_switch: true }, per_second_usd: 0.04 }
+        - { when: { resolution: 360p, extra.generate_audio_switch: true }, per_second_usd: 0.0311111 }
+        - { when: { resolution: 720p, extra.generate_audio_switch: true }, per_second_usd: 0.0533333 }
+        - { when: { resolution: 1080p, extra.generate_audio_switch: true }, per_second_usd: 0.1022222 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
@@ -193,7 +267,7 @@ models:
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     # generate_audio_switch (default false; "Supported in v5.5/v5.6/v6/c1") and
     # generate_multi_clip_switch ("Supported in v5.5/v6"; text/ and img/ only).
-    # The price above is the no-audio rate (audio: 9 credits/s at 540p). No
+    # Audio is priced by the rules above (9 credits/s at 540p). No
     # negative_prompt, motion_mode or sound_effect_* / lip_sync_* (v5 and below).
     # https://docs.platform.pixverse.ai/v6-2056814m0.md
     extra_allowlist: [generate_audio_switch, generate_multi_clip_switch]
@@ -204,10 +278,22 @@ models:
     media_type: video
     display_name: PixVerse C1
     description: PixVerse C1 cinematic text/image-to-video + first/last-frame transition, 1-15s, optional native audio.
-    # 540p (the adapter's default quality), 5s, no audio: 8 credits/s x 5 = 40
-    # credits at $0.01 ($10 = 1,000 credits):
-    # https://docs.platform.pixverse.ai/pricing-796039m0.md (2026-09-11)
-    pricing: { base_cost_usd: 0.40 }
+    # @see https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md (2026-10-30)
+    # "225 Credits = USD 1; 1 Credit ≈ USD 0.004444" (the earlier page, $10 per
+    # 1,000 credits, is gone).
+    # C1 is billed per second by resolution and audio: 8 credits/s at 540p (the
+    # default quality) without audio, so the default 5 s clip is 40 credits.
+    pricing:
+      base_cost_usd: 0.177778
+      variable_pricing:
+        - { per_second_usd: 0.0355556 }
+        - { when: { resolution: 360p }, per_second_usd: 0.0266667 }
+        - { when: { resolution: 720p }, per_second_usd: 0.0444444 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.0844444 }
+        - { when: { extra.generate_audio_switch: true }, per_second_usd: 0.0444444 }
+        - { when: { resolution: 360p, extra.generate_audio_switch: true }, per_second_usd: 0.0355556 }
+        - { when: { resolution: 720p, extra.generate_audio_switch: true }, per_second_usd: 0.0577778 }
+        - { when: { resolution: 1080p, extra.generate_audio_switch: true }, per_second_usd: 0.1066667 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
@@ -236,8 +322,8 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     # generate_audio_switch only: C1 does multi-clip "with prompt", and
-    # generate_multi_clip_switch is "Supported in v5.5/v6". The price above is
-    # the no-audio rate (audio: 10 credits/s at 540p).
+    # generate_multi_clip_switch is "Supported in v5.5/v6". Audio is priced by
+    # the rules above (10 credits/s at 540p).
     # https://docs.platform.pixverse.ai/c1-2067883m0.md
     extra_allowlist: [generate_audio_switch]
     tags: [text-to-video, image-to-video, premium]

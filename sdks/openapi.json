@@ -7391,9 +7391,16 @@
                 "properties": {
                     "base_cost_usd": {
                         "type": "number",
-                        "format": "double"
+                        "format": "double",
+                        "description": "The vendor's price for the model's default request."
                     },
-                    "variable_pricing": {}
+                    "variable_pricing": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/PriceRule"
+                        },
+                        "description": "How the price follows the request (3D doc \u00a73G, L14): rules applied in\norder to a running price that starts at `base_cost_usd`. The quote,\nthe quota reservation and the charge all come from them."
+                    }
                 }
             },
             "CostEstimate": {
@@ -9434,7 +9441,11 @@
                         "description": "Base cost per image/video in USD."
                     },
                     "variable_pricing": {
-                        "description": "Variable pricing by dimension (JSON map)."
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/PriceRule"
+                        },
+                        "description": "How the price follows the request: ordered rules over a running\nprice that starts at `base_cost_usd` (see `PriceRule`)."
                     }
                 }
             },
@@ -10943,6 +10954,70 @@
                     "similar",
                     "unspecified"
                 ]
+            },
+            "PriceRule": {
+                "type": "object",
+                "description": "One pricing rule. When every `when` entry matches the request, its one\neffect applies: a price (`usd`), a rate (`per_second_usd` \u00d7 the clip's\nseconds, `per_megapixel_usd` \u00d7 the image's megapixels, `per_item_usd` \u00d7 the\ncount of the `per_item` list) or an adjustment (`multiply`, `add_usd`).",
+                "properties": {
+                    "add_usd": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double"
+                    },
+                    "multiply": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double"
+                    },
+                    "per_item": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The list `per_item_usd` counts (`animations`, `views`, `keyframes`)."
+                    },
+                    "per_item_usd": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double"
+                    },
+                    "per_megapixel_usd": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double"
+                    },
+                    "per_second_usd": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double"
+                    },
+                    "usd": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double"
+                    },
+                    "when": {
+                        "type": "object",
+                        "description": "Request facts the rule needs: a param (as sent, else its default), an\n`extra.<field>`, or a derived fact (`views`, `keyframes`, `animations`\ncounts, `duration_seconds`, `megapixels`), mapped to the value it must\nhave \u2014 or `\"*\"` for any value present.",
+                        "additionalProperties": {},
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "additionalProperties": false
             },
             "PromptSpec": {
                 "type": "object",

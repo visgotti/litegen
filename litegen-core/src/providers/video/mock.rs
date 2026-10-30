@@ -31,7 +31,8 @@ fn should_render_visual_video(model_id: &str) -> bool {
         "mock/keyframe-video" |
         "mock/passthrough-video" |
         "mock/strict-duration-video" |
-        "mock/expensive-video"
+        "mock/expensive-video" |
+        "mock/priced-video"
     )
 }
 

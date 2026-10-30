@@ -754,6 +754,45 @@ async fn quota_exhausted_402() {
     );
 }
 
+// ─── A reservation holds the request's own price (3D doc §3G, L14) ─────────────
+//
+// `mock/priced-video` costs $0.10 a second at 720p (its default 5 s clip is
+// $0.50) and $0.20 at 1080p. With $1.00 left, an 8 s 1080p clip ($1.60) is
+// refused 402 before it runs — a flat base price would have let it through —
+// while the default clip fits.
+
+#[tokio::test]
+async fn a_reservation_holds_the_requests_own_price() {
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    signup(&mut c, &unique_email("price"), "PriceOrg").await;
+    let csrf = c.csrf().await;
+    let created = c
+        .post_with(
+            "/v1/keys",
+            json!({ "name": "price-key", "token_quota": 1.0, "scopes": "generate,read" }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(created.status, 201, "create key failed: {:?}", created.body);
+    let secret = created.body["key"].as_str().unwrap().to_string();
+    let mut bearer = Client::new(&app.base);
+    let auth = format!("Bearer {secret}");
+
+    let long = bearer
+        .post_with(
+            "/v1/videos/generations",
+            json!({ "model": "mock/priced-video", "prompt": "x", "duration_seconds": 8.0, "resolution": "1080p" }),
+            &[("authorization", &auth)],
+        )
+        .await;
+    assert_eq!(long.status, 402, "$1.60 against $1.00 left: {} {:?}", long.status, long.body);
+    let short = bearer
+        .post_with("/v1/videos/generations", json!({ "model": "mock/priced-video", "prompt": "x" }), &[("authorization", &auth)])
+        .await;
+    assert_eq!(short.status, 200, "the default $0.50 clip fits: {} {:?}", short.status, short.body);
+}
+
 // ─── Test 11: a read-only key cannot generate (scope enforcement) ──────────────
 //
 // `/v1/images/generations` sits behind a `check_scope(Scope::Generate)` layer; a

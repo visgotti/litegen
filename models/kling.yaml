@@ -105,7 +105,11 @@ models:
     # Default request (mode std = 720p, 5 s, no audio): 0.3 units ($0.042)/s
     # x 5 s = $0.21. 1080p (mode pro) is $0.07/s.
     # @see https://kling.ai/document-api/pricing/base/video.md (2026-09-11)
-    pricing: { base_cost_usd: 0.21 }
+    pricing:
+      base_cost_usd: 0.21
+      variable_pricing:
+        - { per_second_usd: 0.042 }
+        - { when: { extra.mode: pro }, per_second_usd: 0.07 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2500 }
     params:
@@ -134,7 +138,12 @@ models:
     # x 5 s = $0.21. 1080p silent is $0.07/s; 1080p with native audio
     # (sound: on) is $0.14/s.
     # @see https://kling.ai/document-api/pricing/base/video.md (2026-09-11)
-    pricing: { base_cost_usd: 0.21 }
+    pricing:
+      base_cost_usd: 0.21
+      variable_pricing:
+        - { per_second_usd: 0.042 }
+        - { when: { extra.mode: pro }, per_second_usd: 0.07 }
+        - { when: { extra.mode: pro, extra.sound: "on" }, per_second_usd: 0.14 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2500 }
     params:
@@ -179,7 +188,14 @@ models:
     # x 5 s = $0.42. 1080p is $0.112/s silent, $0.168/s with native audio;
     # 720p with audio is $0.126/s; 4K is $0.42/s either way.
     # @see https://kling.ai/document-api/pricing/base/video.md (2026-09-11)
-    pricing: { base_cost_usd: 0.42 }
+    pricing:
+      base_cost_usd: 0.42
+      variable_pricing:
+        - { per_second_usd: 0.084 }
+        - { when: { extra.sound: "on" }, per_second_usd: 0.126 }
+        - { when: { extra.mode: pro }, per_second_usd: 0.112 }
+        - { when: { extra.mode: pro, extra.sound: "on" }, per_second_usd: 0.168 }
+        - { when: { extra.mode: 4k }, per_second_usd: 0.42 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2500 }
     params:

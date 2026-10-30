@@ -97,10 +97,11 @@ models:
     # @see https://developers.tripo3d.ai/en/pricing (2026-10-30)
     #   "Animation Retarget / 10 / animation"; "1 credit = $0.01 USD".
     #   10 credits × $0.01 = $0.10 for one clip, the default request;
-    #   variable_pricing records the per-clip rate flat billing does not.
+    #   Billed per clip.
     pricing:
       base_cost_usd: 0.10
-      variable_pricing: { per_animation_usd: 0.10 }
+      variable_pricing:
+        - { per_item_usd: 0.10, per_item: animations }
     capabilities: {}
     prompt: { required: false, max_length: 0 }
     params:

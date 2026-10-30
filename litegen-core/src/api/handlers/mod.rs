@@ -208,14 +208,21 @@ pub async fn generate_image(
     // real spend cap; see reserve_quota). Settled to the actual cost on success
     // and released on failure so a failed request is never billed.
     let charge_key = key_ctx.as_ref().and_then(|c| c.key_id);
-    let reserved = match reserve_quota(&state, charge_key, validated.schema.pricing.base_cost_usd).await {
+    // This request's own price (3D doc §3G): what the quote said and the
+    // charge will take.
+    let price = crate::capabilities::pricing::request_price_usd(
+        &validated.schema,
+        &validated.request.base,
+        &serde_json::to_value(&extras).unwrap_or_default(),
+    );
+    let reserved = match reserve_quota(&state, charge_key, price).await {
         Ok(r) => r,
         Err(resp) => return resp,
     };
     // Org/app/member/end-user/key limits (budgets, model allowlists, rpm and
     // parallel caps). Settled alongside the key quota below.
     let mut limits = match crate::management::enforce::begin(
-        &state, key_ctx.as_ref(), &attribution, &validated.schema.id, validated.schema.pricing.base_cost_usd,
+        &state, key_ctx.as_ref(), &attribution, &validated.schema.id, price,
     ).await {
         Ok(g) => g,
         Err(resp) => {
@@ -453,14 +460,21 @@ pub async fn generate_video(
     // Reserve the estimated cost against the key's quota BEFORE dispatch, then
     // settle to the actual cost on success / release on failure.
     let charge_key = key_ctx.as_ref().and_then(|c| c.key_id);
-    let reserved = match reserve_quota(&state, charge_key, validated.schema.pricing.base_cost_usd).await {
+    // This request's own price (3D doc §3G): what the quote said and the
+    // charge will take.
+    let price = crate::capabilities::pricing::request_price_usd(
+        &validated.schema,
+        &validated.request.base,
+        &serde_json::to_value(&extras).unwrap_or_default(),
+    );
+    let reserved = match reserve_quota(&state, charge_key, price).await {
         Ok(r) => r,
         Err(resp) => return resp,
     };
     // Org/app/member/end-user/key limits (budgets, model allowlists, rpm and
     // parallel caps). Settled alongside the key quota below.
     let mut limits = match crate::management::enforce::begin(
-        &state, key_ctx.as_ref(), &attribution, &validated.schema.id, validated.schema.pricing.base_cost_usd,
+        &state, key_ctx.as_ref(), &attribution, &validated.schema.id, price,
     ).await {
         Ok(g) => g,
         Err(resp) => {
@@ -1065,14 +1079,21 @@ pub async fn generate_3d(
     }
 
     let charge_key = key_ctx.as_ref().and_then(|c| c.key_id);
-    let reserved = match reserve_quota(&state, charge_key, validated.schema.pricing.base_cost_usd).await {
+    // This request's own price (3D doc §3G): what the quote said and the
+    // charge will take.
+    let price = crate::capabilities::pricing::request_price_usd(
+        &validated.schema,
+        &validated.request.base,
+        &serde_json::to_value(&extras).unwrap_or_default(),
+    );
+    let reserved = match reserve_quota(&state, charge_key, price).await {
         Ok(r) => r,
         Err(resp) => return resp,
     };
     // Org/app/member/end-user/key limits (budgets, model allowlists, rpm and
     // parallel caps). Settled alongside the key quota below.
     let mut limits = match crate::management::enforce::begin(
-        &state, key_ctx.as_ref(), &attribution, &validated.schema.id, validated.schema.pricing.base_cost_usd,
+        &state, key_ctx.as_ref(), &attribution, &validated.schema.id, price,
     ).await {
         Ok(g) => g,
         Err(resp) => {

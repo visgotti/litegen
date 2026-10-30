@@ -4,9 +4,14 @@ models:
     media_type: image
     display_name: Flux Pro (Fal)
     description: Flux Pro hosted on Fal.
-    # "$0.04 per megapixels": the default 1 MP request (re-read 2026-09-11).
+    # "$0.04 per megapixels" (re-read 2026-10-30): $0.04 for the default 1 MP
+    # request, then by the asked size's megapixels (width × height ÷ 10⁶;
+    # fal documents no rounding).
     # @see https://fal.ai/models/fal-ai/flux-pro/v1.1/llms.txt
-    pricing: { base_cost_usd: 0.04 }
+    pricing:
+      base_cost_usd: 0.04
+      variable_pricing:
+        - { per_megapixel_usd: 0.04 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
@@ -29,7 +34,13 @@ models:
     media_type: image
     display_name: Flux Dev (Fal)
     description: Flux Dev on Fal.
-    pricing: { base_cost_usd: 0.025 }
+    # "$0.025 per megapixels" (read 2026-10-30): $0.025 for the default 1 MP
+    # request, then by the asked size's megapixels.
+    # @see https://fal.ai/models/fal-ai/flux/dev/llms.txt
+    pricing:
+      base_cost_usd: 0.025
+      variable_pricing:
+        - { per_megapixel_usd: 0.025 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
@@ -59,9 +70,13 @@ models:
     media_type: image
     display_name: FLUX.2 [dev] (Fal)
     description: Black Forest Labs FLUX.2 dev text-to-image on Fal.
-    # "$0.012 per megapixels": the default 1 MP request (re-read 2026-09-11).
+    # "$0.012 per megapixels": $0.012 for the default 1 MP request, then by
+    # the asked size's megapixels (re-read 2026-09-11).
     # @see https://fal.ai/models/fal-ai/flux-2/llms.txt
-    pricing: { base_cost_usd: 0.012 }
+    pricing:
+      base_cost_usd: 0.012
+      variable_pricing:
+        - { per_megapixel_usd: 0.012 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
@@ -86,7 +101,13 @@ models:
     media_type: image
     display_name: Flux Schnell (Fal)
     description: Fast Flux on Fal.
-    pricing: { base_cost_usd: 0.003 }
+    # "$0.003 per megapixels" (read 2026-10-30): $0.003 for the default 1 MP
+    # request, then by the asked size's megapixels.
+    # @see https://fal.ai/models/fal-ai/flux/schnell/llms.txt
+    pricing:
+      base_cost_usd: 0.003
+      variable_pricing:
+        - { per_megapixel_usd: 0.003 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
@@ -131,9 +152,13 @@ models:
     provider: fal
     media_type: image
     display_name: SD 3.5 Medium (Fal)
-    # "$0.02 per megapixels": the default 1 MP request (re-read 2026-09-11).
+    # "$0.02 per megapixels": $0.02 for the default 1 MP request, then by
+    # the asked size's megapixels (re-read 2026-09-11).
     # @see https://fal.ai/models/fal-ai/stable-diffusion-v35-medium/llms.txt
-    pricing: { base_cost_usd: 0.02 }
+    pricing:
+      base_cost_usd: 0.02
+      variable_pricing:
+        - { per_megapixel_usd: 0.02 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
@@ -216,7 +241,12 @@ models:
     # $0.48, read 2026-09-11.
     # @see https://fal.ai/models/fal-ai/ltx-2.3/text-to-video/llms.txt
     # @see https://fal.ai/models/fal-ai/ltx-2.3/image-to-video/llms.txt
-    pricing: { base_cost_usd: 0.48 }
+    pricing:
+      base_cost_usd: 0.48
+      variable_pricing:
+        - { per_second_usd: 0.08 }
+        - { when: { resolution: 1440p }, per_second_usd: 0.16 }
+        - { when: { resolution: 2160p }, per_second_usd: 0.32 }
     capabilities: { text_to_video: true, image_to_video: true }
     # prompt: minLength 1, maxLength 5000 on both endpoints.
     prompt: { required: true, max_length: 5000 }
@@ -274,7 +304,8 @@ models:
     # units"; it is an extra_allowlist passthrough, so the quote here is the base.
     pricing:
       base_cost_usd: 0.4
-      variable_pricing: { addons_highpack_multiplier: 3 }
+      variable_pricing:
+        - { when: { extra.addons: HighPack }, multiply: 3 }
     capabilities: { text_to_3d: true, image_to_3d: true }
     # Hyper3dRodinInput.prompt is `maxLength: 1024`: "Required for Text-to-3D
     # mode. Optional for Image-to-3D mode." Not required here because images
@@ -363,7 +394,8 @@ models:
     # be 3 times that of white mesh". The quote here is the base either way.
     pricing:
       base_cost_usd: 0.16
-      variable_pricing: { textured_mesh_multiplier: 3 }
+      variable_pricing:
+        - { when: { texture: true }, multiply: 3 }
     capabilities: { image_to_3d: true }
     # Hunyuan3dV2Input has no prompt field — see fal/trellis above.
     prompt: { required: false, max_length: 0 }
@@ -423,7 +455,9 @@ models:
     #   if selected." The default request is textured at standard quality.
     pricing:
       base_cost_usd: 0.30
-      variable_pricing: { untextured_usd: 0.20 }
+      # pbr "If true, texture is also enabled", so only both off is untextured.
+      variable_pricing:
+        - { when: { texture: false, pbr: false }, usd: 0.20 }
     capabilities: { multiview_to_3d: true }
     prompt: { required: false, max_length: 0 }
     params:
@@ -488,7 +522,10 @@ models:
     #   Custom face count adds **$0.15**."
     pricing:
       base_cost_usd: 0.375
-      variable_pricing: { pbr_addon_usd: 0.15, multiview_addon_usd: 0.15, face_count_addon_usd: 0.15 }
+      variable_pricing:
+        - { when: { pbr: true }, add_usd: 0.15 }
+        - { when: { views: "*" }, add_usd: 0.15 }
+        - { when: { target_polycount: "*" }, add_usd: 0.15 }
     capabilities: { image_to_3d: true, multiview_to_3d: true }
     prompt: { required: false, max_length: 0 }
     params:

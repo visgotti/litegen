@@ -134,6 +134,8 @@ from .patch_account_request import PatchAccountRequest
 from .patch_model_state_request import PatchModelStateRequest
 from .patch_user_request import PatchUserRequest
 from .preserves_unmasked import PreservesUnmasked
+from .price_rule import PriceRule
+from .price_rule_when import PriceRuleWhen
 from .prompt_spec import PromptSpec
 from .provider_catalog_entry import ProviderCatalogEntry
 from .provider_config import ProviderConfig
@@ -333,6 +335,8 @@ __all__ = (
     "PatchModelStateRequest",
     "PatchUserRequest",
     "PreservesUnmasked",
+    "PriceRule",
+    "PriceRuleWhen",
     "PromptSpec",
     "ProviderCatalogEntry",
     "ProviderConfig",

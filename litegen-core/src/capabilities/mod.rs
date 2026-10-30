@@ -1,4 +1,5 @@
 pub mod schema;
+pub mod pricing;
 pub mod loader;
 pub mod registry;
 

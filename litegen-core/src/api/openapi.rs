@@ -479,6 +479,19 @@ mod tests {
     }
 
     #[test]
+    fn a_models_price_documents_the_rules_that_follow_the_request() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        for pricing in ["ModelPricing", "CapabilityModelPricing"] {
+            let rules = property(&s[pricing], "variable_pricing");
+            assert!(mentions(rules, "#/components/schemas/PriceRule"), "{pricing}: {rules}");
+        }
+        for f in ["when", "usd", "per_second_usd", "per_megapixel_usd", "per_item_usd", "per_item", "multiply", "add_usd"] {
+            property(&s["PriceRule"], f);
+        }
+    }
+
+    #[test]
     fn a_models_reference_spec_says_whether_its_vendor_takes_data_uris() {
         let d = doc();
         let p = property(&d["components"]["schemas"]["RefInputSpec"], "data_uri");

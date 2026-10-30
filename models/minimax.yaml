@@ -175,7 +175,11 @@ models:
     # $0.08 per second at 768P, so the default request (768P, 5 s) is $0.40;
     # $0.13 per second at 2K. Input images: the first 5 are free, then $0.04 each.
     # https://platform.minimax.io/docs/guides/pricing-paygo.md (2026-09-11)
-    pricing: { base_cost_usd: 0.40 }
+    pricing:
+      base_cost_usd: 0.4
+      variable_pricing:
+        - { per_second_usd: 0.08 }
+        - { when: { resolution: 2K }, per_second_usd: 0.13 }
     capabilities: { text_to_video: true, image_to_video: true }
     # "a maximum of 7000 characters per `text`"; every request needs one.
     prompt: { required: true, max_length: 7000 }
@@ -221,7 +225,11 @@ models:
     # $0.08 per second at 768P, so the default request (768P, 5 s) is $0.40;
     # $0.05 per second at 480P. Only the output video is billed.
     # https://platform.minimax.io/docs/guides/pricing-paygo.md (2026-09-11)
-    pricing: { base_cost_usd: 0.40 }
+    pricing:
+      base_cost_usd: 0.4
+      variable_pricing:
+        - { per_second_usd: 0.08 }
+        - { when: { resolution: 480P }, per_second_usd: 0.05 }
     # "Supports text-to-video and image-to-video (first / last frame) only;
     # reference-to-video (reference image / video / audio) is not supported".
     capabilities: { text_to_video: true, image_to_video: true }

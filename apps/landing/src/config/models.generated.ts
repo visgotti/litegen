@@ -4696,7 +4696,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.4
+      "baseCostUsd": 0.177778
     },
     "tags": [
       "text-to-video",
@@ -4775,7 +4775,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.45
+      "baseCostUsd": 0.2
     },
     "tags": [
       "text-to-video",
@@ -4853,7 +4853,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.45
+      "baseCostUsd": 0.2
     },
     "tags": [
       "text-to-video",
@@ -4931,7 +4931,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.45
+      "baseCostUsd": 0.2
     },
     "tags": [
       "text-to-video",
@@ -4943,7 +4943,7 @@ export const MODELS: ModelEntry[] = [
     "id": "pixverse/v5-multi-transition",
     "provider": "pixverse",
     "displayName": "PixVerse v5 Multi-Transition",
-    "description": "Keyframe-to-video on PixVerse v5. Two to sixteen `keyframe` images, the first at 0 s and each at a whole second, become one clip that passes through each in turn and ends on the last; the prompt describes every segment.",
+    "description": "Keyframe-to-video on PixVerse v5. Two to 31 `keyframe` images, the first at 0 s and each at a whole second, become one clip that passes through each in turn and ends on the last; the prompt describes every segment.",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -4958,13 +4958,13 @@ export const MODELS: ModelEntry[] = [
     },
     "sizes": [],
     "aspectRatios": [],
-    "maxRefImages": 16,
+    "maxRefImages": 31,
     "refRoles": [
       {
         "name": "keyframe",
         "required": true,
         "min": 2,
-        "max": 16
+        "max": 31
       }
     ],
     "promptLimits": {
@@ -5066,7 +5066,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "pricing": {
-      "baseCostUsd": 0.35
+      "baseCostUsd": 0.1555555
     },
     "tags": [
       "text-to-video",

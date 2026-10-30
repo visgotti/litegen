@@ -1407,16 +1407,10 @@ impl Model3dProvider for FalModel3dProvider {
         model: &ModelSchema,
         _request: &Model3dGenerationRequest,
     ) -> Result<CostEstimate, ProviderError> {
-        // fal's flat per-generation price. Its conditional multipliers
-        // (Hunyuan's textured_mesh, Rodin's HighPack addon) are recorded in the
-        // catalog's `variable_pricing` and passed along in the breakdown, not
-        // folded into the quote: the charge at submit is the base price too, and
-        // a quote must match what is charged.
-        let mut breakdown = json!({ "model": model.id });
-        if let Some(variable) = &model.pricing.variable_pricing {
-            breakdown["variable_pricing"] = variable.clone();
-        }
-        Ok(build_cost_estimate(model.pricing.base_cost_usd, 0.0, CostSource::Estimated, Some(breakdown)))
+        // fal's price for the default request; litegen's pricing applies the
+        // row's rules (Hunyuan's textured_mesh ×3, Rodin's HighPack ×3) to the
+        // quote, the reservation and the charge alike.
+        Ok(build_cost_estimate(model.pricing.base_cost_usd, 0.0, CostSource::Estimated, Some(json!({ "model": model.id }))))
     }
 
     /// Check the key against fal's Platform API — the price of one public
@@ -2325,7 +2319,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_estimate_is_the_base_price_with_the_multipliers_alongside() {
+    async fn the_adapter_quotes_the_default_request_and_litegen_prices_the_rest() {
         let p = FalModel3dProvider::new();
         let hunyuan = schema("fal/hunyuan3d-v2");
         let req = crate::types::Model3dGenerationRequest {
@@ -2343,8 +2337,8 @@ mod tests {
             skeleton: None, joint_naming: None, height_m: None,
         };
         let est = p.estimate_cost(&hunyuan, &req).await.unwrap();
-        assert_eq!(est.base_cost_usd, 0.16, "what submit charges");
-        assert_eq!(est.breakdown.unwrap()["variable_pricing"]["textured_mesh_multiplier"], 3);
+        assert_eq!(est.base_cost_usd, 0.16, "the row's base; the router applies texture ×3");
+        assert!(est.breakdown.unwrap().get("variable_pricing").is_none());
     }
 
     // ─── The catalog and this adapter must agree ───────────────────────────

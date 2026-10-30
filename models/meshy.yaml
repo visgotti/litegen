@@ -88,10 +88,11 @@ models:
       one file in request order. Each action at most once per request.
     docs_url: https://docs.meshy.ai/en/api/animation
     # "3 per action" (credits) × $0.02 = $0.06 for one clip, provisional;
-    # variable_pricing records the per-clip rate flat billing does not.
+    # Billed per clip.
     pricing:
       base_cost_usd: 0.06
-      variable_pricing: { per_animation_usd: 0.06 }
+      variable_pricing:
+        - { per_item_usd: 0.06, per_item: animations }
     capabilities: {}
     prompt: { required: false, max_length: 0 }
     params:

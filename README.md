@@ -173,6 +173,10 @@ curl -X POST http://localhost:4000/v1/models3d/cost \
   -d '{"prompt": "a low-poly fox", "model": "mock/mesh-3d"}'
 ```
 
+Every `/cost` quote, the quota reservation and the charge use the same price: the model's
+`pricing.base_cost_usd` for its default request, adjusted by its `pricing.variable_pricing` rules
+for the request at hand (per second of video, per megapixel, per clip, multipliers and add-ons).
+
 The mode comes from the reference images' roles: none is text-to-3D, `init` is image-to-3D, and
 `view-<name>` roles (`view-front`, `view-left`, `view-back`, `view-right`, …) are multiview-to-3D.
 A multiview request always needs `view-front`; a model whose `ref_inputs.view_order` is set reads

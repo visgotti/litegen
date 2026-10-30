@@ -3165,6 +3165,41 @@ fn every_multiview_to_3d_model_takes_a_front_view_and_names_any_positional_order
     assert!(!refs.roles.contains_key("init"), "multiview only");
 }
 
+// ─── Prices that match the bill (PixelGenie 3D doc §3G, L14) ────────────────
+
+/// A row's base price is what its own rules charge for its default request —
+/// every param at its default, one clip on an animate model, keyframes 0 s and
+/// 5 s on a keyframe model — so the listing's `base_cost_usd` stays the
+/// vendor's price for the request a caller gets by sending nothing extra.
+#[test]
+fn every_base_price_is_what_the_rules_charge_for_the_default_request() {
+    use litegen::capabilities::pricing::{unit_price_usd, PriceFacts};
+    let reg = registry();
+    let mut priced = 0;
+    for m in reg.all().filter(|m| !m.pricing.variable_pricing.is_empty()) {
+        priced += 1;
+        let mut req = serde_json::json!({ "model": m.id, "prompt": "x" });
+        if m.params.contains_key("animations") {
+            req["animations"] = serde_json::json!([{ "name": "a" }]);
+        }
+        if m.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("keyframe")) {
+            req["reference_images"] = serde_json::json!([
+                { "type": "url", "value": "a", "role": "keyframe", "time_s": 0.0 },
+                { "type": "url", "value": "b", "role": "keyframe", "time_s": 5.0 },
+            ]);
+        }
+        let base: litegen::types::BaseGenerationRequest = serde_json::from_value(req.clone()).unwrap();
+        let price = unit_price_usd(m, &PriceFacts::new(m, &base, &req));
+        assert!(
+            (price - m.pricing.base_cost_usd).abs() < 1e-6,
+            "{}: base_cost_usd {} but its rules charge {price} for the default request",
+            m.id,
+            m.pricing.base_cost_usd
+        );
+    }
+    assert!(priced > 0);
+}
+
 // ─── Timed keyframes (PixelGenie 3D doc §5) ────────────────────────────────
 
 /// @see <https://docs.platform.pixverse.ai/multi-transition-video-43051215e0.md>
@@ -3179,7 +3214,8 @@ fn pixverse_multi_transition_takes_two_or_more_whole_second_keyframes() {
     let m = reg.get("pixverse/v5-multi-transition").expect("the row");
     let refs = m.ref_inputs.as_ref().unwrap();
     let k = &refs.roles["keyframe"];
-    assert_eq!((k.required, k.min_count, k.max_count), (true, 2, 16));
+    // No maxItems is documented; 31 at whole seconds span the longest priced clip (30 s).
+    assert_eq!((k.required, k.min_count, k.max_count), (true, 2, 31));
     assert_eq!((k.timing, k.time_step_s), (Some(KeyframeTiming::Any), Some(1.0)), "integer durations");
     assert_eq!(refs.roles.len(), 1, "keyframes only");
     assert!(!m.params.contains_key("duration_seconds"), "the keyframes make the clip");

@@ -1104,9 +1104,10 @@ fn default_max_images() -> u32 {
 pub struct ModelPricing {
     /// Base cost per image/video in USD.
     pub base_cost_usd: f64,
-    /// Variable pricing by dimension (JSON map).
-    #[serde(default)]
-    pub variable_pricing: Option<serde_json::Value>,
+    /// How the price follows the request: ordered rules over a running
+    /// price that starts at `base_cost_usd` (see `PriceRule`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variable_pricing: Vec<crate::capabilities::PriceRule>,
 }
 
 // ─── Cost Estimation ────────────────────────────────────────────────────────

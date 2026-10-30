@@ -68,7 +68,12 @@ models:
     media_type: video
     display_name: Runway Gen-4 Turbo
     description: Runway Gen-4 Turbo image-to-video (requires a first-frame image).
-    pricing: { base_cost_usd: 0.25 }
+    # gen4_turbo: "5 credits per second", "$0.01 per credit": the default 5 s is $0.25.
+    # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-10-30)
+    pricing:
+      base_cost_usd: 0.25
+      variable_pricing:
+        - { per_second_usd: 0.05 }
     # gen4_turbo is only in the POST /v1/image_to_video model union (promptImage
     # required); /v1/text_to_video has no gen4_turbo branch, and the model
     # guide lists its input as "Image".
@@ -103,7 +108,10 @@ models:
     # gen4.5: 12 credits per second at $0.01 per credit, so the default 5 s
     # request is 60 credits = $0.60. Verified 2026-09-11.
     # @see https://docs.dev.runwayml.com/guides/pricing.md
-    pricing: { base_cost_usd: 0.60 }
+    pricing:
+      base_cost_usd: 0.6
+      variable_pricing:
+        - { per_second_usd: 0.12 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 1000 }
     params:

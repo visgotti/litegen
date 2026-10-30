@@ -298,7 +298,7 @@ impl ProxyRouter {
         .await;
         // A multiview model's views come from one billed vendor call.
         let produced = if schema.task == crate::capabilities::ModelTask::Multiview { 1.0 } else { data.len().max(1) as f64 };
-        let base_cost = schema.pricing.base_cost_usd * produced;
+        let base_cost = unit_price(schema, base, extras) * produced;
         let (markup, total) = apply_markup(base_cost, self.cost_markup_percent());
         let _ = markup;
         let usage = Some(UsageInfo {
@@ -646,7 +646,7 @@ impl ProxyRouter {
         // which is meaningless for video and unbounded on the wire. (Same
         // reasoning as the image path above, which bills per delivered image.)
         let produced = 1.0;
-        let base_cost = schema.pricing.base_cost_usd * produced;
+        let base_cost = unit_price(schema, base, extras) * produced;
         let (_, total) = apply_markup(base_cost, self.cost_markup_percent());
         let usage_info = Some(UsageInfo {
             cost_usd: total,
@@ -848,9 +848,9 @@ impl ProxyRouter {
             last_error: last_error.map(|e| e.to_string()),
         })?;
 
-        // One submitted job produces one mesh, so billing is flat per generation
-        // — `n` is meaningless here, exactly as it is for video.
-        let base_cost = schema.pricing.base_cost_usd;
+        // One submitted job produces one mesh: one unit at this request's
+        // price — `n` is meaningless here, exactly as it is for video.
+        let base_cost = unit_price(schema, base, extras);
         let (_, total) = apply_markup(base_cost, self.cost_markup_percent());
         let usage_info = Some(UsageInfo {
             cost_usd: total,
@@ -1070,13 +1070,7 @@ impl ProxyRouter {
             }
         })?;
 
-        let markup = self.cost_markup_percent();
-        if markup > 0.0 {
-            let (m, total) = apply_markup(est.base_cost_usd, markup);
-            est.markup_usd = m;
-            est.total_cost_usd = total;
-            est.tokens_required = crate::providers::usd_to_tokens(total, USD_PER_TOKEN);
-        }
+        price_estimate(&mut est, schema, &request.base, request, self.cost_markup_percent());
         Ok(est)
     }
 
@@ -1308,14 +1302,7 @@ impl ProxyRouter {
                 retryable: false,
             })?;
 
-        // Apply global markup
-        let markup = self.cost_markup_percent();
-        if markup > 0.0 {
-            let (m, total) = apply_markup(est.base_cost_usd, markup);
-            est.markup_usd = m;
-            est.total_cost_usd = total;
-            est.tokens_required = crate::providers::usd_to_tokens(total, USD_PER_TOKEN);
-        }
+        price_estimate(&mut est, schema, &request.base, request, self.cost_markup_percent());
         Ok(est)
     }
 
@@ -1341,13 +1328,7 @@ impl ProxyRouter {
                 retryable: false,
             })?;
 
-        let markup = self.cost_markup_percent();
-        if markup > 0.0 {
-            let (m, total) = apply_markup(est.base_cost_usd, markup);
-            est.markup_usd = m;
-            est.total_cost_usd = total;
-            est.tokens_required = crate::providers::usd_to_tokens(total, USD_PER_TOKEN);
-        }
+        price_estimate(&mut est, schema, &request.base, request, self.cost_markup_percent());
         Ok(est)
     }
 
@@ -1415,6 +1396,30 @@ impl ProxyRouter {
 
 /// Match a model pattern against a model ID.
 /// Supports exact match, prefix/* glob, and * (match all).
+/// One output's price for a request about to run, from the extras built for
+/// it (3D doc §3G): the same rules and facts the quote and the reservation use.
+fn unit_price(schema: &ModelSchema, base: &BaseGenerationRequest, extras: &impl serde::Serialize) -> f64 {
+    let params = serde_json::to_value(extras).unwrap_or_default();
+    crate::capabilities::pricing::unit_price_usd(schema, &crate::capabilities::pricing::PriceFacts::new(schema, base, &params))
+}
+
+/// A quote at the request's own price: the row's rules over the request,
+/// then litegen's markup — what the reservation holds and the charge takes.
+fn price_estimate(
+    est: &mut CostEstimate,
+    schema: &ModelSchema,
+    base: &BaseGenerationRequest,
+    request: &impl serde::Serialize,
+    markup_percent: f64,
+) {
+    let params = serde_json::to_value(request).unwrap_or_default();
+    est.base_cost_usd = crate::capabilities::pricing::request_price_usd(schema, base, &params);
+    let (markup, total) = apply_markup(est.base_cost_usd, markup_percent);
+    est.markup_usd = markup;
+    est.total_cost_usd = total;
+    est.tokens_required = crate::providers::usd_to_tokens(total, USD_PER_TOKEN);
+}
+
 fn route_matches(pattern: &str, model: &str) -> bool {
     if pattern == "*" {
         return true;
@@ -2007,7 +2012,7 @@ mod model3d_router_tests {
             native_orientation: None,
             preserves_unmasked: None,
             display_name: "slow".into(), description: String::new(), docs_url: None,
-            pricing: crate::capabilities::ModelPricing { base_cost_usd: 0.0, variable_pricing: None },
+            pricing: crate::capabilities::ModelPricing { base_cost_usd: 0.0, variable_pricing: Vec::new() },
             capabilities: crate::capabilities::ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
             prompt: crate::capabilities::PromptSpec { required: true, min_length: None, max_length: None },
             params: Default::default(), ref_inputs: None, extra_allowlist: vec![], tags: vec![],

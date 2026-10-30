@@ -79,6 +79,39 @@ the wire shape both SDKs type.
 | `task` | `ModelSchema.task`, `ModelCapabilities.task` (`ModelTask`) | One per model, from its modality's list (3D: `generate` \| `rig` \| `animate` \| `texture` \| `remesh` \| `segment`; image: `generate` \| `multiview` \| `background_swap`; video: `generate` \| `extend` \| `retake` \| `video_edit`). Omitted in yaml means `generate`. The `*_to_3d` flags are refused on anything but a 3D `generate` model. | loader: `task_defaults_to_generate`, `loads_a_3d_operation_task`, `rejects_a_task_from_another_modality`, `rejects_to_3d_flags_on_a_non_generate_task`, `rejects_an_unknown_task`. conformance: `every_model_declares_a_task_its_modality_has`. wire: `model_task_is_a_named_enum_on_the_schema_and_the_capabilities`, `the_listing_carries_each_models_task`. SDKs: `test_literal_values_match_the_schema_enum[ModelTask]` (Python), `names every catalog task` (TS type test). | ✅ |
 | `native_orientation` | `ModelSchema.native_orientation` (`NativeOrientation {up, front, evidence}`) | 3D only. The axes the vendor builds along, each one of `+x` `-x` `+y` `-y` `+z` `-z` spelled exactly so, at right angles, with the evidence that showed them. Absent means unproven: the mesh is never turned and its manifest says `front: "unverified"`. Declared today only by `mock/rig-3d` (+y/+z) and `mock/turned-3d` (+y/+x); every vendor row stays unproven until a live run shows its axes (no vendor keys here). | loader: `a_3d_model_declares_its_proven_orientation`, `native_orientation_axes_are_signed_axes_at_right_angles`, `native_orientation_names_its_evidence`, `native_orientation_is_a_3d_field`. wire: `a_3d_asset_documents_its_manifest_and_the_original_kind`, `the_catalog_says_which_models_have_a_proven_orientation`. SDKs: TS `types a mesh's manifest and a model's proven orientation`. | ✅ (mock); vendor rows 🟡 unproven |
 
+## Prices that match the bill (3D doc §3G, L14)
+
+A row's `pricing.base_cost_usd` is the vendor's price for its default request;
+its `pricing.variable_pricing` rules follow the request from there. Rules
+apply in order to a running price; a rule applies when every `when` entry
+matches the request's facts — each param as sent or its default,
+`extra.<field>` for allowlisted vendor fields, and the derived `views`,
+`keyframes` and `animations` counts, `duration_seconds` (a keyframe model
+without a duration param lasts until its last keyframe) and `megapixels`
+(width × height ÷ 10⁶ of `size`, 1 when none is sent). Its one effect is a
+price (`usd`), a rate (`per_second_usd`, `per_megapixel_usd`, `per_item_usd` ×
+the `per_item` count) or an adjustment (`multiply`, `add_usd`).
+`capabilities::pricing::request_price_usd` prices the `/cost` quote and the
+quota reservation (× an image model's `n`), and the router charges the same
+unit price per delivered output, so the three agree.
+
+| what | rows | rule | proof | status |
+|---|---|---|---|---|
+| one price for quote, reservation and charge | every row | `request_price_usd` / `unit_price_usd` | HTTP `an_image_is_priced_by_its_megapixels_and_its_quality`, `a_video_is_priced_by_its_seconds_at_its_resolution`, `a_mesh_is_priced_by_its_multipliers_and_add_ons` (quote = charge); `a_reservation_holds_the_requests_own_price` (402 at the request's price, not the base); unit `capabilities::pricing::tests::*` | ✅ mock |
+| the base is the default request's price | every priced row | conformance `every_base_price_is_what_the_rules_charge_for_the_default_request` | ✅ |
+| rules are well formed | every row | one effect each; `per_item` with `per_item_usd`; `when` names a param, an allowlisted `extra.<field>` or a derived fact; `per_second_usd` on video, `per_megapixel_usd` on images; nothing negative but `add_usd` | loader `a_pricing_rule_names_one_effect_over_facts_the_request_has` | ✅ |
+| per megapixel | `fal/flux-pro` 0.04, `fal/flux-dev` 0.025, `fal/flux-schnell` 0.003, `fal/flux-2` 0.012, `fal/sd35-medium` 0.02 | `per_megapixel_usd` | fal's "per megapixels" (llms.txt); how fal counts or rounds megapixels is undocumented **(unverified)** | 🟡 |
+| per second | `runway/gen4.5` 0.12, `runway/gen4-turbo` 0.05; `kling/video-kling-v2-5-turbo`, `-v2-6`, `-v3` by `extra.mode` / `extra.sound`; `minimax/MiniMax-H3`, `-H3-Max` by `resolution`; `vidu/viduq3-turbo` 0.055, `viduq3-pro` 0.10 (720p; other resolutions unpublished in the rows), `viduq2-pro-fast` $0.04 + $0.01/s after the first; `fal/ltx-2.3` by `resolution`; `pixverse/v6`, `pixverse/c1` by `resolution` and `extra.generate_audio_switch` | `per_second_usd` (+ `add_usd`) | each row's quoted vendor rate | 🟡 |
+| fixed tiers | `pixverse/v5` (5 s / 8 s × resolution), `pixverse/v5-multi-transition` (1–10, 15, 20, 25, 30 s × resolution), `ideogram/ideogram-4-5-precise-edit` (quality) | `usd` by value | rows' quoted tables | 🟡 |
+| multipliers and add-ons | `fal/hyper3d-rodin` HighPack ×3, `fal/hunyuan3d-v2` textured ×3, `fal/hunyuan3d-v3.1-pro` +$0.15 each for PBR, views, a face count, `fal/tripo-h3.1-multiview` $0.20 untextured | `multiply`, `add_usd`, `usd` | fal llms.txt quotes | 🟡 |
+| per clip | `tripo/animate` $0.10, `meshy/animate` $0.06 | `per_item_usd` × `animations` | Tripo pricing; Meshy provisional | 🟡 |
+
+PixVerse states "225 Credits = USD 1" (2026-10-30); its rows were priced at
+$0.01 a credit from a page that is now gone, so every PixVerse price fell to
+that reference. Not converted, for want of a re-readable formula: BFL's FLUX.2
+rows (its price page renders the numbers client-side), MiniMax Hailuo's
+per-clip tiers and Vidu's other resolutions.
+
 ## Request headers
 
 Headers every billed POST (`/v1/images/generations`, `/v1/videos/generations`,
@@ -247,7 +280,7 @@ keyframes on in time order.
 | behaviour | `pixverse/v5-multi-transition` | `mock/keyframe-video` | proof | status |
 |---|---|---|---|---|
 | times → vendor form | `multi_transition` items in time order, each `duration` the whole seconds to the next keyframe, the last 0, every segment carrying the prompt; the first keyframe must sit at 0 s (refused before any call) | frame `round(time_s × fps)` is the keyframe's image, unchanged; blends between | adapter `timed_keyframes_reach_multi_transition_as_segment_durations`, `a_multi_transition_starts_at_its_first_keyframe`; HTTP `the_frame_at_each_keyframes_time_is_that_keyframes_image` | 🟡 wiremock / ✅ mock |
-| catalog | 2–16 keyframes, `timing: any`, `time_step_s: 1` | 0–8, `timing: any` | HTTP `the_listing_says_which_models_take_timed_keyframes`; loader `a_keyframe_role_says_how_its_times_are_placed`; OpenAPI `timed_keyframes_document_their_time_and_each_models_timing` | ✅ |
+| catalog | 2–31 keyframes, `timing: any`, `time_step_s: 1` | 0–8, `timing: any` | HTTP `the_listing_says_which_models_take_timed_keyframes`; loader `a_keyframe_role_says_how_its_times_are_placed`; OpenAPI `timed_keyframes_document_their_time_and_each_models_timing` | ✅ |
 | refusals, before billing | the codes above | the codes above | HTTP `keyframe_times_are_checked_before_anything_is_billed`; validator `keyframes_reach_the_vendor_in_time_order`, `even_keyframes_are_spaced_by_litegen_or_must_already_be_even`, `a_keyframe_off_the_vendors_grid_is_refused` | ✅ |
 
 Not carried yet: Luma `ray-3.2` (frame indexes on a 24 fps grid, up to 64)

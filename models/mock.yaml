@@ -574,6 +574,70 @@ models:
     extra_allowlist: []
     tags: [mock, test, multiview]
 
+  # ─── Prices that follow the request (PixelGenie 3D doc §3G, L14) ───────────
+  - id: mock/priced-image
+    provider: mock
+    media_type: image
+    display_name: Mock Priced Image
+    description: >-
+      Priced like FLUX: $0.10 per megapixel of the asked size (1 MP when none
+      is sent), doubled at quality hd — the quote, the reservation and the
+      charge all follow the request.
+    pricing:
+      base_cost_usd: 0.10
+      variable_pricing:
+        - { per_megapixel_usd: 0.10 }
+        - { when: { quality: hd }, multiply: 2 }
+    capabilities: { text_to_image: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      size: { kind: size, mode: enum, values: [[1000, 1000], [2000, 1000]] }
+      quality: { kind: string, enum_values: [standard, hd] }
+    tags: [mock, test, pricing]
+
+  - id: mock/priced-video
+    provider: mock
+    media_type: video
+    display_name: Mock Priced Video
+    description: >-
+      Priced per second like most video vendors: $0.10 a second at 720p (the
+      default 5 s clip is $0.50), $0.20 at 1080p.
+    pricing:
+      base_cost_usd: 0.50
+      variable_pricing:
+        - { per_second_usd: 0.10 }
+        - { when: { resolution: 1080p }, per_second_usd: 0.20 }
+    capabilities: { text_to_video: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      duration_seconds: { kind: float, min: 1.0, max: 10.0, default: 5.0 }
+      resolution: { kind: string, enum_values: [720p, 1080p], default: 720p }
+    tags: [mock, test, pricing]
+
+  - id: mock/priced-3d
+    provider: mock
+    media_type: model3d
+    display_name: Mock Priced 3D
+    description: >-
+      Priced like fal's 3D endpoints: $0.10, three times that textured (as
+      Hunyuan3D's textured_mesh), plus $0.05 for PBR (as an add-on).
+    pricing:
+      base_cost_usd: 0.10
+      variable_pricing:
+        - { when: { texture: true }, multiply: 3 }
+        - { when: { pbr: true }, add_usd: 0.05 }
+    capabilities: { text_to_3d: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      output_formats:
+        kind: string_array
+        enum_values: [glb]
+        max_items: 1
+        default: [glb]
+      texture: { kind: bool, default: false }
+      pbr: { kind: bool, default: false }
+    tags: [mock, test, pricing]
+
   - id: mock/region-image
     provider: mock
     media_type: image

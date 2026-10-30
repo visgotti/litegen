@@ -1974,9 +1974,17 @@ export interface components {
         /** @enum {string} */
         CapabilityMediaType: "image" | "video" | "model3d";
         CapabilityModelPricing: {
-            /** Format: double */
+            /**
+             * Format: double
+             * @description The vendor's price for the model's default request.
+             */
             base_cost_usd: number;
-            variable_pricing?: unknown;
+            /**
+             * @description How the price follows the request (3D doc §3G, L14): rules applied in
+             *     order to a running price that starts at `base_cost_usd`. The quote,
+             *     the quota reservation and the charge all come from them.
+             */
+            variable_pricing?: components["schemas"]["PriceRule"][];
         };
         /** @description Cost estimate returned before generation. */
         CostEstimate: {
@@ -2859,8 +2867,11 @@ export interface components {
              * @description Base cost per image/video in USD.
              */
             base_cost_usd: number;
-            /** @description Variable pricing by dimension (JSON map). */
-            variable_pricing?: unknown;
+            /**
+             * @description How the price follows the request: ordered rules over a running
+             *     price that starts at `base_cost_usd` (see `PriceRule`).
+             */
+            variable_pricing?: components["schemas"]["PriceRule"][];
         };
         /** @description Routing configuration for a model, with fallbacks and weights. */
         ModelRoute: {
@@ -3355,6 +3366,37 @@ export interface components {
          * @enum {string}
          */
         PreservesUnmasked: "exact" | "similar" | "unspecified";
+        /**
+         * @description One pricing rule. When every `when` entry matches the request, its one
+         *     effect applies: a price (`usd`), a rate (`per_second_usd` × the clip's
+         *     seconds, `per_megapixel_usd` × the image's megapixels, `per_item_usd` × the
+         *     count of the `per_item` list) or an adjustment (`multiply`, `add_usd`).
+         */
+        PriceRule: {
+            /** Format: double */
+            add_usd?: number | null;
+            /** Format: double */
+            multiply?: number | null;
+            /** @description The list `per_item_usd` counts (`animations`, `views`, `keyframes`). */
+            per_item?: string | null;
+            /** Format: double */
+            per_item_usd?: number | null;
+            /** Format: double */
+            per_megapixel_usd?: number | null;
+            /** Format: double */
+            per_second_usd?: number | null;
+            /** Format: double */
+            usd?: number | null;
+            /**
+             * @description Request facts the rule needs: a param (as sent, else its default), an
+             *     `extra.<field>`, or a derived fact (`views`, `keyframes`, `animations`
+             *     counts, `duration_seconds`, `megapixels`), mapped to the value it must
+             *     have — or `"*"` for any value present.
+             */
+            when?: {
+                [key: string]: unknown;
+            };
+        };
         /** @description How a model treats the request's `prompt`. Lengths count characters. */
         PromptSpec: {
             /**

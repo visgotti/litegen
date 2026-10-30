@@ -742,4 +742,46 @@ models:
             assert!(err.contains(needle), "{roles}: {err}");
         }
     }
+
+    // ─── Pricing rules (3D doc §3G, L14) ──────────────────────────────────────
+
+    fn priced(media: &str, params: &str, rules: &str) -> Result<CapabilityRegistry, LoadError> {
+        let caps = match media { "video" => "text_to_video: true", "model3d" => "text_to_3d: true", _ => "text_to_image: true" };
+        yaml(&format!(r#"
+models:
+  - id: x/p
+    provider: x
+    media_type: {media}
+    display_name: P
+    pricing:
+      base_cost_usd: 0.5
+      variable_pricing:
+{rules}
+    capabilities: {{ {caps} }}
+    prompt: {{ required: true }}
+    params:
+{params}
+    extra_allowlist: [addons]
+"#))
+    }
+
+    #[test]
+    fn a_pricing_rule_names_one_effect_over_facts_the_request_has() {
+        let video = "      duration_seconds: { kind: float, min: 1, max: 10, default: 5 }\n      resolution: { kind: string, enum_values: [720p, 1080p] }";
+        assert!(priced("video", video, "        - { per_second_usd: 0.1 }\n        - { when: { resolution: 1080p, extra.addons: x }, multiply: 2 }").is_ok());
+        for (media, rules, needle) in [
+            ("video", "        - { per_second_usd: 0.1, multiply: 2 }", "one effect"),
+            ("video", "        - { when: { resolution: 1080p } }", "one effect"),
+            ("video", "        - { per_item_usd: 0.1 }", "per_item"),
+            ("video", "        - { when: { quality: hd }, multiply: 2 }", "quality"),
+            ("video", "        - { when: { extra.tier: x }, multiply: 2 }", "extra.tier"),
+            ("image", "        - { per_second_usd: 0.1 }", "per_second_usd"),
+            ("video", "        - { per_megapixel_usd: 0.1 }", "per_megapixel_usd"),
+            ("video", "        - { usd: -1 }", "negative"),
+        ] {
+            let params = if media == "video" { video } else { "      {}" };
+            let err = priced(media, params, rules).unwrap_err().to_string();
+            assert!(err.contains(needle), "{rules}: {err}");
+        }
+    }
 }

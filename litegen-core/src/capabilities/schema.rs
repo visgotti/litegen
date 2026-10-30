@@ -125,9 +125,44 @@ pub struct ModelCapabilityFlags {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[schema(as = CapabilityModelPricing)]
 pub struct ModelPricing {
+    /// The vendor's price for the model's default request.
     pub base_cost_usd: f64,
-    #[serde(default)]
-    pub variable_pricing: Option<serde_json::Value>,
+    /// How the price follows the request (3D doc §3G, L14): rules applied in
+    /// order to a running price that starts at `base_cost_usd`. The quote,
+    /// the quota reservation and the charge all come from them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variable_pricing: Vec<PriceRule>,
+}
+
+/// One pricing rule. When every `when` entry matches the request, its one
+/// effect applies: a price (`usd`), a rate (`per_second_usd` × the clip's
+/// seconds, `per_megapixel_usd` × the image's megapixels, `per_item_usd` × the
+/// count of the `per_item` list) or an adjustment (`multiply`, `add_usd`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PriceRule {
+    /// Request facts the rule needs: a param (as sent, else its default), an
+    /// `extra.<field>`, or a derived fact (`views`, `keyframes`, `animations`
+    /// counts, `duration_seconds`, `megapixels`), mapped to the value it must
+    /// have — or `"*"` for any value present.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    #[schema(value_type = std::collections::HashMap<String, serde_json::Value>)]
+    pub when: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_second_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_megapixel_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_item_usd: Option<f64>,
+    /// The list `per_item_usd` counts (`animations`, `views`, `keyframes`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_item: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multiply: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub add_usd: Option<f64>,
 }
 
 /// How a model treats the request's `prompt`. Lengths count characters.

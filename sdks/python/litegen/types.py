@@ -118,6 +118,30 @@ PreservesUnmasked = Literal["exact", "similar", "unspecified"]
 """What a vendor promises about pixels outside an edit, in its own words."""
 
 
+class PriceRule(TypedDict):
+    """One rule of a model's ``pricing.variable_pricing`` (from ``GET /v1/models``).
+
+    Rules apply in order to a running price that starts at ``base_cost_usd``.
+    When every ``when`` entry matches the request — a param as sent or its
+    default, an ``extra.<field>``, or a derived fact (``views``,
+    ``keyframes``, ``animations``, ``duration_seconds``, ``megapixels``), with
+    ``"*"`` meaning any value present — the rule's one effect applies: a price
+    (``usd``), a rate (``per_second_usd``, ``per_megapixel_usd``,
+    ``per_item_usd`` × the ``per_item`` count) or an adjustment
+    (``multiply``, ``add_usd``). ``/cost``, the quota reservation and the
+    charge all use them.
+    """
+
+    when: NotRequired[dict[str, Any]]
+    usd: NotRequired[float | None]
+    per_second_usd: NotRequired[float | None]
+    per_megapixel_usd: NotRequired[float | None]
+    per_item_usd: NotRequired[float | None]
+    per_item: NotRequired[str | None]
+    multiply: NotRequired[float | None]
+    add_usd: NotRequired[float | None]
+
+
 class Region(TypedDict):
     """A rectangle of the init image, in its pixels: top-left origin, ends
     exclusive (``x..x+w`` by ``y..y+h``). Pass it to ``images.generate`` as

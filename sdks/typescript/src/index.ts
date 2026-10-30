@@ -136,6 +136,13 @@ export type ImageView = components["schemas"]["ImageView"];
  * the start of the clip to its end.
  */
 export type KeyframeTiming = components["schemas"]["KeyframeTiming"];
+/**
+ * One rule of a model's `pricing.variable_pricing`: applied in order to a
+ * running price that starts at `base_cost_usd`, when every `when` entry
+ * matches the request (`"*"` for any value present). `/cost`, the quota
+ * reservation and the charge all use them.
+ */
+export type PriceRule = components["schemas"]["PriceRule"];
 /** Which pixels of a mask edit. Callers always send `white_edits`; litegen converts. */
 export type MaskConvention = components["schemas"]["MaskConvention"];
 /** How a model receives a `region`: its own `box`, or drawn as its `mask`. */

@@ -113,7 +113,10 @@ models:
     # 720p (the default) is $0.055/s on text2video/img2video/start-end2video
     # ($0.05/s on reference2video), so a 5s clip is $0.275:
     # https://platform.vidu.com/docs/pricing.md (2026-09-11)
-    pricing: { base_cost_usd: 0.275 }
+    pricing:
+      base_cost_usd: 0.275
+      variable_pricing:
+        - { per_second_usd: 0.055 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
@@ -157,7 +160,10 @@ models:
     description: Vidu Q3 Pro text/image/start-end to video with native audio (no reference-to-video).
     # 720p (the default) is $0.10/s, so a 5s clip is $0.50:
     # https://platform.vidu.com/docs/pricing.md (2026-09-11)
-    pricing: { base_cost_usd: 0.50 }
+    pricing:
+      base_cost_usd: 0.5
+      variable_pricing:
+        - { per_second_usd: 0.10 }
     capabilities: { text_to_video: true, image_to_video: true }
     # 20000 on text2video, img2video and start-end2video:
     # https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video.md (2026-10-12)
@@ -198,7 +204,11 @@ models:
     # 720p (the default): "Starts at $0.04, +$0.01/sec" (the 1s price plus
     # $0.01 per further second), so a 5s clip is $0.08:
     # https://platform.vidu.com/docs/pricing.md (2026-09-11)
-    pricing: { base_cost_usd: 0.08 }
+    pricing:
+      base_cost_usd: 0.08
+      variable_pricing:
+        - { per_second_usd: 0.01 }
+        - { add_usd: 0.03 }
     # Only img2video and start-end2video accept viduq2-pro-fast.
     capabilities: { image_to_video: true }
     prompt: { required: true, max_length: 5000 }

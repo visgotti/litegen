@@ -221,6 +221,41 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
+    // 3D doc §3G, L14: each pricing rule has one effect, over facts a
+    // request can have, in a unit its medium has.
+    for rule in &m.pricing.variable_pricing {
+        if rule.effects() != 1 {
+            return Err(bad(format!("model '{}' pricing rule {:?} must name exactly one effect", m.id, rule)));
+        }
+        if rule.per_item_usd.is_some() != rule.per_item.is_some() {
+            return Err(bad(format!("model '{}' pricing rule: per_item_usd and per_item go together", m.id)));
+        }
+        if let Some(list) = rule.per_item.as_deref().filter(|l| !super::pricing::DERIVED_FACTS.contains(l)) {
+            return Err(bad(format!("model '{}' pricing rule counts '{list}', which is not a list litegen counts", m.id)));
+        }
+        if rule.per_second_usd.is_some() && m.media_type != MediaType::Video {
+            return Err(bad(format!("model '{}' pricing rule: per_second_usd is for video models", m.id)));
+        }
+        if rule.per_megapixel_usd.is_some() && m.media_type != MediaType::Image {
+            return Err(bad(format!("model '{}' pricing rule: per_megapixel_usd is for image models", m.id)));
+        }
+        if [rule.usd, rule.per_second_usd, rule.per_megapixel_usd, rule.per_item_usd, rule.multiply].iter().flatten().any(|v| *v < 0.0) {
+            return Err(bad(format!("model '{}' pricing rule has a negative price or factor", m.id)));
+        }
+        for fact in rule.when.keys() {
+            let known = m.params.contains_key(fact)
+                || super::pricing::DERIVED_FACTS.contains(&fact.as_str())
+                || fact.strip_prefix("extra.").is_some_and(|f| m.extra_allowlist.iter().any(|a| a == f));
+            if !known {
+                return Err(bad(format!(
+                    "model '{}' pricing rule reads '{fact}', which is not a param, an allowlisted extra.<field> or one of {:?}",
+                    m.id,
+                    super::pricing::DERIVED_FACTS
+                )));
+            }
+        }
+    }
+
     // 3D doc §3C: the clips an animate model makes.
     if let Some(spec) = m.params.get("animations") {
         let ParamSpec::AnimationList(a) = spec else {

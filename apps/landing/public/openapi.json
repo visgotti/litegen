@@ -2935,6 +2935,117 @@
                 }
             }
         },
+        "/v1/generations/{id}/assets": {
+            "get": {
+                "tags": [
+                    "Generations"
+                ],
+                "summary": "GET /v1/generations/{id}/assets \u2014 Every file litegen kept for a generation.",
+                "operationId": "list_generation_assets",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Generation ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The generation's stored files, in order. Kept for at least 7 days.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/GenerationAssetList"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/generations/{id}/assets/{index}": {
+            "get": {
+                "tags": [
+                    "Generations"
+                ],
+                "summary": "GET /v1/generations/{id}/assets/{index} \u2014 The bytes of one stored file.",
+                "operationId": "get_generation_asset",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Generation ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "index",
+                        "in": "path",
+                        "description": "The asset's `index` in `GET /v1/generations/{id}/assets`",
+                        "required": true,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int32",
+                            "minimum": 0
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The file, with its content type"
+                    },
+                    "307": {
+                        "description": "The file is held by storage litegen does not read back (an S3 image store); follow `Location`"
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "No such generation or asset",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v1/images/cost": {
             "post": {
                 "tags": [
@@ -2983,6 +3094,20 @@
                 ],
                 "summary": "POST /v1/images/generations \u2014 Generate images (OpenAI-compatible).",
                 "operationId": "generate_image",
+                "parameters": [
+                    {
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "description": "1\u2013255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key.",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        }
+                    }
+                ],
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -2997,6 +3122,12 @@
                     "200": {
                         "description": "Image generated successfully",
                         "headers": {
+                            "Idempotent-Replayed": {
+                                "schema": {
+                                    "type": "string"
+                                },
+                                "description": "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."
+                            },
                             "X-Litegen-Dropped-Params": {
                                 "schema": {
                                     "type": "string"
@@ -3022,8 +3153,28 @@
                             }
                         }
                     },
+                    "409": {
+                        "description": "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
                     "502": {
                         "description": "Provider error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "504": {
+                        "description": "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -3947,6 +4098,20 @@
                 ],
                 "summary": "POST /v1/models3d/generations \u2014 Start a 3D (mesh) generation.",
                 "operationId": "generate_3d",
+                "parameters": [
+                    {
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "description": "1\u2013255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key.",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        }
+                    }
+                ],
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -3961,6 +4126,12 @@
                     "200": {
                         "description": "3D generation started",
                         "headers": {
+                            "Idempotent-Replayed": {
+                                "schema": {
+                                    "type": "string"
+                                },
+                                "description": "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."
+                            },
                             "X-Litegen-Dropped-Params": {
                                 "schema": {
                                     "type": "string"
@@ -3978,6 +4149,36 @@
                     },
                     "400": {
                         "description": "Bad request",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "`generation_record_failed`: the vendor accepted the job but litegen could not record it, so it has no id to poll; `vendor_job_id` names the vendor's job. A retry with the same `Idempotency-Key` gets this answer, not a second job.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "504": {
+                        "description": "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -6181,6 +6382,20 @@
                 ],
                 "summary": "POST /v1/videos/generations \u2014 Start video generation.",
                 "operationId": "generate_video",
+                "parameters": [
+                    {
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "description": "1\u2013255 visible ASCII characters. The same key and the same request within 24 hours replay the first response (`Idempotent-Replayed: true`) and bill nothing; the same key with a different request is a 409. A request refused before any vendor was called does not spend the key.",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        }
+                    }
+                ],
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -6195,6 +6410,12 @@
                     "200": {
                         "description": "Video generation started",
                         "headers": {
+                            "Idempotent-Replayed": {
+                                "schema": {
+                                    "type": "string"
+                                },
+                                "description": "`true` when this is the stored response of an earlier request with the same `Idempotency-Key`; nothing ran and nothing was billed. Absent otherwise."
+                            },
                             "X-Litegen-Dropped-Params": {
                                 "schema": {
                                     "type": "string"
@@ -6212,6 +6433,36 @@
                     },
                     "400": {
                         "description": "Bad request",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "`generation_record_failed`: the vendor accepted the job but litegen could not record it, so it has no id to poll; `vendor_job_id` names the vendor's job. A retry with the same `Idempotency-Key` gets this answer, not a second job.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "504": {
+                        "description": "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -6375,6 +6626,85 @@
                     },
                     "source": {
                         "$ref": "#/components/schemas/ModelSource"
+                    }
+                }
+            },
+            "AnimationPresetSpec": {
+                "type": "object",
+                "required": [
+                    "id"
+                ],
+                "properties": {
+                    "canonical": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The canonical preset it plays, when it has one."
+                    },
+                    "id": {
+                        "type": "string",
+                        "description": "The vendor's own id for the clip."
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The vendor's own name for it, for people choosing one."
+                    },
+                    "loopable": {
+                        "type": "boolean",
+                        "description": "Whether the vendor made it to loop."
+                    }
+                }
+            },
+            "AnimationRequest": {
+                "type": "object",
+                "description": "One clip an `animate` request asks for (3D doc \u00a73C).",
+                "required": [
+                    "name"
+                ],
+                "properties": {
+                    "duration_s": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "A prompt clip's length in seconds, within the model's\n`text_to_motion` range."
+                    },
+                    "in_place": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "Keep the root in place horizontally (vertical movement stays)."
+                    },
+                    "loop": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "A loop hint, recorded in the manifest; nothing is resampled to force a\nloop."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "The clip's name in the delivered file: unique within the request, 1\u201364\ncharacters of `[A-Za-z0-9_.-]`."
+                    },
+                    "preset": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "A canonical preset (`Model3dAnimationPreset`) or one of the model's\nown preset ids. Exactly one of `preset` and `prompt`."
+                    },
+                    "prompt": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Text-to-motion, where the model offers it."
                     }
                 }
             },
@@ -7061,9 +7391,16 @@
                 "properties": {
                     "base_cost_usd": {
                         "type": "number",
-                        "format": "double"
+                        "format": "double",
+                        "description": "The vendor's price for the model's default request."
                     },
-                    "variable_pricing": {}
+                    "variable_pricing": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/PriceRule"
+                        },
+                        "description": "How the price follows the request (3D doc \u00a73G, L14): rules applied in\norder to a running price that starts at `base_cost_usd`. The quote,\nthe quota reservation and the charge all come from them."
+                    }
                 }
             },
             "CostEstimate": {
@@ -7599,6 +7936,13 @@
                     "type": {
                         "type": "string",
                         "description": "The error's family, e.g. `validation_error`, `authentication_error`,\n`quota_exceeded`, `provider_not_configured`."
+                    },
+                    "vendor_job_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The vendor's own job id, on `vendor_timeout` (the job the vendor had\naccepted when litegen stopped waiting, if it had; not re-sent) and on\n`generation_record_failed` (a job the vendor took that litegen could\nnot record)."
                     }
                 }
             },
@@ -7762,6 +8106,102 @@
                     }
                 }
             },
+            "GenerationAsset": {
+                "type": "object",
+                "description": "One stored file of a generation of any kind, as\n`GET /v1/generations/{id}/assets` lists it. litegen keeps every result for\nat least 7 days; `GET /v1/generations/{id}/assets/{index}` streams it with\na litegen key alone, whatever the vendor's own URL did.",
+                "required": [
+                    "index",
+                    "kind",
+                    "format",
+                    "url"
+                ],
+                "properties": {
+                    "duration_s": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "Videos: length in seconds, when known."
+                    },
+                    "format": {
+                        "type": "string",
+                        "description": "Lowercase container or image format, without a dot."
+                    },
+                    "fps": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "Videos: frames per second, when known."
+                    },
+                    "height": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "index": {
+                        "type": "integer",
+                        "format": "int32",
+                        "description": "Position in the list; the `{index}` that streams this file.",
+                        "minimum": 0
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "`image`, `video`, `mesh`, `texture`, `preview` or `original`. A plain\nstring so a client tolerates a kind added later."
+                    },
+                    "sha256": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Lowercase hex SHA-256 of the stored file."
+                    },
+                    "size_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Where the file is served from: absolute, and litegen's own storage."
+                    },
+                    "width": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "minimum": 0
+                    }
+                }
+            },
+            "GenerationAssetList": {
+                "type": "object",
+                "description": "`GET /v1/generations/{id}/assets`.",
+                "required": [
+                    "generation_id",
+                    "data"
+                ],
+                "properties": {
+                    "data": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/GenerationAsset"
+                        }
+                    },
+                    "generation_id": {
+                        "type": "string"
+                    }
+                }
+            },
             "GenerationStatus": {
                 "type": "string",
                 "enum": [
@@ -7816,10 +8256,30 @@
                                 ],
                                 "format": "double"
                             },
+                            "mask_grow_px": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ],
+                                "format": "int32",
+                                "description": "Grow the edit area outward by this many pixels: the vendor's own\nsetting where it has one (sent explicitly, even as 0), else litegen\ndilates the mask itself. Default 0.",
+                                "minimum": 0
+                            },
                             "quality": {
                                 "type": [
                                     "string",
                                     "null"
+                                ]
+                            },
+                            "region": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Region",
+                                        "description": "Edit only this rectangle of the `init` image (3D doc \u00a74). A box-native\nmodel receives it as its own box; a mask-only one receives it drawn as\nthe mask. With a `mask` too, the edit area is where they overlap."
+                                    }
                                 ]
                             },
                             "response_format": {
@@ -7851,6 +8311,16 @@
                                     "string",
                                     "null"
                                 ]
+                            },
+                            "views": {
+                                "type": [
+                                    "array",
+                                    "null"
+                                ],
+                                "items": {
+                                    "$ref": "#/components/schemas/ImageView"
+                                },
+                                "description": "The views a `multiview` model makes, one image each, in this order.\nOmitted means the model's default set."
                             }
                         }
                     }
@@ -7941,8 +8411,51 @@
                             "null"
                         ],
                         "description": "URL of the generated image (if response_format=url)."
+                    },
+                    "view": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/ImageView",
+                                "description": "The view this image shows, from a `multiview` model."
+                            }
+                        ]
+                    },
+                    "yaw_deg": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "The camera's yaw for `view`, in degrees (see `ImageView`)."
                     }
                 }
+            },
+            "ImageView": {
+                "type": "string",
+                "description": "A side of the subject a view shows (3D doc \u00a73E). Its `yaw_deg` is the\ncamera's position around +Y, measured from the subject's front (+Z)\ntowards +X \u2014 and glTF puts the subject's left at +X \u2014 so `front` is 0,\n`left` 90, `back` 180 and `right` 270. `top` and `bottom` have no yaw.",
+                "enum": [
+                    "front",
+                    "front-left",
+                    "left",
+                    "back-left",
+                    "back",
+                    "back-right",
+                    "right",
+                    "front-right",
+                    "top",
+                    "bottom"
+                ]
+            },
+            "InPlaceMode": {
+                "type": "string",
+                "description": "Who keeps a clip in place.",
+                "enum": [
+                    "litegen",
+                    "native"
+                ]
             },
             "Invitation": {
                 "type": "object",
@@ -8069,6 +8582,14 @@
                         "type": "boolean"
                     }
                 }
+            },
+            "KeyframeTiming": {
+                "type": "string",
+                "description": "Where a model's keyframes may sit in the clip.",
+                "enum": [
+                    "any",
+                    "even"
+                ]
             },
             "LatencyPercentiles": {
                 "type": "object",
@@ -8198,6 +8719,15 @@
                     }
                 }
             },
+            "MaskConvention": {
+                "type": "string",
+                "description": "Which pixels of a mask mean \"edit\".",
+                "enum": [
+                    "white_edits",
+                    "black_edits",
+                    "transparent_edits"
+                ]
+            },
             "MediaType": {
                 "type": "string",
                 "enum": [
@@ -8233,6 +8763,25 @@
                     }
                 }
             },
+            "Model3dAnimationPreset": {
+                "type": "string",
+                "description": "The canonical animation presets (`animations[].preset`, 3D doc \u00a73C). A\nmodel maps the ones it plays onto its own preset ids; a request may name\neither.",
+                "enum": [
+                    "idle",
+                    "walk",
+                    "run",
+                    "jump",
+                    "fall",
+                    "attack_melee",
+                    "attack_ranged",
+                    "cast",
+                    "hurt",
+                    "death",
+                    "crouch",
+                    "climb",
+                    "turn"
+                ]
+            },
             "Model3dAsset": {
                 "type": "object",
                 "description": "One file produced by a 3D generation, re-hosted on litegen storage (the\napp's own bucket when it configured one).\n\nA `completed` generation carries one `mesh` asset for every format in its\n`output_formats` \u2014 never fewer; a missing one fails the generation instead \u2014\nplus whatever textures and previews the vendor returned.",
@@ -8267,6 +8816,24 @@
                         "description": "Triangle count, on meshes whose vendor reports one. A container litegen\nderived carries its source's count \u2014 conversion keeps every triangle.",
                         "minimum": 0
                     },
+                    "scene": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/SceneManifest",
+                                "description": "On meshes: what litegen's own reader found in this very file. Never the\nvendor's claims."
+                            }
+                        ]
+                    },
+                    "sha256": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Lowercase hex SHA-256 of the stored file."
+                    },
                     "size_bytes": {
                         "type": [
                             "integer",
@@ -8297,7 +8864,8 @@
                 "enum": [
                     "mesh",
                     "texture",
-                    "preview"
+                    "preview",
+                    "original"
                 ]
             },
             "Model3dConvertFormats": {
@@ -8347,6 +8915,44 @@
                     {
                         "type": "object",
                         "properties": {
+                            "animations": {
+                                "type": [
+                                    "array",
+                                    "null"
+                                ],
+                                "items": {
+                                    "$ref": "#/components/schemas/AnimationRequest"
+                                },
+                                "description": "The clips to make, in order: one glTF animation per entry, named\nexactly its `name`."
+                            },
+                            "fps": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ],
+                                "format": "int32",
+                                "description": "Frames per second of the delivered clips.",
+                                "minimum": 0
+                            },
+                            "height_m": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double",
+                                "description": "The character's height in metres, for a vendor that scales its rig."
+                            },
+                            "joint_naming": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Model3dJointNaming",
+                                        "description": "The joint names to deliver the rig with. `vendor` (the default) keeps\nthe vendor's own."
+                                    }
+                                ]
+                            },
                             "output_format": {
                                 "type": "string",
                                 "description": "Superseded by `output_formats`. A lone value is folded into it; when both are sent, `output_formats` wins and this one is reported dropped.",
@@ -8387,6 +8993,28 @@
                                     "null"
                                 ],
                                 "description": "Auto-rig: deliver the mesh with a skeleton."
+                            },
+                            "skeleton": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Model3dSkeleton",
+                                        "description": "The skeleton to rig for, from the model's `skeleton` enum."
+                                    }
+                                ]
+                            },
+                            "source_model": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/SourceRef",
+                                        "description": "The mesh an operation (`rig`, `animate`, `texture`, `remesh`,\n`segment`) works on, required by every model whose task is not\n`generate`. A litegen generation id chains a step onto the last; a URL\nor base64 bytes bring a mesh of your own and name its `format`."
+                                    }
+                                ]
                             },
                             "symmetry": {
                                 "oneOf": [
@@ -8494,6 +9122,31 @@
                     }
                 }
             },
+            "Model3dJointNaming": {
+                "type": "string",
+                "description": "The joint names a rig is delivered with (`joint_naming`, 3D doc \u00a73B).",
+                "enum": [
+                    "vendor",
+                    "vrm",
+                    "mixamo",
+                    "unity",
+                    "unreal"
+                ]
+            },
+            "Model3dSkeleton": {
+                "type": "string",
+                "description": "The skeleton a rig is built for (`skeleton`, 3D doc \u00a73B): Tripo's\n`rig_type` values, with its `biped` named `humanoid`.",
+                "enum": [
+                    "humanoid",
+                    "quadruped",
+                    "hexapod",
+                    "octopod",
+                    "avian",
+                    "serpentine",
+                    "aquatic",
+                    "other"
+                ]
+            },
             "Model3dSymmetry": {
                 "type": "string",
                 "description": "Symmetry handling a 3D request may ask for (`symmetry`).",
@@ -8518,6 +9171,28 @@
                     "supports_image_to_image"
                 ],
                 "properties": {
+                    "keyframe_timing": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/KeyframeTiming",
+                                "description": "`any`: each keyframe at its own time; `even`: evenly spaced over the\nclip, start and end included."
+                            }
+                        ]
+                    },
+                    "mask_convention": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/MaskConvention",
+                                "description": "The mask convention a caller sends: `white_edits` on every model that\ntakes a mask, whatever its vendor reads \u2014 litegen converts."
+                            }
+                        ]
+                    },
                     "max_duration_seconds": {
                         "type": [
                             "number",
@@ -8528,6 +9203,15 @@
                     "max_images": {
                         "type": "integer",
                         "format": "int32",
+                        "minimum": 0
+                    },
+                    "max_keyframes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "The most `keyframe` references one request may carry.",
                         "minimum": 0
                     },
                     "max_polycount": {
@@ -8545,6 +9229,28 @@
                             "type": "string"
                         },
                         "description": "Every mesh container a caller may request, including those litegen\nderives locally \u2014 the same list, in the same order, as\n`GET /v1/models/{id}` serves under `params.output_formats.enum_values`.\nEmpty for image and video models."
+                    },
+                    "preserves_unmasked": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/PreservesUnmasked",
+                                "description": "What the vendor promises about pixels outside the edit, in its own\nwords: `exact`, `similar` or `unspecified`."
+                            }
+                        ]
+                    },
+                    "region_input": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/RegionInput",
+                                "description": "How the model receives a `region`: `box` (its own box) or `mask`\n(drawn as its mask)."
+                            }
+                        ]
                     },
                     "supported_sizes": {
                         "type": "array",
@@ -8568,6 +9274,10 @@
                     "supports_inpainting": {
                         "type": "boolean"
                     },
+                    "supports_keyframes": {
+                        "type": "boolean",
+                        "description": "Takes `keyframe` references, each pinned at its `time_s` (3D doc \u00a75)."
+                    },
                     "supports_last_frame": {
                         "type": "boolean"
                     },
@@ -8579,9 +9289,17 @@
                         "type": "boolean",
                         "description": "Takes the `pbr` param."
                     },
+                    "supports_region_edit": {
+                        "type": "boolean",
+                        "description": "Takes `region` (3D doc \u00a74)."
+                    },
                     "supports_rig": {
                         "type": "boolean",
                         "description": "Takes the `rig` param."
+                    },
+                    "supports_source_model": {
+                        "type": "boolean",
+                        "description": "Takes `source_model`: an operation on an existing mesh."
                     },
                     "supports_text_to_3d": {
                         "type": "boolean",
@@ -8596,6 +9314,10 @@
                     "supports_texture": {
                         "type": "boolean",
                         "description": "Takes the `texture` param."
+                    },
+                    "task": {
+                        "$ref": "#/components/schemas/ModelTask",
+                        "description": "What the model does: `generate`, or an operation on an existing asset\nsuch as `rig` or `animate`. The same value `GET /v1/models/{id}`\nserves as `task`."
                     }
                 }
             },
@@ -8719,7 +9441,11 @@
                         "description": "Base cost per image/video in USD."
                     },
                     "variable_pricing": {
-                        "description": "Variable pricing by dimension (JSON map)."
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/PriceRule"
+                        },
+                        "description": "How the price follows the request: ordered rules over a running\nprice that starts at `base_cost_usd` (see `PriceRule`)."
                     }
                 }
             },
@@ -8799,12 +9525,34 @@
                     "media_type": {
                         "$ref": "#/components/schemas/CapabilityMediaType"
                     },
+                    "native_orientation": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/NativeOrientation",
+                                "description": "3D only: the axes the vendor builds its meshes along, declared once a\nrun has shown them. Absent means unproven: the mesh is never turned and\nits manifest says `front: \"unverified\"`."
+                            }
+                        ]
+                    },
                     "params": {
                         "type": "object",
                         "additionalProperties": {},
                         "propertyNames": {
                             "type": "string"
                         }
+                    },
+                    "preserves_unmasked": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/PreservesUnmasked",
+                                "description": "Image edits: what the vendor promises about pixels outside the edit\narea, in its own words."
+                            }
+                        ]
                     },
                     "pricing": {
                         "$ref": "#/components/schemas/CapabilityModelPricing"
@@ -8830,6 +9578,10 @@
                         "items": {
                             "type": "string"
                         }
+                    },
+                    "task": {
+                        "$ref": "#/components/schemas/ModelTask",
+                        "description": "What the model does: `generate`, or an operation on an existing asset\nsuch as `rig` or `animate`."
                     }
                 }
             },
@@ -8839,6 +9591,23 @@
                 "enum": [
                     "catalog",
                     "runtime"
+                ]
+            },
+            "ModelTask": {
+                "type": "string",
+                "description": "What a catalog model does.\n\nAn operation on an existing asset is a model of its own, submitted to its\nmodality's one job endpoint: `tripo/rig` and `meshy/animate` go to\n`POST /v1/models3d/generations` like any generation, and are polled,\npriced, cancelled, re-hosted and billed the same way, because each\nproduces a new asset.\n\nOne task per model. `generate` is the default in every modality. It still\ncovers image edits driven by `init` and `mask` references, and 3D models\nthat infer text, image or multiview input from their references.",
+                "enum": [
+                    "generate",
+                    "rig",
+                    "animate",
+                    "texture",
+                    "remesh",
+                    "segment",
+                    "multiview",
+                    "background_swap",
+                    "extend",
+                    "retake",
+                    "video_edit"
                 ]
             },
             "ModelUsageStat": {
@@ -8865,6 +9634,29 @@
                         "type": "integer",
                         "format": "int64",
                         "minimum": 0
+                    }
+                }
+            },
+            "NativeOrientation": {
+                "type": "object",
+                "description": "The axes a 3D model's vendor builds its meshes along (3D doc \u00a72 rule 3).\nWhere they differ from glTF's (+Y up, +Z front), litegen adds a root\nrotation and the manifest says `oriented_by: \"litegen\"`. An operation that\nhands back its source's own geometry says `source` for both: its output\nfaces wherever the source did.",
+                "required": [
+                    "up",
+                    "front",
+                    "evidence"
+                ],
+                "properties": {
+                    "evidence": {
+                        "type": "string",
+                        "description": "What showed it: the run, sample file or page."
+                    },
+                    "front": {
+                        "type": "string",
+                        "description": "The axis the asset's front faces, at right angles to `up`; `source`\nwith `up`."
+                    },
+                    "up": {
+                        "type": "string",
+                        "description": "`+x`, `-x`, `+y`, `-y`, `+z` or `-z`; `source` on an operation that\nkeeps its source's axes."
                     }
                 }
             },
@@ -9591,8 +10383,119 @@
                                 }
                             }
                         ]
+                    },
+                    {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/ParamSpecSourceModel"
+                            },
+                            {
+                                "type": "object",
+                                "required": [
+                                    "kind"
+                                ],
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                            "source_model"
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/ParamSpecAnimationList"
+                            },
+                            {
+                                "type": "object",
+                                "required": [
+                                    "kind"
+                                ],
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                            "animation_list"
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/ParamSpecRegion"
+                            },
+                            {
+                                "type": "object",
+                                "required": [
+                                    "kind"
+                                ],
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                            "region"
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
                     }
                 ]
+            },
+            "ParamSpecAnimationList": {
+                "type": "object",
+                "description": "The clips an `animate` model makes (`animations`, 3D doc \u00a73C).",
+                "required": [
+                    "max_items"
+                ],
+                "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "in_place": {
+                        "$ref": "#/components/schemas/InPlaceMode",
+                        "description": "How `in_place: true` is honoured: by the vendor's own flag, or by\nlitegen removing the root's horizontal travel."
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "max_items": {
+                        "type": "integer",
+                        "description": "The most clips one request may ask for.",
+                        "minimum": 0
+                    },
+                    "presets": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/AnimationPresetSpec"
+                        },
+                        "description": "The model's presets: its own ids, each optionally tagged with the\ncanonical preset (`Model3dAnimationPreset`) it plays. A request names\neither."
+                    },
+                    "text_to_motion": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/TextToMotionSpec",
+                                "description": "Present when the model makes clips from a prompt (text-to-motion)."
+                            }
+                        ]
+                    }
+                }
             },
             "ParamSpecAspectRatio": {
                 "type": "object",
@@ -9725,6 +10628,47 @@
                     }
                 }
             },
+            "ParamSpecRegion": {
+                "type": "object",
+                "description": "`region` on a model (3D doc \u00a74).",
+                "required": [
+                    "input"
+                ],
+                "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "input": {
+                        "$ref": "#/components/schemas/RegionInput"
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "max_aspect": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "The vendor's largest box aspect ratio (6 for 1:6\u20136:1)."
+                    },
+                    "min_window_px": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int32",
+                        "description": "The vendor's smallest box side, in pixels. A smaller region gets a\nwindow enlarged to it, with the exact region sent as the mask.",
+                        "minimum": 0
+                    }
+                }
+            },
             "ParamSpecSeed": {
                 "type": "object",
                 "required": [
@@ -9751,6 +10695,57 @@
                     "min": {
                         "type": "integer",
                         "format": "int64"
+                    }
+                }
+            },
+            "ParamSpecSourceModel": {
+                "type": "object",
+                "description": "What an operation on an existing mesh takes as its `source_model` (3D doc\n\u00a73A). litegen reads the source with its own mesh reader and refuses one the\nvendor would refuse \u2014 before the billed submit \u2014 then converts it to a\ncontainer in `formats` if it is not already one.",
+                "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "formats": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Containers the vendor accepts, from the `Model3dFormat` vocabulary. A\nsource in any other container litegen can read is converted to the\nfirst of these it can write."
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "max_bytes": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Largest file the vendor accepts, in bytes, as sent.",
+                        "minimum": 0
+                    },
+                    "max_faces": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "description": "Most triangles the vendor accepts.",
+                        "minimum": 0
+                    },
+                    "requires_skin": {
+                        "type": "boolean",
+                        "description": "The source must already be rigged (have a skin)."
+                    },
+                    "requires_texture": {
+                        "type": "boolean",
+                        "description": "The source must be textured."
                     }
                 }
             },
@@ -9950,6 +10945,79 @@
                         ]
                     }
                 }
+            },
+            "PreservesUnmasked": {
+                "type": "string",
+                "description": "What a vendor promises about the pixels outside an edit.",
+                "enum": [
+                    "exact",
+                    "similar",
+                    "unspecified"
+                ]
+            },
+            "PriceRule": {
+                "type": "object",
+                "description": "One pricing rule. When every `when` entry matches the request, its one\neffect applies: a price (`usd`), a rate (`per_second_usd` \u00d7 the clip's\nseconds, `per_megapixel_usd` \u00d7 the image's megapixels, `per_item_usd` \u00d7 the\ncount of the `per_item` list) or an adjustment (`multiply`, `add_usd`).",
+                "properties": {
+                    "add_usd": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double"
+                    },
+                    "multiply": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double"
+                    },
+                    "per_item": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The list `per_item_usd` counts (`animations`, `views`, `keyframes`)."
+                    },
+                    "per_item_usd": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double"
+                    },
+                    "per_megapixel_usd": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double"
+                    },
+                    "per_second_usd": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double"
+                    },
+                    "usd": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double"
+                    },
+                    "when": {
+                        "type": "object",
+                        "description": "Request facts the rule needs: a param (as sent, else its default), an\n`extra.<field>`, or a derived fact (`views`, `keyframes`, `animations`\ncounts, `duration_seconds`, `megapixels`), mapped to the value it must\nhave \u2014 or `\"*\"` for any value present.",
+                        "additionalProperties": {},
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "additionalProperties": false
             },
             "PromptSpec": {
                 "type": "object",
@@ -10535,7 +11603,8 @@
                 "enum": [
                     "base64",
                     "url",
-                    "blob"
+                    "blob",
+                    "generation"
                 ]
             },
             "RefInputSpec": {
@@ -10546,6 +11615,10 @@
                     "roles"
                 ],
                 "properties": {
+                    "data_uri": {
+                        "type": "boolean",
+                        "description": "Whether the vendor takes a `data:` URI where it takes a URL (default\nyes). When it does not, litegen publishes an uploaded reference at an\nunguessable URL of its own for the vendor to fetch (L4)."
+                    },
                     "default_role": {
                         "type": [
                             "string",
@@ -10566,6 +11639,13 @@
                         "propertyNames": {
                             "type": "string"
                         }
+                    },
+                    "view_order": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/ImageView"
+                        },
+                        "description": "For a multiview-to-3D vendor that takes its views as ONE ordered list\n(3D doc \u00a73E): the views in that list's order. A view needs every view\nbefore it, since the vendor reads them by position. Empty when the\nvendor takes each view by name and any may be omitted."
                     }
                 }
             },
@@ -10646,6 +11726,17 @@
                     "max_count"
                 ],
                 "properties": {
+                    "convention": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/MaskConvention",
+                                "description": "The mask role's VENDOR convention: which pixels it edits. Callers\nalways send white-edits masks; litegen converts."
+                            }
+                        ]
+                    },
                     "max_count": {
                         "type": "integer",
                         "format": "int32",
@@ -10656,8 +11747,31 @@
                         "format": "int32",
                         "minimum": 0
                     },
+                    "native_grow": {
+                        "type": "boolean",
+                        "description": "The mask role's vendor grows masks itself (Stability's `grow_mask`):\n`mask_grow_px` goes to it, explicitly, instead of litegen dilating."
+                    },
                     "required": {
                         "type": "boolean"
+                    },
+                    "time_step_s": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "The `keyframe` role's time grid, when the vendor takes only multiples\nof it (PixVerse: whole seconds). A time off it is refused."
+                    },
+                    "timing": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/KeyframeTiming",
+                                "description": "The `keyframe` role's timing (3D doc \u00a75): `any` time each, or `even`\nspacing over the clip. Required on that role, refused on others."
+                            }
+                        ]
                     }
                 }
             },
@@ -10674,6 +11788,14 @@
                             "null"
                         ]
                     },
+                    "time_s": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "Seconds from the start of the clip, on a `keyframe` reference (3D doc\n\u00a75): the video shows this image at that time."
+                    },
                     "type": {
                         "$ref": "#/components/schemas/RefImageKind"
                     },
@@ -10681,6 +11803,46 @@
                         "type": "string"
                     }
                 }
+            },
+            "Region": {
+                "type": "object",
+                "description": "A rectangle of an image, in its pixels: top-left origin, ends exclusive\n(it covers `x..x+w` by `y..y+h`). Named keys, never arrays: vendors\ndisagree on axis order.",
+                "required": [
+                    "x",
+                    "y",
+                    "w",
+                    "h"
+                ],
+                "properties": {
+                    "h": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "w": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "x": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "y": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    }
+                }
+            },
+            "RegionInput": {
+                "type": "string",
+                "description": "How a model receives a `region`.",
+                "enum": [
+                    "box",
+                    "mask"
+                ]
             },
             "RequestArtifact": {
                 "type": "object",
@@ -10995,6 +12157,240 @@
                     "lowest_latency"
                 ]
             },
+            "SceneAnimation": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "duration_s",
+                    "in_place",
+                    "root_travel_m"
+                ],
+                "properties": {
+                    "duration_s": {
+                        "type": "number",
+                        "format": "float",
+                        "description": "Measured from the keys."
+                    },
+                    "in_place": {
+                        "type": "boolean",
+                        "description": "Measured: the root ends within 1 cm of where it started, horizontally."
+                    },
+                    "in_place_by": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "`vendor` (arrived in place), `litegen` (litegen removed the root's\nhorizontal travel), or absent when not in place."
+                    },
+                    "loop_requested": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ],
+                        "description": "Whether the request asked for a loop (a hint; glTF has no loop flag)."
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "root_travel_m": {
+                        "type": "array",
+                        "items": {
+                            "type": "number",
+                            "format": "float"
+                        },
+                        "description": "The root's world displacement, first key to last, in metres."
+                    }
+                }
+            },
+            "SceneBounds": {
+                "type": "object",
+                "required": [
+                    "min",
+                    "max"
+                ],
+                "properties": {
+                    "max": {
+                        "type": "array",
+                        "items": {
+                            "type": "number",
+                            "format": "float"
+                        }
+                    },
+                    "min": {
+                        "type": "array",
+                        "items": {
+                            "type": "number",
+                            "format": "float"
+                        }
+                    }
+                }
+            },
+            "SceneManifest": {
+                "type": "object",
+                "description": "What litegen measured in a delivered mesh (3D doc \u00a73D). Every delivered\nmesh is in glTF's conventions: metres, +Y up, the subject facing +Z with\nits right side at \u2212X.",
+                "required": [
+                    "units",
+                    "up",
+                    "front",
+                    "oriented_by",
+                    "vertex_count",
+                    "triangle_count",
+                    "uv_sets",
+                    "vertex_colors",
+                    "materials",
+                    "animations",
+                    "extensions_used"
+                ],
+                "properties": {
+                    "animations": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SceneAnimation"
+                        }
+                    },
+                    "bounds": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/SceneBounds",
+                                "description": "World-space bounds at rest, in metres."
+                            }
+                        ]
+                    },
+                    "extensions_used": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "glTF extensions the file uses (none is ever required)."
+                    },
+                    "front": {
+                        "type": "string",
+                        "description": "`+z`, or `unverified` when the model's orientation has not been proven\n(litegen never reports a guess)."
+                    },
+                    "materials": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SceneMaterial"
+                        }
+                    },
+                    "oriented_by": {
+                        "type": "string",
+                        "description": "`vendor` (it arrived so) or `litegen` (litegen turned it)."
+                    },
+                    "skin": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/SceneSkin"
+                            }
+                        ]
+                    },
+                    "triangle_count": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    },
+                    "units": {
+                        "type": "string",
+                        "description": "Always `m`."
+                    },
+                    "up": {
+                        "type": "string",
+                        "description": "Always `+y`."
+                    },
+                    "uv_sets": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "vertex_colors": {
+                        "type": "boolean"
+                    },
+                    "vertex_count": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                    }
+                }
+            },
+            "SceneMaterial": {
+                "type": "object",
+                "required": [
+                    "maps"
+                ],
+                "properties": {
+                    "maps": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "`base_color`, `metallic_roughness`, `normal`, `occlusion`, `emissive`."
+                    },
+                    "name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            },
+            "SceneSkin": {
+                "type": "object",
+                "required": [
+                    "joint_count",
+                    "bind_pose",
+                    "joints"
+                ],
+                "properties": {
+                    "bind_pose": {
+                        "type": "string",
+                        "description": "`t`, `a` or `unknown`, from the upper-arm angle at rest."
+                    },
+                    "humanoid": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "description": "VRM 1.0 humanoid bone \u2192 joint name, for a rig litegen recognises;\n`null` for one it does not (never a guess).",
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
+                    "joint_count": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "joints": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Joint names, unique, in skin order."
+                    },
+                    "root": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "skeleton": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "`humanoid` when a known naming scheme matched, else what the request\nasked the rig to be, else absent."
+                    }
+                }
+            },
             "Session": {
                 "type": "object",
                 "required": [
@@ -11251,6 +12647,43 @@
                     }
                 }
             },
+            "SourceKind": {
+                "type": "string",
+                "description": "How a `SourceRef`'s `value` is to be read.",
+                "enum": [
+                    "generation",
+                    "url",
+                    "base64"
+                ]
+            },
+            "SourceRef": {
+                "type": "object",
+                "description": "Where an operation's input comes from: a stored litegen generation, or a\nfile of your own.",
+                "required": [
+                    "type",
+                    "value"
+                ],
+                "properties": {
+                    "format": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/Model3dFormat",
+                                "description": "The container, from the `Model3dFormat` vocabulary. Required for `url`\nand `base64`; a generation's is known."
+                            }
+                        ]
+                    },
+                    "type": {
+                        "$ref": "#/components/schemas/SourceKind"
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "The generation id, the URL, or the base64 bytes (a `data:` URI prefix\nis allowed)."
+                    }
+                }
+            },
             "SpendGroupBy": {
                 "type": "string",
                 "description": "Dimension a spend report is grouped by.",
@@ -11454,6 +12887,23 @@
                         "type": "integer",
                         "format": "int64",
                         "minimum": 0
+                    }
+                }
+            },
+            "TextToMotionSpec": {
+                "type": "object",
+                "required": [
+                    "min_duration_s",
+                    "max_duration_s"
+                ],
+                "properties": {
+                    "max_duration_s": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "min_duration_s": {
+                        "type": "number",
+                        "format": "double"
                     }
                 }
             },

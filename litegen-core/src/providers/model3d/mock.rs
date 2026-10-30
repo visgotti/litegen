@@ -475,7 +475,7 @@ mod tests {
             display_name: id.into(),
             description: String::new(),
             docs_url: None,
-            pricing: ModelPricing { base_cost_usd: 0.0, variable_pricing: None },
+            pricing: ModelPricing { base_cost_usd: 0.0, variable_pricing: Vec::new() },
             capabilities: ModelCapabilityFlags { text_to_3d: true, ..Default::default() },
             prompt: PromptSpec { required: true, min_length: None, max_length: None },
             params: HashMap::new(),

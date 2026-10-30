@@ -199,7 +199,10 @@ models:
     #   price" (quality). Default medium → $0.06.
     pricing:
       base_cost_usd: 0.06
-      variable_pricing: { quality: { very_low: 0.008, low: 0.03, medium: 0.06, high: 0.22 } }
+      variable_pricing:
+        - { when: { quality: very_low }, usd: 0.008 }
+        - { when: { quality: low }, usd: 0.03 }
+        - { when: { quality: high }, usd: 0.22 }
     capabilities: { text_to_image: false, image_to_image: true, inpainting: true }
     prompt: { required: true, max_length: 10000 }
     preserves_unmasked: exact

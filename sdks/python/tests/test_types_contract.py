@@ -80,6 +80,7 @@ MIRRORED = {
     "SceneAnimation": t.SceneAnimation,
     "AnimationRequest": t.AnimationRequest,
     "Region": t.Region,
+    "PriceRule": t.PriceRule,
 }
 
 
