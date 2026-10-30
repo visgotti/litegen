@@ -71,18 +71,19 @@ pub struct DeliveryPlan {
 }
 
 impl DeliveryPlan {
-    /// What delivering a job for `schema` must do, fixed at submit.
-    pub fn for_model(schema: &crate::capabilities::ModelSchema, requested_formats: &[String]) -> DeliveryPlan {
+    /// What delivering a request for `schema` must do, fixed at submit.
+    pub fn for_request(schema: &crate::capabilities::ModelSchema, extras: &crate::providers::Model3dExtras) -> DeliveryPlan {
         DeliveryPlan {
-            requested_formats: if requested_formats.is_empty() {
+            requested_formats: if extras.output_formats.is_empty() {
                 vec![crate::types::DEFAULT_MODEL3D_FORMAT.to_string()]
             } else {
-                requested_formats.to_vec()
+                extras.output_formats.clone()
             },
             orientation: schema
                 .native_orientation
                 .as_ref()
                 .map(|o| NativeOrientationPlan { up: o.up.clone(), front: o.front.clone() }),
+            skeleton: extras.skeleton.clone(),
             ..Default::default()
         }
     }
@@ -458,6 +459,26 @@ mod tests {
         assert!(only_glb.fatal.as_deref().is_some_and(|e| e.contains("could not be read")), "{:?}", only_glb.fatal);
         let with_fbx = deliver(vec![mesh("glb", draco)], &plan(&["glb", "fbx"], Some(("+y", "+z"))));
         assert!(with_fbx.fatal.as_deref().is_some_and(|e| e.contains("fbx")), "{:?}", with_fbx.fatal);
+    }
+
+    #[test]
+    fn a_rig_no_table_knows_reports_the_requested_skeleton_and_no_humanoid_map() {
+        let mut models = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        models.pop();
+        models.push("models");
+        let schema = crate::capabilities::CapabilityRegistry::from_dir(&models).unwrap().get("mock/rig-3d").unwrap().clone();
+        let extras = crate::providers::Model3dExtras {
+            output_formats: vec!["glb".into()],
+            texture: None, pbr: None, target_polycount: None, symmetry: None, topology: None, rig: None,
+            skeleton: Some("quadruped".into()), joint_naming: None, height_m: None,
+            extra: None, source: None, preflight: None,
+        };
+        let plan = DeliveryPlan::for_request(&schema, &extras);
+        assert_eq!(plan.skeleton.as_deref(), Some("quadruped"));
+        let rig = crate::providers::model3d::humanoid::rigged_humanoid_glb(&["b0", "b1", "b2", "b3", "b4", "b5", "b6"]);
+        let skin = meshes(&deliver(vec![mesh("glb", rig)], &plan))[0].manifest.clone().unwrap().skin.unwrap();
+        assert_eq!(skin.skeleton.as_deref(), Some("quadruped"));
+        assert!(skin.humanoid.is_none(), "never a guess: {:?}", skin.humanoid);
     }
 
     #[test]

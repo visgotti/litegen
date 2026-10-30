@@ -41,6 +41,15 @@ Model3dTopology = Literal["triangle", "quad"]
 Model3dSymmetry = Literal["off", "auto", "on"]
 """Whether the model should enforce a symmetric mesh."""
 
+Model3dSkeleton = Literal[
+    "humanoid", "quadruped", "hexapod", "octopod", "avian", "serpentine", "aquatic", "other"
+]
+"""The skeleton a rig is built for. Which ones a model rigs is its
+``params.skeleton.enum_values``."""
+
+Model3dJointNaming = Literal["vendor", "vrm", "mixamo", "unity", "unreal"]
+"""The joint names a rig is delivered with; ``vendor`` keeps the vendor's own."""
+
 Model3dAssetKind = Literal["mesh", "texture", "preview", "original"]
 """What a :class:`Model3dAsset` is: the mesh itself, a texture map, a preview
 render, or ``original`` — the vendor's own file, kept beside a mesh litegen
@@ -167,6 +176,12 @@ class Model3dGenerateParams(TypedDict, total=False):
     source_model: SourceRef | None
     """The mesh an operation works on; required by every model whose task is
     not ``generate``. See :class:`SourceRef`."""
+    skeleton: Model3dSkeleton | None
+    """The skeleton to rig for (rig models)."""
+    joint_naming: Model3dJointNaming | None
+    """The joint names to deliver the rig with (rig models)."""
+    height_m: float | None
+    """The character's height in metres, where the rig model takes one."""
 
 
 # ─── Responses ───────────────────────────────────────────────────────────────

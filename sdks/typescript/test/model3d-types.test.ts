@@ -9,6 +9,8 @@ import type {
   ModelInfo,
   ModelSchema,
   ModelTask,
+  Model3dJointNaming,
+  Model3dSkeleton,
   NativeOrientation,
   SceneManifest,
   SourceRef,
@@ -71,6 +73,19 @@ describe("3D vocabulary types", () => {
   it("exposes the asset kinds as constants matching the schema", () => {
     expectTypeOf<Model3dAssetKind>().toEqualTypeOf<Model3dAsset["kind"]>();
     expect(Object.values(Model3dAssetKind)).toEqual(["mesh", "texture", "preview", "original"]);
+  });
+
+  it("types the rig params from their vocabularies", () => {
+    expectTypeOf<Model3dGenerationRequest["skeleton"]>().toEqualTypeOf<Model3dSkeleton | null | undefined>();
+    expectTypeOf<Model3dGenerationRequest["joint_naming"]>().toEqualTypeOf<Model3dJointNaming | null | undefined>();
+    expectTypeOf<Model3dGenerationRequest["height_m"]>().toEqualTypeOf<number | null | undefined>();
+    const rig: Model3dGenerationRequest = {
+      model: "tripo/rig",
+      source_model: { type: "generation", value: "litegen-3d-1" },
+      skeleton: "humanoid",
+      joint_naming: "vrm",
+    };
+    expect(rig.skeleton).toBe("humanoid");
   });
 
   it("types a mesh's manifest and a model's proven orientation", () => {

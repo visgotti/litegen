@@ -399,11 +399,14 @@ models:
     display_name: Mock Rig 3D
     description: >-
       Rigs any mesh it can read as the same skinned box humanoid: joints hips,
-      torso, head, arm_l, arm_r, leg_l and leg_r, +Y up, facing +Z, metres,
-      T-pose. Takes its source by generation id (a mock generation is chained
-      by the mock's own task id, as Tripo and Meshy chain theirs), URL or
-      base64, as glb only — anything else litegen reads is converted — and
-      refuses a source over 20,000 triangles before anything runs.
+      torso, head, arm_l, arm_r, leg_l and leg_r (VRM 1.0 bone names with
+      `joint_naming: vrm`), +Y up, facing +Z, metres, T-pose, `height_m` tall.
+      Takes its source by generation id (a mock generation is chained by the
+      mock's own task id, as Tripo and Meshy chain theirs), URL or base64, as
+      glb only — anything else litegen reads is converted — and refuses a
+      source over 20,000 triangles before anything runs. Its free preflight,
+      like Tripo's rig-check, refuses a flat source (one whose thinnest side is
+      under 1% of its longest) as `not_riggable`, billing nothing.
     pricing: { base_cost_usd: 0.0 }
     capabilities: {}
     prompt: { required: false, max_length: 0 }
@@ -415,6 +418,27 @@ models:
         max_faces: 20000
         label: Source mesh
         description: The mesh to rig.
+      skeleton:
+        kind: string
+        enum_values: [humanoid]
+        default: humanoid
+        label: Skeleton
+        description: The skeleton to rig for. The mock rigs humanoids only.
+      joint_naming:
+        kind: string
+        enum_values: [vendor, vrm]
+        default: vendor
+        label: Joint naming
+        description: >-
+          `vendor` keeps the mock's own joint names (hips, torso, head, arm_l,
+          arm_r, leg_l, leg_r); `vrm` names them as VRM 1.0 humanoid bones.
+      height_m:
+        kind: float
+        min: 0.5
+        max: 3.0
+        default: 1.75
+        label: Height (m)
+        description: The rigged character's height in metres; the mock scales its humanoid to it.
       output_formats:
         kind: string_array
         enum_values: [glb]

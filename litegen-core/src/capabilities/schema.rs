@@ -497,6 +497,10 @@ pub const KNOWN_PARAMS: &[&str] = &[
     "rig",
     // 3D operations (3D doc §3A): the mesh an operation works on.
     "source_model",
+    // Rigging (3D doc §3B).
+    "skeleton",
+    "joint_naming",
+    "height_m",
 ];
 
 /// The `ParamSpec` kind(s) a canonical param may be declared with: exactly the
@@ -517,7 +521,8 @@ pub fn canonical_param_kinds(name: &str) -> &'static [&'static str] {
         "size" => &["size"],
         "aspect_ratio" => &["aspect_ratio"],
         "output_formats" => &["string_array"],
-        "output_format" | "symmetry" | "topology" => &["string"],
+        "output_format" | "symmetry" | "topology" | "skeleton" | "joint_naming" => &["string"],
+        "height_m" => &["float"],
         "texture" | "pbr" | "rig" => &["bool"],
         "target_polycount" => &["int"],
         "source_model" => &["source_model"],

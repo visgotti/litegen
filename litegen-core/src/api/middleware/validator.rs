@@ -563,6 +563,32 @@ pub fn validate_model3d(
 
     string_param!(req.symmetry, "symmetry");
     string_param!(req.topology, "topology");
+    string_param!(req.skeleton, "skeleton");
+    string_param!(req.joint_naming, "joint_naming");
+    if let Some(v) = req.height_m {
+        match schema.params.get("height_m") {
+            Some(ParamSpec::Float(s)) => {
+                if !v.is_finite() || v <= 0.0 || s.min.is_some_and(|m| v < m) || s.max.is_some_and(|m| v > m) {
+                    return Err(ValidationError::new(
+                        "param_out_of_range",
+                        format!("height_m {} out of range", v),
+                        Some("height_m"),
+                    ));
+                }
+            }
+            Some(_) | None => {
+                if strict {
+                    return Err(ValidationError::new(
+                        "param_unsupported",
+                        format!("height_m not supported by '{}'", schema.id),
+                        Some("height_m"),
+                    ));
+                }
+                dropped.push("height_m".into());
+                req.height_m = None;
+            }
+        }
+    }
     bool_param!(req.texture, "texture");
     bool_param!(req.pbr, "pbr");
     bool_param!(req.rig, "rig");

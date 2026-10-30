@@ -285,6 +285,84 @@ impl Model3dSymmetry {
     }
 }
 
+/// The skeleton a rig is built for (`skeleton`, 3D doc §3B): Tripo's
+/// `rig_type` values, with its `biped` named `humanoid`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Model3dSkeleton {
+    Humanoid,
+    Quadruped,
+    Hexapod,
+    Octopod,
+    Avian,
+    Serpentine,
+    Aquatic,
+    /// A skeleton matching none of the named topologies.
+    Other,
+}
+
+impl Model3dSkeleton {
+    pub const ALL: [Model3dSkeleton; 8] = [
+        Model3dSkeleton::Humanoid,
+        Model3dSkeleton::Quadruped,
+        Model3dSkeleton::Hexapod,
+        Model3dSkeleton::Octopod,
+        Model3dSkeleton::Avian,
+        Model3dSkeleton::Serpentine,
+        Model3dSkeleton::Aquatic,
+        Model3dSkeleton::Other,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Model3dSkeleton::Humanoid => "humanoid",
+            Model3dSkeleton::Quadruped => "quadruped",
+            Model3dSkeleton::Hexapod => "hexapod",
+            Model3dSkeleton::Octopod => "octopod",
+            Model3dSkeleton::Avian => "avian",
+            Model3dSkeleton::Serpentine => "serpentine",
+            Model3dSkeleton::Aquatic => "aquatic",
+            Model3dSkeleton::Other => "other",
+        }
+    }
+}
+
+/// The joint names a rig is delivered with (`joint_naming`, 3D doc §3B).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Model3dJointNaming {
+    /// Whatever the vendor names them.
+    Vendor,
+    /// VRM 1.0 humanoid bone names.
+    Vrm,
+    /// Mixamo's `mixamorig:` names.
+    Mixamo,
+    /// Unity's `HumanBodyBones`.
+    Unity,
+    /// Unreal Engine's mannequin.
+    Unreal,
+}
+
+impl Model3dJointNaming {
+    pub const ALL: [Model3dJointNaming; 5] = [
+        Model3dJointNaming::Vendor,
+        Model3dJointNaming::Vrm,
+        Model3dJointNaming::Mixamo,
+        Model3dJointNaming::Unity,
+        Model3dJointNaming::Unreal,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Model3dJointNaming::Vendor => "vendor",
+            Model3dJointNaming::Vrm => "vrm",
+            Model3dJointNaming::Mixamo => "mixamo",
+            Model3dJointNaming::Unity => "unity",
+            Model3dJointNaming::Unreal => "unreal",
+        }
+    }
+}
+
 /// OpenAPI schema for the superseded `output_format`: the format vocabulary,
 /// marked deprecated.
 ///
@@ -353,6 +431,18 @@ pub struct Model3dGenerationRequest {
     pub topology: Option<String>,
     /// Auto-rig: deliver the mesh with a skeleton.
     #[serde(default)] pub rig: Option<bool>,
+    /// The skeleton to rig for, from the model's `skeleton` enum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Model3dSkeleton>)]
+    pub skeleton: Option<String>,
+    /// The joint names to deliver the rig with. `vendor` (the default) keeps
+    /// the vendor's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Model3dJointNaming>)]
+    pub joint_naming: Option<String>,
+    /// The character's height in metres, for a vendor that scales its rig.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height_m: Option<f64>,
     /// The mesh an operation (`rig`, `animate`, `texture`, `remesh`,
     /// `segment`) works on, required by every model whose task is not
     /// `generate`. A litegen generation id chains a step onto the last; a URL

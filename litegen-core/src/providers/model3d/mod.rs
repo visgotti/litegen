@@ -23,6 +23,17 @@
 //! | `texture`          | —                               | —             | `textured_mesh`    | accepted        |
 //! | `target_polycount`, `topology`, `symmetry`, `rig` | — | —          | —                  | accepted        |
 //!
+//! Operations take a mesh instead of a prompt (3D doc §3A, §3B):
+//!
+//! | litegen          | `tripo/rig`                            | `fal/meshy-rig`                     | `mock/rig-3d`    |
+//! |------------------|----------------------------------------|-------------------------------------|------------------|
+//! | `source_model`   | `input`: its task id, or a `file_token` | `model_url` (glb as a `data:` URI)  | any glb          |
+//! | `skeleton`       | `rig_type` (`humanoid` → `biped`)      | —                                   | `humanoid` only  |
+//! | `joint_naming`   | `spec` (humanoid rigs only)            | —                                   | `vrm` renames    |
+//! | `height_m`       | —                                      | `height_meters`                     | scales the rig   |
+//! | `output_formats` | `out_format` (glb \| fbx, 1/job)       | glb, plus Meshy's fbx when promised | glb              |
+//! | preflight        | `rig-check` (free) → 422 `not_riggable` | —                                   | flat → `not_riggable` |
+//!
 //! `output_formats` is the one param that is a promise rather than a hint:
 //! adapters ask the vendor for ONE container, and litegen derives the rest
 //! locally (`proxy::model3d_convert`). A vendor's own format field matters for
@@ -39,14 +50,19 @@
 //! the auth header, every terminal state including the vendor's failure
 //! envelopes, and that a transient poll failure stays retryable.
 //!
-//! A vendor flow with a second BILLED call (Tripo's free `rig-check` before
-//! `rig`, an upload before its task, Meshy's preview before refine) reports the
-//! boundary from `poll_status` as `next_stage` and implements `start_stage`;
-//! `proxy::model3d_stages` claims the stage on the row so only one observer
-//! starts it, and persists the context `start_stage` returns.
+//! A vendor's FREE check that decides whether the billed call may run
+//! (Tripo's `rig-check`) is `Model3dProvider::preflight`: the handler runs it
+//! before the submit and answers a refusal 422, billing nothing. A flow with a
+//! second BILLED call after the first finishes (Meshy's preview before
+//! refine) reports the boundary from `poll_status` as `next_stage` and
+//! implements `start_stage`; `proxy::model3d_stages` claims the stage on the
+//! row so only one observer starts it, and persists the context
+//! `start_stage` returns.
 
 pub mod cube;
+pub(crate) mod download;
 pub mod fal;
 pub mod glb;
 pub mod humanoid;
 pub mod mock;
+pub mod tripo;

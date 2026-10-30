@@ -140,6 +140,8 @@ def test_model3d_params_cover_the_request_schema() -> None:
         ("Model3dTopology", t.Model3dTopology),
         ("Model3dSymmetry", t.Model3dSymmetry),
         ("ModelTask", t.ModelTask),
+        ("Model3dSkeleton", t.Model3dSkeleton),
+        ("Model3dJointNaming", t.Model3dJointNaming),
         ("SourceKind", t.SourceKind),
     ],
 )

@@ -497,6 +497,7 @@ fn build_model3d_provider(
     match name {
         "mock" => configured!(MockModel3dProvider),
         "fal" => configured!(FalModel3dProvider),
+        "tripo" => configured!(crate::providers::model3d::tripo::TripoModel3dProvider),
         _ => None,
     }
 }
@@ -520,7 +521,7 @@ pub const VIDEO_PROVIDERS: &[&str] = &[
 /// Canonical list of providers with a 3D implementation. Mirrors
 /// [`build_model3d_provider`]. Real vendors (Meshy, Tripo3D, Stability, Rodin)
 /// land here in phase 2.
-pub const MODEL3D_PROVIDERS: &[&str] = &["mock", "fal"];
+pub const MODEL3D_PROVIDERS: &[&str] = &["mock", "fal", "tripo"];
 
 /// Build the provider catalog that drives the dashboard credential form. Each
 /// entry says which media a provider serves, which credential fields to collect,
@@ -931,6 +932,18 @@ mod tests {
         // A vendor with no 3D implementation must not claim the modality.
         let stability = provider_catalog().into_iter().find(|e| e.name == "stability").unwrap();
         assert!(!stability.modalities.contains(&"model3d".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_stored_tripo_key_configures_the_tripo_3d_adapter() {
+        // The dashboard stores `{"api_keys":[…]}` with no single api_key.
+        let reg = ProviderRegistry::new();
+        let creds = ProviderCredentials::from_json(&serde_json::json!({ "api_keys": [{ "key": "tsk_1", "weight": 1 }] }));
+        let p = reg.model3d_provider_for_request("tripo", Some(creds)).await.expect("tripo builds");
+        assert_eq!(p.name(), "tripo");
+        assert!(p.is_configured(), "a pooled key is enough");
+        let tripo = provider_catalog().into_iter().find(|e| e.name == "tripo").expect("tripo is in the credential form");
+        assert_eq!(tripo.modalities, vec!["model3d".to_string()]);
     }
 
     #[tokio::test]

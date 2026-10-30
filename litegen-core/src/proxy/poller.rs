@@ -1031,6 +1031,7 @@ mod poller_tests {
             texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
+            skeleton: None, joint_naming: None, height_m: None, preflight: None,
         };
         p.generate(&schema, &base, &extras, &Default::default()).await.unwrap().provider_job_id
     }
@@ -1162,6 +1163,7 @@ mod poller_tests {
             texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
+            skeleton: None, joint_naming: None, height_m: None, preflight: None,
         };
         let resp = router.generate_model3d(&staged_schema(), &base, &extras, &Default::default(), None).await.unwrap();
         db.insert_generation(&resp.id, None, "mock/staged-3d", "mock", "model3d", Some("staged-job"), 0.0, None, None).await.unwrap();
@@ -1280,8 +1282,9 @@ mod poller_tests {
             texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
+            skeleton: None, joint_naming: None, height_m: None, preflight: None,
         };
-        let plan = crate::proxy::model3d_deliver::DeliveryPlan::for_model(&schema, &extras.output_formats);
+        let plan = crate::proxy::model3d_deliver::DeliveryPlan::for_request(&schema, &extras);
 
         let mut seen = Vec::new();
         for observer in ["client", "poller"] {

@@ -749,6 +749,36 @@ impl ProxyRouter {
 
     // ─── 3D Model Generation ────────────────────────────────────────────
 
+    /// The vendor's free preflight for a 3D request (3D doc §3B), run before
+    /// the billed submit. Bounded by the vendor timeout: a check that cannot
+    /// finish refuses nothing and bills nothing, so the caller retries.
+    pub async fn preflight_model3d(
+        &self,
+        schema: &ModelSchema,
+        extras: &Model3dExtras,
+        app_creds: Option<ProviderCredentials>,
+    ) -> Result<crate::providers::Preflight, ProxyError> {
+        let provider = self
+            .registry
+            .model3d_provider_for_request(&schema.provider, app_creds)
+            .await
+            .ok_or_else(|| ProxyError::ProviderNotConfigured(schema.provider.clone()))?;
+        let limit = self.config.server.vendor_timeout();
+        match tokio::time::timeout(limit, provider.preflight(schema, extras)).await {
+            Ok(Ok(p)) => Ok(p),
+            Ok(Err(e)) => Err(ProxyError::ProviderError {
+                provider: schema.provider.clone(),
+                error: format!("preflight failed: {e}"),
+                retryable: e.is_retryable(),
+            }),
+            Err(_) => Err(ProxyError::ProviderError {
+                provider: schema.provider.clone(),
+                error: format!("preflight did not finish within {}s", limit.as_secs()),
+                retryable: true,
+            }),
+        }
+    }
+
     /// Submit a 3D generation. Always async: the response is `pending` and the
     /// poller (or `get_model3d_status`) drives it to a terminal state.
     // `app_creds` is in `skip` because it is NOT loggable: its derived `Debug`
@@ -849,7 +879,10 @@ impl ProxyRouter {
                 Model3dJob {
                     handle,
                     usage: usage_info.clone(),
-                    delivery: crate::proxy::model3d_deliver::DeliveryPlan::for_model(schema, &requested_formats),
+                    delivery: crate::proxy::model3d_deliver::DeliveryPlan::for_request(
+                        schema,
+                        &Model3dExtras { output_formats: requested_formats.clone(), ..extras.clone() },
+                    ),
                     provider,
                     created,
                 },
@@ -1857,6 +1890,7 @@ mod model3d_router_tests {
             texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
+            skeleton: None, joint_naming: None, height_m: None, preflight: None,
         };
         let refs = crate::proxy::materializer::MaterializedRequest {
             refs: vec![crate::proxy::materializer::MaterializedRef {
@@ -1989,6 +2023,7 @@ mod model3d_router_tests {
             texture: None, pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
+            skeleton: None, joint_naming: None, height_m: None, preflight: None,
         };
         let refs = crate::proxy::materializer::MaterializedRequest {
             refs: vec![],

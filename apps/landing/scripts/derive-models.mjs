@@ -36,6 +36,7 @@ export const PROVIDER_DOCS = {
   pixverse: 'https://docs.platform.pixverse.ai/',
   replicate: 'https://replicate.com/docs/reference/http',
   fal: 'https://fal.ai/docs/documentation',
+  tripo: 'https://developers.tripo3d.ai/en/docs/introduction',
 };
 
 /**

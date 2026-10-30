@@ -402,6 +402,13 @@ pub struct Model3dExtras {
     pub topology: Option<String>,
     /// Deliver the mesh with a skeleton.
     pub rig: Option<bool>,
+    /// The skeleton to rig for (`types::Model3dSkeleton`).
+    pub skeleton: Option<String>,
+    /// The joint names to deliver (`types::Model3dJointNaming`); `None` keeps
+    /// the vendor's own.
+    pub joint_naming: Option<String>,
+    /// The character's height in metres.
+    pub height_m: Option<f64>,
     /// Vendor fields the canonical vocabulary does not cover, bounded by the
     /// model's `extra_allowlist` in strict mode. An adapter must never let one
     /// overwrite a field it derived from a canonical param above.
@@ -411,6 +418,11 @@ pub struct Model3dExtras {
     /// generation models. Never serialised: it holds the mesh's bytes.
     #[serde(skip)]
     pub source: Option<SourceInput>,
+    /// What the vendor's free preflight learned, for the submit to reuse
+    /// (Tripo's uploaded file token and the rig type it detected). Never
+    /// serialised.
+    #[serde(skip)]
+    pub preflight: Option<serde_json::Value>,
 }
 
 /// How an operation's source reached the vendor — recorded on its row
@@ -592,6 +604,14 @@ pub trait Model3dProvider: Send + Sync {
         )))
     }
 
+    /// Run the vendor's free preflight (Tripo's rig-check) before the billed
+    /// submit: once per request, after the source is prepared and the
+    /// caller's limits are checked. A refusal answers the caller 422 and
+    /// bills nothing. Providers without one proceed.
+    async fn preflight(&self, _model: &ModelSchema, _extras: &Model3dExtras) -> Result<Preflight, ProviderError> {
+        Ok(Preflight::Proceed { context: None })
+    }
+
     /// Ask the vendor to stop a job the caller cancelled. Best-effort: the row
     /// is already `cancelled` and nothing reads the job again, so this only
     /// decides whether the VENDOR keeps working (and billing). Vendors without
@@ -599,6 +619,19 @@ pub trait Model3dProvider: Send + Sync {
     async fn cancel(&self, _handle: &Model3dGenerationHandle) -> Result<CancelOutcome, ProviderError> {
         Ok(CancelOutcome::Unsupported)
     }
+}
+
+/// What a vendor's free preflight said about a request, before anything is
+/// billed (3D doc §3B).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Preflight {
+    /// Go ahead. `context` is what the submit may reuse (an uploaded file's
+    /// token, a detected rig type); it reaches `generate` as
+    /// `Model3dExtras::preflight`.
+    Proceed { context: Option<serde_json::Value> },
+    /// The vendor said no: the request is refused with `code` (422) and
+    /// nothing is billed.
+    Refuse { code: &'static str, message: String },
 }
 
 /// What a vendor said when asked to cancel a job.

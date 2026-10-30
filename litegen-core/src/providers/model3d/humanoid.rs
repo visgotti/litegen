@@ -16,6 +16,9 @@ pub const MOCK_JOINTS: [&str; 7] = ["hips", "torso", "head", "arm_l", "arm_r", "
 /// `joint_naming: "vrm"` asks for.
 pub const VRM_JOINTS: [&str; 7] = ["hips", "spine", "head", "leftUpperArm", "rightUpperArm", "leftUpperLeg", "rightUpperLeg"];
 
+/// How tall the humanoid stands, in metres.
+const HEIGHT_M: f64 = 1.75;
+
 /// (parent joint, world position of the joint, box min, box max), per joint in
 /// skin order. Positions in metres; the boxes together stand 1.75 m tall.
 const BONES: [(Option<usize>, [f64; 3], [f32; 3], [f32; 3]); 7] = [
@@ -110,6 +113,21 @@ pub fn turned_humanoid_glb() -> Vec<u8> {
 /// [`rigged_humanoid`] as a GLB.
 pub fn rigged_humanoid_glb(names: &[&str; 7]) -> Vec<u8> {
     crate::mesh::glb::write_scene(&rigged_humanoid(names)).expect("the mock humanoid is a valid scene")
+}
+
+/// The humanoid at `height_m` instead of its own 1.75 m, scaled by one root
+/// node: the skin and its bind pose are untouched.
+pub fn rigged_humanoid_glb_sized(names: &[&str; 7], height_m: f64) -> Vec<u8> {
+    let mut s = rigged_humanoid(names);
+    let children = std::mem::take(&mut s.roots);
+    let k = height_m / HEIGHT_M;
+    s.add_root(Node {
+        name: Some("mock_scale".into()),
+        transform: Transform::Trs { translation: [0.0; 3], rotation: [0.0, 0.0, 0.0, 1.0], scale: [k; 3] },
+        children,
+        ..Default::default()
+    });
+    crate::mesh::glb::write_scene(&s).expect("the scaled humanoid is a valid scene")
 }
 
 #[cfg(test)]

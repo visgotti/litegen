@@ -74,6 +74,8 @@ from .model_3d_generation_request_output_format import (
     Model3DGenerationRequestOutputFormat,
 )
 from .model_3d_generation_response import Model3DGenerationResponse
+from .model_3d_joint_naming import Model3DJointNaming
+from .model_3d_skeleton import Model3DSkeleton
 from .model_3d_symmetry import Model3DSymmetry
 from .model_3d_topology import Model3DTopology
 from .model_capabilities import ModelCapabilities
@@ -264,6 +266,8 @@ __all__ = (
     "Model3DGenerationRequest",
     "Model3DGenerationRequestOutputFormat",
     "Model3DGenerationResponse",
+    "Model3DJointNaming",
+    "Model3DSkeleton",
     "Model3DSymmetry",
     "Model3DTopology",
     "ModelCapabilities",

@@ -149,6 +149,10 @@ export type Model3dConvertFormats = components["schemas"]["Model3dConvertFormats
 export type Model3dTopology = components["schemas"]["Model3dTopology"];
 /** Symmetry handling a 3D request may ask for (`symmetry`). */
 export type Model3dSymmetry = components["schemas"]["Model3dSymmetry"];
+/** The skeleton a rig model builds (`skeleton`); a model lists the ones it rigs in `params.skeleton.enum_values`. */
+export type Model3dSkeleton = components["schemas"]["Model3dSkeleton"];
+/** The joint names a rig is delivered with (`joint_naming`); `vendor` keeps the vendor's own. */
+export type Model3dJointNaming = components["schemas"]["Model3dJointNaming"];
 /**
  * What a catalog model does (`task` on its schema, `capabilities.task` in the
  * listing): `generate`, or an operation on an existing asset such as `rig` or

@@ -1004,8 +1004,12 @@ pub async fn generate_3d(
         symmetry: validated.request.symmetry.clone(),
         topology: validated.request.topology.clone(),
         rig: validated.request.rig,
+        skeleton: validated.request.skeleton.clone(),
+        joint_naming: validated.request.joint_naming.clone(),
+        height_m: validated.request.height_m,
         extra: validated.request.base.extra.clone(),
         source: None,
+        preflight: None,
     };
 
     let app_creds = match resolve_org_provider_credential(&state, &key_ctx, &validated.schema.provider).await {
@@ -1058,6 +1062,26 @@ pub async fn generate_3d(
     };
     let attributed = limits.attribution();
 
+    // The vendor's free preflight (3D doc §3B), once the caller may run this
+    // model at all: a mesh the vendor says it cannot rig is refused here,
+    // and nothing reserved above is charged.
+    let preflight = state.router.preflight_model3d(&validated.schema, &extras, app_creds.clone()).await;
+    if !matches!(preflight, Ok(crate::providers::Preflight::Proceed { .. })) {
+        settle_quota(&state, charge_key, reserved, 0.0).await;
+        limits.settle(&state, 0.0).await;
+    }
+    match preflight {
+        Ok(crate::providers::Preflight::Proceed { context }) => extras.preflight = context,
+        Ok(crate::providers::Preflight::Refuse { code, message }) => {
+            let param = validated.request.source_model.is_some().then_some("source_model");
+            return (StatusCode::UNPROCESSABLE_ENTITY, Json(crate::api::middleware::validator::err_body(code, &message, param, &validated.schema.id))).into_response();
+        }
+        Err(e) => {
+            error!(error = %e, "3D preflight failed");
+            return generation_error_response(&e);
+        }
+    }
+
     match state.router.generate_model3d(
         &validated.schema, &validated.request.base, &extras, &materialized, app_creds,
     ).await {
@@ -1092,7 +1116,7 @@ pub async fn generate_3d(
             let requested_formats = extras.output_formats.clone();
             // The plan the router's job holds too, so the poller delivers
             // exactly what the client's poll would.
-            let delivery = crate::proxy::model3d_deliver::DeliveryPlan::for_model(&validated.schema, &requested_formats);
+            let delivery = crate::proxy::model3d_deliver::DeliveryPlan::for_request(&validated.schema, &extras);
             let request = request_record(&validated.request.base, serde_json::to_value(&extras).ok(), &validated.ctx);
             let source_record = lineage.clone();
             let source_delivery = extras.source.as_ref().and_then(|s| s.delivery()).map(|d| d.as_str());

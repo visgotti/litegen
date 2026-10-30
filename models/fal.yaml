@@ -391,3 +391,50 @@ models:
     # guidance_scale 0–20.
     extra_allowlist: [num_inference_steps, guidance_scale, octree_resolution]
     tags: [3d, mesh, hunyuan]
+
+  # ─── 3D operations (PixelGenie 3D doc §3A, §3B) ────────────────────────────
+  - id: fal/meshy-rig
+    provider: fal
+    media_type: model3d
+    task: rig
+    display_name: Meshy Auto Rig (Fal)
+    description: >-
+      Meshy's auto-rigger via Fal: a textured humanoid GLB in, a rigged GLB
+      (and Meshy's own FBX) out. The character must face +Z with clearly
+      defined limbs. litegen sends no animation, so none is billed.
+    docs_url: https://fal.ai/models/fal-ai/meshy/rigging/api
+    # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/meshy/rigging
+    #   (MeshyRiggingInput / MeshyRiggingOutput, read 2026-10-30): model_url
+    #   (GLB), height_meters (default 1.7), enable_animation (default false).
+    # @see https://docs.meshy.ai/en/api/rigging (2026-10-30), the limits fal
+    #   forwards: "100 MB as a data URI"; "at most 320,000 faces";
+    #   "Rigging isn't suitable for these models: - Untextured meshes -
+    #   Non-humanoid assets".
+    # @see https://fal.ai/models/fal-ai/meshy/rigging (2026-10-30)
+    #   "$0.20 per request. +$0.12 when enable_animation=true".
+    pricing: { base_cost_usd: 0.20 }
+    capabilities: {}
+    prompt: { required: false, max_length: 0 }
+    params:
+      source_model:
+        kind: source_model
+        formats: [glb]
+        max_bytes: 100000000
+        max_faces: 320000
+        requires_texture: true
+        label: Source mesh
+        description: A textured humanoid facing +Z, sent to fal inline (at most 100 MB, 320,000 faces).
+      height_m:
+        kind: float
+        default: 1.7
+        label: Height (m)
+        description: The character's height in metres (Meshy's height_meters; any positive value).
+      output_formats:
+        kind: string_array
+        enum_values: [glb, fbx]
+        max_items: 1
+        default: [glb]
+        label: Output formats
+        description: Meshy returns glb and fbx; litegen derives the rest.
+    extra_allowlist: []
+    tags: [3d, rig, meshy, 3d-operation]

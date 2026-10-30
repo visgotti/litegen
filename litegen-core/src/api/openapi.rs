@@ -173,6 +173,8 @@ use utoipa::OpenApi;
         crate::types::Model3dFormat,
         crate::types::Model3dTopology,
         crate::types::Model3dSymmetry,
+        crate::types::Model3dSkeleton,
+        crate::types::Model3dJointNaming,
         crate::capabilities::ModelTask,
         crate::types::ReferenceImage,
         crate::types::RefImageKind,
@@ -389,6 +391,20 @@ mod tests {
         );
         assert_eq!(s["Model3dTopology"]["enum"], json!(["triangle", "quad"]));
         assert_eq!(s["Model3dSymmetry"]["enum"], json!(["off", "auto", "on"]));
+        assert_eq!(
+            s["Model3dSkeleton"]["enum"],
+            json!(["humanoid", "quadruped", "hexapod", "octopod", "avian", "serpentine", "aquatic", "other"]),
+        );
+        assert_eq!(s["Model3dJointNaming"]["enum"], json!(["vendor", "vrm", "mixamo", "unity", "unreal"]));
+    }
+
+    #[test]
+    fn the_3d_request_types_the_rig_params() {
+        let d = doc();
+        let req = &d["components"]["schemas"]["Model3dGenerationRequest"];
+        assert!(mentions(property(req, "skeleton"), "#/components/schemas/Model3dSkeleton"));
+        assert!(mentions(property(req, "joint_naming"), "#/components/schemas/Model3dJointNaming"));
+        assert!(mentions(property(req, "height_m"), "\"number\""), "{}", property(req, "height_m"));
     }
 
     #[test]

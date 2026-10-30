@@ -226,6 +226,72 @@ fn resolve_spec(model: &str) -> Option<EndpointSpec> {
     }
 }
 
+/// The litegen operations this adapter serves (models whose task is not
+/// `generate`) — the arms of `resolve_operation`, tied to the catalog by the
+/// same test as `MODELS`.
+pub const OPERATIONS: &[&str] = &["fal/meshy-rig"];
+
+/// What one fal 3D operation endpoint takes and returns: a mesh in, by URL.
+#[derive(Debug, Clone, Copy)]
+struct OperationSpec {
+    endpoint: &'static str,
+    /// The field carrying the source mesh (a URL or `data:` URI).
+    source_field: &'static str,
+    /// The containers that field takes.
+    source_formats: &'static [&'static str],
+    /// The largest source the endpoint takes inline.
+    source_max_bytes: u64,
+    source_max_faces: Option<u64>,
+    /// Whether the vendor refuses an untextured mesh.
+    requires_texture: bool,
+    /// Where canonical `height_m` goes.
+    height_field: Option<&'static str>,
+    /// `(container, result field)` for every container the endpoint returns.
+    outputs: &'static [(&'static str, &'static str)],
+}
+
+/// Resolve a litegen operation id to its fal endpoint.
+fn resolve_operation(model: &str) -> Option<OperationSpec> {
+    match model {
+        // Meshy auto-rigging, on fal.
+        //
+        // MeshyRiggingInput: model_url (REQUIRED, "URL of a 3D model in GLB
+        //   format to rig … The model must be a humanoid character with
+        //   clearly defined limbs."), height_meters (default 1.7),
+        //   enable_animation (default false; +$0.12), animation_action_id,
+        //   enable_safety_checker.
+        // MeshyRiggingOutput: rigged_character_glb, rigged_character_fbx,
+        //   basic_animations {walking_*, running_*}, rig_task_id.
+        // Meshy's own limits, which fal forwards: "The model must be a GLB
+        //   (`.glb`) file of at most 400 MB from an `http` or `https` URL, or
+        //   100 MB as a data URI."; "The model can have at most 320,000
+        //   faces"; "Rigging isn't suitable for these models: - Untextured
+        //   meshes - Non-humanoid assets" (docs.meshy.ai/en/api/rigging).
+        //
+        // @see <https://fal.ai/models/fal-ai/meshy/rigging/api>
+        // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/meshy/rigging>
+        // @see <https://fal.ai/models/fal-ai/meshy/rigging> — "$0.20 per request"
+        "fal/meshy-rig" => Some(OperationSpec {
+            endpoint: "fal-ai/meshy/rigging",
+            source_field: "model_url",
+            source_formats: &["glb"],
+            source_max_bytes: 100_000_000,
+            source_max_faces: Some(320_000),
+            requires_texture: true,
+            height_field: Some("height_meters"),
+            outputs: &[("glb", "rigged_character_glb"), ("fbx", "rigged_character_fbx")],
+        }),
+        _ => None,
+    }
+}
+
+/// A delivered container's content type: the canonical one for a mesh
+/// container, else what fal declared, else what the CDN served.
+fn model3d_content_type_or(format: &str, declared: &str, served: &str) -> String {
+    let fallback = if declared.is_empty() { served } else { declared };
+    crate::proxy::storage::model3d_content_type(format, fallback).to_string()
+}
+
 /// The ONE container to ask the vendor for — `None` when the endpoint emits GLB
 /// with no choice.
 ///
@@ -409,14 +475,7 @@ impl QueueReply {
     }
 }
 
-/// Why an asset did not download.
-enum AssetError {
-    /// Asking again may work: the connection dropped, or the host answered
-    /// 5xx / 408 / 429.
-    Transient(ProviderError),
-    /// It never will: the URL is gone, refused, private, or too large.
-    Gone(String),
-}
+use super::download::AssetError;
 
 /// Where a job lives on fal — rebuilt from the handle on every poll, so the
 /// poller can use it after a restart.
@@ -527,6 +586,7 @@ impl FalModel3dProvider {
             .filter(|e| !e.is_empty())
             .map(str::to_string)
             .or_else(|| resolve_spec(&handle.model).and_then(|s| s.sole_endpoint()).map(str::to_string))
+            .or_else(|| resolve_operation(&handle.model).map(|o| o.endpoint.to_string()))
             .ok_or_else(|| {
                 ProviderError::InvalidRequest(format!(
                     "fal 3d job '{}' records no endpoint, and '{}' has more than one",
@@ -569,6 +629,214 @@ impl FalModel3dProvider {
         Ok(QueueReply { status, error_type, json, text })
     }
 
+    /// Submit `body` to a queue endpoint (`POST {queue}/{endpoint}`). Returns
+    /// fal's request id and the queue URLs to poll it by, as a stage context.
+    async fn queue_submit(&self, endpoint: &str, body: Value, api_key: &str) -> Result<(String, Value), ProviderError> {
+        let url = format!("{}/{}", self.queue_base(), endpoint);
+        let resp = crate::providers::inject_trace_headers(
+            self.client
+                .post(&url)
+                .header("Authorization", format!("Key {api_key}"))
+                .json(&body),
+        )
+        .send()
+        .await
+        .map_err(|e| ProviderError::RequestFailed {
+            message: format!("fal 3d submit failed: {e}"),
+            status_code: e.status().map(|s| s.as_u16()),
+            provider_error: None,
+            retryable: e.is_timeout() || e.is_connect(),
+        })?;
+        let retry_hint = needs_retry(resp.headers());
+        let error_type = header(resp.headers(), "x-fal-error-type").map(str::to_string);
+        let status = resp.status();
+        let text = resp.text().await.map_err(|e| ProviderError::RequestFailed {
+            message: format!("fal 3d submit response could not be read: {e}"),
+            status_code: Some(status.as_u16()),
+            provider_error: None,
+            // A 2xx means fal already queued (and will bill) the job; its
+            // request id was in the body we lost, so resubmitting would start a
+            // second job. Only an unreadable failure reply is worth retrying.
+            retryable: !status.is_success(),
+        })?;
+        let reply = QueueReply { status, error_type, json: serde_json::from_str(&text).ok(), text };
+
+        if !status.is_success() {
+            // fal says whether resubmitting can help; without that, 5xx, 408 and
+            // 429 are worth another try and anything else is the request's fault.
+            let retryable = retry_hint.unwrap_or_else(|| transient(status));
+            return Err(reply.into_error("submit", retryable));
+        }
+
+        let Some(json) = reply.json else {
+            return Err(ProviderError::RequestFailed {
+                message: "fal 3d submit answered 2xx with a body that is not JSON".into(),
+                status_code: Some(status.as_u16()),
+                provider_error: None,
+                retryable: false,
+            });
+        };
+        let request_id = json["request_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| ProviderError::RequestFailed {
+                message: "fal 3d submit response has no request_id".into(),
+                status_code: Some(status.as_u16()),
+                provider_error: Some(json.clone()),
+                retryable: false,
+            })?
+            .to_string();
+
+        Ok((
+            request_id,
+            json!({
+                "endpoint": endpoint,
+                "status_url": json["status_url"].as_str().unwrap_or(""),
+                "response_url": json["response_url"].as_str().unwrap_or(""),
+                "cancel_url": json["cancel_url"].as_str().unwrap_or(""),
+            }),
+        ))
+    }
+
+    /// Submit an operation on an existing mesh (Meshy rigging). The source
+    /// goes inline as a base64 `data:` URI, which fal takes as a file input:
+    /// a mesh litegen stores is not reachable from fal in every deployment.
+    ///
+    /// @see <https://fal.ai/docs/documentation/model-apis/fal-cdn>
+    async fn submit_operation(
+        &self,
+        model: &ModelSchema,
+        op: &OperationSpec,
+        extras: &Model3dExtras,
+        api_key: &str,
+    ) -> Result<Model3dGenerationHandle, ProviderError> {
+        use base64::Engine;
+        let source = extras.source.as_ref().ok_or_else(|| {
+            ProviderError::InvalidRequest(format!("'{}' works on a mesh; send source_model", model.id))
+        })?;
+        // The catalog holds the source to these before anything is reserved;
+        // checked again here so no caller can submit what fal would only
+        // refuse after queueing it.
+        if !op.source_formats.iter().any(|f| f.eq_ignore_ascii_case(&source.format)) {
+            return Err(ProviderError::InvalidRequest(format!(
+                "'{}' takes a source in {:?}, not {}",
+                model.id, op.source_formats, source.format
+            )));
+        }
+        if source.bytes.len() as u64 > op.source_max_bytes {
+            return Err(ProviderError::InvalidRequest(format!(
+                "'{}' takes a source of at most {} bytes inline; this one is {}",
+                model.id, op.source_max_bytes, source.bytes.len()
+            )));
+        }
+        if op.source_max_faces.is_some_and(|max| source.facts.triangles > max) {
+            return Err(ProviderError::InvalidRequest(format!(
+                "'{}' takes at most {:?} faces; the source has {}",
+                model.id, op.source_max_faces, source.facts.triangles
+            )));
+        }
+        if op.requires_texture && !source.facts.textured {
+            return Err(ProviderError::InvalidRequest(format!("'{}' rigs textured meshes only", model.id)));
+        }
+        let content_type = crate::proxy::storage::model3d_content_type(&source.format, "application/octet-stream");
+        let uri = format!("data:{content_type};base64,{}", base64::engine::general_purpose::STANDARD.encode(&source.bytes));
+        let mut body = serde_json::Map::new();
+        body.insert(op.source_field.into(), json!(uri));
+        if let (Some(field), Some(h)) = (op.height_field, extras.height_m) {
+            body.insert(field.into(), json!(h));
+        }
+        // `extra` is not merged: these rows allow none, and in lax mode it
+        // would arrive unfiltered — `enable_animation` alone is a billed
+        // add-on litegen would not charge for.
+        //
+        // The endpoint returns every container it makes; the job records the
+        // ones to download: glb, plus a promised one only the vendor's own
+        // export carries in full (`prefers_vendor_native`: fbx).
+        let mut want = vec![DEFAULT_MODEL3D_FORMAT.to_string()];
+        for (format, _) in op.outputs {
+            if *format != DEFAULT_MODEL3D_FORMAT
+                && extras.output_formats.iter().any(|f| f.eq_ignore_ascii_case(format))
+                && model3d_convert::prefers_vendor_native(format)
+            {
+                want.push(format.to_string());
+            }
+        }
+        let (request_id, mut queue) = self.queue_submit(op.endpoint, Value::Object(body), api_key).await?;
+        source.record(crate::providers::SourceDelivery::DataUri);
+        queue["want"] = json!(want);
+        Ok(Model3dGenerationHandle {
+            provider_job_id: request_id,
+            provider: "fal".to_string(),
+            model: model.id.clone(),
+            stage_context: Some(queue),
+        })
+    }
+
+    /// The containers an operation's result names that the job wants,
+    /// downloaded. glb is the deliverable; a wanted fbx that will not download
+    /// is derived from it instead.
+    async fn collect_operation(
+        &self,
+        op: &OperationSpec,
+        handle: &Model3dGenerationHandle,
+        result: &Value,
+        mut meta: HashMap<String, Value>,
+    ) -> Result<Model3dGenerationPollResult, ProviderError> {
+        let want: Vec<String> = handle
+            .stage_context
+            .as_ref()
+            .and_then(|c| c["want"].as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .filter(|w: &Vec<String>| !w.is_empty())
+            .unwrap_or_else(|| vec![DEFAULT_MODEL3D_FORMAT.to_string()]);
+        let mut files = Vec::new();
+        for (format, field) in op.outputs {
+            if !want.iter().any(|w| w == format) {
+                continue;
+            }
+            let primary = *format == DEFAULT_MODEL3D_FORMAT;
+            let Some((url, declared_ct)) = result.get(*field).and_then(file_url) else {
+                if primary {
+                    return Ok(finished(
+                        GenerationStatus::Failed,
+                        Some(format!("fal 3d completed without {field} in its result")),
+                        Vec::new(),
+                        meta,
+                    ));
+                }
+                continue;
+            };
+            match self.fetch_asset(url).await {
+                Ok((bytes, served_ct)) => files.push(Model3dFile {
+                    kind: Model3dAssetKind::Mesh,
+                    format: format.to_string(),
+                    content_type: model3d_content_type_or(format, declared_ct, &served_ct),
+                    bytes,
+                    polycount: None,
+                    width: None,
+                    height: None,
+                    manifest: None,
+                }),
+                Err(AssetError::Transient(e)) => return Err(e),
+                Err(AssetError::Gone(why)) if primary => {
+                    return Ok(finished(
+                        GenerationStatus::Failed,
+                        Some(format!("fal 3d {field} could not be downloaded: {why}")),
+                        Vec::new(),
+                        meta,
+                    ))
+                }
+                Err(AssetError::Gone(why)) => {
+                    tracing::warn!(field = %field, reason = %why, "fal 3d: a vendor container would not download; litegen derives it");
+                }
+            }
+        }
+        if let Some(id) = result.get("rig_task_id").filter(|v| v.is_string()) {
+            meta.insert("rig_task_id".into(), id.clone());
+        }
+        Ok(finished(GenerationStatus::Completed, None, files, meta))
+    }
+
     /// Download one asset into memory, refusing anything over the size limit
     /// before buffering it, and anything that does not resolve to a public
     /// address before connecting.
@@ -579,66 +847,7 @@ impl FalModel3dProvider {
     /// lost intermittently, and only in production. No API key is sent — the
     /// CDN URLs are public, and the key must never reach another host.
     async fn fetch_asset(&self, url: &str) -> Result<(Vec<u8>, String), AssetError> {
-        if self.public_assets_only {
-            crate::util::ssrf::check_public_url(url).await.map_err(|why| match why {
-                // A resolver blip is not a verdict on the URL: retried, the
-                // download of a result fal keeps for 30 days can still succeed.
-                crate::util::ssrf::UrlCheckError::Lookup(e) => AssetError::Transient(ProviderError::RequestFailed {
-                    message: format!("fal 3d asset host lookup failed: {e}"),
-                    status_code: None,
-                    provider_error: None,
-                    retryable: true,
-                }),
-                crate::util::ssrf::UrlCheckError::Refused(e) => AssetError::Gone(format!("asset URL refused: {e}")),
-            })?;
-        }
-        let mut resp = self.asset_client.get(url).send().await.map_err(|e| {
-            AssetError::Transient(ProviderError::RequestFailed {
-                message: format!("fal 3d asset download failed: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: true,
-            })
-        })?;
-        let status = resp.status();
-        if !status.is_success() {
-            let message = format!("fal 3d asset download returned HTTP {}", status.as_u16());
-            return Err(if transient(status) {
-                AssetError::Transient(ProviderError::RequestFailed {
-                    message,
-                    status_code: Some(status.as_u16()),
-                    provider_error: None,
-                    retryable: true,
-                })
-            } else {
-                AssetError::Gone(message)
-            });
-        }
-        let limit = self.max_asset_bytes;
-        if let Some(len) = resp.content_length().filter(|&l| l > limit) {
-            return Err(AssetError::Gone(format!("asset is {len} bytes, over the {limit}-byte limit")));
-        }
-        let content_type = header(resp.headers(), reqwest::header::CONTENT_TYPE.as_str())
-            .and_then(|ct| ct.split(';').next())
-            .map(|ct| ct.trim().to_string())
-            .unwrap_or_else(|| "application/octet-stream".to_string());
-        // Streamed against the limit, so a missing or dishonest Content-Length
-        // cannot make us buffer an arbitrarily large body.
-        let mut bytes = Vec::with_capacity(resp.content_length().unwrap_or(0) as usize);
-        while let Some(chunk) = resp.chunk().await.map_err(|e| {
-            AssetError::Transient(ProviderError::RequestFailed {
-                message: format!("fal 3d asset body failed: {e}"),
-                status_code: Some(status.as_u16()),
-                provider_error: None,
-                retryable: true,
-            })
-        })? {
-            if (bytes.len() + chunk.len()) as u64 > limit {
-                return Err(AssetError::Gone(format!("asset exceeds the {limit}-byte limit")));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok((bytes, content_type))
+        super::download::fetch_asset(&self.asset_client, url, self.max_asset_bytes, self.public_assets_only, "fal 3d").await
     }
 }
 
@@ -683,6 +892,9 @@ impl Model3dProvider for FalModel3dProvider {
         materialized: &MaterializedRequest,
     ) -> Result<Model3dGenerationHandle, ProviderError> {
         let api_key = self.api_key()?;
+        if let Some(op) = resolve_operation(&model.id) {
+            return self.submit_operation(model, &op, extras, &api_key).await;
+        }
         let spec = resolve_spec(&model.id).ok_or_else(|| ProviderError::ModelNotSupported {
             model: model.id.clone(),
             provider: "fal".into(),
@@ -780,61 +992,7 @@ impl Model3dProvider for FalModel3dProvider {
             }
         }
 
-        let url = format!("{}/{}", self.queue_base(), endpoint);
-        let resp = crate::providers::inject_trace_headers(
-            self.client
-                .post(&url)
-                .header("Authorization", format!("Key {api_key}"))
-                .json(&Value::Object(body)),
-        )
-        .send()
-        .await
-        .map_err(|e| ProviderError::RequestFailed {
-            message: format!("fal 3d submit failed: {e}"),
-            status_code: e.status().map(|s| s.as_u16()),
-            provider_error: None,
-            retryable: e.is_timeout() || e.is_connect(),
-        })?;
-        let retry_hint = needs_retry(resp.headers());
-        let error_type = header(resp.headers(), "x-fal-error-type").map(str::to_string);
-        let status = resp.status();
-        let text = resp.text().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("fal 3d submit response could not be read: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            // A 2xx means fal already queued (and will bill) the job; its
-            // request id was in the body we lost, so resubmitting would start a
-            // second job. Only an unreadable failure reply is worth retrying.
-            retryable: !status.is_success(),
-        })?;
-        let reply = QueueReply { status, error_type, json: serde_json::from_str(&text).ok(), text };
-
-        if !status.is_success() {
-            // fal says whether resubmitting can help; without that, 5xx, 408 and
-            // 429 are worth another try and anything else is the request's fault.
-            let retryable = retry_hint.unwrap_or_else(|| transient(status));
-            return Err(reply.into_error("submit", retryable));
-        }
-
-        let Some(json) = reply.json else {
-            return Err(ProviderError::RequestFailed {
-                message: "fal 3d submit answered 2xx with a body that is not JSON".into(),
-                status_code: Some(status.as_u16()),
-                provider_error: None,
-                retryable: false,
-            });
-        };
-        let request_id = json["request_id"]
-            .as_str()
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| ProviderError::RequestFailed {
-                message: "fal 3d submit response has no request_id".into(),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(json.clone()),
-                retryable: false,
-            })?
-            .to_string();
-
+        let (request_id, queue) = self.queue_submit(endpoint, Value::Object(body), &api_key).await?;
         Ok(Model3dGenerationHandle {
             provider_job_id: request_id,
             provider: "fal".to_string(),
@@ -842,12 +1000,7 @@ impl Model3dProvider for FalModel3dProvider {
             // Persisted on the row as `stage_context`, so the poller can rebuild
             // the job after a restart. The endpoint is not derivable from the
             // model id once a model has separate text and image arms.
-            stage_context: Some(json!({
-                "endpoint": endpoint,
-                "status_url": json["status_url"].as_str().unwrap_or(""),
-                "response_url": json["response_url"].as_str().unwrap_or(""),
-                "cancel_url": json["cancel_url"].as_str().unwrap_or(""),
-            })),
+            stage_context: Some(queue),
         })
     }
 
@@ -962,6 +1115,10 @@ impl Model3dProvider for FalModel3dProvider {
                 retryable: true,
             });
         };
+
+        if let Some(op) = resolve_operation(&handle.model) {
+            return self.collect_operation(&op, handle, &result, meta).await;
+        }
 
         // Every endpoint here names it `model_mesh`; some fal 3D variants say
         // `model_glb`, so both are read rather than assumed.
@@ -1194,6 +1351,7 @@ mod tests {
             rig: None,
             extra: None,
             source: None,
+            skeleton: None, joint_naming: None, height_m: None, preflight: None,
         }
     }
 
@@ -1879,6 +2037,7 @@ mod tests {
             topology: None,
             rig: None,
             source_model: None,
+            skeleton: None, joint_naming: None, height_m: None,
         };
         let est = p.estimate_cost(&hunyuan, &req).await.unwrap();
         assert_eq!(est.base_cost_usd, 0.16, "what submit charges");
@@ -1898,15 +2057,124 @@ mod tests {
             .filter(|m| m.provider == "fal" && m.media_type == crate::capabilities::MediaType::Model3d)
             .map(|m| m.id.clone())
             .collect();
-        let mut sorted_models: Vec<String> = MODELS.iter().map(|s| s.to_string()).collect();
+        let mut sorted_models: Vec<String> = MODELS.iter().chain(OPERATIONS).map(|s| s.to_string()).collect();
         let mut sorted_rows = rows.clone();
         sorted_models.sort();
         sorted_rows.sort();
-        assert_eq!(sorted_rows, sorted_models, "models/fal.yaml and fal::MODELS disagree");
+        assert_eq!(sorted_rows, sorted_models, "models/fal.yaml and fal::MODELS + OPERATIONS disagree");
         for id in MODELS {
             assert!(resolve_spec(id).is_some(), "{id} has no endpoint");
         }
+        for id in OPERATIONS {
+            assert!(resolve_operation(id).is_some(), "{id} has no endpoint");
+        }
         assert!(resolve_spec("fal/not-a-3d-model").is_none());
+        assert!(resolve_operation("fal/not-a-3d-model").is_none());
+    }
+
+    // ─── Operations: Meshy rigging ──────────────────────────────────────────
+    // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/meshy/rigging>
+
+    fn rig_extras(formats: &[&str], height_m: Option<f64>) -> (Model3dExtras, Vec<u8>) {
+        let glb = crate::providers::model3d::glb::generate_cube_glb("a knight");
+        let mut x = extras(formats);
+        x.height_m = height_m;
+        x.source = Some(crate::providers::SourceInput {
+            bytes: glb.clone(),
+            format: "glb".into(),
+            sha256: "00".into(),
+            facts: crate::proxy::model3d_source::SourceFacts { triangles: 12, skinned: false, textured: true },
+            vendor_task_id: None,
+            delivered: Default::default(),
+        });
+        (x, glb)
+    }
+
+    #[tokio::test]
+    async fn meshy_rigging_sends_the_source_as_a_glb_data_uri_and_the_height() {
+        use base64::Engine;
+        let server = MockServer::start().await;
+        mount_submit(&server, "fal-ai/meshy/rigging", "rig-1").await;
+        let (x, glb) = rig_extras(&["glb"], Some(1.8));
+        let h = provider(&server).generate(&schema("fal/meshy-rig"), &base("", "fal/meshy-rig"), &x, &no_images()).await.unwrap();
+        let body = submitted_body(&server).await;
+        let uri = format!("data:model/gltf-binary;base64,{}", base64::engine::general_purpose::STANDARD.encode(&glb));
+        assert_eq!(body, json!({ "model_url": uri, "height_meters": 1.8 }), "nothing else: no animation is billed");
+        assert_eq!(h.stage_context.as_ref().unwrap()["endpoint"], "fal-ai/meshy/rigging");
+        assert_eq!(h.stage_context.as_ref().unwrap()["want"], json!(["glb"]));
+        assert_eq!(x.source.as_ref().unwrap().delivery(), Some(crate::providers::SourceDelivery::DataUri));
+    }
+
+    #[tokio::test]
+    async fn meshy_rigging_without_a_height_leaves_merely_the_source() {
+        let server = MockServer::start().await;
+        mount_submit(&server, "fal-ai/meshy/rigging", "rig-1").await;
+        let (x, _) = rig_extras(&["glb", "fbx"], None);
+        let h = provider(&server).generate(&schema("fal/meshy-rig"), &base("", "fal/meshy-rig"), &x, &no_images()).await.unwrap();
+        let body = submitted_body(&server).await;
+        assert_eq!(body.as_object().unwrap().keys().collect::<Vec<_>>(), ["model_url"]);
+        assert_eq!(h.stage_context.as_ref().unwrap()["want"], json!(["glb", "fbx"]), "the vendor's own fbx");
+    }
+
+    #[tokio::test]
+    async fn an_operation_without_its_source_is_refused_before_any_call() {
+        let server = MockServer::start().await;
+        let err = provider(&server)
+            .generate(&schema("fal/meshy-rig"), &base("", "fal/meshy-rig"), &extras(&["glb"]), &no_images())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_finished_rig_downloads_the_promised_containers() {
+        let server = MockServer::start().await;
+        let rig = crate::providers::model3d::humanoid::rigged_humanoid_glb(&crate::providers::model3d::humanoid::MOCK_JOINTS);
+        Mock::given(method("GET")).and(path("/cdn/rigged_character.glb")).respond_with(ResponseTemplate::new(200).set_body_bytes(rig.clone())).mount(&server).await;
+        Mock::given(method("GET")).and(path("/cdn/rigged_character.fbx")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"Kaydara FBX Binary  \0".to_vec())).mount(&server).await;
+        let file = |name: &str| json!({ "url": format!("{}/cdn/{name}", server.uri()), "file_name": name, "file_size": 10, "content_type": "application/octet-stream" });
+        for (want, formats) in [(json!(["glb"]), vec!["glb"]), (json!(["glb", "fbx"]), vec!["glb", "fbx"])] {
+            let mut h = handle("fal/meshy-rig", "fal-ai/meshy/rigging", "rig-1", &server);
+            h.stage_context.as_mut().unwrap()["want"] = want;
+            let app = "/fal-ai/meshy/requests/rig-1";
+            server.reset().await;
+            Mock::given(method("GET")).and(path("/cdn/rigged_character.glb")).respond_with(ResponseTemplate::new(200).set_body_bytes(rig.clone())).mount(&server).await;
+            Mock::given(method("GET")).and(path("/cdn/rigged_character.fbx")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"Kaydara FBX Binary  \0".to_vec())).mount(&server).await;
+            mount_get(&server, &format!("{app}/status"), ResponseTemplate::new(200).set_body_json(json!({ "status": "COMPLETED" }))).await;
+            mount_get(&server, app, ResponseTemplate::new(200).set_body_json(json!({
+                "rigged_character_glb": file("rigged_character.glb"),
+                "rigged_character_fbx": file("rigged_character.fbx"),
+                "basic_animations": { "walking_glb": file("walking.glb") },
+                "rig_task_id": "meshy-rig-9",
+            }))).await;
+            let done = provider(&server).poll_status(&h).await.unwrap();
+            assert_eq!(done.status, GenerationStatus::Completed, "{:?}", done.error);
+            let got: Vec<&str> = done.files.iter().map(|f| f.format.as_str()).collect();
+            assert_eq!(got, formats);
+            assert!(done.files.iter().all(|f| f.kind == Model3dAssetKind::Mesh));
+            assert_eq!(done.files[0].bytes, rig);
+            assert_eq!(done.metadata.get("rig_task_id"), Some(&json!("meshy-rig-9")));
+        }
+    }
+
+    #[test]
+    fn each_operation_row_declares_what_its_endpoint_takes() {
+        for id in OPERATIONS {
+            let m = schema(id);
+            let op = resolve_operation(id).unwrap();
+            assert_ne!(m.task, crate::capabilities::ModelTask::Generate, "{id}");
+            let Some(ParamSpec::SourceModel(src)) = m.params.get("source_model") else { panic!("{id}: source_model") };
+            assert_eq!(src.formats, op.source_formats, "{id}: source formats");
+            assert!(src.max_bytes.is_some_and(|b| b <= op.source_max_bytes), "{id}: source size");
+            assert_eq!(src.max_faces, op.source_max_faces, "{id}: face limit");
+            assert_eq!(src.requires_texture, op.requires_texture, "{id}: texture");
+            assert_eq!(m.params.contains_key("height_m"), op.height_field.is_some(), "{id}: height_m");
+            let formats = m.output_formats_spec().expect("output_formats");
+            assert_eq!(formats.enum_values, op.outputs.iter().map(|(f, _)| *f).collect::<Vec<_>>(), "{id}: native containers");
+            assert!(m.ref_inputs.is_none() && m.prompt.max_length == Some(0), "{id}: a mesh in, nothing else");
+            assert!(m.docs_url.as_deref().is_some_and(|u| u.contains(op.endpoint)), "{id}: docs_url");
+        }
     }
 
     #[test]

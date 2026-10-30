@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::capabilities::schema::*;
-use crate::types::{Model3dFormat, Model3dSymmetry, Model3dTopology, DEFAULT_MODEL3D_FORMAT};
+use crate::types::{Model3dFormat, Model3dJointNaming, Model3dSkeleton, Model3dSymmetry, Model3dTopology, DEFAULT_MODEL3D_FORMAT};
 
 #[derive(Debug, Error)]
 pub enum LoadError {
@@ -197,6 +197,14 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
     if let Some(ParamSpec::String(s)) = m.params.get("symmetry") {
         let vocab: Vec<&str> = Model3dSymmetry::ALL.iter().map(|t| t.as_str()).collect();
         in_vocab("symmetry", &s.enum_values, &vocab)?;
+    }
+    if let Some(ParamSpec::String(s)) = m.params.get("skeleton") {
+        let vocab: Vec<&str> = Model3dSkeleton::ALL.iter().map(|t| t.as_str()).collect();
+        in_vocab("skeleton", &s.enum_values, &vocab)?;
+    }
+    if let Some(ParamSpec::String(s)) = m.params.get("joint_naming") {
+        let vocab: Vec<&str> = Model3dJointNaming::ALL.iter().map(|t| t.as_str()).collect();
+        in_vocab("joint_naming", &s.enum_values, &vocab)?;
     }
 
     // `output_formats` sanity.

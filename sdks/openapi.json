@@ -8720,6 +8720,25 @@
                     {
                         "type": "object",
                         "properties": {
+                            "height_m": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double",
+                                "description": "The character's height in metres, for a vendor that scales its rig."
+                            },
+                            "joint_naming": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Model3dJointNaming",
+                                        "description": "The joint names to deliver the rig with. `vendor` (the default) keeps\nthe vendor's own."
+                                    }
+                                ]
+                            },
                             "output_format": {
                                 "type": "string",
                                 "description": "Superseded by `output_formats`. A lone value is folded into it; when both are sent, `output_formats` wins and this one is reported dropped.",
@@ -8760,6 +8779,17 @@
                                     "null"
                                 ],
                                 "description": "Auto-rig: deliver the mesh with a skeleton."
+                            },
+                            "skeleton": {
+                                "oneOf": [
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/Model3dSkeleton",
+                                        "description": "The skeleton to rig for, from the model's `skeleton` enum."
+                                    }
+                                ]
                             },
                             "source_model": {
                                 "oneOf": [
@@ -8877,6 +8907,31 @@
                         ]
                     }
                 }
+            },
+            "Model3dJointNaming": {
+                "type": "string",
+                "description": "The joint names a rig is delivered with (`joint_naming`, 3D doc \u00a73B).",
+                "enum": [
+                    "vendor",
+                    "vrm",
+                    "mixamo",
+                    "unity",
+                    "unreal"
+                ]
+            },
+            "Model3dSkeleton": {
+                "type": "string",
+                "description": "The skeleton a rig is built for (`skeleton`, 3D doc \u00a73B): Tripo's\n`rig_type` values, with its `biped` named `humanoid`.",
+                "enum": [
+                    "humanoid",
+                    "quadruped",
+                    "hexapod",
+                    "octopod",
+                    "avian",
+                    "serpentine",
+                    "aquatic",
+                    "other"
+                ]
             },
             "Model3dSymmetry": {
                 "type": "string",

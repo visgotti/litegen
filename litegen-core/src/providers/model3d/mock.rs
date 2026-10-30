@@ -159,9 +159,16 @@ impl Model3dProvider for MockModel3dProvider {
                 Some(id) if jobs().read().await.contains_key(id) => crate::providers::SourceDelivery::VendorTask,
                 _ => crate::providers::SourceDelivery::DataUri,
             });
+            // The vendor's own naming setting, as Tripo's `spec` is.
+            use crate::providers::model3d::humanoid::{rigged_humanoid_glb_sized, MOCK_JOINTS, VRM_JOINTS};
+            let names = match extras.joint_naming.as_deref() {
+                Some("vrm") => &VRM_JOINTS,
+                _ => &MOCK_JOINTS,
+            };
+            let rig = rigged_humanoid_glb_sized(names, extras.height_m.unwrap_or(1.75));
             let job = Arc::new(Job {
                 model: model.id.clone(),
-                meshes: vec![("glb".into(), crate::providers::model3d::humanoid::rigged_humanoid_glb(&crate::providers::model3d::humanoid::MOCK_JOINTS))],
+                meshes: vec![("glb".into(), rig)],
                 preview: generate_visual_image_png("rigged humanoid"),
                 polls: AtomicU32::new(0),
                 finished_at: std::sync::OnceLock::new(),
@@ -213,6 +220,32 @@ impl Model3dProvider for MockModel3dProvider {
             model: model.id.clone(),
             stage_context: None,
         })
+    }
+
+    /// `mock/rig-3d`'s rig-check: a flat source (thinnest side under 1% of
+    /// its longest) has no volume to rig.
+    async fn preflight(&self, model: &ModelSchema, extras: &Model3dExtras) -> Result<crate::providers::Preflight, ProviderError> {
+        let Some(source) = extras.source.as_ref().filter(|_| model.id == RIG_MODEL) else {
+            return Ok(crate::providers::Preflight::Proceed { context: None });
+        };
+        let format = crate::mesh::MeshFormat::parse(&source.format)
+            .ok_or_else(|| ProviderError::InvalidRequest(format!("mock rig-check cannot read '{}'", source.format)))?;
+        let scene = crate::mesh::read_scene(&source.bytes, format, &crate::mesh::package::NoSidecars)
+            .map_err(|e| ProviderError::InvalidRequest(format!("mock rig-check cannot read the source: {e}")))?
+            .scene;
+        let bounds = crate::mesh::inspect::inspect(&scene)
+            .map_err(|e| ProviderError::InvalidRequest(format!("mock rig-check cannot measure the source: {e}")))?
+            .bounds;
+        let extents = bounds.map(|(lo, hi)| [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]]).unwrap_or([0.0; 3]);
+        let longest = extents.iter().cloned().fold(0.0f32, f32::max);
+        let thinnest = extents.iter().cloned().fold(f32::INFINITY, f32::min);
+        if longest <= 0.0 || thinnest < longest * 0.01 {
+            return Ok(crate::providers::Preflight::Refuse {
+                code: "not_riggable",
+                message: format!("the vendor's rig-check found nothing to rig: the source is flat (extents {extents:?} m)"),
+            });
+        }
+        Ok(crate::providers::Preflight::Proceed { context: None })
     }
 
     async fn poll_status(
@@ -376,6 +409,7 @@ mod tests {
             texture: Some(true), pbr: None, target_polycount: None,
             symmetry: None, topology: None, rig: None, extra: None,
             source: None,
+            skeleton: None, joint_naming: None, height_m: None, preflight: None,
         }
     }
 

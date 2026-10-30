@@ -310,6 +310,25 @@ models:
     }
 
     #[test]
+    fn rejects_skeleton_and_joint_naming_outside_their_vocabularies() {
+        // 3D doc §3B: Tripo's rig_type values with its biped named humanoid,
+        // and the joint conventions a vendor or litegen can produce.
+        let err = model3d_yaml("      skeleton: { kind: string, enum_values: [humanoid, dragon] }\n").unwrap_err();
+        assert!(err.to_string().contains("'dragon'"), "{err}");
+        let err = model3d_yaml("      joint_naming: { kind: string, enum_values: [vendor, blender] }\n").unwrap_err();
+        assert!(err.to_string().contains("'blender'"), "{err}");
+        assert!(model3d_yaml(
+            "      skeleton: { kind: string, enum_values: [humanoid, quadruped, hexapod, octopod, avian, serpentine, aquatic, other] }\n      joint_naming: { kind: string, enum_values: [vendor, vrm, mixamo, unity, unreal] }\n      height_m: { kind: float, min: 0.1, max: 10.0 }\n",
+        ).is_ok());
+    }
+
+    #[test]
+    fn height_m_is_a_float() {
+        let err = model3d_yaml("      height_m: { kind: int, min: 1, max: 3 }\n").unwrap_err();
+        assert!(err.to_string().contains("height_m"), "{err}");
+    }
+
+    #[test]
     fn rejects_a_required_prompt_that_may_not_be_sent() {
         let err = yaml(r#"
 models:

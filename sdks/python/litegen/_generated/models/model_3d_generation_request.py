@@ -1,4 +1,13 @@
-from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -7,6 +16,8 @@ from ..models.model_3d_format import Model3DFormat
 from ..models.model_3d_generation_request_output_format import (
     Model3DGenerationRequestOutputFormat,
 )
+from ..models.model_3d_joint_naming import Model3DJointNaming
+from ..models.model_3d_skeleton import Model3DSkeleton
 from ..models.model_3d_symmetry import Model3DSymmetry
 from ..models.model_3d_topology import Model3DTopology
 from ..types import UNSET, Unset
@@ -46,6 +57,8 @@ class Model3DGenerationRequest:
             reference_images (Union[Unset, List['ReferenceImage']]):
             seed (Union[None, Unset, int]):
             strict (Union[Unset, bool]):
+            height_m (Union[None, Unset, float]): The character's height in metres, for a vendor that scales its rig.
+            joint_naming (Union[Model3DJointNaming, None, Unset]):
             output_format (Union[Unset, Model3DGenerationRequestOutputFormat]): Superseded by `output_formats`. A lone value
                 is folded into it; when both are sent, `output_formats` wins and this one is reported dropped.
             output_formats (Union[List[Model3DFormat], None, Unset]): Mesh containers to deliver, e.g. `["glb", "fbx"]`. A
@@ -61,6 +74,7 @@ class Model3DGenerationRequest:
                 than the model's `max_items` is refused with `param_too_many`.
             pbr (Union[None, Unset, bool]): PBR materials. `false` asks for flat shading, not "no material".
             rig (Union[None, Unset, bool]): Auto-rig: deliver the mesh with a skeleton.
+            skeleton (Union[Model3DSkeleton, None, Unset]):
             source_model (Union['SourceRef', None, Unset]):
             symmetry (Union[Model3DSymmetry, None, Unset]):
             target_polycount (Union[None, Unset, int]): Approximate triangle budget for the mesh, within the model's
@@ -79,10 +93,13 @@ class Model3DGenerationRequest:
     reference_images: Union[Unset, List["ReferenceImage"]] = UNSET
     seed: Union[None, Unset, int] = UNSET
     strict: Union[Unset, bool] = UNSET
+    height_m: Union[None, Unset, float] = UNSET
+    joint_naming: Union[Model3DJointNaming, None, Unset] = UNSET
     output_format: Union[Unset, Model3DGenerationRequestOutputFormat] = UNSET
     output_formats: Union[List[Model3DFormat], None, Unset] = UNSET
     pbr: Union[None, Unset, bool] = UNSET
     rig: Union[None, Unset, bool] = UNSET
+    skeleton: Union[Model3DSkeleton, None, Unset] = UNSET
     source_model: Union["SourceRef", None, Unset] = UNSET
     symmetry: Union[Model3DSymmetry, None, Unset] = UNSET
     target_polycount: Union[None, Unset, int] = UNSET
@@ -124,6 +141,20 @@ class Model3DGenerationRequest:
 
         strict = self.strict
 
+        height_m: Union[None, Unset, float]
+        if isinstance(self.height_m, Unset):
+            height_m = UNSET
+        else:
+            height_m = self.height_m
+
+        joint_naming: Union[None, Unset, str]
+        if isinstance(self.joint_naming, Unset):
+            joint_naming = UNSET
+        elif isinstance(self.joint_naming, Model3DJointNaming):
+            joint_naming = self.joint_naming.value
+        else:
+            joint_naming = self.joint_naming
+
         output_format: Union[Unset, str] = UNSET
         if not isinstance(self.output_format, Unset):
             output_format = self.output_format.value
@@ -151,6 +182,14 @@ class Model3DGenerationRequest:
             rig = UNSET
         else:
             rig = self.rig
+
+        skeleton: Union[None, Unset, str]
+        if isinstance(self.skeleton, Unset):
+            skeleton = UNSET
+        elif isinstance(self.skeleton, Model3DSkeleton):
+            skeleton = self.skeleton.value
+        else:
+            skeleton = self.skeleton
 
         source_model: Union[Dict[str, Any], None, Unset]
         if isinstance(self.source_model, Unset):
@@ -211,6 +250,10 @@ class Model3DGenerationRequest:
             field_dict["seed"] = seed
         if strict is not UNSET:
             field_dict["strict"] = strict
+        if height_m is not UNSET:
+            field_dict["height_m"] = height_m
+        if joint_naming is not UNSET:
+            field_dict["joint_naming"] = joint_naming
         if output_format is not UNSET:
             field_dict["output_format"] = output_format
         if output_formats is not UNSET:
@@ -219,6 +262,8 @@ class Model3DGenerationRequest:
             field_dict["pbr"] = pbr
         if rig is not UNSET:
             field_dict["rig"] = rig
+        if skeleton is not UNSET:
+            field_dict["skeleton"] = skeleton
         if source_model is not UNSET:
             field_dict["source_model"] = source_model
         if symmetry is not UNSET:
@@ -275,6 +320,32 @@ class Model3DGenerationRequest:
 
         strict = d.pop("strict", UNSET)
 
+        def _parse_height_m(data: object) -> Union[None, Unset, float]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, float], data)
+
+        height_m = _parse_height_m(d.pop("height_m", UNSET))
+
+        def _parse_joint_naming(data: object) -> Union[Model3DJointNaming, None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                joint_naming_type_1 = Model3DJointNaming(data)
+
+                return joint_naming_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[Model3DJointNaming, None, Unset], data)
+
+        joint_naming = _parse_joint_naming(d.pop("joint_naming", UNSET))
+
         _output_format = d.pop("output_format", UNSET)
         output_format: Union[Unset, Model3DGenerationRequestOutputFormat]
         if isinstance(_output_format, Unset):
@@ -325,6 +396,23 @@ class Model3DGenerationRequest:
             return cast(Union[None, Unset, bool], data)
 
         rig = _parse_rig(d.pop("rig", UNSET))
+
+        def _parse_skeleton(data: object) -> Union[Model3DSkeleton, None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                skeleton_type_1 = Model3DSkeleton(data)
+
+                return skeleton_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union[Model3DSkeleton, None, Unset], data)
+
+        skeleton = _parse_skeleton(d.pop("skeleton", UNSET))
 
         def _parse_source_model(data: object) -> Union["SourceRef", None, Unset]:
             if data is None:
@@ -405,10 +493,13 @@ class Model3DGenerationRequest:
             reference_images=reference_images,
             seed=seed,
             strict=strict,
+            height_m=height_m,
+            joint_naming=joint_naming,
             output_format=output_format,
             output_formats=output_formats,
             pbr=pbr,
             rig=rig,
+            skeleton=skeleton,
             source_model=source_model,
             symmetry=symmetry,
             target_polycount=target_polycount,

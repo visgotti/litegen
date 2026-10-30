@@ -144,3 +144,59 @@ fn capability_flags_agree_with_the_declared_params() {
         }
     }
 }
+
+// ─── Rigging rows (PixelGenie 3D doc §3B) ───────────────────────────────────
+
+fn source_spec(m: &ModelSchema) -> &litegen::capabilities::ParamSpecSourceModel {
+    match m.params.get("source_model") {
+        Some(ParamSpec::SourceModel(s)) => s,
+        other => panic!("{}: source_model is {other:?}", m.id),
+    }
+}
+
+fn string_enum(m: &ModelSchema, param: &str) -> Vec<String> {
+    match m.params.get(param) {
+        Some(ParamSpec::String(s)) => s.enum_values.clone(),
+        other => panic!("{}: {param} is {other:?}", m.id),
+    }
+}
+
+/// @see <https://developers.tripo3d.ai/en/docs/animations-rig> (2026-10-30):
+/// input "GLB, FBX, OBJ, STL" up to "150 MB"; rig_type biped … aquatic,
+/// others; spec tripo, mixamo, actorcore, unity, unreal, vrm; out_format glb,
+/// fbx. @see <https://developers.tripo3d.ai/en/pricing>: "Auto Rig / 25",
+/// "1 credit = $0.01 USD".
+#[test]
+fn tripo_rig_takes_what_tripos_rig_endpoint_accepts() {
+    let reg = catalog();
+    let m = reg.get("tripo/rig").expect("tripo/rig");
+    assert_eq!(m.task, litegen::capabilities::ModelTask::Rig);
+    let src = source_spec(m);
+    assert_eq!(src.formats, ["glb", "fbx", "obj", "stl"]);
+    assert_eq!(src.max_bytes, Some(150_000_000));
+    assert_eq!(string_enum(m, "skeleton"), ["humanoid", "quadruped", "hexapod", "octopod", "avian", "serpentine", "aquatic", "other"]);
+    assert_eq!(string_enum(m, "joint_naming"), ["vendor", "vrm", "mixamo", "unity", "unreal"]);
+    assert!(!m.params.contains_key("height_m"), "Tripo's rig takes no height");
+    let formats = m.output_formats_spec().unwrap();
+    assert_eq!((formats.enum_values.as_slice(), formats.max_items), (["glb".to_string(), "fbx".to_string()].as_slice(), Some(1)));
+    assert!((m.pricing.base_cost_usd - 0.25).abs() < 1e-9);
+    assert_eq!(m.prompt.max_length, Some(0), "the rig endpoint has no prompt");
+    assert!(m.docs_url.as_deref().is_some_and(|u| u.ends_with("/animations-rig")));
+}
+
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/meshy/rigging>
+/// (2026-10-30): model_url (GLB), height_meters; Meshy's limits
+/// (docs.meshy.ai/en/api/rigging): "100 MB as a data URI", "at most 320,000
+/// faces", untextured meshes unsuitable. Price: "$0.20 per request".
+#[test]
+fn fal_meshy_rig_takes_a_textured_glb_within_meshys_limits() {
+    let reg = catalog();
+    let m = reg.get("fal/meshy-rig").expect("fal/meshy-rig");
+    assert_eq!(m.task, litegen::capabilities::ModelTask::Rig);
+    let src = source_spec(m);
+    assert_eq!(src.formats, ["glb"]);
+    assert_eq!((src.max_bytes, src.max_faces, src.requires_texture), (Some(100_000_000), Some(320_000), true));
+    assert!(matches!(m.params.get("height_m"), Some(ParamSpec::Float(_))));
+    assert!(!m.params.contains_key("skeleton") && !m.params.contains_key("joint_naming"), "Meshy rigs humanoids with its own names");
+    assert!((m.pricing.base_cost_usd - 0.20).abs() < 1e-9, "no animation is sent, so none is billed");
+}

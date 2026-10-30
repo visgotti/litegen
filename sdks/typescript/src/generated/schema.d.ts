@@ -2563,6 +2563,12 @@ export interface components {
          */
         Model3dGenerationRequest: components["schemas"]["BaseGenerationRequest"] & {
             /**
+             * Format: double
+             * @description The character's height in metres, for a vendor that scales its rig.
+             */
+            height_m?: number | null;
+            joint_naming?: null | components["schemas"]["Model3dJointNaming"];
+            /**
              * @deprecated
              * @description Superseded by `output_formats`. A lone value is folded into it; when both are sent, `output_formats` wins and this one is reported dropped.
              * @enum {string}
@@ -2585,6 +2591,7 @@ export interface components {
             pbr?: boolean | null;
             /** @description Auto-rig: deliver the mesh with a skeleton. */
             rig?: boolean | null;
+            skeleton?: null | components["schemas"]["Model3dSkeleton"];
             source_model?: null | components["schemas"]["SourceRef"];
             symmetry?: null | components["schemas"]["Model3dSymmetry"];
             /**
@@ -2634,6 +2641,17 @@ export interface components {
             status: components["schemas"]["GenerationStatus"];
             usage?: null | components["schemas"]["UsageInfo"];
         };
+        /**
+         * @description The joint names a rig is delivered with (`joint_naming`, 3D doc §3B).
+         * @enum {string}
+         */
+        Model3dJointNaming: "vendor" | "vrm" | "mixamo" | "unity" | "unreal";
+        /**
+         * @description The skeleton a rig is built for (`skeleton`, 3D doc §3B): Tripo's
+         *     `rig_type` values, with its `biped` named `humanoid`.
+         * @enum {string}
+         */
+        Model3dSkeleton: "humanoid" | "quadruped" | "hexapod" | "octopod" | "avian" | "serpentine" | "aquatic" | "other";
         /**
          * @description Symmetry handling a 3D request may ask for (`symmetry`).
          * @enum {string}

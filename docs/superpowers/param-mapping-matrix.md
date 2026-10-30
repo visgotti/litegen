@@ -221,6 +221,31 @@ submit.
 | `reference_images[].type: "generation"` | `RefImageKind` | A stored image generation's id; read back after the same access check and sent as inline bytes, so every vendor form takes it. Another org's, a non-image, or a vanished one is 404 `source_not_found` (`param: reference_images`); unfinished 409. | — | `a_stored_image_is_a_reference_by_its_generation_id` (an image edit and image-to-3D from a stored image), `an_image_reference_another_org_owns_is_not_found`, `a_mesh_is_not_an_image_reference` | ✅ |
 | row `vendor_account` | — | Every 3D row records the vendor account it ran on (`org:<id>` for an org credential, else `platform`); a source chains by the vendor's task id only on the same provider and account. | — | `a_rig_chained_by_generation_id_records_its_lineage` | ✅ |
 
+### Rigging (3D doc §3B)
+
+A `rig` model turns a mesh into a skinned one. Before the billed call litegen
+runs the vendor's free preflight (`Model3dProvider::preflight`), after the
+caller's limits and quota are checked: a refusal answers 422 with its code
+(`not_riggable`) and settles the reservation to nothing.
+
+| litegen param | ParamSpec | `tripo/rig` | `fal/meshy-rig` | `mock/rig-3d` | proof | status |
+|---|---|---|---|---|---|---|
+| `source_model` | `source_model` | `input`: the source's own Tripo task id when it is a Tripo job on the same account (`delivery: vendor_task`), else `POST /v3/files` multipart `file` → `file_token` (`upload`); glb, fbx, obj, stl ≤ 150 MB | `model_url` = the glb as a `data:model/gltf-binary;base64,…` URI (`data_uri`); glb ≤ 100 MB, ≤ 320,000 faces, textured (re-checked in the adapter) | any glb ≤ 20,000 triangles | tripo: `the_preflight_uploads_the_source_and_asks_rig_check`, `a_chained_source_goes_to_tripo_by_its_own_task_id`; fal: `meshy_rigging_sends_the_source_as_a_glb_data_uri_and_the_height`, `an_operation_without_its_source_is_refused_before_any_call`; conformance: `tripo_rig_takes_what_tripos_rig_endpoint_accepts`, `fal_meshy_rig_takes_a_textured_glb_within_meshys_limits` | 🟡 wiremock |
+| `skeleton` | `string` (`Model3dSkeleton`) | `rig_type` (`humanoid` → `biped`, `other` → `others`); rig `model` `v3.0-20260909` for biped/others, `v2.5-20260210` for creatures; omitted → what rig-check found | — (humanoid only) | `humanoid` only | `a_humanoid_rig_asks_for_v3_and_the_requested_naming`, `vendor_naming_sends_no_spec_and_a_creature_asks_for_v2_5`, `an_omitted_skeleton_rigs_what_rig_check_found`; validator `a_skeleton_or_naming_the_rig_does_not_offer_is_refused`; loader `rejects_skeleton_and_joint_naming_outside_their_vocabularies` | 🟡 wiremock |
+| `joint_naming` | `string` (`Model3dJointNaming`) | `spec` (`vrm`, `mixamo`, `unity`, `unreal`; `vendor` sends none); refused on a non-humanoid rig before any call | — | `vrm` emits VRM 1.0 bone names | `a_humanoid_rig_asks_for_v3_and_the_requested_naming`, `joint_naming_on_a_creature_is_refused_before_any_call`; HTTP `vrm_joint_naming_delivers_vrm_bone_names` | 🟡 wiremock / ✅ mock |
+| `height_m` | `float` | — | `height_meters` (any positive value) | scales the humanoid (0.5–3 m) | `meshy_rigging_sends_the_source_as_a_glb_data_uri_and_the_height`, `meshy_rigging_without_a_height_leaves_merely_the_source`; HTTP `height_m_sets_the_rigged_characters_height`; validator `a_height_outside_the_rigs_range_is_refused` | 🟡 wiremock / ✅ mock |
+| `output_formats` | `string_array` | `out_format`: `fbx` when fbx is promised, else `glb` | the endpoint returns both; glb is downloaded, Meshy's own fbx too when promised | glb | `an_fbx_promise_asks_tripo_for_its_own_fbx`, `a_finished_rig_downloads_the_promised_containers` | 🟡 wiremock |
+| preflight | — | `POST /v3/animations/rig-check` (free), polled at `GET /v3/tasks/{id}`: `riggable: false`, a failed check, or a `rig_type` other than the requested skeleton → 422 `not_riggable` | none | a flat source (thinnest side < 1 % of longest) → 422 `not_riggable` | `a_source_rig_check_refuses_is_not_riggable`, `a_skeleton_rig_check_did_not_find_is_not_riggable`; HTTP `a_source_the_vendor_cannot_rig_is_refused_before_anything_is_billed` (no row, no log) | 🟡 wiremock / ✅ mock |
+| manifest `skin` | — | measured from the delivered file | measured | `the_mock_rig_reports_its_skeleton_exactly` (§3I's joints and humanoid map) | `a_rig_no_table_knows_reports_the_requested_skeleton_and_no_humanoid_map` | ✅ |
+
+Tripo statuses map `queued` → pending, `running` (and any unknown status) →
+processing, `success` → completed after downloading `output.model_url` with no
+key, and `failed`, `cancelled`, `banned`, `expired` → failed with Tripo's
+`error_message` (`every_task_status_is_mapped`). Its error envelope
+`{code, message, suggestion}` reaches the caller; a 429 or 5xx on submit is
+retryable, a lost reply is not (`tripos_error_envelope_reaches_the_caller`).
+Not verified live: no Tripo or fal key is available here.
+
 ### Normalised delivery (3D doc §2 rule 3, §3D)
 
 One step, `proxy::model3d_deliver::deliver`, runs on a finished job's files at
@@ -381,6 +406,9 @@ field name — but it is what makes the family behave the same on every model:
   `max_items`, the served set a superset of the native one, a `docs_url` on
   every vendor row, no-prompt models never requiring one, image-only models
   requiring their image.
+- `litegen-core/tests/rig_api.rs` — rigging over HTTP against `mock/rig-3d`:
+  the exact §3I skeleton and humanoid map, `joint_naming: vrm`, `height_m`,
+  and a source the preflight refuses costing nothing.
 - `litegen-core/tests/delivery_api.rs` — normalised delivery over HTTP: a
   turned vendor mesh delivered facing +Z with its `original`, every asset's
   hash matching the served bytes, an unproven model reporting

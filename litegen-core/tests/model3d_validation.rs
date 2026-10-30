@@ -50,6 +50,7 @@ fn req(strict: bool) -> Model3dGenerationRequest {
         output_formats: None, output_format: None,
         texture: None, pbr: None, target_polycount: None,
         symmetry: None, topology: None, rig: None,
+        skeleton: None, joint_naming: None, height_m: None,
         source_model: None,
     }
 }
@@ -448,9 +449,15 @@ fn every_3d_param() -> Vec<(&'static str, Setter, IsSet)> {
         ("target_polycount", |r| r.target_polycount = Some(5000), |r| r.target_polycount.is_some()),
         ("symmetry", |r| r.symmetry = Some("auto".into()), |r| r.symmetry.is_some()),
         ("topology", |r| r.topology = Some("quad".into()), |r| r.topology.is_some()),
+        ("skeleton", |r| r.skeleton = Some("humanoid".into()), |r| r.skeleton.is_some()),
+        ("joint_naming", |r| r.joint_naming = Some("vrm".into()), |r| r.joint_naming.is_some()),
+        ("height_m", |r| r.height_m = Some(1.8), |r| r.height_m.is_some()),
         ("negative_prompt", |r| r.base.negative_prompt = Some("blurry".into()), |r| r.base.negative_prompt.is_some()),
     ]
 }
+
+/// The params only a rig declares (3D doc §3B).
+const RIG_PARAMS: [&str; 3] = ["skeleton", "joint_naming", "height_m"];
 
 #[test]
 fn every_3d_param_is_refused_in_strict_and_dropped_in_lax_where_undeclared() {
@@ -478,14 +485,58 @@ fn every_declared_3d_param_passes_through_on_the_model_that_declares_it() {
     // mock/all-params-3d is the catalog's full-surface subject.
     let schema = real("mock/all-params-3d");
     for (param, set, is_set) in every_3d_param() {
-        if param == "negative_prompt" {
-            continue; // no 3D model in the catalog declares it
+        if param == "negative_prompt" || RIG_PARAMS.contains(&param) {
+            continue; // no 3D generation model in the catalog declares these
         }
         let mut r = valid_for(&schema, true);
         set(&mut r);
         let out = validate_model3d(&schema, r).unwrap_or_else(|e| panic!("{param}: {e:?}"));
         assert!(out.dropped.is_empty(), "{param}: {:?}", out.dropped);
         assert!(is_set(&out.request), "{param} must survive validation");
+    }
+}
+
+fn rig_request(strict: bool) -> Model3dGenerationRequest {
+    let mut r = req(strict);
+    r.base.model = "mock/rig-3d".into();
+    r.base.prompt = String::new();
+    r.source_model = Some(SourceRef { kind: SourceKind::Generation, value: "litegen-3d-x".into(), format: None });
+    r
+}
+
+#[test]
+fn the_rig_params_pass_through_on_the_rig_that_declares_them() {
+    let schema = real("mock/rig-3d");
+    for (param, set, is_set) in every_3d_param().into_iter().filter(|(p, _, _)| RIG_PARAMS.contains(p)) {
+        let mut r = rig_request(true);
+        set(&mut r);
+        let out = validate_model3d(&schema, r).unwrap_or_else(|e| panic!("{param}: {e:?}"));
+        assert!(out.dropped.is_empty(), "{param}: {:?}", out.dropped);
+        assert!(is_set(&out.request), "{param} must survive validation");
+    }
+}
+
+#[test]
+fn a_skeleton_or_naming_the_rig_does_not_offer_is_refused() {
+    let schema = real("mock/rig-3d");
+    let mut r = rig_request(false);
+    r.skeleton = Some("quadruped".into());
+    let err = validate_model3d(&schema, r).unwrap_err();
+    assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_enum_mismatch", Some("skeleton")));
+    let mut r = rig_request(false);
+    r.joint_naming = Some("mixamo".into());
+    let err = validate_model3d(&schema, r).unwrap_err();
+    assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_enum_mismatch", Some("joint_naming")));
+}
+
+#[test]
+fn a_height_outside_the_rigs_range_is_refused() {
+    let schema = real("mock/rig-3d");
+    for h in [0.0, -1.0, 100.0, f64::NAN] {
+        let mut r = rig_request(false);
+        r.height_m = Some(h);
+        let err = validate_model3d(&schema, r).unwrap_err();
+        assert_eq!((err.code.as_str(), err.param.as_deref()), ("param_out_of_range", Some("height_m")), "{h}");
     }
 }
 

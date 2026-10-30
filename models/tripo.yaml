@@ -1,0 +1,69 @@
+# Tripo (VAST AI) — first-party 3D operations on Tripo's v3 API.
+#
+# International accounts use https://openapi.tripo3d.ai/v3 (the default);
+# China-mainland keys belong to https://openapi.tripo3d.com/v3 and set
+# providers.tripo.api_base. Auth: `Authorization: Bearer tsk_…`.
+# @see https://developers.tripo3d.ai/en/docs/introduction (2026-10-30)
+
+models:
+  # ─── Rigging (PixelGenie 3D doc §3B) ───────────────────────────────────────
+  # @see https://developers.tripo3d.ai/en/docs/animations-rig (2026-10-30)
+  #   input (task id | file_token | URL; GLB, FBX, OBJ or STL, ≤150 MB),
+  #   model (v1.0-20240301 default | v2.5-20260210 | v3.0-20260909),
+  #   rig_type (biped default | quadruped | hexapod | octopod | avian |
+  #   serpentine | aquatic | others, the last v3.0 only),
+  #   spec (tripo default | mixamo | actorcore | unity | unreal | vrm; "Only
+  #   takes effect when `rig_type` is `biped`"), out_format (glb default | fbx).
+  # @see https://developers.tripo3d.ai/en/docs/animations-rig-check (2026-10-30)
+  #   The free preflight litegen runs first: output.riggable, output.rig_type.
+  # @see https://developers.tripo3d.ai/en/docs/files (2026-10-30)
+  #   "Models: `GLB`, `GLTF`, `FBX`, `OBJ`, `STL`. Max **150 MB**."
+  - id: tripo/rig
+    provider: tripo
+    media_type: model3d
+    task: rig
+    display_name: Tripo Auto Rig
+    description: >-
+      Rigs a mesh with Tripo's auto-rigger after Tripo's free rig-check says
+      it can (a mesh it cannot rig is refused 422 `not_riggable`, billed
+      nothing). Humanoids and `other` use Tripo's v3.0 rig model, creatures
+      v2.5; `joint_naming` maps onto Tripo's `spec` for humanoids. A source
+      from a Tripo generation on the same account goes by its task id;
+      anything else is uploaded.
+    docs_url: https://developers.tripo3d.ai/en/docs/animations-rig
+    # @see https://developers.tripo3d.ai/en/pricing (2026-10-30)
+    #   "1 credit = $0.01 USD" · "Auto Rig / 25" · "Rig Check / Free"
+    #   25 credits × $0.01 = $0.25.
+    pricing: { base_cost_usd: 0.25 }
+    capabilities: {}
+    prompt: { required: false, max_length: 0 }
+    params:
+      source_model:
+        kind: source_model
+        formats: [glb, fbx, obj, stl]
+        max_bytes: 150000000
+        label: Source mesh
+        description: The mesh to rig. GLB, FBX, OBJ or STL up to 150 MB; anything else litegen reads is converted.
+      skeleton:
+        kind: string
+        enum_values: [humanoid, quadruped, hexapod, octopod, avian, serpentine, aquatic, other]
+        label: Skeleton
+        description: >-
+          The skeleton to rig for (Tripo's rig_type). Omitted, litegen rigs
+          what Tripo's rig-check finds; named, a mesh rig-check reads as
+          another skeleton is refused.
+      joint_naming:
+        kind: string
+        enum_values: [vendor, vrm, mixamo, unity, unreal]
+        default: vendor
+        label: Joint naming
+        description: Joint names for a humanoid rig (Tripo's spec). `vendor` keeps Tripo's own.
+      output_formats:
+        kind: string_array
+        enum_values: [glb, fbx]
+        max_items: 1
+        default: [glb]
+        label: Output formats
+        description: Mesh containers. Tripo emits glb or fbx; litegen derives the rest.
+    extra_allowlist: []
+    tags: [rig, 3d-operation]

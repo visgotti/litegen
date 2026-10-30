@@ -1262,6 +1262,64 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://fal.ai/docs/documentation"
   },
   {
+    "id": "fal/meshy-rig",
+    "provider": "fal",
+    "displayName": "Meshy Auto Rig (Fal)",
+    "description": "Meshy's auto-rigger via Fal: a textured humanoid GLB in, a rigged GLB (and Meshy's own FBX) out. The character must face +Z with clearly defined limbs. litegen sends no animation, so none is billed.",
+    "mediaType": "model3d",
+    "output": "model3d",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "source_model",
+        "kind": "source_model"
+      },
+      {
+        "name": "height_m",
+        "kind": "float",
+        "default": 1.7
+      },
+      {
+        "name": "output_formats",
+        "kind": "string_array",
+        "enum": [
+          "glb",
+          "fbx"
+        ],
+        "default": [
+          "glb"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.2
+    },
+    "tags": [
+      "3d",
+      "rig",
+      "meshy",
+      "3d-operation"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/meshy/rigging/api"
+  },
+  {
     "id": "fal/recraft-v3",
     "provider": "fal",
     "displayName": "Recraft V3 (Fal)",
@@ -6113,6 +6171,83 @@ export const MODELS: ModelEntry[] = [
       "photorealistic"
     ],
     "referenceUrl": "https://platform.stability.ai/docs/api-reference"
+  },
+  {
+    "id": "tripo/rig",
+    "provider": "tripo",
+    "displayName": "Tripo Auto Rig",
+    "description": "Rigs a mesh with Tripo's auto-rigger after Tripo's free rig-check says it can (a mesh it cannot rig is refused 422 `not_riggable`, billed nothing). Humanoids and `other` use Tripo's v3.0 rig model, creatures v2.5; `joint_naming` maps onto Tripo's `spec` for humanoids. A source from a Tripo generation on the same account goes by its task id; anything else is uploaded.",
+    "mediaType": "model3d",
+    "output": "model3d",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "source_model",
+        "kind": "source_model"
+      },
+      {
+        "name": "skeleton",
+        "kind": "string",
+        "enum": [
+          "humanoid",
+          "quadruped",
+          "hexapod",
+          "octopod",
+          "avian",
+          "serpentine",
+          "aquatic",
+          "other"
+        ]
+      },
+      {
+        "name": "joint_naming",
+        "kind": "string",
+        "enum": [
+          "vendor",
+          "vrm",
+          "mixamo",
+          "unity",
+          "unreal"
+        ],
+        "default": "vendor"
+      },
+      {
+        "name": "output_formats",
+        "kind": "string_array",
+        "enum": [
+          "glb",
+          "fbx"
+        ],
+        "default": [
+          "glb"
+        ]
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.25
+    },
+    "tags": [
+      "rig",
+      "3d-operation"
+    ],
+    "referenceUrl": "https://developers.tripo3d.ai/en/docs/animations-rig"
   },
   {
     "id": "vidu/vidu2.0",

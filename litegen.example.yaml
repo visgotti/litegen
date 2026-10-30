@@ -57,6 +57,10 @@ providers:
     api_key: ""  # or set GOOGLE_API_KEY env var
   fal:
     api_key: ""  # or set FAL_KEY env var
+  # ── 3D-only vendors ──
+  tripo:
+    api_key: ""  # or TRIPO_API_KEY (Tripo 3D; Authorization: Bearer tsk_…)
+    # api_base: "https://openapi.tripo3d.com/v3"  # China-mainland keys only; or TRIPO_API_BASE
   runway:
     api_key: ""  # or set RUNWAY_API_KEY env var (Gen-4 image + video)
   luma:

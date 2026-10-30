@@ -293,21 +293,23 @@ Several vendors serve **both** image and video under one provider name — e.g. 
 holds for `replicate`. The model ID prefix (`<provider>/<model>`) selects the
 modality automatically.
 
-| Provider | Image | Video | Models |
-|----------|-------|-------|--------|
-| OpenAI | ✅ | — | GPT Image 2.5 / 2 / 1 · _(Sora 2 and the Videos API shut down 2026-09-24)_ |
-| Fal.ai | ✅ | ✅ | Flux, SDXL, Recraft · Kling, MiniMax, SVD, LTX |
-| Replicate | ✅ | ✅ | Flux, SDXL, SD3 · AnimateDiff, SVD, Zeroscope |
-| Google | ✅ | 🔜 | Imagen 3, Gemini 2.5/3 image · _Veo 3 video — public API, not yet wired_ |
-| Stability AI | ✅ | — | SD3.5, Core, Ultra, SDXL · _(Stable Video hosted API discontinued)_ |
-| Runway | 🔜 | ✅ | _Gen-4 Image — public API, not yet wired_ · Gen-3 / Gen-4 video |
-| Luma | 🔜 | ✅ | _Photon image — public API, not yet wired_ · Dream Machine / Ray video |
+| Provider | Image | Video | 3D | Models |
+|----------|-------|-------|----|--------|
+| OpenAI | ✅ | — | — | GPT Image 2.5 / 2 / 1 · _(Sora 2 and the Videos API shut down 2026-09-24)_ |
+| Fal.ai | ✅ | ✅ | ✅ | Flux, SDXL, Recraft · Kling, MiniMax, SVD, LTX · Hyper3D Rodin, TRELLIS, Hunyuan3D v2, Meshy rigging |
+| Tripo | — | — | ✅ | Auto rig (after Tripo's free rig-check) |
+| Replicate | ✅ | ✅ | — | Flux, SDXL, SD3 · AnimateDiff, SVD, Zeroscope |
+| Google | ✅ | 🔜 | — | Imagen 3, Gemini 2.5/3 image · _Veo 3 video — public API, not yet wired_ |
+| Stability AI | ✅ | — | 🔜 | SD3.5, Core, Ultra, SDXL · _(Stable Video hosted API discontinued)_ |
+| Runway | 🔜 | ✅ | — | _Gen-4 Image — public API, not yet wired_ · Gen-3 / Gen-4 video |
+| Luma | 🔜 | ✅ | — | _Photon image — public API, not yet wired_ · Dream Machine / Ray video |
 
 **Legend:** ✅ supported in litegen · 🔜 vendor offers a public API for this modality but litegen
 hasn't wired it yet (see [Roadmap: missing providers](#roadmap--missing-providers)) · — no public API.
 
-**3D (`model3d`):** no vendor is wired for 3D yet — the family runs on the built-in mock providers
-only (see [Generate 3D Model](#generate-3d-model)). Meshy, Tripo3D, Stability 3D and Rodin are
+**3D (`model3d`):** generation through fal (Rodin, TRELLIS, Hunyuan3D v2), and rigging through
+Tripo and fal's Meshy endpoint (see [Generate 3D Model](#generate-3d-model)); every delivered mesh
+is normalised and carries a measured manifest. Meshy direct, Stability 3D and Rodin direct are
 deferred.
 
 ## Roadmap — Missing Providers

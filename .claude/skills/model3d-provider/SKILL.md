@@ -42,19 +42,27 @@ parsed as untrusted input. Read this whole skill before writing code.
   timeout and up to two retries, and each retry is a new billed vendor job.
 - **`stage_context` is your polling state.** Put the endpoint, the vendor's
   status and result URLs, and the job's mode there. The handler persists it
-  to the row as `metadata.stage_context` **at submit time only**, and the
-  poller reads it back after a restart. `poll_status` gets `&handle`, and no
-  code path persists a *changed* context, which matters for multi-stage
-  vendors (see [below](#multi-stage-and-synchronous-vendors)).
+  to the row as `metadata.stage_context` at submit, and the poller reads it
+  back after a restart. A poll that reports a new `stage_context` (or a
+  `next_stage` to start) has it persisted by whichever observer sees it
+  (`proxy/model3d_stages.rs`; see
+  [below](#multi-stage-and-synchronous-vendors)).
+- **A free vendor check before the billed call** (Tripo's `rig-check`) is
+  `Model3dProvider::preflight`. The handler runs it after the caller's
+  limits and before the submit; `Preflight::Refuse { code, .. }` answers 422
+  and bills nothing, and `Proceed { context }` reaches `generate` as
+  `extras.preflight` (an uploaded file's token, say).
 - **Two observers.** Client polls (`GET /v1/models3d/{id}`) go through the
   router, reusing the instance that submitted the job, and fall back to the
   row on error. The background poller builds a fresh instance with the org's
   BYO credential, possibly in another process or after a restart.
 - **The completion pipeline is core code; don't duplicate it in the adapter.**
   When you return `Completed` with files, core runs three steps:
-  1. `synthesize_missing_formats` derives any requested glb, obj, stl or ply
-     from a mesh it can read. It runs on a blocking thread and never
-     replaces a vendor file.
+  1. `model3d_deliver::deliver` reads the vendor's mesh, normalises it
+     (orientation, unique names, no required extension), derives every
+     promised container and measures each into its `scene` manifest. It
+     runs on a blocking thread, and keeps the vendor's files as `original`
+     assets whenever it changed anything.
   2. `rehost_model3d_files` uploads every file to the app's BYO bucket or
      the global store, under
      `{prefix}/{generation_id}/{model|texture|preview}[_n].{ext}`, all in
@@ -320,22 +328,13 @@ SF3D and SPAR3D use the `stability` key, for example), and you're adding
 ## Multi-stage and synchronous vendors
 
 - **Multi-stage** (Meshy text-to-3D: `preview`, then `refine` referencing
-  `preview_task_id`). `stage_context` is **write-once**: it is persisted at
-  submit, and nothing persists a change made later. See the doc comment on
-  `Model3dGenerationHandle.stage_context` and the open items in spec §14.5.
-  An adapter that starts stage two from `poll_status` loses that job id on a
-  restart. Worse, the client's poll and the poller can each start, and each
-  bill, their own stage two. A multi-stage vendor needs core plumbing built
-  first:
-  1. a poll result that carries the new stage state;
-  2. both observers of completion (`get_3d_status` and the poller)
-     persisting it;
-  3. an atomic claim, so only one observer can advance the stage.
-
-  That is design work, and it belongs to the user. Until it exists, offer
-  only the vendor's single-stage flows (Meshy image-to-3D folds texturing
-  into one task). An honestly labelled preview-only, untextured text row is
-  also fine.
+  `preview_task_id`). Never start stage two from inside `poll_status`: the
+  client's poll and the poller would each start, and each bill, their own.
+  Report the boundary instead: return `next_stage` from the poll that sees
+  stage one finish and implement `start_stage`. `proxy/model3d_stages.rs`
+  claims the stage on the row so exactly one observer starts it, persists
+  the context `start_stage` returns, and fails the generation rather than
+  re-send a start it cannot prove did not land.
 - **Synchronous** (Stability SF3D and SPAR3D return the GLB in the response
   body). The trait is submit-and-poll, so the adapter calls the vendor inside
   `generate()`, keeps the bytes, and returns a handle whose poll returns
