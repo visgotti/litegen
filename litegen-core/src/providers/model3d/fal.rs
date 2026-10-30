@@ -7,11 +7,16 @@
 //! against this API:
 //!
 //! ```text
-//! POST {queue}/{endpoint}                        submit → request_id, status_url, response_url, cancel_url
-//! GET  {queue}/{endpoint}/requests/{id}/status   IN_QUEUE | IN_PROGRESS | COMPLETED (+ error, error_type)
-//! GET  {queue}/{endpoint}/requests/{id}          the stored result: model_mesh (+ textures, on Rodin)
-//! PUT  {queue}/{endpoint}/requests/{id}/cancel   202 CANCELLATION_REQUESTED | 400 ALREADY_COMPLETED | 404 NOT_FOUND
+//! POST {queue}/{endpoint}                   submit → request_id, status_url, response_url, cancel_url
+//! GET  {queue}/{app}/requests/{id}/status   IN_QUEUE | IN_PROGRESS | COMPLETED (+ error, error_type)
+//! GET  {queue}/{app}/requests/{id}          the stored result: model_mesh (+ textures, on Rodin)
+//! PUT  {queue}/{app}/requests/{id}/cancel   202 CANCELLATION_REQUESTED | 400 ALREADY_COMPLETED | 404 NOT_FOUND
 //! ```
+//!
+//! `{app}` is the endpoint's owner and app only (`fal-ai/hyper3d` for
+//! `fal-ai/hyper3d/rodin`): "These URLs use only the owner and the app
+//! (`fal-ai/flux`), not the full model ID. A URL that contains the endpoint
+//! path, for example `fal-ai/flux/schnell/requests/...`, returns `405`."
 //!
 //! # References (re-read 2026-10-12)
 //!
@@ -507,6 +512,14 @@ impl FalModel3dProvider {
         same_origin.then(|| candidate.to_string())
     }
 
+    /// The owner and app of an endpoint id, which is all a queue URL names:
+    /// `fal-ai/hyper3d/rodin` → `fal-ai/hyper3d`. Used whenever the URLs fal
+    /// returned at submit cannot be (they were lost, or a configured base
+    /// makes them untrusted).
+    fn queue_app(endpoint: &str) -> String {
+        endpoint.splitn(3, '/').take(2).collect::<Vec<_>>().join("/")
+    }
+
     fn job(&self, handle: &Model3dGenerationHandle) -> Result<FalJob, ProviderError> {
         let ctx = handle.stage_context.as_ref();
         let field = |k: &str| ctx.and_then(|c| c.get(k)).and_then(Value::as_str);
@@ -520,7 +533,7 @@ impl FalModel3dProvider {
                     handle.provider_job_id, handle.model
                 ))
             })?;
-        let base = format!("{}/{}/requests/{}", self.queue_base(), endpoint, handle.provider_job_id);
+        let base = format!("{}/{}/requests/{}", self.queue_base(), Self::queue_app(&endpoint), handle.provider_job_id);
         Ok(FalJob {
             request_id: handle.provider_job_id.clone(),
             status_url: self.trusted_queue_url(field("status_url")).unwrap_or_else(|| format!("{base}/status")),
@@ -1212,8 +1225,9 @@ mod tests {
         serde_json::from_slice(&received[0].body).unwrap()
     }
 
+    /// A handle as fal's submit answer leaves it: queue URLs on the app id.
     fn handle(model: &str, endpoint: &str, id: &str, server: &MockServer) -> Model3dGenerationHandle {
-        let base = format!("{}/{endpoint}/requests/{id}", server.uri());
+        let base = format!("{}/{}/requests/{id}", server.uri(), FalModel3dProvider::queue_app(endpoint));
         Model3dGenerationHandle {
             provider_job_id: id.into(),
             provider: "fal".into(),
@@ -1495,11 +1509,11 @@ mod tests {
     const RODIN: &str = "fal-ai/hyper3d/rodin";
 
     fn status_path(endpoint: &str, id: &str) -> String {
-        format!("/{endpoint}/requests/{id}/status")
+        format!("/{}/requests/{id}/status", FalModel3dProvider::queue_app(endpoint))
     }
 
     fn result_path(endpoint: &str, id: &str) -> String {
-        format!("/{endpoint}/requests/{id}")
+        format!("/{}/requests/{id}", FalModel3dProvider::queue_app(endpoint))
     }
 
     async fn poll(server: &MockServer, model: &str, endpoint: &str, id: &str) -> Result<Model3dGenerationPollResult, ProviderError> {
@@ -1761,7 +1775,10 @@ mod tests {
     async fn a_job_whose_stage_context_was_lost_is_rebuilt_from_the_model() {
         // The row's metadata write can fail; the poller must still find the job.
         let server = MockServer::start().await;
-        mount_get(&server, &status_path("fal-ai/hunyuan3d/v2", "lost"), ResponseTemplate::new(200).set_body_json(json!({ "status": "IN_PROGRESS" }))).await;
+        // fal's queue URLs name the owner and the app, never the endpoint path:
+        // "A URL that contains the endpoint path … returns 405."
+        // @see <https://fal.ai/docs/documentation/model-apis/inference/queue>
+        mount_get(&server, "/fal-ai/hunyuan3d/requests/lost/status", ResponseTemplate::new(200).set_body_json(json!({ "status": "IN_PROGRESS" }))).await;
         let h = Model3dGenerationHandle {
             provider_job_id: "lost".into(),
             provider: "fal".into(),
@@ -1770,6 +1787,27 @@ mod tests {
         };
         let polled = provider(&server).poll_status(&h).await.expect("rebuilt");
         assert_eq!(polled.status, GenerationStatus::Processing);
+    }
+
+    #[tokio::test]
+    async fn behind_a_proxy_base_the_queue_urls_name_the_app_not_the_endpoint() {
+        // A configured api_base (a proxy) makes fal's own URLs untrusted, so
+        // they are rebuilt — from the app id, or fal answers 405.
+        let server = MockServer::start().await;
+        mount_get(&server, "/fal-ai/hyper3d/requests/p/status", ResponseTemplate::new(200).set_body_json(json!({ "status": "IN_QUEUE" }))).await;
+        let h = Model3dGenerationHandle {
+            provider_job_id: "p".into(),
+            provider: "fal".into(),
+            model: "fal/hyper3d-rodin".into(),
+            stage_context: Some(json!({
+                "endpoint": RODIN,
+                "status_url": "https://queue.fal.run/fal-ai/hyper3d/requests/p/status",
+                "response_url": "https://queue.fal.run/fal-ai/hyper3d/requests/p",
+                "cancel_url": "https://queue.fal.run/fal-ai/hyper3d/requests/p/cancel",
+            })),
+        };
+        let polled = provider(&server).poll_status(&h).await.expect("polled through the proxy");
+        assert_eq!(polled.status, GenerationStatus::Pending);
     }
 
     // ─── Cancel and health ──────────────────────────────────────────────────
