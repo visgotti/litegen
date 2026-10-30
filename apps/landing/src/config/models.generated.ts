@@ -961,6 +961,98 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://fal.ai/docs/documentation"
   },
   {
+    "id": "fal/birefnet-v2",
+    "provider": "fal",
+    "displayName": "BiRefNet v2 (Fal)",
+    "description": "BiRefNet v2 background removal on Fal, up to a 2304 px working resolution: one image in, the same image with its background made transparent out.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp"
+        ],
+        "default": "png"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0
+    },
+    "tags": [
+      "background-removal"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/birefnet/v2/api"
+  },
+  {
+    "id": "fal/bria-rmbg-2",
+    "provider": "fal",
+    "displayName": "Bria RMBG 2.0 (Fal)",
+    "description": "Bria's RMBG 2.0 on Fal: one image in, the same image with its background made transparent out.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [],
+    "pricing": {
+      "baseCostUsd": 0.018
+    },
+    "tags": [
+      "background-removal"
+    ],
+    "referenceUrl": "https://fal.ai/models/fal-ai/bria/background/remove/api"
+  },
+  {
     "id": "fal/flux-2",
     "provider": "fal",
     "displayName": "FLUX.2 [dev] (Fal)",
@@ -5890,6 +5982,57 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://www.recraft.ai/docs/api-reference/getting-started"
   },
   {
+    "id": "recraft/remove-background",
+    "provider": "recraft",
+    "displayName": "Recraft Remove Background",
+    "description": "Recraft's Remove Background: one image in, the subject on a transparent background out.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp"
+        ],
+        "default": "png"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.01
+    },
+    "tags": [
+      "background-removal"
+    ],
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/tools/remove-background"
+  },
+  {
     "id": "replicate/flux-1.1-pro",
     "provider": "replicate",
     "displayName": "Flux 1.1 Pro",
@@ -6753,6 +6896,57 @@ export const MODELS: ModelEntry[] = [
       "inpainting"
     ],
     "referenceUrl": "https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1inpaint/post"
+  },
+  {
+    "id": "stability/remove-background",
+    "provider": "stability",
+    "displayName": "Stable Image Remove Background",
+    "description": "Stability's Remove Background: one image in, the subject on a transparent background out.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": false,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 1,
+    "refRoles": [
+      {
+        "name": "init",
+        "required": true,
+        "min": 1,
+        "max": 1
+      }
+    ],
+    "promptLimits": {
+      "required": false,
+      "maxLength": 0
+    },
+    "params": [
+      {
+        "name": "output_format",
+        "kind": "string",
+        "enum": [
+          "png",
+          "webp"
+        ],
+        "default": "png"
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.05
+    },
+    "tags": [
+      "background-removal"
+    ],
+    "referenceUrl": "https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1remove-background/post"
   },
   {
     "id": "stability/sd3-large",

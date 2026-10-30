@@ -217,6 +217,33 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
             return Err(bad(format!("model '{}' sets {} but a segmentation model makes no images", m.id, flag)));
         }
     }
+
+    // PixelGenie L8: a background-removal model takes one init image and no
+    // prompt, does nothing else, and answers in a container with alpha.
+    if c.background_removal {
+        let refuse = |why: String| Err(bad(format!("model '{}' sets background_removal: {why}", m.id)));
+        if m.media_type != MediaType::Image || m.task != ModelTask::Generate {
+            return refuse("only image models whose task is generate remove backgrounds".into());
+        }
+        if let Some((flag, _)) = [("text_to_image", c.text_to_image), ("image_to_image", c.image_to_image), ("inpainting", c.inpainting)]
+            .into_iter()
+            .find(|(_, set)| *set)
+        {
+            return refuse(format!("it sets {flag} too; a matting model only removes backgrounds"));
+        }
+        if m.prompt.max_length != Some(0) {
+            return refuse("it takes no prompt (prompt.max_length: 0)".into());
+        }
+        let init = m.ref_inputs.as_ref().and_then(|r| r.roles.get("init").map(|role| (r.max_total, role)));
+        if !matches!(init, Some((1, role)) if role.required && role.max_count == 1) {
+            return refuse("it takes exactly one required init image and no other reference".into());
+        }
+        if let Some(ParamSpec::String(f)) = m.params.get("output_format") {
+            if let Some(lossy) = f.enum_values.iter().find(|v| !matches!(v.as_str(), "png" | "webp")) {
+                return refuse(format!("output_format '{lossy}' has no alpha channel; offer png or webp"));
+            }
+        }
+    }
     if let Some(refs) = &m.ref_inputs {
         if let Some(r) = refs.roles.keys().filter_map(|r| r.strip_prefix("view-")).find(|v| !views.contains(v)) {
             return Err(bad(format!("model '{}' role 'view-{}' names no view of {:?}", m.id, r, views)));

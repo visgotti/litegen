@@ -1,6 +1,6 @@
 // fal.ai — an aggregator (~1,500 endpoints), so "new" is scoped to the model
 // families we carry: FLUX, Stable Diffusion / SDXL, Recraft, AuraFlow, SAM
-// (segmentation), LTX Video, and the 3D families Hyper3D Rodin, TRELLIS,
+// (segmentation), Bria and BiRefNet (background removal), LTX Video, and the 3D families Hyper3D Rodin, TRELLIS,
 // Hunyuan3D, Meshy and Tripo, matched on
 // the endpoint id, minus training endpoints (LoRA trainers are not generation
 // models). Sources are fal's public Platform API (api.fal.ai/v1/models — no
@@ -42,6 +42,9 @@ const IMAGE = {
   // Segmentation (image/fal.rs `SEGMENT_MODELS`), appended so the chunks above keep their ids.
   'fal/sam-3': 'fal-ai/sam-3/image',
   'fal/sam-3.1': 'fal-ai/sam-3-1/image',
+  // Background removal (image/fal.rs `resolve_endpoint`).
+  'fal/bria-rmbg-2': 'fal-ai/bria/background/remove',
+  'fal/birefnet-v2': 'fal-ai/birefnet/v2',
 };
 const VIDEO = {
   'fal/video': ['fal-ai/ltx-video', 'fal-ai/ltx-video/image-to-video'],
@@ -64,7 +67,7 @@ const GROUPS = { image: IMAGE, video: VIDEO, '3d': MODEL3D };
 const MODELS = { ...IMAGE, ...VIDEO, ...MODEL3D };
 
 const API = 'https://api.fal.ai/v1/models';
-const FAMILIES = /(?:^|[/-])(?:flux|stable-diffusion|sdxl|sd3|recraft|aura-?flow|ltx|hyper3d|rodin|trellis|hunyuan-?3d|meshy|tripo|sam)/;
+const FAMILIES = /(?:^|[/-])(?:flux|stable-diffusion|sdxl|sd3|recraft|aura-?flow|ltx|hyper3d|rodin|trellis|hunyuan-?3d|meshy|tripo|sam|bria|birefnet)/;
 
 const isTraining = (m) => m.metadata?.category === 'training' || m.metadata?.kind === 'training';
 

@@ -1978,6 +1978,7 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
                 Some(crate::capabilities::ParamSpec::Int(i)) => i.values.iter().map(|v| *v as f64).collect(),
                 _ => Vec::new(),
             },
+            supports_background_removal: s.capabilities.background_removal,
             // PixelGenie L7, read the way the segmentation endpoint reads it.
             supports_segmentation: segmentation_prompts(s).is_some(),
             segmentation_prompts: segmentation_prompts(s).map(|p| p.types.clone()).unwrap_or_default(),

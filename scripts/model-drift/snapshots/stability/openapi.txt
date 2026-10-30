@@ -18,6 +18,95 @@
 /v2beta/stable-image/upscale/fast
 
 {
+  "POST /v2beta/stable-image/edit/inpaint (multipart/form-data)": {
+    "properties": {
+      "grow_mask": {
+        "default": 5,
+        "maximum": 100,
+        "minimum": 0,
+        "type": "number"
+      },
+      "image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "mask": {
+        "format": "binary",
+        "type": "string"
+      },
+      "negative_prompt": {
+        "maxLength": 10000,
+        "type": "string"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ],
+        "type": "string"
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "seed": {
+        "default": 0,
+        "maximum": 4294967294,
+        "minimum": 0,
+        "type": "number"
+      },
+      "style_preset": {
+        "enum": [
+          "enhance",
+          "anime",
+          "photographic",
+          "digital-art",
+          "comic-book",
+          "fantasy-art",
+          "line-art",
+          "analog-film",
+          "neon-punk",
+          "isometric",
+          "low-poly",
+          "origami",
+          "modeling-compound",
+          "cinematic",
+          "3d-model",
+          "pixel-art",
+          "tile-texture"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "image",
+      "prompt"
+    ],
+    "type": "object"
+  },
+  "POST /v2beta/stable-image/edit/remove-background (multipart/form-data)": {
+    "properties": {
+      "image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "png",
+          "webp"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "image"
+    ],
+    "type": "object"
+  },
   "POST /v2beta/stable-image/generate/core (multipart/form-data)": {
     "properties": {
       "aspect_ratio": {

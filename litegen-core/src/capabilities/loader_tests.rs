@@ -860,4 +860,46 @@ models:
             assert!(err.contains(needle), "{task} {caps} {params}: {err}");
         }
     }
+
+    // ─── Background removal (PixelGenie L8) ───────────────────────────────────
+
+    fn matting(caps: &str, prompt: &str, params: &str, init: &str) -> Result<CapabilityRegistry, LoadError> {
+        yaml(&format!(r#"
+models:
+  - id: x/rmbg
+    provider: x
+    media_type: image
+    display_name: RMBG
+    pricing: {{ base_cost_usd: 0.01 }}
+    capabilities: {caps}
+    prompt: {prompt}
+    params:
+{params}
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: {{ form: base64 }}
+      roles:
+        init: {init}
+"#))
+    }
+
+    #[test]
+    fn a_background_removal_model_takes_one_init_image_and_nothing_else() {
+        const CAPS: &str = "{ background_removal: true }";
+        const NO_PROMPT: &str = "{ required: false, max_length: 0 }";
+        const INIT: &str = "{ required: true, min_count: 1, max_count: 1 }";
+        const PNG: &str = "      output_format: { kind: string, enum_values: [png, webp], default: png }";
+        let r = matting(CAPS, NO_PROMPT, PNG, INIT).unwrap();
+        assert!(r.get("x/rmbg").unwrap().capabilities.background_removal);
+        for (caps, prompt, params, init, needle) in [
+            ("{ background_removal: true, image_to_image: true }", NO_PROMPT, PNG, INIT, "image_to_image"),
+            (CAPS, "{ required: false, max_length: 100 }", PNG, INIT, "prompt"),
+            (CAPS, NO_PROMPT, PNG, "{ required: false, min_count: 0, max_count: 1 }", "init"),
+            (CAPS, NO_PROMPT, "      output_format: { kind: string, enum_values: [png, jpeg] }", INIT, "jpeg"),
+        ] {
+            let err = matting(caps, prompt, params, init).unwrap_err().to_string();
+            assert!(err.contains(needle) && err.contains("background_removal"), "{caps} {prompt} {params} {init}: {err}");
+        }
+    }
 }

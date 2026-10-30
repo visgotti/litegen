@@ -9525,6 +9525,10 @@
                         "type": "boolean",
                         "description": "Takes `audio: false` (or `true`) to leave audio out (or in)."
                     },
+                    "supports_background_removal": {
+                        "type": "boolean",
+                        "description": "Takes one `init` image and returns it as an RGBA PNG with its\nbackground removed (PixelGenie L8)."
+                    },
                     "supports_first_frame": {
                         "type": "boolean"
                     },
@@ -9607,6 +9611,10 @@
             "ModelCapabilityFlags": {
                 "type": "object",
                 "properties": {
+                    "background_removal": {
+                        "type": "boolean",
+                        "description": "Takes one `init` image and returns it as an RGBA PNG with the\nbackground made transparent (PixelGenie L8)."
+                    },
                     "image_to_3d": {
                         "type": "boolean"
                     },

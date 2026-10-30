@@ -610,6 +610,27 @@ models:
       background: { kind: string, enum_values: [transparent, opaque] }
     tags: [mock, test, formats]
 
+  # ─── Background removal (PixelGenie L8) ───────────────────────────────────
+  - id: mock/remove-background
+    provider: mock
+    media_type: image
+    display_name: Mock Remove Background
+    description: >-
+      Takes one init image and returns it as an RGBA PNG with every exactly
+      #ff00ff pixel — PixelGenie's flat key colour — fully transparent and
+      every other pixel exactly as it came.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { background_removal: true }
+    prompt: { required: false, max_length: 0 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: base64 }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: []
+    tags: [mock, test, background-removal]
+
   # ─── Promptable segmentation (PixelGenie L7) ──────────────────────────────
   - id: mock/segment-image
     provider: mock

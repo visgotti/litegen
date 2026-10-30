@@ -456,6 +456,14 @@ mod tests {
     }
 
     #[test]
+    fn background_removal_is_a_catalog_flag_and_a_listed_capability() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        assert!(mentions(property(&s["ModelCapabilityFlags"], "background_removal"), "boolean"));
+        assert!(mentions(property(&s["ModelCapabilities"], "supports_background_removal"), "boolean"));
+    }
+
+    #[test]
     fn segmentation_documents_its_prompts_its_masks_and_the_catalog_fields() {
         let d = doc();
         let op = &d["paths"]["/v1/images/segmentations"]["post"];

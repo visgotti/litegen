@@ -26,6 +26,7 @@ const V2_ENDPOINTS = [
   '/v2beta/stable-image/generate/core',
   '/v2beta/stable-image/generate/ultra',
   '/v2beta/stable-image/edit/inpaint',
+  '/v2beta/stable-image/edit/remove-background',
 ];
 const V1_ENDPOINTS = [
   '/v1/generation/{engine_id}/text-to-image',
@@ -52,8 +53,10 @@ function generateModels(spec) {
     const enumValues = openapiModelIds(spec, { paths: [path] });
     ids.push(...(enumValues.length ? [...enumValues, ...describedModels(spec, path)] : [route]));
   }
-  // The one carried edit route (the adapter calls no other).
-  if (spec.paths['/v2beta/stable-image/edit/inpaint']?.post) ids.push('edit/inpaint');
+  // The carried edit routes (the adapter calls no others).
+  for (const route of ['edit/inpaint', 'edit/remove-background']) {
+    if (spec.paths[`/v2beta/stable-image/${route}`]?.post) ids.push(route);
+  }
   return ids;
 }
 
@@ -96,6 +99,7 @@ export default {
     'stability/ultra': 'ultra',
     'stability/sdxl': 'stable-diffusion-xl-1024-v1-0',
     'stability/inpaint': 'edit/inpaint',
+    'stability/remove-background': 'edit/remove-background',
   },
   sources: [
     {

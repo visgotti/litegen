@@ -201,3 +201,32 @@ models:
         mask: { required: false, min_count: 0, max_count: 1, convention: white_edits, native_grow: true }
     extra_allowlist: []
     tags: [image-to-image, inpainting]
+
+  # PixelGenie L8. Multipart: image (required; jpeg, png or webp, "Every side
+  # must be at least 64 pixels", "Total pixel count must be between 4,096 and
+  # 4,194,304 pixels"), output_format png | webp (default png). No prompt.
+  # @see https://api.stability.ai/v2alpha/openapi (read 2026-10-30)
+  - id: stability/remove-background
+    provider: stability
+    media_type: image
+    display_name: Stable Image Remove Background
+    description: >-
+      Stability's Remove Background: one image in, the subject on a
+      transparent background out.
+    docs_url: https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1remove-background/post
+    # "Remove Background | Removes the background while preserving foreground
+    # | 5" credits; "1 credit = $0.01" → $0.05 (docs.stability.ai/pricing.md,
+    # read 2026-10-30).
+    pricing: { base_cost_usd: 0.05 }
+    capabilities: { background_removal: true }
+    prompt: { required: false, max_length: 0 }
+    params:
+      output_format: { kind: string, enum_values: [png, webp], default: png }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: image } }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: []
+    tags: [background-removal]

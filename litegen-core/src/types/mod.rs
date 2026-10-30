@@ -1294,6 +1294,10 @@ pub struct ModelCapabilities {
     /// Returns only lossy containers (no PNG).
     #[serde(default)]
     pub lossy_only: bool,
+    /// Takes one `init` image and returns it as an RGBA PNG with its
+    /// background removed (PixelGenie L8).
+    #[serde(default)]
+    pub supports_background_removal: bool,
     /// Serves `POST /v1/images/segmentations` (PixelGenie L7).
     #[serde(default)]
     pub supports_segmentation: bool,

@@ -122,6 +122,9 @@ pub struct ModelCapabilityFlags {
     #[serde(default)] pub text_to_3d: bool,
     #[serde(default)] pub image_to_3d: bool,
     #[serde(default)] pub multiview_to_3d: bool,
+    /// Takes one `init` image and returns it as an RGBA PNG with the
+    /// background made transparent (PixelGenie L8).
+    #[serde(default)] pub background_removal: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

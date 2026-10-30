@@ -1,6 +1,8 @@
-// Recraft — three views of the one endpoint our adapter calls (POST
+// Recraft — three views of the generation endpoint our adapter calls (POST
 // /v1/images/generations, body `model`; GET /v1/users/me is only a health
-// check), plus the docs index:
+// check), plus the docs index. The one tool it calls, POST
+// /v1/images/removeBackground, is an id of its own (`images/removeBackground`,
+// present while the spec has the path) with its schema in the openapi excerpt:
 //  • openapi: the OpenAPI spec the API host serves behind its Swagger UI
 //    (docs/api-reference/swagger → external.api.recraft.ai/doc →
 //    doc/ui/?spec=external-api.yaml → doc/spec/external-api.yaml). It is YAML,
@@ -21,6 +23,7 @@
 import { openapiModelIds, openapiExcerpt, parseYaml } from '../extract.mjs';
 
 const ENDPOINTS = ['/v1/images/generations'];
+const TOOLS = ['/v1/images/removeBackground'];
 const DOCS = 'https://www.recraft.ai/docs/api-reference';
 
 // Both callbacks of the openapi source parse the same body; parse it once.
@@ -118,15 +121,20 @@ export default {
     'recraft/recraftv4_1_vector': 'recraftv4_1_vector',
     'recraft/recraftv4_1_pro_vector': 'recraftv4_1_pro_vector',
     'recraft/recraftv2_vector': 'recraftv2_vector',
+    'recraft/remove-background': 'images/removeBackground',
   },
   sources: [
     {
       key: 'openapi',
       url: 'https://external.api.recraft.ai/doc/spec/external-api.yaml',
       expect: 'text',
-      extract: (_text, body) => openapiModelIds(spec(body), { paths: ENDPOINTS }),
+      extract: (_text, body) => [
+        ...openapiModelIds(spec(body), { paths: ENDPOINTS }),
+        ...TOOLS.filter((p) => spec(body).paths[p]?.post).map((p) => p.replace('/v1/', '')),
+      ],
       snapshot: (_text, body, { ours }) =>
-        `# endpoints\n${Object.keys(spec(body).paths).sort().join('\n')}\n\n` + openapiExcerpt(spec(body), { paths: ENDPOINTS, ours }),
+        `# endpoints\n${Object.keys(spec(body).paths).sort().join('\n')}\n\n` +
+        openapiExcerpt(spec(body), { paths: [...ENDPOINTS, ...TOOLS], ours }),
     },
     {
       key: 'models',

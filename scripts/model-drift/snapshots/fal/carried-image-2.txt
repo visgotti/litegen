@@ -1,3 +1,94 @@
+## fal-ai/birefnet/v2 — active image-to-image
+{
+  "POST /fal-ai/birefnet/v2 (application/json)": {
+    "properties": {
+      "image_url": {
+        "_fal_ui_field": "image",
+        "type": "string"
+      },
+      "mask_only": {
+        "default": false,
+        "type": "boolean"
+      },
+      "model": {
+        "default": "General Use (Light)",
+        "enum": [
+          "General Use (Light)",
+          "General Use (Light 2K)",
+          "General Use (Heavy)",
+          "Matting",
+          "Portrait",
+          "General Use (Dynamic)"
+        ],
+        "type": "string"
+      },
+      "operating_resolution": {
+        "default": "1024x1024",
+        "enum": [
+          "1024x1024",
+          "2048x2048",
+          "2304x2304"
+        ],
+        "type": "string"
+      },
+      "output_format": {
+        "default": "png",
+        "enum": [
+          "webp",
+          "png",
+          "gif"
+        ],
+        "type": "string"
+      },
+      "output_mask": {
+        "default": false,
+        "type": "boolean"
+      },
+      "refine_foreground": {
+        "default": true,
+        "type": "boolean"
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "image_url"
+    ],
+    "type": "object"
+  }
+}
+
+## fal-ai/bria/background/remove — active image-to-image
+{
+  "POST /fal-ai/bria/background/remove (application/json)": {
+    "properties": {
+      "image_url": {
+        "type": "string"
+      },
+      "prompt": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "sync_mode": {
+        "default": false,
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "image_url"
+    ],
+    "type": "object"
+  }
+}
+
 ## fal-ai/sam-3-1/image — active image-to-image
 {
   "POST /fal-ai/sam-3-1/image (application/json)": {

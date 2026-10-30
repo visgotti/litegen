@@ -83,6 +83,7 @@ impl StabilityProvider {
             "core" => "core".to_string(),
             "ultra" => "ultra".to_string(),
             "inpaint" => "inpaint".to_string(),
+            "remove-background" => "remove-background".to_string(),
             "sdxl" => "stable-diffusion-xl-1024-v1-0".to_string(),
             "sd-1.6" | "sd1.6" => "stable-diffusion-v1-6".to_string(),
             _ => native.to_string(),
@@ -93,13 +94,15 @@ impl StabilityProvider {
     /// `/v2beta/stable-image/`.
     ///
     /// @see <https://platform.stability.ai/docs/api-reference#tag/Generate> — V2beta Stable Image generate routes
-    /// @see <https://platform.stability.ai/docs/api-reference#tag/Edit> — the edit routes (`edit/inpaint`)
+    /// @see <https://platform.stability.ai/docs/api-reference#tag/Edit> — the edit routes (`edit/inpaint`,
+    ///   `edit/remove-background`)
     fn v2_endpoint(model: &str) -> Option<&'static str> {
         match model {
             "sd3.5-large" | "sd3.5-large-turbo" | "sd3.5-medium" => Some("generate/sd3"),
             "core" => Some("generate/core"),
             "ultra" => Some("generate/ultra"),
             "inpaint" => Some("edit/inpaint"),
+            "remove-background" => Some("edit/remove-background"),
             _ => None,
         }
     }
@@ -196,9 +199,14 @@ impl ImageProvider for StabilityProvider {
             let url = format!("{}/v2beta/stable-image/{route}", self.api_base());
             let endpoint = route.rsplit('/').next().unwrap_or(route);
             let inpaint = route == "edit/inpaint";
+            // Remove Background (PixelGenie L8) takes only `image` and
+            // `output_format`.
+            let matting = route == "edit/remove-background";
 
-            let mut form = reqwest::multipart::Form::new()
-                .text("prompt", base.prompt.clone());
+            let mut form = reqwest::multipart::Form::new();
+            if !matting {
+                form = form.text("prompt", base.prompt.clone());
+            }
 
             // Only /generate/sd3 has a `model` property — the core and ultra
             // request schemas do not define one; the route selects the model.
@@ -270,7 +278,7 @@ impl ImageProvider for StabilityProvider {
             // requires the prompt, image, and strength parameters") and is
             // "only valid for image-to-image requests" — so default it when a
             // reference image is present, and never send it otherwise.
-            if has_image_ref && !inpaint {
+            if has_image_ref && !inpaint && !matting {
                 form = form.text("strength", format!("{:.2}", extras.strength.unwrap_or(0.5)));
             }
 
@@ -665,7 +673,7 @@ impl Default for ModelCapabilities {
             supports_keyframes: false, max_keyframes: None, keyframe_timing: None,
             supports_transparent_background: false, lossy_only: false,
             supports_fixed_camera: false, supports_audio_toggle: false, supports_loop: false, duration_values: Vec::new(),
-            supports_segmentation: false, segmentation_prompts: Vec::new(),
+            supports_background_removal: false, supports_segmentation: false, segmentation_prompts: Vec::new(),
         }
     }
 }
@@ -1013,6 +1021,45 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Remove Background takes `image` and `output_format` (png | webp,
+    /// default png) and nothing else: no prompt.
+    /// @see <https://api.stability.ai/v2alpha/openapi> — `/v2beta/stable-image/edit/remove-background`
+    #[tokio::test]
+    async fn remove_background_sends_only_the_image_and_its_container() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2beta/stable-image/edit/remove-background"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"CUTOUT".to_vec()).insert_header("content-type", "image/png"))
+            .mount(&server)
+            .await;
+        let materialized = crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".to_string(),
+                form: crate::proxy::materializer::MaterializedRefForm::MultipartField {
+                    field_name: "image".to_string(),
+                    bytes: bytes::Bytes::from_static(b"src"),
+                    content_type: "image/png".to_string(),
+                },
+                time_s: None,
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+        let mut base = make_base("", "stability/remove-background");
+        base.seed = None;
+        let extras = ImageExtras { aspect_ratio: None, size: None, style: None, strength: None, ..make_extras_sd3() };
+        let out = make_provider(&server.uri())
+            .generate(&ref_schema("stability/remove-background"), &base, &extras, &materialized)
+            .await
+            .expect("generate");
+        assert_eq!(out.data, b"CUTOUT");
+        let body = &server.received_requests().await.unwrap()[0].body;
+        assert_eq!(multipart_field(body, "output_format").as_deref(), Some("png"));
+        assert!(String::from_utf8_lossy(body).contains("name=\"image\""), "the image part");
+        for absent in ["prompt", "model", "mode", "strength", "aspect_ratio", "seed", "grow_mask"] {
+            assert!(multipart_field(body, absent).is_none(), "{absent} is not a remove-background field");
         }
     }
 }

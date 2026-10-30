@@ -136,6 +136,10 @@ entry of `views` (`front`, `left`, `back`, `right`, …), each returned with its
 the camera's position around +Y from the subject's front (+Z) towards +X, so front 0, left 90,
 back 180 and right 270. The call is billed once, however many views come back.
 
+A model whose listing says `supports_background_removal` (`fal/bria-rmbg-2`, `fal/birefnet-v2`,
+`recraft/remove-background`, `stability/remove-background`) is an edit that takes only an `init`
+image and returns it as an RGBA PNG with its background transparent.
+
 ### Segment an Image
 ```bash
 curl -X POST http://localhost:4000/v1/images/segmentations \
@@ -339,12 +343,12 @@ modality automatically.
 | Provider | Image | Video | 3D | Models |
 |----------|-------|-------|----|--------|
 | OpenAI | ✅ | — | — | GPT Image 2.5 / 2 / 1 · _(Sora 2 and the Videos API shut down 2026-09-24)_ |
-| Fal.ai | ✅ | ✅ | ✅ | Flux, SDXL, Recraft, SAM 3 and 3.1 segmentation · Kling, MiniMax, SVD, LTX · Hyper3D Rodin, TRELLIS, Hunyuan3D v2 and 3.1 Pro, Tripo H3.1 multiview, Meshy rigging |
+| Fal.ai | ✅ | ✅ | ✅ | Flux, SDXL, Recraft, SAM 3 and 3.1 segmentation, Bria RMBG 2.0 and BiRefNet v2 background removal · Kling, MiniMax, SVD, LTX · Hyper3D Rodin, TRELLIS, Hunyuan3D v2 and 3.1 Pro, Tripo H3.1 multiview, Meshy rigging |
 | Tripo | ✅ | — | ✅ | Image to multiview (front, left, back, right) · auto rig (after Tripo's free rig-check) · animation retarget |
 | Meshy | — | — | ✅ | Auto rig · animation library (680 clips) |
 | Replicate | ✅ | ✅ | — | Flux, SDXL, SD3 · AnimateDiff, SVD, Zeroscope |
 | Google | ✅ | 🔜 | — | Imagen 3, Gemini 2.5/3 image · _Veo 3 video — public API, not yet wired_ |
-| Stability AI | ✅ | — | 🔜 | SD3.5, Core, Ultra, SDXL · _(Stable Video hosted API discontinued)_ |
+| Stability AI | ✅ | — | 🔜 | SD3.5, Core, Ultra, SDXL, Inpaint, Remove Background · _(Stable Video hosted API discontinued)_ |
 | Runway | 🔜 | ✅ | — | _Gen-4 Image — public API, not yet wired_ · Gen-3 / Gen-4 video |
 | Luma | 🔜 | ✅ | — | _Photon image — public API, not yet wired_ · Dream Machine / Ray video |
 

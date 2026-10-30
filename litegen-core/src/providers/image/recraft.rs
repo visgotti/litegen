@@ -68,6 +68,71 @@ impl RecraftProvider {
     }
 }
 
+impl RecraftProvider {
+    /// Remove background (PixelGenie L8): the image uploaded as `file`, the
+    /// result asked as base64 in `image_format` png (Recraft's default is
+    /// lossless WebP) unless webp is asked. It answers one `image`, not a
+    /// `data` array.
+    ///
+    /// @see <https://www.recraft.ai/docs/api-reference/tools/remove-background.md> — `file` (multipart),
+    ///   `response_format`, `image_format` webp | png, and the `{created, credits, image}` response
+    async fn remove_background(&self, extras: &ImageExtras, materialized: &MaterializedRequest) -> Result<GenerationOutput, ProviderError> {
+        use crate::proxy::materializer::MaterializedRefForm;
+        let creds = self.creds()?;
+        let file = materialized.refs.iter().find(|r| r.role == "init").and_then(|r| match &r.form {
+            MaterializedRefForm::MultipartField { bytes, content_type, .. } => Some((bytes.to_vec(), content_type.clone())),
+            _ => None,
+        });
+        let (bytes, content_type) = file.ok_or_else(|| ProviderError::InvalidRequest("background removal needs an init image".into()))?;
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name("image")
+            .mime_str(&content_type)
+            .map_err(|e| ProviderError::InvalidRequest(format!("init image type {content_type}: {e}")))?;
+        let form = reqwest::multipart::Form::new()
+            .part("file", part)
+            .text("response_format", "b64_json")
+            .text("image_format", extras.output_format.clone().unwrap_or_else(|| "png".into()));
+        let url = format!("{}/images/removeBackground", self.api_base());
+        let builder = crate::providers::auth::apply(&self.auth, &creds, self.client.post(&url).multipart(form))?;
+        let resp = crate::providers::inject_trace_headers(builder).send().await.map_err(|e| ProviderError::RequestFailed {
+            message: format!("Recraft request failed: {e}"),
+            status_code: e.status().map(|s| s.as_u16()),
+            provider_error: None,
+            retryable: e.is_timeout() || e.is_connect(),
+        })?;
+        let status = resp.status();
+        let data: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
+            message: format!("Failed to parse Recraft response: {e}"),
+            status_code: Some(status.as_u16()),
+            provider_error: None,
+            retryable: false,
+        })?;
+        if !status.is_success() {
+            return Err(ProviderError::RequestFailed {
+                message: format!("Recraft API error: {data}"),
+                status_code: Some(status.as_u16()),
+                provider_error: Some(data),
+                retryable: status.as_u16() >= 500,
+            });
+        }
+        let failed = |message: String| ProviderError::RequestFailed { message, status_code: None, provider_error: None, retryable: false };
+        let bytes = if let Some(b64) = data["image"]["b64_json"].as_str() {
+            B64.decode(b64).map_err(|e| failed(format!("Failed to decode Recraft b64_json: {e}")))?
+        } else if let Some(at) = data["image"]["url"].as_str() {
+            let r = self.client.get(at).send().await.map_err(|e| failed(format!("Failed to fetch Recraft image: {e}")))?;
+            r.bytes().await.map(|b| b.to_vec()).map_err(|e| failed(format!("Failed to read Recraft image: {e}")))?
+        } else {
+            return Err(ProviderError::RequestFailed {
+                message: "Recraft response has no image".into(),
+                status_code: None,
+                provider_error: Some(data),
+                retryable: false,
+            });
+        };
+        Ok(GenerationOutput { data: bytes, content_type: "image/png".into(), metadata: HashMap::new(), more: Vec::new() })
+    }
+}
+
 impl Default for RecraftProvider {
     fn default() -> Self {
         Self::new()
@@ -103,6 +168,9 @@ impl ImageProvider for RecraftProvider {
         extras: &ImageExtras,
         _materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
+        if model.capabilities.background_removal {
+            return self.remove_background(extras, _materialized).await;
+        }
         let creds = self.creds()?;
         let native = Self::resolve_model(&model.id);
         let url = format!("{}/images/generations", self.api_base());
@@ -401,5 +469,57 @@ mod tests {
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
         assert_eq!(body["random_seed"], 4242);
         assert!(body.get("seed").is_none(), "Recraft has no `seed` field");
+    }
+
+    fn multipart_field(body: &[u8], name: &str) -> Option<String> {
+        let s = String::from_utf8_lossy(body).into_owned();
+        let marker = format!("name=\"{name}\"");
+        let at = s.find(&marker)? + marker.len();
+        let rest = &s[at..];
+        let value = &rest[rest.find("\r\n\r\n")? + 4..];
+        Some(value[..value.find("\r\n")?].to_string())
+    }
+
+    /// Remove background uploads the image as `file` and answers one `image`,
+    /// not a `data` array; litegen asks for PNG (Recraft's default is WebP)
+    /// as base64.
+    /// @see <https://www.recraft.ai/docs/api-reference/tools/remove-background.md>
+    #[tokio::test]
+    async fn remove_background_uploads_the_file_and_reads_the_one_image() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/images/removeBackground"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "created": 1, "credits": 10, "image": { "image_id": "i", "b64_json": B64.encode(b"CUTOUT") }
+            })))
+            .mount(&server)
+            .await;
+        let materialized = MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".to_string(),
+                form: crate::proxy::materializer::MaterializedRefForm::MultipartField {
+                    field_name: "file".to_string(),
+                    bytes: bytes::Bytes::from_static(b"src"),
+                    content_type: "image/png".to_string(),
+                },
+                time_s: None,
+            }],
+            cleanup: Cleanup::empty(),
+        };
+        let extras = ImageExtras { size: None, style: None, ..make_extras() };
+        let out = make_provider(&server.uri())
+            .generate(&ref_schema("recraft/remove-background"), &make_base("", "recraft/remove-background"), &extras, &materialized)
+            .await
+            .expect("generate");
+        assert_eq!(out.data, b"CUTOUT");
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received[0].headers.get("authorization").unwrap(), "Bearer rc-token");
+        let body = &received[0].body;
+        assert!(String::from_utf8_lossy(body).contains("name=\"file\""), "the file part");
+        assert_eq!(multipart_field(body, "response_format").as_deref(), Some("b64_json"));
+        assert_eq!(multipart_field(body, "image_format").as_deref(), Some("png"));
+        for absent in ["prompt", "model", "n", "size", "style"] {
+            assert!(multipart_field(body, absent).is_none(), "{absent} is not a removeBackground field");
+        }
     }
 }

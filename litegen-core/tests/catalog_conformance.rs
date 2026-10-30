@@ -3300,3 +3300,36 @@ fn fal_sam_rows_take_all_three_prompt_types_and_at_most_32_masks() {
         assert!(m.docs_url.as_deref().is_some_and(|u| u.contains(&id.replace("fal/", "fal-ai/").replace("3.1", "3-1"))), "{id}");
     }
 }
+
+// ─── Background removal (PixelGenie L8) ─────────────────────────────────────
+
+/// Each matting row restates its vendor's price and container choice:
+/// Bria RMBG 2.0 "$0.018 per image without a prompt" and BiRefNet v2 "$0 per
+/// compute seconds" (fal `llms.txt`, 2026-10-30; output_format webp | png |
+/// gif); Recraft "Remove background … $0.01", image_format webp | png
+/// (endpoints.md, remove-background.md); Stability "Remove Background … 5"
+/// credits at "$0.01" each, output_format png | webp (pricing.md, v2alpha
+/// openapi).
+#[test]
+fn background_removal_rows_restate_their_vendors_prices_and_containers() {
+    use litegen::capabilities::ParamSpec;
+    let reg = registry();
+    for (id, price, formats) in [
+        ("fal/bria-rmbg-2", 0.018, None),
+        ("fal/birefnet-v2", 0.0, Some(["png", "webp"])),
+        ("recraft/remove-background", 0.01, Some(["png", "webp"])),
+        ("stability/remove-background", 0.05, Some(["png", "webp"])),
+    ] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id}"));
+        assert!(m.capabilities.background_removal, "{id}");
+        assert!((m.pricing.base_cost_usd - price).abs() < 1e-9, "{id}");
+        let offered = match m.params.get("output_format") {
+            Some(ParamSpec::String(f)) => Some(f.enum_values.clone()),
+            _ => None,
+        };
+        assert_eq!(offered, formats.map(|f| f.map(String::from).to_vec()), "{id}");
+        assert!(m.docs_url.is_some(), "{id}");
+    }
+    // Bria's prompt is billed $0.03 instead of $0.018, so the row takes none.
+    assert_eq!(reg.get("fal/bria-rmbg-2").unwrap().prompt.max_length, Some(0));
+}

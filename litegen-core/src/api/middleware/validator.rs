@@ -1206,7 +1206,7 @@ fn check_image_request(schema: &ModelSchema, req: &ImageGenerationRequest) -> Re
             Some("reference_images"),
         ));
     }
-    if refs.iter().any(|r| r.role.as_deref() == Some("init")) && !(c.image_to_image || c.inpainting) {
+    if refs.iter().any(|r| r.role.as_deref() == Some("init")) && !(c.image_to_image || c.inpainting || c.background_removal) {
         return Err(ValidationError::new(
             "capability_unsupported",
             format!("'{}' does not take an init image", schema.id),

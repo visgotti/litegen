@@ -79,6 +79,11 @@ impl FalProvider {
             // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/recraft/v3/text-to-image>
             "recraft-v3" => "fal-ai/recraft/v3/text-to-image",
             "auraflow" | "aura-flow" => "fal-ai/aura-flow",
+            // Background removal (PixelGenie L8).
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/bria/background/remove>
+            "bria-rmbg-2" => "fal-ai/bria/background/remove",
+            // @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/birefnet/v2>
+            "birefnet-v2" => "fal-ai/birefnet/v2",
             _ => return None,
         })
     }
@@ -123,6 +128,94 @@ impl FalProvider {
             retryable: false,
         })?;
         Ok(bytes.to_vec())
+    }
+
+    /// A result file's bytes: decoded from a `data:` URI (`sync_mode`), or
+    /// fetched without the key.
+    async fn result_bytes(&self, at: &str) -> Result<Vec<u8>, ProviderError> {
+        use base64::Engine;
+        match at.strip_prefix("data:").and_then(|d| d.split_once(";base64,")) {
+            Some((_, b64)) => base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| ProviderError::RequestFailed {
+                message: format!("Fal result is not base64: {e}"),
+                status_code: None,
+                provider_error: None,
+                retryable: false,
+            }),
+            None => self.fetch_image_bytes(at).await,
+        }
+    }
+
+    /// POST `body` to `fal.run/{endpoint}` and read the JSON answer; a vendor
+    /// error carries fal's own `detail` (a 422's is a list of `{msg}`).
+    async fn run(&self, endpoint: &str, body: &Value) -> Result<Value, ProviderError> {
+        let api_key = self.api_key()?;
+        let url = format!("{}/{}", self.api_base(), endpoint);
+        let resp = crate::providers::inject_trace_headers(self.client.post(&url).header("Authorization", format!("Key {api_key}")).json(body))
+            .send()
+            .await
+            .map_err(|e| ProviderError::RequestFailed {
+                message: format!("Fal request failed: {e}"),
+                status_code: e.status().map(|s| s.as_u16()),
+                provider_error: None,
+                retryable: e.is_timeout() || e.is_connect(),
+            })?;
+        let status = resp.status();
+        let answer: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
+            message: format!("Failed to parse Fal response: {e}"),
+            status_code: Some(status.as_u16()),
+            provider_error: None,
+            retryable: false,
+        })?;
+        if !status.is_success() {
+            let detail = answer["detail"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| answer["detail"][0]["msg"].as_str().map(str::to_string))
+                .or_else(|| answer["message"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "Unknown error".into());
+            return Err(ProviderError::RequestFailed {
+                message: format!("Fal API error: {detail}"),
+                status_code: Some(status.as_u16()),
+                provider_error: Some(answer),
+                retryable: status.as_u16() >= 500,
+            });
+        }
+        Ok(answer)
+    }
+
+    /// Background removal (PixelGenie L8): only the image, the endpoint's own
+    /// knobs from `extra`, then the asked container, so `extra` cannot change
+    /// it. Bria's optional `prompt` is billed $0.03 instead of $0.018 and is
+    /// never sent. Both endpoints answer one `image`.
+    async fn remove_background(&self, endpoint: &str, extras: &ImageExtras, materialized: &MaterializedRequest) -> Result<GenerationOutput, ProviderError> {
+        let image_url = materialized.refs.iter().find(|r| r.role == "init").and_then(|r| match &r.form {
+            MaterializedRefForm::Url(u) => Some(u.clone()),
+            MaterializedRefForm::Base64(b64) => Some(format!("data:image/png;base64,{b64}")),
+            MaterializedRefForm::MultipartField { .. } => None,
+        });
+        let image_url = image_url.ok_or_else(|| ProviderError::InvalidRequest("background removal needs an init image".into()))?;
+        let mut body = json!({ "image_url": image_url, "sync_mode": true });
+        if let (Some(Value::Object(extra)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
+            for (k, v) in extra {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+        if let Some(f) = extras.output_format.as_deref() {
+            body["output_format"] = Value::String(f.to_string());
+        }
+        let answer = self.run(endpoint, &body).await?;
+        let at = answer["image"]["url"].as_str().ok_or_else(|| ProviderError::RequestFailed {
+            message: "Fal response has no image".into(),
+            status_code: None,
+            provider_error: Some(answer.clone()),
+            retryable: false,
+        })?;
+        Ok(GenerationOutput {
+            data: self.result_bytes(at).await?,
+            content_type: answer["image"]["content_type"].as_str().unwrap_or("image/png").to_string(),
+            metadata: HashMap::new(),
+            more: Vec::new(),
+        })
     }
 }
 
@@ -176,6 +269,9 @@ impl ImageProvider for FalProvider {
     ) -> Result<GenerationOutput, ProviderError> {
         let api_key = self.api_key()?;
         let endpoint = self.resolve_endpoint(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "fal".into() })?;
+        if model.capabilities.background_removal {
+            return self.remove_background(endpoint, extras, materialized).await;
+        }
         let url = format!("{}/{}", self.api_base(), endpoint);
 
         // Build request body
@@ -359,7 +455,6 @@ impl ImageProvider for FalProvider {
     async fn segment(&self, model: &ModelSchema, input: &SegmentationInput) -> Result<Vec<VendorMask>, ProviderError> {
         use base64::Engine;
         let endpoint = segment_endpoint(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "fal".into() })?;
-        let api_key = self.api_key()?;
         let (mut text, mut points, mut boxes) = (None, Vec::new(), Vec::new());
         for p in &input.prompts {
             match p {
@@ -385,40 +480,7 @@ impl ImageProvider for FalProvider {
         if text.is_some() {
             body["max_masks"] = json!(input.max_masks);
         }
-        let url = format!("{}/{}", self.api_base(), endpoint);
-        let resp = crate::providers::inject_trace_headers(
-            self.client.post(&url).header("Authorization", format!("Key {api_key}")).json(&body),
-        )
-        .send()
-        .await
-        .map_err(|e| ProviderError::RequestFailed {
-            message: format!("Fal request failed: {e}"),
-            status_code: e.status().map(|s| s.as_u16()),
-            provider_error: None,
-            retryable: e.is_timeout() || e.is_connect(),
-        })?;
-        let status = resp.status();
-        let answer: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse Fal response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
-        if !status.is_success() {
-            // A 422's `detail` is a list of `{msg}`; other errors a string.
-            let detail = answer["detail"]
-                .as_str()
-                .map(str::to_string)
-                .or_else(|| answer["detail"][0]["msg"].as_str().map(str::to_string))
-                .or_else(|| answer["message"].as_str().map(str::to_string))
-                .unwrap_or_else(|| "Unknown error".into());
-            return Err(ProviderError::RequestFailed {
-                message: format!("Fal API error: {detail}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(answer),
-                retryable: status.as_u16() >= 500,
-            });
-        }
+        let answer = self.run(endpoint, &body).await?;
         let masks = answer["masks"].as_array().ok_or_else(|| ProviderError::RequestFailed {
             message: "Fal response missing masks".into(),
             status_code: None,
@@ -435,15 +497,7 @@ impl ImageProvider for FalProvider {
                     retryable: false,
                 });
             };
-            let bytes = match at.strip_prefix("data:").and_then(|d| d.split_once(";base64,")) {
-                Some((_, b64)) => base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| ProviderError::RequestFailed {
-                    message: format!("Fal mask {i} is not base64: {e}"),
-                    status_code: None,
-                    provider_error: None,
-                    retryable: false,
-                })?,
-                None => self.fetch_image_bytes(at).await?,
-            };
+            let bytes = self.result_bytes(at).await?;
             let score = answer["scores"][i].as_f64().or_else(|| {
                 answer["metadata"].as_array()?.iter().find(|d| d["index"].as_u64() == Some(i as u64))?["score"].as_f64()
             });
@@ -529,6 +583,77 @@ mod tests {
         }
         assert!(FalProvider::new().resolve_endpoint("fal/not-a-model").is_none());
         assert!(segment_endpoint("fal/flux-dev").is_none());
+    }
+
+    // ─── Background removal (PixelGenie L8) ────────────────────────────────────
+
+    fn init_ref(form: crate::proxy::materializer::MaterializedRefForm) -> crate::proxy::materializer::MaterializedRequest {
+        crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef { role: "init".into(), form, time_s: None }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        }
+    }
+
+    fn matting_extras() -> ImageExtras {
+        ImageExtras { size: None, steps: None, guidance_scale: None, ..make_extras() }
+    }
+
+    /// Bria's `prompt` "Change[s] what the cutout keeps … Billed at $0.03
+    /// instead of $0.018", so it is never sent; nor is any generation field.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/bria/background/remove>
+    #[tokio::test]
+    async fn bria_rmbg_is_sent_only_the_image_and_its_cutout_comes_back() {
+        use crate::proxy::materializer::MaterializedRefForm;
+        let server = MockServer::start().await;
+        let cutout = png_of(4, 4, |_, _| true);
+        Mock::given(method("POST"))
+            .and(path("/fal-ai/bria/background/remove"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "image": { "url": data_uri(&cutout), "content_type": "image/png" } })))
+            .mount(&server)
+            .await;
+        let out = make_provider(&server.uri())
+            .generate(
+                &ref_schema("fal/bria-rmbg-2"),
+                &make_base("", "fal/bria-rmbg-2"),
+                &matting_extras(),
+                &init_ref(MaterializedRefForm::Url("https://cdn.example/sprite.png".into())),
+            )
+            .await
+            .expect("generate");
+        assert_eq!(out.data, cutout);
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body, json!({ "image_url": "https://cdn.example/sprite.png", "sync_mode": true }));
+    }
+
+    /// BiRefNet takes the asked container and its own knobs from `extra`;
+    /// its result can come back as a URL, fetched without the key.
+    /// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/birefnet/v2>
+    #[tokio::test]
+    async fn birefnet_gets_the_asked_container_and_its_own_knobs() {
+        use crate::proxy::materializer::MaterializedRefForm;
+        let (server, cdn) = (MockServer::start().await, MockServer::start().await);
+        Mock::given(method("POST"))
+            .and(path("/fal-ai/birefnet/v2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "image": { "url": format!("{}/cut.webp", cdn.uri()) }, "mask_image": null })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET")).and(path("/cut.webp")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"WEBPCUT".to_vec())).mount(&cdn).await;
+        let extras = ImageExtras {
+            output_format: Some("webp".into()),
+            extra: Some(json!({ "operating_resolution": "2048x2048" })),
+            ..matting_extras()
+        };
+        let out = make_provider(&server.uri())
+            .generate(&ref_schema("fal/birefnet-v2"), &make_base("", "fal/birefnet-v2"), &extras, &init_ref(MaterializedRefForm::Base64("aGk=".into())))
+            .await
+            .expect("generate");
+        assert_eq!(out.data, b"WEBPCUT");
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(
+            body,
+            json!({ "image_url": "data:image/png;base64,aGk=", "sync_mode": true, "output_format": "webp", "operating_resolution": "2048x2048" })
+        );
+        assert!(cdn.received_requests().await.unwrap()[0].headers.get("authorization").is_none(), "no key to the CDN");
     }
 
     // ─── Segmentation (PixelGenie L7) ─────────────────────────────────────────

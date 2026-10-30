@@ -307,6 +307,33 @@ Which side Tripo calls "left" is not documented **(unverified)**; litegen
 names Tripo's `left_view_url` its `left` (yaw 90). Not verified live: no Tripo
 key is available here.
 
+### Background removal (L8)
+
+A matting model is an edit on `POST /v1/images/generations`: one required
+`init` image, no prompt, and the same image back as an RGBA PNG (or WebP,
+where the row offers it) with its background transparent. Its row sets
+`capabilities.background_removal`, listed as `supports_background_removal`;
+the loader holds such a row to exactly that: an image `generate` model with
+one required `init` role and nothing else, `prompt.max_length: 0`, none of
+`text_to_image`, `image_to_image` or `inpainting`, and an `output_format`
+(if any) of `png` and `webp` only. `content_type` is read from the bytes
+(L9).
+
+| row | vendor call | price | proof | status |
+|---|---|---|---|---|
+| `mock/remove-background` | every exactly-#ff00ff pixel made fully transparent, every other pixel as it came | $0 | HTTP `the_flat_background_comes_off_and_the_subject_stays_exactly`, `a_background_removal_model_takes_only_an_image_and_says_so_before_billing` (`ref_role_required`, `param_unsupported` for a prompt or `output_format`, no request log), `the_listing_says_which_models_remove_backgrounds` | ✅ |
+| `fal/bria-rmbg-2` | `POST https://fal.run/fal-ai/bria/background/remove` `{image_url, sync_mode: true}` only — Bria's optional `prompt` is billed $0.03 instead of $0.018, so it is never sent; answers `image.url` (a data URI, or fetched with no key) | $0.018 per image | adapter `bria_rmbg_is_sent_only_the_image_and_its_cutout_comes_back` | 🟡 wiremock |
+| `fal/birefnet-v2` | `POST …/fal-ai/birefnet/v2` `{image_url, sync_mode: true, output_format}` + allowlisted `model`, `operating_resolution`, `refine_foreground` (merged before `output_format`, which wins); `gif` is not offered (one-bit alpha) | **$0 (unverified)**: fal publishes "$0 per compute seconds" (`endpointBilling.price: 0`, 2026-10-30) | adapter `birefnet_gets_the_asked_container_and_its_own_knobs` | 🟡 wiremock |
+| `recraft/remove-background` | `POST /v1/images/removeBackground` multipart `file`, `response_format: b64_json`, `image_format` png (Recraft's default is lossless WebP) or webp; answers one `image`, not `data[]`. The OpenAPI spec names the part `image`; the docs page and its examples say `file` **(unverified)** | $0.01 | adapter `remove_background_uploads_the_file_and_reads_the_one_image` | 🟡 wiremock |
+| `stability/remove-background` | `POST /v2beta/stable-image/edit/remove-background` multipart `image` + `output_format` (png default) only — no prompt, strength or aspect ratio; the vendor refuses a side under 64 px or over 4,194,304 pixels (unbilled 400) | $0.05 (5 credits) | adapter `remove_background_sends_only_the_image_and_its_container` | 🟡 wiremock |
+
+Conformance `background_removal_rows_restate_their_vendors_prices_and_containers`
+restates each price and container list; loader
+`a_background_removal_model_takes_one_init_image_and_nothing_else`; OpenAPI
+`background_removal_is_a_catalog_flag_and_a_listed_capability`; TS
+`background removal types`. Not verified live: no fal, Recraft or Stability
+key is available here.
+
 ### Promptable segmentation (L7)
 
 `POST /v1/images/segmentations` answers at once (no job, no stored row) with

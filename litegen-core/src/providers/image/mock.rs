@@ -86,6 +86,33 @@ fn formatted_image(prompt: &str, format: Option<&str>, background: Option<&str>)
     Ok(out)
 }
 
+/// The background-removal mock (PixelGenie L8).
+const REMOVE_BACKGROUND_MODEL: &str = "mock/remove-background";
+
+/// `mock/remove-background`'s answer: the init image as an RGBA PNG with
+/// every exactly-#ff00ff pixel made fully transparent, PixelGenie's flat
+/// key colour, and every other pixel exactly as it came.
+fn remove_background(materialized: &MaterializedRequest) -> Result<Vec<u8>, ProviderError> {
+    use crate::proxy::materializer::MaterializedRefForm;
+    use base64::Engine;
+    let init = materialized.refs.iter().find(|r| r.role == "init").and_then(|r| match &r.form {
+        MaterializedRefForm::Base64(b) => base64::engine::general_purpose::STANDARD.decode(b).ok(),
+        MaterializedRefForm::MultipartField { bytes, .. } => Some(bytes.to_vec()),
+        MaterializedRefForm::Url(_) => None,
+    });
+    let init = init.ok_or_else(|| ProviderError::InvalidRequest("mock/remove-background needs an init image".into()))?;
+    let unreadable = |e: image::ImageError| ProviderError::InvalidRequest(format!("mock/remove-background could not read its image: {e}"));
+    let mut img = image::load_from_memory(&init).map_err(unreadable)?.to_rgba8();
+    for p in img.pixels_mut() {
+        if p.0 == [0xff, 0x00, 0xff, 0xff] {
+            p.0 = [0, 0, 0, 0];
+        }
+    }
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).map_err(unreadable)?;
+    Ok(out)
+}
+
 /// The segmentation mock (PixelGenie L7).
 const SEGMENT_MODEL: &str = "mock/segment-image";
 
@@ -278,6 +305,14 @@ impl ImageProvider for MockProvider {
         if model.id == FORMAT_MODEL {
             return Ok(GenerationOutput {
                 data: formatted_image(&base.prompt, _extras.output_format.as_deref(), _extras.background.as_deref())?,
+                content_type: "image/png".to_string(),
+                metadata,
+                more: Vec::new(),
+            });
+        }
+        if model.id == REMOVE_BACKGROUND_MODEL {
+            return Ok(GenerationOutput {
+                data: remove_background(_materialized)?,
                 content_type: "image/png".to_string(),
                 metadata,
                 more: Vec::new(),

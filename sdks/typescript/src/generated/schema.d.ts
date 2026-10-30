@@ -2886,6 +2886,11 @@ export interface components {
             supported_sizes?: string[];
             /** @description Takes `audio: false` (or `true`) to leave audio out (or in). */
             supports_audio_toggle?: boolean;
+            /**
+             * @description Takes one `init` image and returns it as an RGBA PNG with its
+             *     background removed (PixelGenie L8).
+             */
+            supports_background_removal?: boolean;
             supports_first_frame?: boolean;
             /** @description Takes `camera: fixed` (PixelGenie L10). */
             supports_fixed_camera?: boolean;
@@ -2927,6 +2932,11 @@ export interface components {
             task?: components["schemas"]["ModelTask"];
         };
         ModelCapabilityFlags: {
+            /**
+             * @description Takes one `init` image and returns it as an RGBA PNG with the
+             *     background made transparent (PixelGenie L8).
+             */
+            background_removal?: boolean;
             image_to_3d?: boolean;
             image_to_image?: boolean;
             image_to_video?: boolean;

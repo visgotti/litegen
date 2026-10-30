@@ -12,6 +12,8 @@ T = TypeVar("T", bound="ModelCapabilityFlags")
 class ModelCapabilityFlags:
     """
     Attributes:
+        background_removal (Union[Unset, bool]): Takes one `init` image and returns it as an RGBA PNG with the
+            background made transparent (PixelGenie L8).
         image_to_3d (Union[Unset, bool]):
         image_to_image (Union[Unset, bool]):
         image_to_video (Union[Unset, bool]):
@@ -22,6 +24,7 @@ class ModelCapabilityFlags:
         text_to_video (Union[Unset, bool]):
     """
 
+    background_removal: Union[Unset, bool] = UNSET
     image_to_3d: Union[Unset, bool] = UNSET
     image_to_image: Union[Unset, bool] = UNSET
     image_to_video: Union[Unset, bool] = UNSET
@@ -33,6 +36,8 @@ class ModelCapabilityFlags:
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        background_removal = self.background_removal
+
         image_to_3d = self.image_to_3d
 
         image_to_image = self.image_to_image
@@ -52,6 +57,8 @@ class ModelCapabilityFlags:
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
+        if background_removal is not UNSET:
+            field_dict["background_removal"] = background_removal
         if image_to_3d is not UNSET:
             field_dict["image_to_3d"] = image_to_3d
         if image_to_image is not UNSET:
@@ -74,6 +81,8 @@ class ModelCapabilityFlags:
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         d = src_dict.copy()
+        background_removal = d.pop("background_removal", UNSET)
+
         image_to_3d = d.pop("image_to_3d", UNSET)
 
         image_to_image = d.pop("image_to_image", UNSET)
@@ -91,6 +100,7 @@ class ModelCapabilityFlags:
         text_to_video = d.pop("text_to_video", UNSET)
 
         model_capability_flags = cls(
+            background_removal=background_removal,
             image_to_3d=image_to_3d,
             image_to_image=image_to_image,
             image_to_video=image_to_video,

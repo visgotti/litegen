@@ -186,3 +186,34 @@ models:
     # No text_layout ("V3 models only").
     extra_allowlist: [style_id, controls]
     tags: [text-to-image, vector]
+
+  # PixelGenie L8. POST /v1/images/removeBackground: image_url (JSON) or file
+  # (multipart); response_format url | b64_json | multipart; image_format webp
+  # (lossless, the default) | png. "The input image must be PNG, JPG, WEBP, or
+  # SVG, under 20 MB, up to 16 MP, with sides between 256 and 4096 px."
+  # Answers {created, credits, image: {image_id, url | b64_json}}.
+  # @see https://www.recraft.ai/docs/api-reference/tools/remove-background.md (read 2026-10-30)
+  - id: recraft/remove-background
+    provider: recraft
+    media_type: image
+    display_name: Recraft Remove Background
+    description: >-
+      Recraft's Remove Background: one image in, the subject on a transparent
+      background out.
+    docs_url: https://www.recraft.ai/docs/api-reference/tools/remove-background
+    # "Remove background | POST /images/removeBackground | $0.01" (read 2026-10-30)
+    # @see https://www.recraft.ai/docs/api-reference/endpoints.md
+    pricing: { base_cost_usd: 0.01 }
+    capabilities: { background_removal: true }
+    prompt: { required: false, max_length: 0 }
+    params:
+      # Its image_format; litegen asks for png unless webp is asked.
+      output_format: { kind: string, enum_values: [png, webp], default: png }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: multipart, field_map: { init: file } }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: []
+    tags: [background-removal]

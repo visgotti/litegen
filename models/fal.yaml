@@ -294,6 +294,67 @@ models:
     extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
+  # ─── Background removal (PixelGenie L8) ───────────────────────────────────
+  # Input: image_url (required), prompt (optional: "Change what the cutout
+  # keeps in plain words … Billed at $0.03 instead of $0.018" — litegen sends
+  # none), sync_mode. Output: image.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/bria/background/remove (read 2026-10-30)
+  - id: fal/bria-rmbg-2
+    provider: fal
+    media_type: image
+    display_name: Bria RMBG 2.0 (Fal)
+    description: >-
+      Bria's RMBG 2.0 on Fal: one image in, the same image with its
+      background made transparent out.
+    docs_url: https://fal.ai/models/fal-ai/bria/background/remove/api
+    # "$0.018 per image without a prompt and $0.03 per image with a prompt"
+    # (read 2026-10-30); litegen sends no prompt.
+    # @see https://fal.ai/models/fal-ai/bria/background/remove/llms.txt
+    pricing: { base_cost_usd: 0.018 }
+    capabilities: { background_removal: true }
+    prompt: { required: false, max_length: 0 }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: []
+    tags: [background-removal]
+
+  # Input: image_url (required), model ("General Use (Light)" default, "General
+  # Use (Light 2K)", "General Use (Heavy)", "Matting", "Portrait", "General Use
+  # (Dynamic)"), operating_resolution 1024x1024 | 2048x2048 | 2304x2304,
+  # output_format webp | png | gif (default png), refine_foreground (default
+  # true), output_mask, mask_only, sync_mode. Output: image, mask_image.
+  # @see https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/birefnet/v2 (read 2026-10-30)
+  - id: fal/birefnet-v2
+    provider: fal
+    media_type: image
+    display_name: BiRefNet v2 (Fal)
+    description: >-
+      BiRefNet v2 background removal on Fal, up to a 2304 px working
+      resolution: one image in, the same image with its background made
+      transparent out.
+    docs_url: https://fal.ai/models/fal-ai/birefnet/v2/api
+    # fal publishes "$0 per compute seconds" (its endpointBilling price is 0,
+    # read 2026-10-30) — (unverified) by a billed run.
+    # @see https://fal.ai/models/fal-ai/birefnet/v2/llms.txt
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: { background_removal: true }
+    prompt: { required: false, max_length: 0 }
+    params:
+      # gif is offered too, but its alpha is one bit.
+      output_format: { kind: string, enum_values: [png, webp], default: png }
+    ref_inputs:
+      max_total: 1
+      default_role: init
+      provider_format: { form: url }
+      roles:
+        init: { required: true, min_count: 1, max_count: 1 }
+    extra_allowlist: [model, operating_resolution, refine_foreground]
+    tags: [background-removal]
+
   # ─── Promptable segmentation (PixelGenie L7) ──────────────────────────────
   # Input: image_url (a URL or data: URI), prompt (text, default "wheel"),
   # point_prompts [{x, y, label 0|1, object_id, frame_index}], box_prompts
