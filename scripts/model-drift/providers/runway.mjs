@@ -12,7 +12,7 @@ const ENDPOINTS = ['/v1/text_to_image', '/v1/image_to_video', '/v1/text_to_video
 // (not a pattern) so a new Runway-native model still surfaces as new.
 const RESOLD =
   'skipped 2026-09-11: resold third-party model — carried direct from its own vendor, or reachable only ' +
-  'through Runway and not adapter-ready (the Runway adapters map unknown ids to gen4_image / gen4_turbo); ' +
+  'through Runway and not adapter-ready (the Runway adapters refuse an id they have no arm for); ' +
   'revisit Grok/Wan/Muse/HappyHorse as one batch if wanted';
 const RESOLD_IDS = [
   'gemini_2.5_flash',

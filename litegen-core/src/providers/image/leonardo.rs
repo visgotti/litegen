@@ -20,7 +20,12 @@ use crate::types::*;
 /// fields}` (fields is a JSON string of S3 form fields); then POST the file to
 /// the returned S3 `url` as multipart (fields + `file`). The `id` is the imageId.
 ///
-/// @see <https://docs.leonardo.ai/reference/uploadinitimage> — "returns presigned details to upload an init image to S3"
+/// The upload names the image's own type: `extension` "Has to be png, jpg,
+/// jpeg, or webp", and "the image must be in the format of the `extension`
+/// provided to the init image method". Anything else is refused before any call.
+///
+/// @see <https://docs.leonardo.ai/v1.0/reference/uploadinitimage> (2026-10-30)
+/// @see <https://docs.leonardo.ai/v1.0/docs/how-to-upload-an-image-using-a-presigned-url.md> (2026-10-30)
 pub(crate) async fn upload_init_image(
     client: &Client,
     api_base: &str,
@@ -28,29 +33,31 @@ pub(crate) async fn upload_init_image(
     creds: &ProviderCredentials,
     bytes: &[u8],
 ) -> Result<String, ProviderError> {
+    let (extension, mime) = match crate::proxy::materializer::sniff_image_mime(bytes) {
+        Some("image/png") => ("png", "image/png"),
+        Some("image/jpeg") => ("jpg", "image/jpeg"),
+        Some("image/webp") => ("webp", "image/webp"),
+        other => {
+            return Err(ProviderError::InvalidRequest(format!(
+                "leonardo takes a PNG, JPEG or WebP reference, not {}",
+                other.unwrap_or("an image of unknown type")
+            )))
+        }
+    };
     let url = format!("{api_base}/init-image");
     let builder = crate::providers::auth::apply(
         auth,
         creds,
-        client.post(&url).header("Content-Type", "application/json").json(&json!({ "extension": "png" })),
+        client.post(&url).header("Content-Type", "application/json").json(&json!({ "extension": extension })),
     )?;
-    let data: Value = builder
-        .send()
-        .await
-        .map_err(|e| ProviderError::RequestFailed {
-            message: format!("Leonardo init-image request failed: {e}"),
-            status_code: None,
-            provider_error: None,
-            retryable: true,
-        })?
-        .json()
-        .await
-        .map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse Leonardo init-image response: {e}"),
-            status_code: None,
-            provider_error: None,
-            retryable: false,
-        })?;
+    // An upload is not a billed job, so a failed one may be asked again.
+    let resp = crate::providers::inject_trace_headers(builder).send().await.map_err(|e| ProviderError::RequestFailed {
+        message: format!("Leonardo init-image request failed: {e}"),
+        status_code: None,
+        provider_error: None,
+        retryable: true,
+    })?;
+    let data = read_create(resp, "Leonardo init-image").await?;
 
     let uii = &data["uploadInitImage"];
     let image_id = uii["id"].as_str().ok_or_else(|| ProviderError::RequestFailed {
@@ -76,8 +83,8 @@ pub(crate) async fn upload_init_image(
     form = form.part(
         "file",
         Part::bytes(bytes.to_vec())
-            .file_name("image.png")
-            .mime_str("image/png")
+            .file_name(format!("image.{extension}"))
+            .mime_str(mime)
             .map_err(|e| ProviderError::InvalidRequest(format!("leonardo ref mime: {e}")))?,
     );
     let s3_resp = client.post(s3_url).multipart(form).send().await.map_err(|e| ProviderError::RequestFailed {
@@ -97,6 +104,33 @@ pub(crate) async fn upload_init_image(
     Ok(image_id.to_string())
 }
 
+/// A create's answer, shared by the image and video providers: its JSON on
+/// success, otherwise an error with Leonardo's status that may be sent again
+/// only when Leonardo turned the call away (429, 5xx).
+pub(crate) async fn read_create(resp: reqwest::Response, what: &str) -> Result<Value, ProviderError> {
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let snippet: String = text.chars().take(200).collect();
+        return Err(ProviderError::RequestFailed {
+            message: format!("{what} returned HTTP {}: {snippet}", status.as_u16()),
+            status_code: Some(status.as_u16()),
+            provider_error: serde_json::from_str(&text).ok(),
+            retryable: status.as_u16() == 429 || status.is_server_error(),
+        });
+    }
+    serde_json::from_str(&text).map_err(|e| ProviderError::RequestFailed {
+        message: format!("Failed to parse {what} response: {e}"),
+        status_code: Some(status.as_u16()),
+        provider_error: None,
+        retryable: false,
+    })
+}
+
+/// What litegen itself sends to `POST /generations`; `extra` cannot replace it.
+const OWNED_FIELDS: &[&str] =
+    &["prompt", "modelId", "width", "height", "num_images", "negative_prompt", "seed", "init_image_id", "init_strength"];
+
 /// Leonardo.Ai image generation provider.
 ///
 /// Async: `POST /generations` returns `sdGenerationJob.generationId`; poll
@@ -104,15 +138,19 @@ pub(crate) async fn upload_init_image(
 /// download `generated_images[0].url`. Bearer auth. Reference images are
 /// uploaded via the presigned init-image flow and passed as `init_image_id`.
 ///
-/// @see <https://docs.leonardo.ai/reference/creategeneration> — POST /generations
-///   Verbatim: "POST https://cloud.leonardo.ai/api/rest/v1/generations"
-/// @see <https://docs.leonardo.ai/reference/getgenerationbyid> — GET /generations/{id}
-///   Verbatim: "GET https://cloud.leonardo.ai/api/rest/v1/generations/{id}"
+/// @see <https://docs.leonardo.ai/v1.0/reference/creategeneration> (2026-10-30) — POST /generations
+/// @see <https://docs.leonardo.ai/v1.0/reference/getgenerationbyid> (2026-10-30) — GET /generations/{id}
 pub struct LeonardoImageProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
     auth: AuthSpec,
     client: Client,
+    /// Result downloads: no redirects, so a URL that passed the public-address
+    /// check cannot bounce into a private one.
+    asset_client: Client,
+    /// Whether a result URL must resolve to a public address. Only the tests,
+    /// whose mock vendor runs on loopback, turn it off.
+    pub(crate) public_assets_only: bool,
 }
 
 /// Leonardo Lightning XL — the `modelId` default of the v1 `POST /generations`
@@ -134,6 +172,11 @@ impl LeonardoImageProvider {
                 .timeout(std::time::Duration::from_secs(180))
                 .build()
                 .expect("failed to build HTTP client"),
+            asset_client: crate::util::ssrf::no_redirect_download_client(
+                std::time::Duration::from_secs(120),
+                std::time::Duration::from_secs(30),
+            ),
+            public_assets_only: true,
         }
     }
 
@@ -181,23 +224,22 @@ impl LeonardoImageProvider {
         for _ in 0..max_attempts {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             let builder = crate::providers::auth::apply(&self.auth, &creds, self.client.get(&url))?;
-            let data: Value = crate::providers::inject_trace_headers(builder)
-                .send()
-                .await
-                .map_err(|e| ProviderError::RequestFailed {
-                    message: e.to_string(),
-                    status_code: None,
-                    provider_error: None,
-                    retryable: true,
-                })?
-                .json()
-                .await
-                .unwrap_or_default();
+            let resp = match crate::providers::inject_trace_headers(builder).send().await {
+                Ok(resp) => resp,
+                // The generation is Leonardo's now; a dropped poll is asked again.
+                Err(_) => continue,
+            };
+            // A 5xx or 429 is asked again; any other error status is the answer.
+            let data = match crate::providers::video::read_poll_json(resp, "leonardo").await {
+                Ok(data) => data,
+                Err(ProviderError::RequestFailed { retryable: true, .. }) => continue,
+                Err(e) => return Err(e),
+            };
             match data["generations_by_pk"]["status"].as_str() {
                 Some("COMPLETE") => return Ok(data),
                 Some("FAILED") => {
                     return Err(ProviderError::RequestFailed {
-                        message: "Leonardo generation failed".to_string(),
+                        message: "Leonardo generation failed (status FAILED)".to_string(),
                         status_code: None,
                         provider_error: Some(data),
                         retryable: false,
@@ -209,34 +251,10 @@ impl LeonardoImageProvider {
         Err(ProviderError::Timeout { timeout_ms: max_attempts * 2000 })
     }
 
+    /// A non-2xx (an expired or throttled presigned CDN URL) is an error, not
+    /// image bytes: storing its body would bill for a broken asset.
     async fn fetch_image_bytes(&self, url: &str) -> Result<Vec<u8>, ProviderError> {
-        let resp = self.client.get(url).send().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to fetch Leonardo image: {e}"),
-            status_code: e.status().map(|s| s.as_u16()),
-            provider_error: None,
-            retryable: true,
-        })?;
-        if !resp.status().is_success() {
-            // A non-2xx (e.g. an expired/throttled presigned CDN URL) delivers a
-            // short error body, not image bytes. Returning it would store an
-            // error blob as the generated image and bill for a broken asset.
-            return Err(ProviderError::RequestFailed {
-                message: format!("Leonardo image URL returned HTTP {}", resp.status()),
-                status_code: Some(resp.status().as_u16()),
-                provider_error: None,
-                retryable: false,
-            });
-        }
-        Ok(resp
-            .bytes()
-            .await
-            .map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to read Leonardo image: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
-            })?
-            .to_vec())
+        super::fetch_result(&self.asset_client, url, self.public_assets_only, "leonardo image").await
     }
 }
 
@@ -294,12 +312,18 @@ impl ImageProvider for LeonardoImageProvider {
             }
         }
 
+        // One image: `num_images` defaults to 4, and litegen returns and bills
+        // one. Alchemy off unless asked for: it defaults on, and "when using
+        // Alchemy v2, the output dimension is 1.75 times bigger" than `size`.
+        // @see <https://docs.leonardo.ai/v1.0/reference/creategeneration> (2026-10-30)
+        // @see <https://docs.leonardo.ai/docs/legacy-faq.md> (2026-10-30)
         let mut body = json!({
             "prompt": base.prompt,
             "modelId": model_id,
             "width": w,
             "height": h,
-            "num_images": base.n.max(1),
+            "num_images": 1,
+            "alchemy": false,
         });
         if let Some(np) = base.negative_prompt.as_deref() {
             body["negative_prompt"] = Value::String(np.to_string());
@@ -315,7 +339,7 @@ impl ImageProvider for LeonardoImageProvider {
         }
         if let Some(Value::Object(map)) = &extras.extra {
             if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map {
+                for (k, v) in map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
                     obj.insert(k.clone(), v.clone());
                 }
             }
@@ -327,23 +351,18 @@ impl ImageProvider for LeonardoImageProvider {
             &creds,
             self.client.post(&url).header("Content-Type", "application/json").json(&body),
         )?;
-        let submit: Value = crate::providers::inject_trace_headers(builder)
+        let resp = crate::providers::inject_trace_headers(builder)
             .send()
             .await
             .map_err(|e| ProviderError::RequestFailed {
                 message: format!("Leonardo request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
-            })?
-            .json()
-            .await
-            .map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to parse Leonardo response: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
+                // Only a connection that never opened is safe to retry: a
+                // request that timed out may have been accepted and billed.
+                retryable: e.is_connect(),
             })?;
+        let submit = read_create(resp, "Leonardo").await?;
 
         let gen_id = submit["sdGenerationJob"]["generationId"].as_str().ok_or_else(|| ProviderError::RequestFailed {
             message: "Leonardo response missing sdGenerationJob.generationId".to_string(),
@@ -432,6 +451,7 @@ mod tests {
         let mut cfg = ProviderInstanceConfig { api_key: "leo-key".to_string(), api_base: Some(api_base.to_string()), ..Default::default() };
         cfg.credentials.api_key = Some("leo-key".to_string());
         p.configure(cfg);
+        p.public_assets_only = false;
         p
     }
 
@@ -537,5 +557,188 @@ mod tests {
             p.resolve_model_id("leonardo/diffusion-xl").as_deref(),
             Some("1e60896f-3c26-4296-8ecc-53e2afecc132")
         );
+    }
+
+    // ─── Leonardo audit, 2026-10-30 ─────────────────────────────────────────
+
+    fn no_refs() -> MaterializedRequest {
+        MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() }
+    }
+
+    /// Leonardo answers every create with a 400, so only the outbound body matters.
+    async fn refusing_server() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/generations"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "error": "stop" })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn created_body(server: &MockServer) -> Value {
+        let received = server.received_requests().await.unwrap();
+        let create = received.iter().find(|r| r.url.path() == "/generations").expect("no create");
+        serde_json::from_slice(&create.body).unwrap()
+    }
+
+    /// #4, #10, #11, #16: `num_images` defaults to 4 ("Must be between 1 and
+    /// 8"), so one is asked for; `alchemy` defaults to true and makes the
+    /// output 1.75 times the requested size, so it is sent off; `extra` cannot
+    /// replace the model litegen bills or anything else litegen sends.
+    /// @see <https://docs.leonardo.ai/v1.0/reference/creategeneration> (2026-10-30)
+    /// @see <https://docs.leonardo.ai/docs/legacy-faq.md> (2026-10-30)
+    #[tokio::test]
+    async fn one_plain_image_is_asked_for_and_extra_cannot_replace_what_litegen_sends() {
+        let server = refusing_server().await;
+        let mut base = make_base("a quiet harbour", "leonardo/diffusion-xl");
+        base.n = 4;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({
+            "modelId": "aa77f04e-3eec-4034-9c07-d0f619684628", "prompt": "other", "num_images": 8,
+            "width": 64, "height": 64, "init_image_id": "x", "presetStyle": "CINEMATIC"
+        }));
+        let _ = make_provider(&server.uri()).generate(&ref_schema("leonardo/diffusion-xl"), &base, &extras, &no_refs()).await;
+        let body = created_body(&server).await;
+        assert_eq!(body["modelId"], DIFFUSION_XL_MODEL_ID);
+        assert_eq!(body["prompt"], "a quiet harbour");
+        assert_eq!(body["num_images"], 1);
+        assert_eq!((body["width"].clone(), body["height"].clone()), (json!(1024), json!(768)));
+        assert!(body.get("init_image_id").is_none(), "{body}");
+        assert_eq!(body["alchemy"], false);
+        assert_eq!(body["presetStyle"], "CINEMATIC");
+
+        // A caller may still ask for Alchemy.
+        let server = refusing_server().await;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "alchemy": true }));
+        let _ = make_provider(&server.uri()).generate(&ref_schema("leonardo/diffusion-xl"), &base, &extras, &no_refs()).await;
+        assert_eq!(created_body(&server).await["alchemy"], true);
+    }
+
+    /// #12: `extension` "Has to be png, jpg, jpeg, or webp", and "the image
+    /// must be in the format of the `extension` provided"; anything else is
+    /// refused before any call.
+    /// @see <https://docs.leonardo.ai/v1.0/reference/uploadinitimage> (2026-10-30)
+    #[tokio::test]
+    async fn a_reference_goes_up_as_its_own_type_and_a_gif_is_refused() {
+        let server = refusing_server().await;
+        let s3 = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/init-image"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "uploadInitImage": { "id": "init-1", "url": format!("{}/upload", s3.uri()), "fields": "{\"key\":\"k\"}" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST")).and(path("/upload")).respond_with(ResponseTemplate::new(204)).mount(&s3).await;
+        let one = |bytes: &[u8]| MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".into(),
+                form: MaterializedRefForm::MultipartField {
+                    field_name: "file".into(),
+                    bytes: bytes::Bytes::copy_from_slice(bytes),
+                    content_type: "application/octet-stream".into(),
+                },
+                time_s: None,
+            }],
+            cleanup: Cleanup::empty(),
+        };
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("leonardo/diffusion-xl");
+        let base = make_base("x", "leonardo/diffusion-xl");
+        let _ = provider.generate(&schema, &base, &make_extras(), &one(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 16])).await;
+        let received = server.received_requests().await.unwrap();
+        let init = received.iter().find(|r| r.url.path() == "/init-image").expect("no init-image call");
+        assert_eq!(serde_json::from_slice::<Value>(&init.body).unwrap()["extension"], "jpg");
+        let upload = String::from_utf8_lossy(&s3.received_requests().await.unwrap()[0].body).to_string();
+        assert!(upload.contains("Content-Type: image/jpeg") && upload.contains("image.jpg"), "{upload}");
+        assert_eq!(created_body(&server).await["init_image_id"], "init-1");
+
+        let before = server.received_requests().await.unwrap().len();
+        let err = provider.generate(&schema, &base, &make_extras(), &one(b"GIF89a\x01\x00\x01\x00")).await.unwrap_err();
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        assert_eq!(server.received_requests().await.unwrap().len(), before, "a GIF reached Leonardo");
+    }
+
+    /// #17, #19: a create Leonardo turned away says so, with its status — a
+    /// 429 or 5xx may be sent again, another 4xx may not — and one that timed
+    /// out may have been accepted and billed, so it is never sent again.
+    #[tokio::test]
+    async fn a_turned_away_create_says_so_and_a_timed_out_one_is_never_sent_again() {
+        let schema = ref_schema("leonardo/diffusion-xl");
+        let base = make_base("x", "leonardo/diffusion-xl");
+        for (status, retryable) in [(429, true), (503, true), (400, false)] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(json!({ "error": "no" })))
+                .mount(&server)
+                .await;
+            let err = make_provider(&server.uri()).generate(&schema, &base, &make_extras(), &no_refs()).await.unwrap_err();
+            assert!(
+                matches!(err, ProviderError::RequestFailed { status_code: Some(s), retryable: r, .. } if s == status && r == retryable),
+                "{status}: {err:?}"
+            );
+        }
+        let slow = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})).set_delay(std::time::Duration::from_secs(5)))
+            .mount(&slow)
+            .await;
+        let mut p = make_provider(&slow.uri());
+        p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let err = p.generate(&schema, &base, &make_extras(), &no_refs()).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+    }
+
+    /// #13: a poll Leonardo answers with an error is that error, not a
+    /// generation still running.
+    #[tokio::test]
+    async fn a_poll_error_is_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/generations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "sdGenerationJob": { "generationId": "g1" } })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/generations/g1"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({ "error": "Invalid token" })))
+            .mount(&server)
+            .await;
+        let err = make_provider(&server.uri())
+            .generate(&ref_schema("leonardo/diffusion-xl"), &make_base("x", "leonardo/diffusion-xl"), &make_extras(), &no_refs())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { status_code: Some(401), retryable: false, .. }), "{err:?}");
+    }
+
+    /// #23: the result is fetched without the key, only from a public address,
+    /// and at most 64 MiB.
+    #[tokio::test]
+    async fn a_result_is_fetched_only_from_a_public_address() {
+        let server = MockServer::start().await;
+        let cdn = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/generations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "sdGenerationJob": { "generationId": "g1" } })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/generations/g1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "generations_by_pk": { "status": "COMPLETE", "generated_images": [{ "url": format!("{}/out.jpg", cdn.uri()) }] }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xFF, 0xD8, 0xFF])).mount(&cdn).await;
+        let mut provider = make_provider(&server.uri());
+        provider.public_assets_only = true;
+        let err = provider
+            .generate(&ref_schema("leonardo/diffusion-xl"), &make_base("x", "leonardo/diffusion-xl"), &make_extras(), &no_refs())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+        assert!(cdn.received_requests().await.unwrap().is_empty(), "a private address was fetched");
     }
 }

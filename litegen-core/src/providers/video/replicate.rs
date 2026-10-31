@@ -2,7 +2,7 @@
 // API Reference: https://replicate.com/docs/reference/http
 // POST /v1/predictions — create prediction (with version hash)
 // GET  /v1/predictions/{id} — poll for status
-// Models: AnimateDiff, SVD, SVD-XT, Zeroscope, ModelScope
+// Models: AnimateDiff (replicate/video)
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use crate::capabilities::ModelSchema;
-use crate::proxy::materializer::{MaterializedRequest, MaterializedRefForm};
+use crate::proxy::materializer::MaterializedRequest;
 use crate::providers::{
     ApiKeyPool, BaseGenerationRequest, HealthCheckResult, ProviderError, ProviderInstanceConfig,
     CancelOutcome, VideoExtras, VideoGenerationHandle, VideoGenerationPollResult, VideoProvider, build_cost_estimate,
@@ -19,8 +19,8 @@ use crate::types::*;
 
 /// Replicate video generation provider.
 ///
-/// Hosts AnimateDiff, Stable Video Diffusion (SVD/SVD-XT), Zeroscope,
-/// and ModelScope via the Replicate predictions API.
+/// Runs AnimateDiff (`lucataco/animate-diff`), the model behind
+/// `replicate/video`, through the Replicate predictions API.
 ///
 /// @see <https://replicate.com/docs/reference/http#create-a-prediction> — create (`POST /v1/predictions`)
 /// @see <https://replicate.com/docs/reference/http#get-a-prediction> — poll (`GET /v1/predictions/{id}`)
@@ -30,79 +30,20 @@ pub struct ReplicateVideoProvider {
     client: Client,
 }
 
-/// Known Replicate video model version hashes.
-/// Found on each model's Replicate page under "Versions".
-struct ModelVersion {
-    /// Full model owner/name (kept for documentation purposes)
-    #[allow(dead_code)]
-    model: &'static str,
-    /// SHA256 version hash (from Replicate model page)
-    version: &'static str,
-    /// Default FPS for this model (informational; AnimateDiff hardcodes frame count,
-    /// so this is not sent as an input field — kept for the documented named arms)
-    #[allow(dead_code)]
-    default_fps: u32,
-    /// Max frames this model can generate (informational; not sent as an input field)
-    #[allow(dead_code)]
-    max_frames: u32,
-    /// Whether this model requires an input image (kept for future use)
-    #[allow(dead_code)]
-    requires_image: bool,
-}
+/// What litegen itself sends in a prediction's `input`; `extra` cannot
+/// replace it.
+const OWNED_FIELDS: &[&str] = &["prompt", "seed", "n_prompt"];
 
-/// Model version registry with hashes from Replicate.
+/// The Replicate version a litegen video id runs; an id with no arm is
+/// refused, not billed as AnimateDiff. (Stable Video Diffusion was removed
+/// from Replicate, and Zeroscope and Deforum were never catalog rows.)
 ///
 /// @see <https://replicate.com/docs/reference/http#create-a-prediction> — the `version` hash sent in the create body
-fn resolve_model_version(model: &str) -> ModelVersion {
+/// @see <https://replicate.com/lucataco/animate-diff/versions> — `beecf59c…`, the latest version (2026-10-30)
+fn resolve_model_version(model: &str) -> Option<&'static str> {
     match model {
-        // AnimateDiff — text-to-video
-        // https://replicate.com/lucataco/animate-diff
-        "replicate/animate-diff" | "replicate-animate-diff" => ModelVersion {
-            model: "lucataco/animate-diff",
-            version: "beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa377e48a9f",
-            default_fps: 8,
-            max_frames: 32,
-            requires_image: false,
-        },
-
-        // NOTE: `replicate/svd` and `replicate/svd-xt` used to map to
-        // stability-ai/stable-video-diffusion. That model has been removed from
-        // Replicate — https://replicate.com/stability-ai/stable-video-diffusion
-        // returns HTTP 404 — so the entries were deleted rather than left to
-        // fail at request time. There is no drop-in Replicate replacement;
-        // current official video models are minimax/hailuo-02, kwaivgi/kling-v2.1
-        // and google/veo-3.
-
-        // Zeroscope v2 XL — text-to-video
-        // https://replicate.com/anotherjesse/zeroscope-v2-xl
-        "replicate/zeroscope" | "replicate-zeroscope" => ModelVersion {
-            model: "anotherjesse/zeroscope-v2-xl",
-            version: "9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351",
-            default_fps: 24,
-            max_frames: 36,
-            requires_image: false,
-        },
-
-        // Deforum Stable Diffusion — text-to-video.
-        // (Previously mislabelled "ModelScope"; the slug has always been
-        // deforum/deforum_stable_diffusion, which is a different model.)
-        "replicate/deforum" | "replicate-deforum" | "replicate/modelscope"
-        | "replicate-modelscope" => ModelVersion {
-            model: "deforum/deforum_stable_diffusion",
-            version: "e22e77495f2fb83c34d5fae2ad8ab63c0a87b6b573b6208e1535b23b89ea66d6",
-            default_fps: 8,
-            max_frames: 16,
-            requires_image: false,
-        },
-
-        // Generic replicate/video model — fallback to AnimateDiff
-        _ => ModelVersion {
-            model: "lucataco/animate-diff",
-            version: "beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa377e48a9f",
-            default_fps: 8,
-            max_frames: 32,
-            requires_image: false,
-        },
+        "replicate/video" | "replicate/animate-diff" => Some("beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa377e48a9f"),
+        _ => None,
     }
 }
 
@@ -165,18 +106,20 @@ impl VideoProvider for ReplicateVideoProvider {
     ///
     /// @see <https://replicate.com/docs/reference/http#create-a-prediction> — create a prediction.
     ///   Proves the `{version, input}` body, the `input` fields (`prompt`, `n_prompt`,
-    ///   `seed`, `init_image`, plus `steps`/`guidance_scale` via `extra`), and the
-    ///   `id`/`urls.get` response fields. The backing AnimateDiff model does not accept
-    ///   `fps`/`num_frames`/`negative_prompt`, so those are intentionally not sent.
+    ///   `seed`, plus `steps`/`guidance_scale` via `extra`), and the `id` response
+    ///   field. The backing AnimateDiff model does not accept `fps`/`num_frames`/
+    ///   `negative_prompt` or an image, so those are intentionally not sent.
     async fn generate(
         &self,
         model: &ModelSchema,
         base: &BaseGenerationRequest,
         extras: &VideoExtras,
-        materialized: &MaterializedRequest,
+        // AnimateDiff has no image input, and the row declares no references.
+        _materialized: &MaterializedRequest,
     ) -> Result<VideoGenerationHandle, ProviderError> {
         let api_key = self.api_key()?;
-        let mv = resolve_model_version(&model.id);
+        let pinned = resolve_model_version(&model.id)
+            .ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "replicate".into() })?;
         // Honor an operator-supplied `version` override via model_mapping
         // (value form: "owner/name:version" or just a bare "version" hash).
         let version = self
@@ -189,7 +132,7 @@ impl VideoProvider for ReplicateVideoProvider {
                     .map(|(_, v)| v.to_string())
                     .unwrap_or_else(|| mapped.clone())
             })
-            .unwrap_or_else(|| mv.version.to_string());
+            .unwrap_or_else(|| pinned.to_string());
         let url = format!("{}/predictions", self.api_base());
 
         // Build input payload.
@@ -216,26 +159,10 @@ impl VideoProvider for ReplicateVideoProvider {
             input["n_prompt"] = Value::String(np.to_string());
         }
 
-        // Reference image for image-to-video models
-        for r in &materialized.refs {
-            match &r.form {
-                MaterializedRefForm::Url(img_url) => {
-                    input["init_image"] = Value::String(img_url.clone());
-                    break;
-                }
-                MaterializedRefForm::Base64(b64) => {
-                    input["init_image"] =
-                        Value::String(format!("data:image/png;base64,{b64}"));
-                    break;
-                }
-                _ => {}
-            }
-        }
-
-        // Shallow-merge extra
+        // Shallow-merge extra, never over what litegen sends.
         if let Some(Value::Object(extra_map)) = &extras.extra {
             if let Some(input_obj) = input.as_object_mut() {
-                for (k, v) in extra_map {
+                for (k, v) in extra_map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
                     input_obj.insert(k.clone(), v.clone());
                 }
             }
@@ -259,30 +186,36 @@ impl VideoProvider for ReplicateVideoProvider {
             message: format!("Replicate request failed: {e}"),
             status_code: e.status().map(|s| s.as_u16()),
             provider_error: None,
-            retryable: e.is_timeout() || e.is_connect(),
+            // Only a connection that never opened is safe to retry: a request
+            // that timed out may have created, and billed, a prediction.
+            retryable: e.is_connect(),
         })?;
 
         let status = resp.status();
-        let resp_json: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let resp_json: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+            let err = resp_json["detail"]
+                .as_str()
+                .or_else(|| resp_json["error"].as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| text.chars().take(200).collect());
+            return Err(ProviderError::RequestFailed {
+                message: format!("Replicate API error: {err}"),
+                status_code: Some(status.as_u16()),
+                provider_error: Some(resp_json),
+                // Turned away, not run: "If you hit a limit, you will receive a
+                // response with status `429`".
+                // @see <https://replicate.com/docs/topics/predictions/rate-limits>
+                retryable: status.as_u16() == 429 || status.is_server_error(),
+            });
+        }
+        let resp_json: Value = serde_json::from_str(&text).map_err(|e| ProviderError::RequestFailed {
             message: format!("Failed to parse Replicate response: {e}"),
             status_code: Some(status.as_u16()),
             provider_error: None,
             retryable: false,
         })?;
-
-        if !status.is_success() {
-            let err = resp_json["detail"]
-                .as_str()
-                .or_else(|| resp_json["error"].as_str())
-                .unwrap_or("Unknown error")
-                .to_string();
-            return Err(ProviderError::RequestFailed {
-                message: format!("Replicate API error: {err}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(resp_json),
-                retryable: status.as_u16() >= 500,
-            });
-        }
 
         let prediction_id = resp_json["id"]
             .as_str()
@@ -294,11 +227,10 @@ impl VideoProvider for ReplicateVideoProvider {
             })?
             .to_string();
 
-        // Store prediction_id plus optional poll_url
-        let job_data = json!({
-            "prediction_id": prediction_id,
-            "poll_url": resp_json["urls"]["get"].as_str().unwrap_or(""),
-        });
+        // The prediction is polled at the configured base by its id, never at
+        // the `urls.get` the response named: that would carry the key to
+        // whatever host the response chose.
+        let job_data = json!({ "prediction_id": prediction_id });
 
         Ok(VideoGenerationHandle {
             provider_job_id: job_data.to_string(),
@@ -317,19 +249,17 @@ impl VideoProvider for ReplicateVideoProvider {
     ) -> Result<VideoGenerationPollResult, ProviderError> {
         let api_key = self.api_key()?;
 
-        let job_data: Value =
-            serde_json::from_str(&handle.provider_job_id).unwrap_or_default();
-        let prediction_id = job_data["prediction_id"].as_str().unwrap_or("");
-
-        let poll_url = if let Some(url) = job_data["poll_url"].as_str() {
-            if !url.is_empty() {
-                url.to_string()
-            } else {
-                format!("{}/predictions/{prediction_id}", self.api_base())
-            }
-        } else {
-            format!("{}/predictions/{prediction_id}", self.api_base())
-        };
+        // Rows stored before 2026-10-30 also carry a `poll_url`; it is ignored.
+        let prediction_id = serde_json::from_str::<Value>(&handle.provider_job_id)
+            .ok()
+            .and_then(|job| job["prediction_id"].as_str().filter(|id| !id.is_empty()).map(str::to_string))
+            .ok_or_else(|| ProviderError::RequestFailed {
+                message: format!("replicate job handle names no prediction: {}", handle.provider_job_id),
+                status_code: None,
+                provider_error: None,
+                retryable: false,
+            })?;
+        let poll_url = format!("{}/predictions/{prediction_id}", self.api_base());
 
         // GET /v1/predictions/{id} — https://replicate.com/docs/reference/http#get-a-prediction
         let resp = crate::providers::inject_trace_headers(
@@ -348,12 +278,23 @@ impl VideoProvider for ReplicateVideoProvider {
 
         let data = super::read_poll_json(resp, "replicate").await?;
 
-        let status = match data["status"].as_str() {
+        // starting | processing | succeeded | failed | canceled | aborted.
+        // @see <https://api.replicate.com/openapi.json> (2026-10-30)
+        let mut error = data["error"].as_str().filter(|e| !e.is_empty()).map(String::from);
+        let mut status = match data["status"].as_str() {
             Some("succeeded") => GenerationStatus::Completed,
             Some("failed") | Some("canceled") => GenerationStatus::Failed,
             Some("processing") => GenerationStatus::Processing,
             Some("starting") => GenerationStatus::Pending,
-            _ => GenerationStatus::Pending,
+            // "`aborted` means the prediction was terminated before it started running".
+            Some("aborted") => {
+                error.get_or_insert_with(|| "replicate prediction aborted before it started".into());
+                GenerationStatus::Failed
+            }
+            other => {
+                error = Some(format!("replicate prediction status {}", other.unwrap_or("missing")));
+                GenerationStatus::Failed
+            }
         };
 
         // Video URL from output (string or array of strings)
@@ -368,7 +309,11 @@ impl VideoProvider for ReplicateVideoProvider {
                     .map(String::from)
             });
 
-        let error = data["error"].as_str().map(String::from);
+        // A success with nothing to deliver is a failure, not an empty result.
+        if status == GenerationStatus::Completed && video_url.is_none() {
+            status = GenerationStatus::Failed;
+            error = Some("replicate prediction succeeded with no output".into());
+        }
 
         let mut metadata = HashMap::new();
         if let Some(predict_time) = data["metrics"]["predict_time"].as_f64() {
@@ -595,24 +540,20 @@ mod tests {
         assert_eq!(body["input"]["prompt"], "a time lapse of clouds");
     }
 
-    /// https://replicate.com/stability-ai/stable-video-diffusion returns 404 —
-    /// the model was removed from Replicate. No id may still resolve to it.
+    /// #15: every catalog row has its own arm, and an id with none — the
+    /// removed Stable Video Diffusion among them — is refused rather than
+    /// billed as AnimateDiff.
     #[test]
-    fn no_model_id_resolves_to_the_removed_stable_video_diffusion() {
-        for id in [
-            "replicate/svd",
-            "replicate/svd-xt",
-            "replicate/video",
-            "replicate/animate-diff",
-            "replicate/zeroscope",
-            "replicate/modelscope",
-            "replicate/anything-else",
-        ] {
-            let mv = resolve_model_version(id);
-            assert_ne!(
-                mv.model, "stability-ai/stable-video-diffusion",
-                "{id} still resolves to a model Replicate has removed"
-            );
+    fn every_catalog_row_resolves_and_an_unknown_id_does_not() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        for m in catalog.for_provider("replicate").filter(|m| m.media_type == crate::capabilities::MediaType::Video) {
+            assert!(resolve_model_version(&m.id).is_some(), "{} has no arm", m.id);
+        }
+        for id in ["replicate/svd", "replicate/svd-xt", "replicate/zeroscope", "replicate/anything-else"] {
+            assert!(resolve_model_version(id).is_none(), "{id} resolves");
         }
     }
 
@@ -641,5 +582,124 @@ mod tests {
             let handle = VideoGenerationHandle { provider_job_id: job.to_string(), provider: "replicate".into(), model: "replicate/x".into() };
             assert_eq!(make_provider(&server.uri()).cancel(&handle).await.unwrap(), expected);
         }
+    }
+
+    // ─── Replicate audit, 2026-10-30 ────────────────────────────────────────
+
+    /// #8: a prediction is polled at the configured `api_base` only, never at
+    /// the `urls.get` the create answered with, which would carry the key to
+    /// whatever host the response named.
+    #[tokio::test]
+    async fn a_prediction_is_polled_only_at_the_configured_base() {
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "p1", "status": "processing" })))
+            .mount(&elsewhere)
+            .await;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/predictions"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "id": "p1", "status": "starting", "urls": { "get": format!("{}/predictions/p1", elsewhere.uri()) }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/predictions/p1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "p1", "status": "processing" })))
+            .mount(&server)
+            .await;
+        let provider = make_provider(&server.uri());
+        let handle = provider
+            .generate(&ref_schema("replicate/video"), &make_base("clouds", "replicate/video"), &make_extras(), &empty_materialized())
+            .await
+            .unwrap();
+        provider.poll_status(&handle).await.unwrap();
+        assert!(elsewhere.received_requests().await.unwrap().is_empty(), "the key went to the host the response named");
+        assert_eq!(server.received_requests().await.unwrap().iter().filter(|r| r.method.as_str() == "GET").count(), 1);
+
+        let err = provider
+            .poll_status(&VideoGenerationHandle { provider_job_id: "not json".into(), provider: "replicate".into(), model: "replicate/video".into() })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+    }
+
+    /// #7, #25: "`aborted` means the prediction was terminated before it
+    /// started running"; a status outside the documented enum and a success
+    /// with no output are failures, not predictions still running.
+    /// @see <https://api.replicate.com/openapi.json> (2026-10-30)
+    #[tokio::test]
+    async fn an_aborted_unknown_or_empty_prediction_fails() {
+        let server = MockServer::start().await;
+        for (id, body) in [
+            ("aborted", json!({ "id": "aborted", "status": "aborted" })),
+            ("odd", json!({ "id": "odd", "status": "melted" })),
+            ("empty", json!({ "id": "empty", "status": "succeeded", "output": null })),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(format!("/predictions/{id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&server)
+                .await;
+        }
+        let provider = make_provider(&server.uri());
+        for (id, says) in [("aborted", "aborted"), ("odd", "melted"), ("empty", "no output")] {
+            let handle = VideoGenerationHandle {
+                provider_job_id: json!({ "prediction_id": id }).to_string(),
+                provider: "replicate".into(),
+                model: "replicate/video".into(),
+            };
+            let polled = provider.poll_status(&handle).await.unwrap();
+            assert_eq!(polled.status, GenerationStatus::Failed, "{id}");
+            assert!(polled.error.as_deref().is_some_and(|e| e.contains(says)), "{id}: {:?}", polled.error);
+        }
+    }
+
+    /// #17, #18: a create that timed out may have been accepted and billed, so
+    /// it is never sent again; a 429 may be.
+    #[tokio::test]
+    async fn a_timed_out_create_is_never_sent_again_and_a_throttled_one_may_be() {
+        let slow = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": "p" })).set_delay(std::time::Duration::from_secs(5)))
+            .mount(&slow)
+            .await;
+        let mut p = make_provider(&slow.uri());
+        p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let schema = ref_schema("replicate/video");
+        let base = make_base("x", "replicate/video");
+        let err = p.generate(&schema, &base, &make_extras(), &empty_materialized()).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+
+        let throttled = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).set_body_json(json!({ "detail": "Request was throttled." })))
+            .mount(&throttled)
+            .await;
+        let err = make_provider(&throttled.uri()).generate(&schema, &base, &make_extras(), &empty_materialized()).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: true, status_code: Some(429), .. }), "{err:?}");
+    }
+
+    /// AnimateDiff's input is exactly {guidance_scale, motion_module,
+    /// n_prompt, path, prompt, seed, steps}: `extra` adds its knobs but never
+    /// replaces what litegen sends.
+    /// @see <https://replicate.com/lucataco/animate-diff/versions/beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa377e48a9f> (2026-10-30)
+    #[tokio::test]
+    async fn extra_cannot_replace_what_litegen_sends() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(json!({ "detail": "stop" })))
+            .mount(&server)
+            .await;
+        let mut base = make_base("waves", "replicate/video");
+        base.seed = Some(5);
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "prompt": "other", "seed": 9, "steps": 20 }));
+        let _ = make_provider(&server.uri()).generate(&ref_schema("replicate/video"), &base, &extras, &empty_materialized()).await;
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body["input"]["prompt"], "waves");
+        assert_eq!(body["input"]["seed"], 5);
+        assert_eq!(body["input"]["steps"], 20);
     }
 }

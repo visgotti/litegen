@@ -13,7 +13,7 @@ use crate::types::*;
 
 /// Replicate image generation provider.
 ///
-/// Supports Flux, SDXL, SD3, and SD1.5 hosted on Replicate.
+/// Supports FLUX, SDXL and SD3 hosted on Replicate.
 /// Uses two endpoint patterns:
 ///
 /// - Versioned: POST /v1/predictions with version hash
@@ -22,10 +22,23 @@ use crate::types::*;
 /// @see <https://replicate.com/docs/reference/http#create-a-prediction> — versioned create (`POST /v1/predictions`)
 /// @see <https://replicate.com/docs/reference/http#create-a-prediction-using-an-official-model> — official create (`POST /v1/models/{owner}/{name}/predictions`)
 /// @see <https://replicate.com/docs/reference/http#get-a-prediction> — poll (`GET /v1/predictions/{id}`)
+/// What litegen itself sends in a prediction's `input`; `extra` cannot
+/// replace it.
+const OWNED_FIELDS: &[&str] = &[
+    "prompt", "aspect_ratio", "width", "height", "seed", "negative_prompt", "guidance", "guidance_scale", "cfg",
+    "steps", "num_inference_steps", "prompt_strength", "image", "output_format",
+];
+
 pub struct ReplicateProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
     client: Client,
+    /// Result downloads: no redirects, so a URL that passed the public-address
+    /// check cannot bounce into a private one.
+    asset_client: Client,
+    /// Whether a result URL must resolve to a public address. Only the tests,
+    /// whose mock vendor runs on loopback, turn it off.
+    pub(crate) public_assets_only: bool,
 }
 
 impl ReplicateProvider {
@@ -37,6 +50,11 @@ impl ReplicateProvider {
                 .timeout(std::time::Duration::from_secs(300))
                 .build()
                 .expect("failed to build HTTP client"),
+            asset_client: crate::util::ssrf::no_redirect_download_client(
+                std::time::Duration::from_secs(120),
+                std::time::Duration::from_secs(30),
+            ),
+            public_assets_only: true,
         }
     }
 
@@ -89,10 +107,6 @@ impl ReplicateProvider {
                 Some("39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b".into()),
             ),
             "sd3" => ("stability-ai/stable-diffusion-3".into(), None),
-            "sd1.5" | "sd-1.5" => (
-                "stability-ai/stable-diffusion".into(),
-                Some("ac732df83cea7fff18b8472768c88ad041fa750ff7682a21affe81863cbe77e4".into()),
-            ),
             _ => (native.to_string(), None),
         }
     }
@@ -142,39 +156,43 @@ impl ReplicateProvider {
         for _ in 0..max_attempts {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-            let resp = crate::providers::inject_trace_headers(
+            let resp = match crate::providers::inject_trace_headers(
                 self.client
                     .get(&poll_url)
                     .header("Authorization", format!("Bearer {api_key}")),
             )
             .send()
             .await
-            .map_err(|e| ProviderError::RequestFailed {
-                message: e.to_string(),
-                status_code: e.status().map(|s| s.as_u16()),
-                provider_error: None,
-                retryable: true,
-            })?;
-
-            let result: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to parse poll response: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
-            })?;
+            {
+                Ok(resp) => resp,
+                // The prediction is Replicate's now; a dropped poll is asked again.
+                Err(_) => continue,
+            };
+            // A 5xx or 429 is asked again; any other error status is the answer.
+            let result = match crate::providers::video::read_poll_json(resp, "replicate").await {
+                Ok(result) => result,
+                Err(ProviderError::RequestFailed { retryable: true, .. }) => continue,
+                Err(e) => return Err(e),
+            };
 
             match result["status"].as_str() {
                 Some("succeeded") => return Ok(result),
-                Some("failed") | Some("canceled") => {
-                    let error = result["error"].as_str().unwrap_or("Unknown error").to_string();
+                Some("starting") | Some("processing") => continue,
+                // failed, canceled, aborted ("terminated before it started
+                // running") — or a status outside the documented enum.
+                other => {
+                    let status = other.unwrap_or("with no status");
+                    let message = match result["error"].as_str().filter(|e| !e.is_empty()) {
+                        Some(e) => format!("Replicate prediction {status}: {e}"),
+                        None => format!("Replicate prediction {status}"),
+                    };
                     return Err(ProviderError::RequestFailed {
-                        message: format!("Replicate prediction failed: {error}"),
+                        message,
                         status_code: None,
                         provider_error: Some(result),
                         retryable: false,
                     });
                 }
-                _ => continue,
             }
         }
 
@@ -186,29 +204,7 @@ impl ReplicateProvider {
     ///
     /// @see <https://replicate.com/docs/reference/http#get-a-prediction> — `output` URL field
     async fn fetch_image_bytes(&self, url: &str) -> Result<Vec<u8>, ProviderError> {
-        let resp = self.client.get(url).send().await.map_err(|e| {
-            ProviderError::RequestFailed {
-                message: format!("Failed to fetch image: {e}"),
-                status_code: e.status().map(|s| s.as_u16()),
-                provider_error: None,
-                retryable: true,
-            }
-        })?;
-        if !resp.status().is_success() {
-            return Err(ProviderError::RequestFailed {
-                message: format!("Image URL returned HTTP {}", resp.status()),
-                status_code: Some(resp.status().as_u16()),
-                provider_error: None,
-                retryable: false,
-            });
-        }
-        let bytes = resp.bytes().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to read image bytes: {e}"),
-            status_code: None,
-            provider_error: None,
-            retryable: false,
-        })?;
-        Ok(bytes.to_vec())
+        super::fetch_result(&self.asset_client, url, self.public_assets_only, "replicate image").await
     }
 }
 
@@ -291,27 +287,29 @@ impl ImageProvider for ReplicateProvider {
             input[steps_field] = Value::Number(steps.into());
         }
 
+        // img2img strength: "prompt_strength — Prompt strength when using img2img".
+        // @see <https://replicate.com/black-forest-labs/flux-dev/api/schema> (2026-10-30)
         if let Some(strength) = extras.strength {
-            input["strength"] = json!(strength);
+            input["prompt_strength"] = json!(strength);
         }
 
-        // Reference image as URL
+        // Reference image as a URL, or a data URI of its own type.
         for r in &materialized.refs {
             match &r.form {
                 MaterializedRefForm::Url(url) => {
                     input["image"] = Value::String(url.clone());
                 }
                 MaterializedRefForm::Base64(b64) => {
-                    input["image"] = Value::String(format!("data:image/png;base64,{b64}"));
+                    input["image"] = Value::String(crate::proxy::materializer::base64_data_uri(b64, Some("image/png")));
                 }
                 _ => {}
             }
         }
 
-        // Shallow-merge extra
+        // Shallow-merge extra, never over what litegen sends.
         if let Some(Value::Object(extra_map)) = &extras.extra {
             if let Some(input_obj) = input.as_object_mut() {
-                for (k, v) in extra_map {
+                for (k, v) in extra_map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
                     input_obj.insert(k.clone(), v.clone());
                 }
             }
@@ -347,26 +345,32 @@ impl ImageProvider for ReplicateProvider {
             message: format!("Replicate request failed: {e}"),
             status_code: e.status().map(|s| s.as_u16()),
             provider_error: None,
-            retryable: e.is_timeout() || e.is_connect(),
+            // Only a connection that never opened is safe to retry: a request
+            // that timed out may have created, and billed, a prediction.
+            retryable: e.is_connect(),
         })?;
 
         let status = resp.status();
-        let prediction: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let prediction: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+            let err = prediction["detail"].as_str().map(str::to_string).unwrap_or_else(|| text.chars().take(200).collect());
+            return Err(ProviderError::RequestFailed {
+                message: format!("Replicate API error: {err}"),
+                status_code: Some(status.as_u16()),
+                provider_error: Some(prediction),
+                // Turned away, not run: "If you hit a limit, you will receive a
+                // response with status `429`".
+                // @see <https://replicate.com/docs/topics/predictions/rate-limits>
+                retryable: status.as_u16() == 429 || status.is_server_error(),
+            });
+        }
+        let prediction: Value = serde_json::from_str(&text).map_err(|e| ProviderError::RequestFailed {
             message: format!("Failed to parse Replicate response: {e}"),
             status_code: Some(status.as_u16()),
             provider_error: None,
             retryable: false,
         })?;
-
-        if !status.is_success() {
-            let err = prediction["detail"].as_str().unwrap_or("Unknown error").to_string();
-            return Err(ProviderError::RequestFailed {
-                message: format!("Replicate API error: {err}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(prediction),
-                retryable: status.as_u16() >= 500,
-            });
-        }
 
         // Get prediction ID and poll for result
         let prediction_id = prediction["id"]
@@ -504,6 +508,7 @@ mod tests {
             extra_headers: Default::default(),
             options: None,
         });
+        p.public_assets_only = false;
         p
     }
 
@@ -751,5 +756,126 @@ mod tests {
         );
         assert_eq!(body["input"]["prompt"], "a lighthouse at dusk");
         assert_eq!(body["input"]["aspect_ratio"], "1:1");
+    }
+
+    // ─── Replicate audit, 2026-10-30 ────────────────────────────────────────
+
+    /// Replicate answers every create with a 422, so only the outbound body matters.
+    async fn refusing_server() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(json!({ "detail": "stop" })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn sent_input(server: &MockServer) -> Value {
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        body["input"].clone()
+    }
+
+    /// #24: img2img strength is `prompt_strength` ("Prompt strength when using
+    /// img2img"); a base64 reference goes with its own type; `extra` never
+    /// replaces what litegen sends.
+    /// @see <https://replicate.com/black-forest-labs/flux-dev/api/schema> (2026-10-30)
+    #[tokio::test]
+    async fn the_input_says_what_each_model_takes_and_extra_cannot_replace_it() {
+        use base64::Engine;
+        let server = refusing_server().await;
+        let mut extras = make_extras();
+        extras.strength = Some(0.6);
+        extras.extra = Some(json!({ "prompt": "other", "image": "https://x/y.png", "seed": 9, "output_quality": 90 }));
+        let refs = crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".into(),
+                form: MaterializedRefForm::Base64(base64::engine::general_purpose::STANDARD.encode([0xFF, 0xD8, 0xFF, 0xE0, 0, 16])),
+                time_s: None,
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+        let _ = make_provider(&server.uri())
+            .generate(&ref_schema("replicate/flux-dev"), &make_base("a red kite", "replicate/flux-dev"), &extras, &refs)
+            .await;
+        let input = sent_input(&server).await;
+        assert_eq!(input["prompt_strength"], 0.6);
+        assert!(input.get("strength").is_none(), "{input}");
+        assert!(input["image"].as_str().unwrap().starts_with("data:image/jpeg;base64,"), "{input}");
+        assert_eq!(input["prompt"], "a red kite");
+        assert_eq!(input["seed"], 123);
+        assert_eq!(input["output_quality"], 90);
+    }
+
+    /// #17, #18: a create that timed out may have been accepted and billed, so
+    /// it is never sent again; a 429 ("Request was throttled") may be.
+    /// @see <https://replicate.com/docs/topics/predictions/rate-limits> (2026-10-30)
+    #[tokio::test]
+    async fn a_timed_out_create_is_never_sent_again_and_a_throttled_one_may_be() {
+        let slow = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": "p" })).set_delay(std::time::Duration::from_secs(5)))
+            .mount(&slow)
+            .await;
+        let mut p = make_provider(&slow.uri());
+        p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let schema = ref_schema("replicate/flux-dev");
+        let base = make_base("x", "replicate/flux-dev");
+        let err = p.generate(&schema, &base, &make_extras(), &empty_materialized()).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+
+        let throttled = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).set_body_json(json!({ "detail": "Request was throttled. Your rate limit resets in ~30s." })))
+            .mount(&throttled)
+            .await;
+        let err = make_provider(&throttled.uri()).generate(&schema, &base, &make_extras(), &empty_materialized()).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: true, status_code: Some(429), .. }), "{err:?}");
+    }
+
+    /// #7: "`aborted` means the prediction was terminated before it started
+    /// running" — an ending, not a prediction still to come.
+    /// @see <https://api.replicate.com/openapi.json> (2026-10-30)
+    #[tokio::test]
+    async fn an_aborted_prediction_is_an_ending() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": "p1", "status": "starting" })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/predictions/p1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "p1", "status": "aborted" })))
+            .mount(&server)
+            .await;
+        let started = std::time::Instant::now();
+        let err = make_provider(&server.uri())
+            .generate(&ref_schema("replicate/flux-dev"), &make_base("x", "replicate/flux-dev"), &make_extras(), &empty_materialized())
+            .await
+            .unwrap_err();
+        assert!(matches!(&err, ProviderError::RequestFailed { retryable: false, message, .. } if message.contains("aborted")), "{err:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "polled past an aborted prediction");
+    }
+
+    /// #23: the result is fetched without the key, only from a public address,
+    /// and at most 64 MiB.
+    #[tokio::test]
+    async fn a_result_is_fetched_only_from_a_public_address() {
+        let server = MockServer::start().await;
+        let cdn = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "id": "p1", "status": "succeeded", "output": [format!("{}/out-0.webp", cdn.uri())]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"RIFF\x24\x00\x00\x00WEBP".to_vec())).mount(&cdn).await;
+        let mut provider = make_provider(&server.uri());
+        provider.public_assets_only = true;
+        let err = provider
+            .generate(&ref_schema("replicate/flux-dev"), &make_base("x", "replicate/flux-dev"), &make_extras(), &empty_materialized())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+        assert!(cdn.received_requests().await.unwrap().is_empty(), "a private address was fetched");
     }
 }

@@ -6,6 +6,7 @@ models:
     media_type: image
     display_name: Runway Gen-4 Image
     description: Runway Gen-4 text-to-image with @tag reference images.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
     pricing: { base_cost_usd: 0.08 }
     capabilities: { text_to_image: true, image_to_image: true }
     # promptText: "A non-empty string up to 1000 characters".
@@ -32,10 +33,12 @@ models:
     media_type: image
     display_name: Runway Gen-4 Image Turbo
     description: Faster, cheaper Gen-4 image (requires at least one reference image).
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post
     pricing: { base_cost_usd: 0.02 }
-    # Not text_to_image: a prompt-only request cannot succeed (Runway lists the
-    # input as "Text+Image (References)").
-    # @see https://docs.dev.runwayml.com/guides/models.md
+    # Not text_to_image: a prompt-only request cannot succeed (referenceImages
+    # is required: "An array of one to three images to be used as references
+    # for the generated image output").
+    # @see https://docs.dev.runwayml.com/openapi.json (POST /v1/text_to_image, 2026-10-30)
     capabilities: { image_to_image: true }
     # promptText: "A non-empty string up to 1000 characters".
     # @see https://docs.dev.runwayml.com/openapi.json (POST /v1/text_to_image)
@@ -68,6 +71,7 @@ models:
     media_type: video
     display_name: Runway Gen-4 Turbo
     description: Runway Gen-4 Turbo image-to-video (requires a first-frame image).
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
     # gen4_turbo: "5 credits per second", "$0.01 per credit": the default 5 s is $0.25.
     # @see https://docs.dev.runwayml.com/guides/pricing.md (2026-10-30)
     pricing:
@@ -75,12 +79,12 @@ models:
       variable_pricing:
         - { per_second_usd: 0.05 }
     # gen4_turbo is only in the POST /v1/image_to_video model union (promptImage
-    # required); /v1/text_to_video has no gen4_turbo branch, and the model
-    # guide lists its input as "Image".
-    # @see https://docs.dev.runwayml.com/openapi.json
-    # @see https://docs.dev.runwayml.com/guides/models.md
+    # required); /v1/text_to_video has no gen4_turbo branch. Its branch is
+    # `required: ["promptImage","ratio","model"]`: promptText is optional,
+    # "A non-empty string up to 1000 characters", and none is sent when empty.
+    # @see https://docs.dev.runwayml.com/openapi.json (2026-10-30)
     capabilities: { image_to_video: true }
-    prompt: { required: true, max_length: 1000 }
+    prompt: { required: false, max_length: 1000 }
     params:
       duration_seconds: { kind: int, min: 2, max: 10, default: 5 }
       seed: { kind: seed, min: 0, max: 4294967295 }
@@ -105,6 +109,7 @@ models:
     media_type: video
     display_name: Runway Gen-4.5
     description: Runway Gen-4.5, the highest-quality Runway video tier.
+    docs_url: https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post
     # gen4.5: 12 credits per second at $0.01 per credit, so the default 5 s
     # request is 60 credits = $0.60. Verified 2026-09-11.
     # @see https://docs.dev.runwayml.com/guides/pricing.md
@@ -131,8 +136,12 @@ models:
       provider_format: { form: url }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-    # proresProfile is outputFormat's companion ("Only valid when outputFormat
-    # is prores or hdr_prores") on both gen4.5 endpoints.
-    # @see https://docs.dev.runwayml.com/guides/models.md#professional-and-hdr-output-formats
-    extra_allowlist: [contentModeration, outputFormat, proresProfile]
+    # No outputFormat / proresProfile: every format but mp4 is another
+    # container ("a ProRes .mov", "a .zip of PNG frames", 10-bit .mp4s) at a
+    # surcharge ("5 credits per second for prores and png_sequence, and 20
+    # credits per second for every 10-bit and deeper profile"), and this row
+    # prices and delivers an H.264 .mp4.
+    # @see https://docs.dev.runwayml.com/openapi.json (POST /v1/text_to_video, 2026-10-30)
+    # @see https://docs.dev.runwayml.com/guides/pricing.md#professional-and-hdr-output-formats (2026-10-30)
+    extra_allowlist: [contentModeration]
     tags: [text-to-video, image-to-video, premium]

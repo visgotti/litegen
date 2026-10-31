@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::capabilities::ModelSchema;
 use crate::proxy::materializer::{MaterializedRefForm, MaterializedRequest};
 use crate::providers::auth::{AuthSpec, ProviderCredentials};
-use crate::providers::image::leonardo::upload_init_image;
+use crate::providers::image::leonardo::{read_create, upload_init_image};
 use crate::providers::{
     ApiKeyPool, BaseGenerationRequest, HealthCheckResult, ProviderError, ProviderInstanceConfig,
     VideoExtras, VideoGenerationHandle, VideoGenerationPollResult, VideoProvider, build_cost_estimate,
@@ -21,10 +21,9 @@ use crate::types::*;
 /// `generated_images[0].motionMP4URL`. Bearer auth; start frame uploaded via the
 /// shared presigned init-image flow.
 ///
-/// @see <https://docs.leonardo.ai/docs/list-of-models.md> — current model line-up
-///   (the older /reference/createimagetovideogeneration page now 404s)
-///   (required: prompt, imageId, imageType; optional: model [MOTION2/VEO3/...],
-///    resolution [RESOLUTION_720/...], duration)
+/// @see <https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration> (2026-10-30)
+///   (required: prompt, imageId, imageType; optional: model [MOTION2, VEO3_1,
+///   KLING2_5, …], resolution [RESOLUTION_720, …], duration)
 /// @see <https://docs.leonardo.ai/v1.0/docs/veo-31>
 ///   Verbatim: "\"resolution\": \"RESOLUTION_1080\", \"duration\":8, ... \"model\": \"VEO3_1\""
 pub struct LeonardoVideoProvider {
@@ -33,6 +32,11 @@ pub struct LeonardoVideoProvider {
     auth: AuthSpec,
     client: Client,
 }
+
+/// What litegen itself sends to `POST /generations-image-to-video`; `extra`
+/// cannot replace it (`imageId` and `imageType` in `extra` name the start
+/// frame instead of an uploaded reference).
+const OWNED_FIELDS: &[&str] = &["prompt", "imageId", "imageType", "model", "resolution", "duration"];
 
 impl LeonardoVideoProvider {
     pub fn new() -> Self {
@@ -179,10 +183,8 @@ impl VideoProvider for LeonardoVideoProvider {
         }
         if let Some(Value::Object(map)) = &extras.extra {
             if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map {
-                    if k != "imageId" && k != "imageType" {
-                        obj.insert(k.clone(), v.clone());
-                    }
+                for (k, v) in map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
+                    obj.insert(k.clone(), v.clone());
                 }
             }
         }
@@ -193,23 +195,18 @@ impl VideoProvider for LeonardoVideoProvider {
             &creds,
             self.client.post(&url).header("Content-Type", "application/json").json(&body),
         )?;
-        let submit: Value = crate::providers::inject_trace_headers(builder)
+        let resp = crate::providers::inject_trace_headers(builder)
             .send()
             .await
             .map_err(|e| ProviderError::RequestFailed {
                 message: format!("Leonardo video request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
-            })?
-            .json()
-            .await
-            .map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to parse Leonardo video response: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
+                // Only a connection that never opened is safe to retry: a
+                // request that timed out may have been accepted and billed.
+                retryable: e.is_connect(),
             })?;
+        let submit = read_create(resp, "Leonardo video").await?;
 
         // The generation id appears under one of these job keys depending on model.
         let gen_id = submit["motionVideoGenerationJob"]["generationId"]
@@ -237,7 +234,7 @@ impl VideoProvider for LeonardoVideoProvider {
         let creds = self.creds()?;
         let url = format!("{}/generations/{}", self.api_base(), handle.provider_job_id);
         let builder = crate::providers::auth::apply(&self.auth, &creds, self.client.get(&url))?;
-        let data: Value = crate::providers::inject_trace_headers(builder)
+        let resp = crate::providers::inject_trace_headers(builder)
             .send()
             .await
             .map_err(|e| ProviderError::RequestFailed {
@@ -245,30 +242,40 @@ impl VideoProvider for LeonardoVideoProvider {
                 status_code: None,
                 provider_error: None,
                 retryable: true,
-            })?
-            .json()
-            .await
-            .unwrap_or_default();
+            })?;
+        let data = super::read_poll_json(resp, "leonardo").await?;
 
         let pk = &data["generations_by_pk"];
-        let status = match pk["status"].as_str() {
+        let mut status = match pk["status"].as_str() {
             Some("COMPLETE") => GenerationStatus::Completed,
             Some("FAILED") => GenerationStatus::Failed,
             _ => GenerationStatus::Processing,
         };
-        // Motion/video URL is on the generated image as motionMP4URL.
-        let video_url = pk["generated_images"][0]["motionMP4URL"]
-            .as_str()
-            .or_else(|| pk["generated_images"][0]["url"].as_str())
-            .map(String::from);
+        // The video is the generated image's `motionMP4URL` ("The URL of the
+        // motion MP4"); its `url` is not a video, so a finished generation
+        // without one fails.
+        // @see <https://docs.leonardo.ai/v1.0/reference/getgenerationbyid> (2026-10-30)
+        let video_url = pk["generated_images"][0]["motionMP4URL"].as_str().map(String::from);
+        let error = match status {
+            GenerationStatus::Failed => Some("leonardo generation failed (status FAILED)".to_string()),
+            GenerationStatus::Completed if video_url.is_none() => {
+                status = GenerationStatus::Failed;
+                Some("leonardo generation finished with no motionMP4URL".to_string())
+            }
+            _ => None,
+        };
 
         Ok(VideoGenerationPollResult {
             status,
-            progress: if status == GenerationStatus::Completed { 100 } else { 50 },
+            progress: match status {
+                GenerationStatus::Completed => 100,
+                GenerationStatus::Failed => 0,
+                _ => 50,
+            },
             video_url,
             video_data: None,
             content_type: Some("video/mp4".into()),
-            error: None,
+            error,
             metadata: HashMap::new(),
         })
     }
@@ -536,5 +543,102 @@ mod tests {
         assert_eq!(body["model"], "KLING2_5");
         assert_eq!(body["resolution"], "RESOLUTION_1080");
         assert_eq!(body["duration"], 10);
+    }
+
+    // ─── Leonardo audit, 2026-10-30 ─────────────────────────────────────────
+
+    fn no_refs() -> MaterializedRequest {
+        MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() }
+    }
+
+    /// #16: `extra` passes a start frame by `imageId` and Leonardo's own
+    /// knobs, but never replaces the model litegen bills or anything else it sends.
+    #[tokio::test]
+    async fn extra_cannot_replace_what_litegen_sends() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "error": "stop" })))
+            .mount(&server)
+            .await;
+        let mut extras = extras_with_image_id();
+        extras.duration_seconds = 8.0;
+        extras.extra = Some(json!({
+            "imageId": "img-1", "model": "MOTION2", "prompt": "other", "resolution": "RESOLUTION_480",
+            "duration": 4, "isPublic": true
+        }));
+        let _ = make_provider(&server.uri())
+            .generate(&ref_schema("leonardo/veo3.1"), &make_base("a fox runs", "leonardo/veo3.1"), &extras, &no_refs())
+            .await;
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body["model"], "VEO3_1");
+        assert_eq!(body["prompt"], "a fox runs");
+        assert_eq!(body["resolution"], "RESOLUTION_720");
+        assert_eq!(body["duration"], 8);
+        assert_eq!(body["imageId"], "img-1");
+        assert_eq!(body["isPublic"], true);
+    }
+
+    /// #17, #19: a create Leonardo turned away says so, with its status, and
+    /// one that timed out may have been accepted and billed, so it is never
+    /// sent again.
+    #[tokio::test]
+    async fn a_turned_away_create_says_so_and_a_timed_out_one_is_never_sent_again() {
+        let schema = ref_schema("leonardo/motion2");
+        let base = make_base("x", "leonardo/motion2");
+        for (status, retryable) in [(429, true), (502, true), (400, false)] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(json!({ "error": "no" })))
+                .mount(&server)
+                .await;
+            let err = make_provider(&server.uri()).generate(&schema, &base, &extras_with_image_id(), &no_refs()).await.unwrap_err();
+            assert!(
+                matches!(err, ProviderError::RequestFailed { status_code: Some(s), retryable: r, .. } if s == status && r == retryable),
+                "{status}: {err:?}"
+            );
+        }
+        let slow = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})).set_delay(std::time::Duration::from_secs(5)))
+            .mount(&slow)
+            .await;
+        let mut p = make_provider(&slow.uri());
+        p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let err = p.generate(&schema, &base, &extras_with_image_id(), &no_refs()).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+    }
+
+    /// #13, #25: a poll Leonardo answers with an error is that error; a
+    /// failed generation says so; a finished one with no `motionMP4URL` ("The
+    /// URL of the motion MP4") fails rather than delivering a still as a video.
+    /// @see <https://docs.leonardo.ai/v1.0/reference/getgenerationbyid> (2026-10-30)
+    #[tokio::test]
+    async fn a_poll_says_what_leonardo_said() {
+        let server = MockServer::start().await;
+        for (id, status, body) in [
+            ("gone", 404, json!({ "error": "not found" })),
+            ("failed", 200, json!({ "generations_by_pk": { "status": "FAILED", "generated_images": [] } })),
+            ("still", 200, json!({ "generations_by_pk": { "status": "COMPLETE", "generated_images": [{ "url": "https://cdn.leonardo.ai/a.jpg" }] } })),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(format!("/generations/{id}")))
+                .respond_with(ResponseTemplate::new(status).set_body_json(body))
+                .mount(&server)
+                .await;
+        }
+        let provider = make_provider(&server.uri());
+        let handle = |id: &str| VideoGenerationHandle { provider_job_id: id.into(), provider: "leonardo".into(), model: "leonardo/motion2".into() };
+
+        let err = provider.poll_status(&handle("gone")).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { status_code: Some(404), retryable: false, .. }), "{err:?}");
+
+        let failed = provider.poll_status(&handle("failed")).await.unwrap();
+        assert_eq!(failed.status, GenerationStatus::Failed);
+        assert!(failed.error.is_some());
+
+        let still = provider.poll_status(&handle("still")).await.unwrap();
+        assert_eq!(still.status, GenerationStatus::Failed);
+        assert!(still.video_url.is_none());
+        assert!(still.error.as_deref().is_some_and(|e| e.contains("motionMP4URL")), "{:?}", still.error);
     }
 }

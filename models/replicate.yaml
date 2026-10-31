@@ -4,6 +4,7 @@ models:
     media_type: image
     display_name: Flux Pro
     description: Black Forest Labs Flux Pro via Replicate.
+    docs_url: https://replicate.com/black-forest-labs/flux-pro/api/schema
     pricing: { base_cost_usd: 0.055 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
@@ -33,6 +34,7 @@ models:
     media_type: image
     display_name: Flux 1.1 Pro
     description: Black Forest Labs FLUX1.1 [pro] via Replicate.
+    docs_url: https://replicate.com/black-forest-labs/flux-1.1-pro/api/schema
     # "$0.04 per output image" (re-read 2026-09-11).
     # @see https://replicate.com/black-forest-labs/flux-1.1-pro
     pricing: { base_cost_usd: 0.04 }
@@ -59,6 +61,7 @@ models:
     media_type: image
     display_name: Flux Dev
     description: Flux Dev — open weights via Replicate.
+    docs_url: https://replicate.com/black-forest-labs/flux-dev/api/schema
     pricing: { base_cost_usd: 0.025 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 5000 }
@@ -68,6 +71,9 @@ models:
       seed: { kind: seed, min: 0, max: 4294967294 }
       guidance_scale: { kind: float, min: 0.0, max: 10.0, default: 3.5 }
       steps: { kind: int, min: 1, max: 50, default: 28 }
+      # With an init image the shape is the image's: "The aspect ratio of your
+      # output will match this image".
+      # @see https://replicate.com/black-forest-labs/flux-dev/api/schema (2026-10-30)
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["1:1","16:9","21:9","2:3","3:2","4:5","5:4","9:16","9:21","3:4","4:3"]
@@ -86,12 +92,16 @@ models:
     media_type: image
     display_name: Flux Schnell
     description: Fastest Flux variant.
+    docs_url: https://replicate.com/black-forest-labs/flux-schnell/api/schema
     pricing: { base_cost_usd: 0.003 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
     params:
       # PixelGenie L9: output_format webp | jpg | png, default webp (litegen says jpeg).
       output_format: { kind: string, enum_values: [png, webp, jpeg], default: webp }
+      # Not reproducible by default: `go_fast` (default true) "outputs will not
+      # be deterministic when this is enabled, even if you set a seed".
+      # @see https://replicate.com/black-forest-labs/flux-schnell/api/schema (2026-10-30)
       seed: { kind: seed, min: 0, max: 4294967294 }
       steps: { kind: int, min: 1, max: 4, default: 4 }
       aspect_ratio:
@@ -106,9 +116,11 @@ models:
     media_type: image
     display_name: SDXL on Replicate
     description: SDXL hosted on Replicate.
+    docs_url: https://replicate.com/stability-ai/sdxl/versions
     # Replicate bills this community model by GPU time: "costs approximately
-    # $0.0019 to run" at default inputs (re-read 2026-09-11). $0.005 covers
-    # our 100-step max.
+    # $0.0015 to run on Replicate, or 666 runs per $1" (re-read 2026-10-30;
+    # that is the latest version, 7762fd07, and the pinned 39ed52f2 is still
+    # listed). $0.005 covers our 100-step max.
     # @see https://replicate.com/stability-ai/sdxl
     pricing: { base_cost_usd: 0.005 }
     capabilities: { text_to_image: true, image_to_image: true }
@@ -140,6 +152,7 @@ models:
     media_type: image
     display_name: SD3 on Replicate
     description: SD3 hosted on Replicate.
+    docs_url: https://replicate.com/stability-ai/stable-diffusion-3/api/schema
     pricing: { base_cost_usd: 0.035 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 5000 }
@@ -162,7 +175,8 @@ models:
     provider: replicate
     media_type: video
     display_name: Replicate Video (generic)
-    description: Generic Replicate video endpoint.
+    description: AnimateDiff text-to-video on Replicate (lucataco/animate-diff).
+    docs_url: https://replicate.com/lucataco/animate-diff/versions/beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa377e48a9f
     # Billed by GPU time: "costs approximately $0.10 to run" (re-read
     # 2026-09-11).
     # @see https://replicate.com/lucataco/animate-diff

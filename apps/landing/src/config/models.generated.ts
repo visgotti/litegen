@@ -3590,7 +3590,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://docs.leonardo.ai/"
+    "referenceUrl": "https://docs.leonardo.ai/v1.0/reference/creategeneration"
   },
   {
     "id": "leonardo/kling2.5",
@@ -3646,7 +3646,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "image-to-video"
     ],
-    "referenceUrl": "https://docs.leonardo.ai/"
+    "referenceUrl": "https://docs.leonardo.ai/v1.0/docs/kling-2-5-turbo"
   },
   {
     "id": "leonardo/motion2",
@@ -3687,7 +3687,8 @@ export const MODELS: ModelEntry[] = [
         "enum": [
           "480p",
           "720p"
-        ]
+        ],
+        "default": "720p"
       }
     ],
     "pricing": {
@@ -3696,7 +3697,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "image-to-video"
     ],
-    "referenceUrl": "https://docs.leonardo.ai/"
+    "referenceUrl": "https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration"
   },
   {
     "id": "leonardo/veo3.1",
@@ -3754,7 +3755,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "premium"
     ],
-    "referenceUrl": "https://docs.leonardo.ai/"
+    "referenceUrl": "https://docs.leonardo.ai/v1.0/docs/veo-31"
   },
   {
     "id": "leonardo/veo3.1-fast",
@@ -3812,7 +3813,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "fast"
     ],
-    "referenceUrl": "https://docs.leonardo.ai/"
+    "referenceUrl": "https://docs.leonardo.ai/v1.0/docs/veo-31"
   },
   {
     "id": "luma/dream-machine",
@@ -6273,7 +6274,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "premium"
     ],
-    "referenceUrl": "https://replicate.com/docs/reference/http"
+    "referenceUrl": "https://replicate.com/black-forest-labs/flux-1.1-pro/api/schema"
   },
   {
     "id": "replicate/flux-dev",
@@ -6358,7 +6359,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://replicate.com/docs/reference/http"
+    "referenceUrl": "https://replicate.com/black-forest-labs/flux-dev/api/schema"
   },
   {
     "id": "replicate/flux-pro",
@@ -6427,7 +6428,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "premium"
     ],
-    "referenceUrl": "https://replicate.com/docs/reference/http"
+    "referenceUrl": "https://replicate.com/black-forest-labs/flux-pro/api/schema"
   },
   {
     "id": "replicate/flux-schnell",
@@ -6498,7 +6499,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "fast"
     ],
-    "referenceUrl": "https://replicate.com/docs/reference/http"
+    "referenceUrl": "https://replicate.com/black-forest-labs/flux-schnell/api/schema"
   },
   {
     "id": "replicate/sd3",
@@ -6577,7 +6578,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://replicate.com/docs/reference/http"
+    "referenceUrl": "https://replicate.com/stability-ai/stable-diffusion-3/api/schema"
   },
   {
     "id": "replicate/sdxl",
@@ -6644,13 +6645,13 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://replicate.com/docs/reference/http"
+    "referenceUrl": "https://replicate.com/stability-ai/sdxl/versions"
   },
   {
     "id": "replicate/video",
     "provider": "replicate",
     "displayName": "Replicate Video (generic)",
-    "description": "Generic Replicate video endpoint.",
+    "description": "AnimateDiff text-to-video on Replicate (lucataco/animate-diff).",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -6689,7 +6690,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-video"
     ],
-    "referenceUrl": "https://replicate.com/docs/reference/http"
+    "referenceUrl": "https://replicate.com/lucataco/animate-diff/versions/beecf59c4aee8d81bf04f0381033dfa10dc16e845b4ae00d281e2fa377e48a9f"
   },
   {
     "id": "runway/gen4_image",
@@ -6745,7 +6746,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://docs.dev.runwayml.com/"
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
   },
   {
     "id": "runway/gen4_image_turbo",
@@ -6801,7 +6802,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-image",
       "fast"
     ],
-    "referenceUrl": "https://docs.dev.runwayml.com/"
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1text_to_image/post"
   },
   {
     "id": "runway/gen4-turbo",
@@ -6839,7 +6840,7 @@ export const MODELS: ModelEntry[] = [
       }
     ],
     "promptLimits": {
-      "required": true,
+      "required": false,
       "maxLength": 1000
     },
     "params": [
@@ -6864,7 +6865,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "fast"
     ],
-    "referenceUrl": "https://docs.dev.runwayml.com/"
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
   },
   {
     "id": "runway/gen4.5",
@@ -6924,7 +6925,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "premium"
     ],
-    "referenceUrl": "https://docs.dev.runwayml.com/"
+    "referenceUrl": "https://docs.dev.runwayml.com/api/#tag/Start-generating/paths/~1v1~1image_to_video/post"
   },
   {
     "id": "stability/core",

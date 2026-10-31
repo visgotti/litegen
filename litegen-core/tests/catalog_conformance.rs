@@ -546,8 +546,7 @@ fn target_polycount_bounds_are_sane_where_declared() {
 /// (`promptImage` required); `/v1/text_to_video` has no gen4_turbo branch, and
 /// the model guide lists its input as "Image". Advertising text-to-video sent
 /// prompt-only requests to an endpoint that rejects the model.
-/// @see <https://docs.dev.runwayml.com/openapi.json> (2026-09-11)
-/// @see <https://docs.dev.runwayml.com/guides/models.md> (2026-09-11)
+/// @see <https://docs.dev.runwayml.com/openapi.json> (2026-10-30)
 #[test]
 fn runway_gen4_turbo_is_image_to_video_only() {
     let reg = registry();
@@ -609,8 +608,8 @@ fn runway_image_prompt_limit_is_the_prompt_text_max_length() {
 /// `required` ("An array of one to three images", `minItems: 1`). A role with
 /// `required: false` lets a zero-reference request through to a 400, and
 /// `text_to_image` promises a prompt-only request can work.
-/// @see <https://docs.dev.runwayml.com/openapi.json> (2026-09-11)
-/// @see <https://docs.dev.runwayml.com/guides/models.md> (2026-09-11) — "Text+Image (References)"
+/// @see <https://docs.dev.runwayml.com/openapi.json> (2026-10-30) — `referenceImages`: "An array of
+///   one to three images to be used as references for the generated image output."
 #[test]
 fn runway_gen4_image_turbo_requires_a_reference_image() {
     let reg = registry();
@@ -633,21 +632,20 @@ fn runway_gen4_image_turbo_requires_a_reference_image() {
     assert!(schema.capabilities.image_to_image);
 }
 
-/// gen4.5 takes `proresProfile` on both `/v1/text_to_video` and
-/// `/v1/image_to_video` ("Only valid when `outputFormat` is `prores` or
-/// `hdr_prores`"). `outputFormat` is allowlisted; its companion was not, so a
-/// caller could pick ProRes but not the profile.
-/// @see <https://docs.dev.runwayml.com/guides/models.md#professional-and-hdr-output-formats> (2026-09-11)
+/// #9: gen4.5's `outputFormat` turns the output into "a ProRes .mov", "a .zip
+/// of PNG frames" or a 10-bit .mp4, each with "an additional per-second credit
+/// surcharge: 5 credits per second for `prores` and `png_sequence`, and 20
+/// credits per second for every 10-bit and deeper profile". The row prices,
+/// labels and delivers an H.264 .mp4, so neither it nor `proresProfile` is a
+/// caller's knob until each format is priced and delivered as what it is.
+/// @see <https://docs.dev.runwayml.com/openapi.json> (POST /v1/text_to_video, 2026-10-30)
+/// @see <https://docs.dev.runwayml.com/guides/pricing.md> (2026-10-30)
 #[test]
-fn runway_gen4_5_allowlists_the_prores_profile_with_output_format() {
+fn runway_gen4_5_returns_only_the_mp4_it_prices() {
     let reg = registry();
     let schema = reg.get("runway/gen4.5").expect("runway/gen4.5 missing");
     for key in ["outputFormat", "proresProfile"] {
-        assert!(
-            schema.extra_allowlist.iter().any(|k| k == key),
-            "runway/gen4.5 extra_allowlist is missing {key:?}: {:?}",
-            schema.extra_allowlist
-        );
+        assert!(!schema.extra_allowlist.iter().any(|k| k == key), "runway/gen4.5 allowlists {key:?}: {:?}", schema.extra_allowlist);
     }
 }
 
@@ -3633,5 +3631,59 @@ fn a_480p_hunyuan_image_to_video_job_is_billed_at_two_credits() {
         let req = serde_json::json!({ "model": m.id, "prompt": "x", "resolution": resolution });
         let base: litegen::types::BaseGenerationRequest = serde_json::from_value(req.clone()).unwrap();
         assert!((unit_price_usd(m, &PriceFacts::new(m, &base, &req)) - usd).abs() < 1e-9, "{resolution}");
+    }
+}
+
+// ─── Runway / Leonardo / Replicate audit, 2026-10-30 ───────────────────────
+
+/// #29: gen4_turbo on `/v1/image_to_video` is `required: ["promptImage",
+/// "ratio", "model"]`; `promptText` is optional, "A non-empty string up to
+/// 1000 characters".
+/// @see <https://docs.dev.runwayml.com/openapi.json> (2026-10-30)
+#[test]
+fn runway_gen4_turbo_takes_an_optional_prompt() {
+    let reg = registry();
+    let schema = reg.get("runway/gen4-turbo").expect("runway/gen4-turbo");
+    assert!(!schema.prompt.required, "promptText is not required for gen4_turbo");
+    assert_eq!(schema.prompt.max_length, Some(1000));
+}
+
+/// #4, #33: `modelId` — "The model ID used for image generation" — would run
+/// any Leonardo model at Diffusion XL's price, and `contrast` is "Used in
+/// Phoenix and Flux models", not Diffusion XL.
+/// @see <https://docs.leonardo.ai/v1.0/reference/creategeneration> (2026-10-30)
+#[test]
+fn leonardo_diffusion_xl_cannot_name_another_model_or_a_phoenix_knob() {
+    let reg = registry();
+    let schema = reg.get("leonardo/diffusion-xl").expect("leonardo/diffusion-xl");
+    for key in ["modelId", "contrast"] {
+        assert!(!schema.extra_allowlist.iter().any(|k| k == key), "allowlists {key}: {:?}", schema.extra_allowlist);
+    }
+}
+
+/// #27: Motion 2.0 "Defaults to `RESOLUTION_480`", and litegen sends 720 when
+/// no resolution is asked for; the row says so.
+/// @see <https://docs.leonardo.ai/docs/motion-20.md> (2026-10-30)
+#[test]
+fn leonardo_motion2_says_it_is_sent_at_720p() {
+    let reg = registry();
+    let schema = reg.get("leonardo/motion2").expect("leonardo/motion2");
+    match schema.params.get("resolution") {
+        Some(ParamSpec::String(s)) => assert_eq!(s.default.as_deref(), Some("720p")),
+        other => panic!("resolution is {other:?}"),
+    }
+}
+
+/// #28: every Runway, Leonardo and Replicate row names the vendor page its
+/// fields were read from.
+#[test]
+fn every_runway_leonardo_and_replicate_row_names_its_docs_url() {
+    for m in registry().all().filter(|m| ["runway", "leonardo", "replicate"].contains(&m.provider.as_str())) {
+        let url = m.docs_url.as_deref().unwrap_or_else(|| panic!("{} names no docs_url", m.id));
+        assert!(
+            ["https://docs.dev.runwayml.com/", "https://docs.leonardo.ai/", "https://replicate.com/"].iter().any(|p| url.starts_with(p)),
+            "{}: {url}",
+            m.id
+        );
     }
 }

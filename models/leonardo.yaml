@@ -6,12 +6,16 @@ models:
     media_type: image
     display_name: Leonardo Diffusion XL
     description: Leonardo image generation (default Diffusion XL model). Add more models via providers.leonardo.model_mapping.
-    pricing: { base_cost_usd: 0.02 }
+    docs_url: https://docs.leonardo.ai/v1.0/reference/creategeneration
+    pricing: { base_cost_usd: 0.02 }  # price unverified: Leonardo publishes API prices only in its logged-in calculator
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 4000 }
     params:
       negative_prompt: { kind: string, max_length: 4000 }
       seed: { kind: seed, min: 0, max: 2147483647 }
+      # Sent as init_strength ("How strongly the generated images should
+      # reflect the original image in image2image. Must be a float between
+      # 0.1 and 0.9"), so a text-only request ignores it.
       strength: { kind: float, min: 0.1, max: 0.9 }
       size:
         kind: size
@@ -30,7 +34,11 @@ models:
           init: file
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [alchemy, photoReal, presetStyle, contrast, modelId]
+    # No modelId: it would run any Leonardo model at this row's price. No
+    # contrast: "Used in Phoenix and Flux models". alchemy is sent false
+    # unless asked for (it defaults on and makes the output 1.75x `size`).
+    # @see https://docs.leonardo.ai/v1.0/reference/creategeneration (2026-10-30)
+    extra_allowlist: [alchemy, photoReal, presetStyle]
     tags: [text-to-image, image-to-image]
 
   # ─── Motion / Veo 3.1 / Kling video (image-to-video; start frame required) ─
@@ -39,7 +47,8 @@ models:
     media_type: video
     display_name: Leonardo Motion 2.0
     description: Leonardo Motion 2.0 image-to-video.
-    pricing: { base_cost_usd: 0.30 }
+    docs_url: https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration
+    pricing: { base_cost_usd: 0.30 }  # price unverified: Leonardo publishes API prices only in its logged-in calculator
     capabilities: { image_to_video: true }
     prompt: { required: true, max_length: 4000 }
     # No duration_seconds: Motion 2.0 has no duration parameter (the v1
@@ -48,9 +57,13 @@ models:
     # @see https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration
     # @see https://docs.leonardo.ai/docs/motion-20
     params:
+      # Motion 2.0 "Defaults to RESOLUTION_480"; litegen sends 720p unless
+      # 480p is asked for.
+      # @see https://docs.leonardo.ai/docs/motion-20.md (2026-10-30)
       resolution:
         kind: string
         enum_values: [480p, 720p]
+        default: 720p
     ref_inputs:
       max_total: 1
       default_role: first_frame
@@ -77,6 +90,7 @@ models:
     media_type: video
     display_name: Leonardo Veo 3.1
     description: Google Veo 3.1 served through Leonardo's first-party API (start-frame image-to-video).
+    docs_url: https://docs.leonardo.ai/v1.0/docs/veo-31
     pricing: { base_cost_usd: 2.50 }  # price unverified: Leonardo publishes API prices only in its logged-in calculator
     capabilities: { image_to_video: true }
     # Veo 3.1 prompt maxLength 9999, default duration 8 (Leonardo's model
@@ -112,6 +126,7 @@ models:
     media_type: video
     display_name: Leonardo Veo 3.1 Fast
     description: Google Veo 3.1 Fast served through Leonardo's first-party API (start-frame image-to-video).
+    docs_url: https://docs.leonardo.ai/v1.0/docs/veo-31
     pricing: { base_cost_usd: 2.50 }  # price unverified: Leonardo publishes API prices only in its logged-in calculator
     capabilities: { image_to_video: true }
     # Veo 3.1 Fast prompt maxLength 9999, duration enum [4, 6, 8] default 8
@@ -135,7 +150,9 @@ models:
     extra_allowlist: [imageId, imageType, isPublic]
     tags: [image-to-video, fast]
 
-  # Kling 2.5 Turbo (model KLING2_5 in the v1 reference's `model` enum):
+  # Kling 2.5 Turbo (model KLING2_5 in the v1 reference's `model` enum; the
+  # guide spells it "Set to `Kling2_5`", and the enum and "Commonly Used API
+  # Values" both say KLING2_5, which is sent):
   # "duration ... Set to 5 or 10" (the schema can only express a range, so
   # 5-10 is advertised; 6-9 s will be refused), "resolution ... Set to
   # RESOLUTION_1080" (the adapter sends 1080 when none is requested).
@@ -146,6 +163,7 @@ models:
     media_type: video
     display_name: Leonardo Kling 2.5 Turbo
     description: Kling 2.5 Turbo served through Leonardo's first-party API.
+    docs_url: https://docs.leonardo.ai/v1.0/docs/kling-2-5-turbo
     pricing: { base_cost_usd: 1.00 }  # price unverified: Leonardo publishes API prices only in its logged-in calculator
     capabilities: { image_to_video: true }
     # Kling 2.5 Turbo prompt maxLength 2500 (Leonardo's model schema,

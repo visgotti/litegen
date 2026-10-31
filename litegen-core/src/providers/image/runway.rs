@@ -28,9 +28,53 @@ pub struct RunwayImageProvider {
     key_pool: Option<ApiKeyPool>,
     auth: AuthSpec,
     client: Client,
+    /// Result downloads: no redirects, so a URL that passed the public-address
+    /// check cannot bounce into a private one.
+    asset_client: Client,
+    /// Whether a result URL must resolve to a public address. Only the tests,
+    /// whose mock vendor runs on loopback, turn it off.
+    pub(crate) public_assets_only: bool,
 }
 
 const RUNWAY_VERSION: &str = "2024-11-06";
+
+/// What litegen itself sends to `POST /text_to_image`; `extra` cannot replace it.
+const OWNED_FIELDS: &[&str] = &["promptText", "model", "ratio", "seed", "referenceImages"];
+
+/// The longest data URI Runway takes: `"maxLength": 5242880` ("to fit an
+/// image within the 5MB limit, the binary file must be 3.3MB or less").
+/// @see <https://docs.dev.runwayml.com/assets/inputs.md> (2026-10-30)
+const MAX_DATA_URI_CHARS: usize = 5_242_880;
+
+/// A reference as Runway takes it, for both the image and the video
+/// adapter: a URL, or a data URI of a JPEG, PNG or WebP within
+/// [`MAX_DATA_URI_CHARS`] ("Data URIs are accepted in any field where a URL is
+/// accepted"; "GIF images are not supported"). Anything else is refused
+/// before any call. `None` for a form Runway has no field for.
+/// @see <https://docs.dev.runwayml.com/assets/inputs.md> (2026-10-30)
+pub(crate) fn runway_uri(form: &MaterializedRefForm) -> Result<Option<String>, ProviderError> {
+    let uri = match form {
+        MaterializedRefForm::Url(u) => u.clone(),
+        MaterializedRefForm::Base64(b64) => crate::proxy::materializer::base64_data_uri(b64, None),
+        MaterializedRefForm::MultipartField { .. } => return Ok(None),
+    };
+    if let Some(rest) = uri.strip_prefix("data:") {
+        let mime = rest.split([';', ',']).next().unwrap_or("");
+        if !matches!(mime, "image/jpeg" | "image/jpg" | "image/png" | "image/webp") {
+            return Err(ProviderError::InvalidRequest(format!(
+                "runway takes a JPEG, PNG or WebP reference, not {}",
+                if mime.is_empty() { "an untyped one" } else { mime }
+            )));
+        }
+        if uri.len() > MAX_DATA_URI_CHARS {
+            return Err(ProviderError::InvalidRequest(format!(
+                "runway takes a reference of at most {MAX_DATA_URI_CHARS} characters as a data URI (3.3 MB of image); this one is {}",
+                uri.len()
+            )));
+        }
+    }
+    Ok(Some(uri))
+}
 
 impl RunwayImageProvider {
     pub fn new() -> Self {
@@ -42,6 +86,11 @@ impl RunwayImageProvider {
                 .timeout(std::time::Duration::from_secs(180))
                 .build()
                 .expect("failed to build HTTP client"),
+            asset_client: crate::util::ssrf::no_redirect_download_client(
+                std::time::Duration::from_secs(120),
+                std::time::Duration::from_secs(30),
+            ),
+            public_assets_only: true,
         }
     }
 
@@ -144,21 +193,17 @@ impl RunwayImageProvider {
                 &creds,
                 self.client.get(&url).header("X-Runway-Version", RUNWAY_VERSION),
             )?;
-            let resp = crate::providers::inject_trace_headers(builder)
-                .send()
-                .await
-                .map_err(|e| ProviderError::RequestFailed {
-                    message: e.to_string(),
-                    status_code: e.status().map(|s| s.as_u16()),
-                    provider_error: None,
-                    retryable: true,
-                })?;
-            let data: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to parse Runway poll response: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
-            })?;
+            let resp = match crate::providers::inject_trace_headers(builder).send().await {
+                Ok(resp) => resp,
+                // The task is Runway's now; a dropped poll is asked again.
+                Err(_) => continue,
+            };
+            // A 5xx or 429 is asked again; any other error status is the answer.
+            let data = match crate::providers::video::read_poll_json(resp, "runway").await {
+                Ok(data) => data,
+                Err(ProviderError::RequestFailed { retryable: true, .. }) => continue,
+                Err(e) => return Err(e),
+            };
             match data["status"].as_str() {
                 Some("SUCCEEDED") => return Ok(data),
                 Some("FAILED") | Some("CANCELLED") => {
@@ -177,30 +222,7 @@ impl RunwayImageProvider {
     }
 
     async fn fetch_image_bytes(&self, url: &str) -> Result<Vec<u8>, ProviderError> {
-        let resp = self.client.get(url).send().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to fetch Runway image: {e}"),
-            status_code: e.status().map(|s| s.as_u16()),
-            provider_error: None,
-            retryable: true,
-        })?;
-        if !resp.status().is_success() {
-            return Err(ProviderError::RequestFailed {
-                message: format!("Runway image URL returned HTTP {}", resp.status()),
-                status_code: Some(resp.status().as_u16()),
-                provider_error: None,
-                retryable: false,
-            });
-        }
-        Ok(resp
-            .bytes()
-            .await
-            .map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to read Runway image bytes: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
-            })?
-            .to_vec())
+        super::fetch_result(&self.asset_client, url, self.public_assets_only, "runway image").await
     }
 }
 
@@ -253,16 +275,13 @@ impl ImageProvider for RunwayImageProvider {
             body["seed"] = Value::Number(seed.into());
         }
 
-        // Reference images: {uri, tag}. uri may be a URL or a base64 data URI.
+        // Reference images: {uri, tag}. uri may be a URL or a data URI of the
+        // image's own type.
         let mut refs: Vec<Value> = Vec::new();
         for (i, r) in materialized.refs.iter().enumerate() {
             let tag = if r.role.is_empty() || r.role == "init" { format!("ref{i}") } else { r.role.clone() };
-            match &r.form {
-                MaterializedRefForm::Url(u) => refs.push(json!({ "uri": u, "tag": tag })),
-                MaterializedRefForm::Base64(b64) => {
-                    refs.push(json!({ "uri": format!("data:image/png;base64,{b64}"), "tag": tag }))
-                }
-                _ => {}
+            if let Some(uri) = runway_uri(&r.form)? {
+                refs.push(json!({ "uri": uri, "tag": tag }));
             }
         }
         if !refs.is_empty() {
@@ -271,7 +290,7 @@ impl ImageProvider for RunwayImageProvider {
 
         if let Some(Value::Object(extra_map)) = &extras.extra {
             if let Some(obj) = body.as_object_mut() {
-                for (k, v) in extra_map {
+                for (k, v) in extra_map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
                     obj.insert(k.clone(), v.clone());
                 }
             }
@@ -293,25 +312,31 @@ impl ImageProvider for RunwayImageProvider {
                 message: format!("Runway image request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
+                // Only a connection that never opened is safe to retry: a
+                // request that timed out may have been accepted and billed.
+                retryable: e.is_connect(),
             })?;
 
         let status = resp.status();
-        let submit: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let submit: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+            let err = submit["error"].as_str().map(str::to_string).unwrap_or_else(|| text.chars().take(200).collect());
+            return Err(ProviderError::RequestFailed {
+                message: format!("Runway API error: {err}"),
+                status_code: Some(status.as_u16()),
+                provider_error: Some(submit),
+                // Turned away, not run: "429 | If the client makes too many requests … | Yes".
+                // @see <https://docs.dev.runwayml.com/errors/errors.md>
+                retryable: status.as_u16() == 429 || status.is_server_error(),
+            });
+        }
+        let submit: Value = serde_json::from_str(&text).map_err(|e| ProviderError::RequestFailed {
             message: format!("Failed to parse Runway response: {e}"),
             status_code: Some(status.as_u16()),
             provider_error: None,
             retryable: false,
         })?;
-        if !status.is_success() {
-            let err = submit["error"].as_str().unwrap_or("Unknown error").to_string();
-            return Err(ProviderError::RequestFailed {
-                message: format!("Runway API error: {err}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(submit),
-                retryable: status.as_u16() >= 500,
-            });
-        }
 
         let id = submit["id"].as_str().ok_or_else(|| ProviderError::RequestFailed {
             message: "Runway response missing task id".to_string(),
@@ -416,6 +441,7 @@ mod tests {
         };
         cfg.credentials.api_key = Some("rw-secret".to_string());
         p.configure(cfg);
+        p.public_assets_only = false;
         p
     }
 
@@ -558,5 +584,162 @@ mod tests {
                 "ar={ar:?} size={size:?} produced {got:?}, which Runway rejects"
             );
         }
+    }
+
+    // ─── Runway audit, 2026-10-30 ───────────────────────────────────────────
+
+    fn no_refs() -> MaterializedRequest {
+        MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() }
+    }
+
+    /// Runway answers every submit with a 400, so `generate()` returns before
+    /// polling; only the outbound body matters.
+    async fn refusing_server() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "error": "stop" })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn sent_bodies(server: &MockServer) -> Vec<Value> {
+        server.received_requests().await.unwrap().iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect()
+    }
+
+    /// #16: `extra` adds Runway's own knobs but never replaces what litegen sends.
+    #[tokio::test]
+    async fn extra_cannot_replace_what_litegen_sends() {
+        let server = refusing_server().await;
+        let mut base = make_base("a lighthouse", "runway/gen4_image");
+        base.seed = Some(3);
+        let mut extras = make_extras();
+        extras.extra = Some(json!({
+            "model": "gen4_image_turbo", "promptText": "other", "ratio": "720:720", "seed": 9,
+            "referenceImages": [], "contentModeration": { "publicFigureThreshold": "low" }
+        }));
+        let _ = make_provider(&server.uri()).generate(&ref_schema("runway/gen4_image"), &base, &extras, &no_refs()).await;
+        let body = &sent_bodies(&server).await[0];
+        assert_eq!(body["model"], "gen4_image");
+        assert_eq!(body["promptText"], "a lighthouse");
+        assert_eq!(body["ratio"], "1920:1080");
+        assert_eq!(body["seed"], 3);
+        assert!(body.get("referenceImages").is_none(), "{body}");
+        assert_eq!(body["contentModeration"]["publicFigureThreshold"], "low");
+    }
+
+    /// #17, #18: a submit that timed out may have been accepted and billed, so
+    /// it is never sent again; a 429 was turned away and may be ("429 | If the
+    /// client makes too many requests … | Yes").
+    /// @see <https://docs.dev.runwayml.com/errors/errors.md> (2026-10-30)
+    #[tokio::test]
+    async fn a_timed_out_submit_is_never_sent_again_and_a_rate_limited_one_may_be() {
+        let slow = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "t" })).set_delay(std::time::Duration::from_secs(5)))
+            .mount(&slow)
+            .await;
+        let mut p = make_provider(&slow.uri());
+        p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let schema = ref_schema("runway/gen4_image");
+        let err = p.generate(&schema, &make_base("x", "runway/gen4_image"), &make_extras(), &no_refs()).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+
+        let limited = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).set_body_json(json!({ "error": "Too many requests" })))
+            .mount(&limited)
+            .await;
+        let err = make_provider(&limited.uri())
+            .generate(&schema, &make_base("x", "runway/gen4_image"), &make_extras(), &no_refs())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: true, status_code: Some(429), .. }), "{err:?}");
+    }
+
+    /// #21: "GIF images are not supported", and a data URI is at most
+    /// 5,242,880 characters matching `^data:image\/.*`. A base64 reference goes
+    /// with its own type; one Runway cannot take is refused before any call.
+    /// @see <https://docs.dev.runwayml.com/assets/inputs.md> (2026-10-30)
+    #[tokio::test]
+    async fn a_reference_goes_with_its_own_type_and_one_runway_cannot_take_is_refused() {
+        use base64::Engine;
+        let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+        let one = |form| MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef { role: "init".into(), form, time_s: None }],
+            cleanup: Cleanup::empty(),
+        };
+        let server = refusing_server().await;
+        let provider = make_provider(&server.uri());
+        let schema = ref_schema("runway/gen4_image");
+        let base = make_base("x", "runway/gen4_image");
+        let jpeg = one(MaterializedRefForm::Base64(b64(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 16, b'J', b'F', b'I', b'F'])));
+        let _ = provider.generate(&schema, &base, &make_extras(), &jpeg).await;
+        let uri = sent_bodies(&server).await[0]["referenceImages"][0]["uri"].as_str().unwrap().to_string();
+        assert!(uri.starts_with("data:image/jpeg;base64,"), "{}", &uri[..40.min(uri.len())]);
+
+        for form in [
+            MaterializedRefForm::Base64(b64(b"GIF89a\x01\x00\x01\x00")),
+            MaterializedRefForm::Url(format!("data:image/png;base64,{}", "A".repeat(5_242_880))),
+        ] {
+            let err = provider.generate(&schema, &base, &make_extras(), &one(form)).await.unwrap_err();
+            assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 1, "a refused reference reached Runway");
+    }
+
+    /// #13: a poll Runway answers with an error is that error, not a task
+    /// still running ("404 | Requests will return a 404 when the referenced
+    /// resource is not available | No").
+    /// @see <https://docs.dev.runwayml.com/errors/errors.md> (2026-10-30)
+    #[tokio::test]
+    async fn a_poll_error_is_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "t1" })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/tasks/t1"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({ "error": "Task not found" })))
+            .mount(&server)
+            .await;
+        let err = make_provider(&server.uri())
+            .generate(&ref_schema("runway/gen4_image"), &make_base("x", "runway/gen4_image"), &make_extras(), &no_refs())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { status_code: Some(404), retryable: false, .. }), "{err:?}");
+    }
+
+    /// #23: the result is fetched without the key, only from a public address,
+    /// and at most 64 MiB; Runway has billed the task by then, so a refusal is
+    /// final.
+    #[tokio::test]
+    async fn a_result_is_fetched_only_from_a_public_address() {
+        let server = MockServer::start().await;
+        let image_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "t1" })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/tasks/t1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "t1", "status": "SUCCEEDED", "output": [format!("{}/out.png", image_server.uri())]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"\x89PNG\r\n\x1a\n".to_vec()))
+            .mount(&image_server)
+            .await;
+        let mut provider = make_provider(&server.uri());
+        provider.public_assets_only = true;
+        let err = provider
+            .generate(&ref_schema("runway/gen4_image"), &make_base("x", "runway/gen4_image"), &make_extras(), &no_refs())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+        assert!(image_server.received_requests().await.unwrap().is_empty(), "a private address was fetched");
     }
 }
