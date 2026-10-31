@@ -116,40 +116,6 @@ impl GoogleProvider {
         })
     }
 
-    /// Map pixel dimensions to a Google-supported aspect ratio.
-    fn aspect_ratio_from_size(size: &str) -> Option<&'static str> {
-        let parts: Vec<&str> = size.split('x').collect();
-        if parts.len() != 2 {
-            return None;
-        }
-        let w: f64 = parts[0].parse().ok()?;
-        let h: f64 = parts[1].parse().ok()?;
-        if h == 0.0 {
-            return None;
-        }
-        let ratio = w / h;
-        // `ImageConfig.aspect_ratio` supports exactly these eight values.
-        // `5:4` and `4:5` are NOT members and are rejected by the API, so the
-        // near-square band collapses to `1:1`.
-        // @see googleapis/python-genai `types.ImageConfig.aspect_ratio`
-        Some(if ratio >= 2.1 {
-            "21:9"
-        } else if ratio >= 1.7 {
-            "16:9"
-        } else if ratio >= 1.4 {
-            "3:2"
-        } else if ratio >= 1.18 {
-            "4:3"
-        } else if ratio >= 0.85 {
-            "1:1"
-        } else if ratio >= 0.7 {
-            "3:4"
-        } else if ratio >= 0.58 {
-            "2:3"
-        } else {
-            "9:16"
-        })
-    }
 }
 
 impl Default for GoogleProvider {
@@ -200,18 +166,9 @@ impl ImageProvider for GoogleProvider {
         let url = self.api_url(gemini_model);
         let is_imagen = Self::is_imagen_model(gemini_model);
 
-        // Resolve the requested aspect ratio (explicit, else derived from size).
-        let aspect_ratio: Option<String> = extras
-            .aspect_ratio
-            .as_deref()
-            .map(|s| s.to_string())
-            .or_else(|| {
-                extras
-                    .size
-                    .as_deref()
-                    .and_then(Self::aspect_ratio_from_size)
-                    .map(|s| s.to_string())
-            });
+        // The requested aspect ratio. No Google row declares `size`, so none
+        // reaches here to derive one from.
+        let aspect_ratio: Option<String> = extras.aspect_ratio.clone();
 
         let body = if is_imagen {
             // ── Imagen :predict surface ───────────────────────────────────
@@ -257,9 +214,13 @@ impl ImageProvider for GoogleProvider {
             for r in &materialized.refs {
                 match &r.form {
                     MaterializedRefForm::Base64(b64) => {
+                        // The type the bytes are: `Blob.mimeType` is "the IANA
+                        // standard MIME type of the source data".
+                        let head = B64.decode(b64.get(..b64.len().min(64)).unwrap_or("")).unwrap_or_default();
+                        let mime = crate::proxy::materializer::sniff_image_mime(&head).unwrap_or("image/png");
                         parts.push(json!({
                             "inlineData": {
-                                "mimeType": "image/png",
+                                "mimeType": mime,
                                 "data": b64
                             }
                         }));
@@ -300,22 +261,18 @@ impl ImageProvider for GoogleProvider {
                 gen_config["seed"] = Value::Number(seed.into());
             }
 
-            // Number of images — the generateContent surface uses
-            // candidateCount; `numberOfImages` belongs to the Imagen :predict
-            // API and Google 400s on unknown generationConfig fields. Omit
-            // entirely for n<=1 (the default) to stay off models that reject
-            // candidateCount for image output.
-            if base.n > 1 {
-                gen_config["candidateCount"] = Value::Number(base.n.into());
-            }
+            // No `candidateCount`: it defaults to 1, and litegen returns (and
+            // bills) one image.
 
-            // Merge extra fields. `imageSize` and `personGeneration` are
-            // members of `generationConfig.imageConfig`, not of
-            // `generationConfig` itself, so they have to be nested.
-            // @see googleapis/python-genai `types.ImageConfig`
-            const IMAGE_CONFIG_KEYS: [&str; 2] = ["imageSize", "personGeneration"];
+            // Merge extra fields: `imageSize` is a member of
+            // `generationConfig.imageConfig`, whose only other member is the
+            // `aspectRatio` set above; nothing litegen sets is replaced.
+            // @see <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta> — `ImageConfig`
+            //   has exactly `aspectRatio` and `imageSize`.
+            const IMAGE_CONFIG_KEYS: [&str; 1] = ["imageSize"];
+            const OWNED: [&str; 4] = ["responseModalities", "candidateCount", "seed", "imageConfig"];
             if let Some(Value::Object(extra_map)) = &extras.extra {
-                for (k, v) in extra_map {
+                for (k, v) in extra_map.iter().filter(|(k, _)| !OWNED.contains(&k.as_str())) {
                     if IMAGE_CONFIG_KEYS.contains(&k.as_str()) {
                         if !gen_config["imageConfig"].is_object() {
                             gen_config["imageConfig"] = json!({});
@@ -345,7 +302,9 @@ impl ImageProvider for GoogleProvider {
         .await
         .map_err(|e| {
             let status_code = e.status().map(|s| s.as_u16());
-            let retryable = e.is_timeout() || e.is_connect();
+            // Only a connection that never opened was surely not received:
+            // a call that timed out may still run, and bill, at Google.
+            let retryable = e.is_connect();
             ProviderError::RequestFailed {
                 // No URL in the text, whatever it carries: errors reach callers.
                 message: format!("Google request failed: {}", e.without_url()),
@@ -431,14 +390,10 @@ impl ImageProvider for GoogleProvider {
                 }
             })?;
 
-            let parts_arr = first_candidate["content"]["parts"].as_array().ok_or_else(|| {
-                ProviderError::RequestFailed {
-                    message: "Google response missing parts".to_string(),
-                    status_code: None,
-                    provider_error: None,
-                    retryable: false,
-                }
-            })?;
+            // A refused image may come with no content at all; the search
+            // below then answers with Google's reason.
+            let no_parts = Vec::new();
+            let parts_arr = first_candidate["content"]["parts"].as_array().unwrap_or(&no_parts);
 
             // Include any text parts (e.g. revised prompt)
             for part in parts_arr {
@@ -448,15 +403,26 @@ impl ImageProvider for GoogleProvider {
                 }
             }
 
-            // Find the part with inlineData (image)
+            // The final image is the last one that is not a thought: "The
+            // model generates up to two interim images to test composition
+            // and logic. The last image within Thinking is also the final
+            // rendered image." With none, Google's reason is the error.
+            // @see <https://ai.google.dev/gemini-api/docs/generate-content/image-generation>
             let image_part = parts_arr
                 .iter()
-                .find(|p| p["inlineData"].is_object())
-                .ok_or_else(|| ProviderError::RequestFailed {
-                    message: "Google response missing image inlineData part".to_string(),
-                    status_code: None,
-                    provider_error: Some(resp_json.clone()),
-                    retryable: false,
+                .rev()
+                .find(|p| p["inlineData"].is_object() && p["thought"] != Value::Bool(true))
+                .ok_or_else(|| {
+                    let why = first_candidate["finishReason"]
+                        .as_str()
+                        .or_else(|| resp_json["promptFeedback"]["blockReason"].as_str())
+                        .unwrap_or("no reason given");
+                    ProviderError::RequestFailed {
+                        message: format!("Google returned no image ({why})"),
+                        status_code: None,
+                        provider_error: Some(resp_json.clone()),
+                        retryable: false,
+                    }
                 })?;
 
             let mime = image_part["inlineData"]["mimeType"]
@@ -796,27 +762,6 @@ mod tests {
         );
     }
 
-    /// `ImageConfig.aspect_ratio` supports exactly
-    /// `1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, 21:9`. The size-derivation helper
-    /// used to emit `5:4` and `4:5`, which are rejected.
-    #[test]
-    fn every_derived_aspect_ratio_is_supported_by_image_config() {
-        const SUPPORTED: [&str; 8] =
-            ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"];
-        // Sweep a wide range of plausible sizes, including the ratios that used
-        // to fall into the 5:4 and 4:5 buckets.
-        for w in (256..=3072).step_by(16) {
-            for h in [256u32, 512, 768, 832, 1024, 1200, 1280, 1536, 2048] {
-                if let Some(ar) = GoogleProvider::aspect_ratio_from_size(&format!("{w}x{h}")) {
-                    assert!(
-                        SUPPORTED.contains(&ar),
-                        "{w}x{h} derived unsupported aspect ratio {ar:?}"
-                    );
-                }
-            }
-        }
-    }
-
     /// The canonical wire value is the proto enum name. `Modality.IMAGE` in the
     /// Google GenAI SDK serialises as `"IMAGE"`; lowercase is undocumented.
     #[tokio::test]
@@ -848,9 +793,10 @@ mod tests {
         );
     }
 
-    /// `imageSize` and `personGeneration` are members of
-    /// `generationConfig.imageConfig`, not of `generationConfig` itself.
-    /// @see googleapis/python-genai `types.ImageConfig`
+    /// `imageSize` is a member of `generationConfig.imageConfig`, not of
+    /// `generationConfig` itself; the REST `ImageConfig` has exactly
+    /// `aspectRatio` and `imageSize` (no `personGeneration`).
+    /// @see <https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta> (2026-10-30)
     #[tokio::test]
     async fn image_config_keys_are_nested_under_image_config() {
         let server = MockServer::start().await;
@@ -868,7 +814,7 @@ mod tests {
         let schema = ref_schema("google/gemini-3-pro-image");
         let base = make_base("a lighthouse", "google/gemini-3-pro-image");
         let mut extras = make_extras();
-        extras.extra = Some(json!({ "imageSize": "2K", "personGeneration": "ALLOW_ADULT" }));
+        extras.extra = Some(json!({ "imageSize": "2K" }));
 
         provider
             .generate(&schema, &base, &extras, &empty_materialized())
@@ -879,13 +825,119 @@ mod tests {
         let body: Value = serde_json::from_slice(&received[0].body).unwrap();
         let cfg = &body["generationConfig"];
         assert_eq!(cfg["imageConfig"]["imageSize"], "2K");
-        assert_eq!(cfg["imageConfig"]["personGeneration"], "ALLOW_ADULT");
         assert!(cfg.get("imageSize").is_none(), "imageSize must not be top-level");
-        assert!(
-            cfg.get("personGeneration").is_none(),
-            "personGeneration must not be top-level"
-        );
         // The aspect ratio still nests under imageConfig alongside them.
         assert_eq!(cfg["imageConfig"]["aspectRatio"], "1:1");
+    }
+
+    // ─── Google audit, 2026-10-30: W3–W7 ────────────────────────────────────
+
+    fn gemini_answer(parts: Value) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({ "candidates": [{ "content": { "parts": parts } }] }))
+    }
+
+    async fn sent_body(server: &MockServer) -> Value {
+        serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap()
+    }
+
+    /// W3, W4: `candidateCount` is never sent (litegen returns and bills one
+    /// image), `extra` cannot replace what litegen sets, and only `imageSize`
+    /// nests in `imageConfig`, whose only other member is `aspectRatio`.
+    #[tokio::test]
+    async fn one_image_is_asked_for_and_extra_cannot_replace_what_litegen_sets() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(gemini_answer(json!([{ "inlineData": { "mimeType": "image/png", "data": B64.encode(b"PNG") } }])))
+            .mount(&server)
+            .await;
+        let mut base = make_base("a fox", "google/gemini-3.1-flash-image");
+        base.n = 4;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "responseModalities": ["TEXT"], "candidateCount": 3, "imageSize": "2K", "personGeneration": "allow_all" }));
+        make_provider(&server.uri()).generate(&ref_schema("google/gemini-3.1-flash-image"), &base, &extras, &empty_materialized()).await.unwrap();
+        let cfg = sent_body(&server).await["generationConfig"].clone();
+        assert_eq!(cfg["responseModalities"], json!(["IMAGE"]), "{cfg}");
+        assert!(cfg.get("candidateCount").is_none(), "{cfg}");
+        assert_eq!(cfg["imageConfig"], json!({ "aspectRatio": "1:1", "imageSize": "2K" }), "{cfg}");
+    }
+
+    /// W5: the final image is the last non-thought one, and a reply with none
+    /// says why, with Google's own answer.
+    #[tokio::test]
+    async fn the_last_finished_image_is_kept_and_a_refusal_says_why() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(gemini_answer(json!([
+                { "thought": true, "inlineData": { "mimeType": "image/png", "data": B64.encode(b"DRAFT") } },
+                { "inlineData": { "mimeType": "image/png", "data": B64.encode(b"FIRST") } },
+                { "inlineData": { "mimeType": "image/png", "data": B64.encode(b"FINAL") } },
+            ])))
+            .mount(&server)
+            .await;
+        let schema = ref_schema("google/gemini-3.1-flash-image");
+        let out = make_provider(&server.uri())
+            .generate(&schema, &make_base("x", "google/gemini-3.1-flash-image"), &make_extras(), &empty_materialized())
+            .await
+            .unwrap();
+        assert_eq!(out.data, b"FINAL");
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "candidates": [{ "finishReason": "IMAGE_SAFETY", "content": { "parts": [] } }] })))
+            .mount(&server)
+            .await;
+        let err = make_provider(&server.uri())
+            .generate(&schema, &make_base("x", "google/gemini-3.1-flash-image"), &make_extras(), &empty_materialized())
+            .await
+            .unwrap_err();
+        match err {
+            ProviderError::RequestFailed { message, provider_error, retryable, .. } => {
+                assert!(message.contains("IMAGE_SAFETY"), "{message}");
+                assert!(provider_error.is_some() && !retryable);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// W6: a reference goes with the type its bytes are.
+    #[tokio::test]
+    async fn a_reference_is_labelled_with_its_real_type() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(gemini_answer(json!([{ "inlineData": { "mimeType": "image/png", "data": B64.encode(b"PNG") } }])))
+            .mount(&server)
+            .await;
+        let jpeg = B64.encode([0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, b'J', b'F', b'I', b'F', 0, 1]);
+        let materialized = crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".into(),
+                form: MaterializedRefForm::Base64(jpeg),
+                time_s: None,
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+        make_provider(&server.uri())
+            .generate(&ref_schema("google/gemini-3.1-flash-image"), &make_base("x", "google/gemini-3.1-flash-image"), &make_extras(), &materialized)
+            .await
+            .unwrap();
+        assert_eq!(sent_body(&server).await["contents"][0]["parts"][1]["inlineData"]["mimeType"], "image/jpeg");
+    }
+
+    /// W7: a call that timed out may still have run, and been billed, at
+    /// Google: it is never sent again.
+    #[tokio::test]
+    async fn a_timed_out_call_is_never_sent_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(gemini_answer(json!([])).set_delay(std::time::Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        let mut p = make_provider(&server.uri());
+        p.client = Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let err = p
+            .generate(&ref_schema("google/gemini-3.1-flash-image"), &make_base("x", "google/gemini-3.1-flash-image"), &make_extras(), &empty_materialized())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
     }
 }

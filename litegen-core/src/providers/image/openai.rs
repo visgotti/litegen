@@ -12,6 +12,11 @@ use crate::providers::{
 };
 use crate::types::{CostEstimate, CostSource, ImageGenerationRequest};
 
+/// What litegen itself sends in an Images API body; `extra` cannot replace it.
+const OWNED_FIELDS: &[&str] = &[
+    "model", "prompt", "n", "size", "quality", "style", "response_format", "image", "mask", "output_format", "background",
+];
+
 /// OpenAI image generation provider (GPT Image family).
 ///
 /// Text-to-image goes to `POST /v1/images/generations`; a request carrying a
@@ -22,12 +27,18 @@ use crate::types::{CostEstimate, CostSource, ImageGenerationRequest};
 /// deployment.
 ///
 /// @see <https://developers.openai.com/api/docs/deprecations> — DALL-E shutdown
-/// @see <https://platform.openai.com/docs/api-reference/images/create> — Images API "create" reference
+/// @see <https://developers.openai.com/api/reference/resources/images/methods/generate> — Images API "create" reference
 ///   (the request body and response object this provider conforms to).
 pub struct OpenAiProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
     client: Client,
+    /// Result downloads: no redirects, so a URL that passed the public-address
+    /// check cannot bounce into a private one.
+    asset_client: Client,
+    /// Whether a result URL must resolve to a public address. Only the tests,
+    /// whose mock vendor runs on loopback, turn it off.
+    pub(crate) public_assets_only: bool,
 }
 
 impl OpenAiProvider {
@@ -39,15 +50,29 @@ impl OpenAiProvider {
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .expect("failed to build HTTP client"),
+            asset_client: crate::util::ssrf::no_redirect_download_client(
+                std::time::Duration::from_secs(120),
+                std::time::Duration::from_secs(30),
+            ),
+            public_assets_only: true,
         }
     }
 
-    fn api_url(&self) -> String {
-        self.config
+    /// The API root, `https://api.openai.com/v1` unless `api_base` says
+    /// otherwise; every URL is built from it. A base set to the generations
+    /// URL itself, as configs used to, names the same root.
+    fn api_root(&self) -> String {
+        let base = self
+            .config
             .as_ref()
             .and_then(|c| c.api_base.as_deref())
-            .unwrap_or("https://api.openai.com/v1/images/generations")
-            .to_string()
+            .unwrap_or("https://api.openai.com/v1")
+            .trim_end_matches('/');
+        base.strip_suffix("/images/generations").unwrap_or(base).to_string()
+    }
+
+    fn api_url(&self) -> String {
+        format!("{}/images/generations", self.api_root())
     }
 
     fn api_key(&self) -> Result<String, ProviderError> {
@@ -179,11 +204,7 @@ impl OpenAiProvider {
     ///
     /// @see <https://developers.openai.com/api/reference> — `POST /v1/images/edits`
     fn edits_url(&self) -> String {
-        let generations = self.api_url();
-        match generations.strip_suffix("/generations") {
-            Some(prefix) => format!("{prefix}/edits"),
-            None => generations,
-        }
+        format!("{}/images/edits", self.api_root())
     }
 
     /// Build the multipart `images/edits` request when the caller supplied a
@@ -234,17 +255,23 @@ impl OpenAiProvider {
             return Ok(None);
         }
 
+        // One image: litegen reads `data[0]` and bills one, whatever `n` was.
+        let _ = base.n;
         form = form
             .text("model", model_name.to_string())
             .text("prompt", base.prompt.clone())
             .text("size", size.to_string())
-            .text("n", base.n.max(1).to_string());
+            .text("n", "1".to_string());
 
         if let Some(q) = extras.quality.as_deref() {
             form = form.text("quality", q.to_string());
         }
+        // `extra` adds the endpoint's own fields; it cannot replace one litegen
+        // sets, and `moderation` — which only the generations body and the
+        // JSON edit body take — is not a multipart edit field.
+        // @see <https://developers.openai.com/api/reference/resources/images/methods/edit>
         if let Some(Value::Object(extra_map)) = &extras.extra {
-            for (k, v) in extra_map {
+            for (k, v) in extra_map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str()) && k.as_str() != "moderation") {
                 let s = match v {
                     Value::String(s) => s.clone(),
                     other => other.to_string(),
@@ -282,7 +309,10 @@ impl OpenAiProvider {
                 message: format!("OpenAI request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
+                // Only a connection that never opened was surely not received:
+                // "Complex prompts may take up to 2 minutes to process", and a
+                // call that timed out may still run, and bill.
+                retryable: e.is_connect(),
             })?;
 
         let status = resp.status();
@@ -362,34 +392,27 @@ impl OpenAiProvider {
     }
 
     /// Download the rendered image from the URL the Images API returns when
-    /// `response_format` is `url` (a plain HTTPS GET of the OpenAI-hosted
-    /// asset named in the `data[].url` response field — not a REST endpoint).
+    /// `response_format` is `url` (legacy models only: "Unsupported for GPT
+    /// image models, which always return base64-encoded images"): without
+    /// the key, only from a public address, and at most 64 MiB. OpenAI has run
+    /// and billed the job by now, so no failure here is worth a second call.
     ///
-    /// @see <https://platform.openai.com/docs/api-reference/images/create> — response `data[].url` field
+    /// @see <https://developers.openai.com/api/reference/resources/images/methods/generate> — `data[].url`
     async fn fetch_image_bytes(&self, url: &str) -> Result<Vec<u8>, ProviderError> {
-        let resp = self.client.get(url).send().await.map_err(|e| {
-            ProviderError::RequestFailed {
-                message: format!("Failed to fetch image from URL: {e}"),
-                status_code: e.status().map(|s| s.as_u16()),
-                provider_error: None,
-                retryable: true,
+        use crate::providers::model3d::download::{fetch_asset, AssetError};
+        match fetch_asset(&self.asset_client, url, 64 * 1024 * 1024, self.public_assets_only, "openai image").await {
+            Ok((bytes, _)) => Ok(bytes),
+            Err(AssetError::Transient(ProviderError::RequestFailed { message, status_code, provider_error, .. })) => {
+                Err(ProviderError::RequestFailed { message, status_code, provider_error, retryable: false })
             }
-        })?;
-        if !resp.status().is_success() {
-            return Err(ProviderError::RequestFailed {
-                message: format!("Image URL returned HTTP {}", resp.status()),
-                status_code: Some(resp.status().as_u16()),
+            Err(AssetError::Transient(e)) => Err(e),
+            Err(AssetError::Gone(why)) => Err(ProviderError::RequestFailed {
+                message: format!("openai image result could not be fetched: {why}"),
+                status_code: None,
                 provider_error: None,
                 retryable: false,
-            });
+            }),
         }
-        let bytes = resp.bytes().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to read image bytes: {e}"),
-            status_code: None,
-            provider_error: None,
-            retryable: false,
-        })?;
-        Ok(bytes.to_vec())
     }
 }
 
@@ -420,7 +443,7 @@ impl ImageProvider for OpenAiProvider {
 
     /// Create an image via `POST {api_base}/v1/images/generations`.
     ///
-    /// @see <https://platform.openai.com/docs/api-reference/images/create> — Images: create.
+    /// @see <https://developers.openai.com/api/reference/resources/images/methods/generate> — Images: create.
     ///   Proves the request fields used here (`model`, `prompt`, `size`, `n`,
     ///   `response_format`, and the DALL-E 3 `quality`/`style` options) and the
     ///   `data[].b64_json` / `data[].url` / `data[].revised_prompt` response fields.
@@ -460,12 +483,12 @@ impl ImageProvider for OpenAiProvider {
             return self.send_and_read_image(request, response_format).await;
         }
 
-        // Build JSON body
+        // Build JSON body. One image: litegen reads `data[0]` and bills one.
         let mut body = json!({
             "model": model_name,
             "prompt": base.prompt,
             "size": size,
-            "n": base.n.max(1),
+            "n": 1,
         });
         if !is_gpt_image {
             body["response_format"] = Value::String(response_format.to_string());
@@ -482,14 +505,12 @@ impl ImageProvider for OpenAiProvider {
             }
         }
 
-        // Shallow-merge extras.extra into body (background, output_format,
-        // output_compression, moderation, user — all GPT-image-only fields
-        // gated by the model's extra_allowlist).
-        if let Some(Value::Object(extra_map)) = &extras.extra {
-            if let Some(body_map) = body.as_object_mut() {
-                for (k, v) in extra_map {
-                    body_map.insert(k.clone(), v.clone());
-                }
+        // `extra` adds the endpoint's own fields (output_compression,
+        // moderation, user, safety_identifier); it cannot replace one litegen
+        // sets — `extra.model` would run a dearer model than the one billed.
+        if let (Some(Value::Object(extra_map)), Some(body_map)) = (&extras.extra, body.as_object_mut()) {
+            for (k, v) in extra_map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
+                body_map.insert(k.clone(), v.clone());
             }
         }
         // PixelGenie L9: the canonical container and background, after
@@ -555,7 +576,7 @@ impl ImageProvider for OpenAiProvider {
 
     /// Validate the API key with a lightweight `GET https://api.openai.com/v1/models`.
     ///
-    /// @see <https://platform.openai.com/docs/api-reference/models/list> — Models: list
+    /// @see <https://developers.openai.com/api/reference/resources/models/methods/list> — Models: list
     async fn health_check(&self) -> HealthCheckResult {
         if !self.is_configured() {
             return HealthCheckResult {
@@ -579,7 +600,7 @@ impl ImageProvider for OpenAiProvider {
 
         match self
             .client
-            .get("https://api.openai.com/v1/models")
+            .get(format!("{}/models", self.api_root()))
             .header("Authorization", format!("Bearer {api_key}"))
             .timeout(std::time::Duration::from_secs(10))
             .send()
@@ -628,6 +649,8 @@ mod tests {
         }
     }
 
+    /// A provider against a mock OpenAI; result URLs are on loopback, so the
+    /// public-address check is off (`a_result_url_is_fetched_only_from_a_public_address`).
     fn make_provider_with_base(base_url: &str) -> OpenAiProvider {
         let mut p = OpenAiProvider::new();
         p.configure(ProviderInstanceConfig {
@@ -639,6 +662,7 @@ mod tests {
             extra_headers: Default::default(),
             options: None,
         });
+        p.public_assets_only = false;
         p
     }
 
@@ -1061,5 +1085,125 @@ mod tests {
         assert!(body.contains("name=\"image\""), "missing image part: {body}");
         assert!(body.contains("name=\"prompt\""), "missing prompt part");
         assert!(body.contains("put a hat on the cat"));
+    }
+
+    // ─── OpenAI audit, 2026-10-30: W7–W9, W12–W14 ───────────────────────────
+
+    fn edit_refs() -> crate::proxy::materializer::MaterializedRequest {
+        crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "init".to_string(),
+                form: crate::proxy::materializer::MaterializedRefForm::MultipartField {
+                    field_name: "image".to_string(),
+                    bytes: bytes::Bytes::from_static(b"source-png"),
+                    content_type: "image/png".to_string(),
+                },
+                time_s: None,
+            }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        }
+    }
+
+    async fn answered(server: &MockServer, at: &str) {
+        Mock::given(method("POST"))
+            .and(path(at))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "created": 1, "data": [{ "b64_json": B64.encode(b"img") }] })))
+            .mount(server)
+            .await;
+    }
+
+    /// W8, W9: one image is asked for (litegen reads `data[0]` and bills
+    /// one), and `extra` cannot replace what litegen sends — `extra.model`
+    /// would run a dearer model than the one billed.
+    #[tokio::test]
+    async fn one_image_is_asked_for_and_extra_cannot_replace_what_litegen_sends() {
+        let server = MockServer::start().await;
+        answered(&server, "/v1/images/generations").await;
+        let p = make_provider_with_base(&format!("{}/v1/images/generations", server.uri()));
+        let schema = ref_schema("openai/gpt-image-2");
+        let mut base = make_base("a lighthouse", "openai/gpt-image-2");
+        base.n = 4;
+        let mut extras = make_extras(Some("1024x1024"), Some("low"), None);
+        extras.extra = Some(json!({ "model": "gpt-image-2.5-sunburst", "prompt": "other", "n": 8, "size": "1536x1024", "quality": "high", "user": "u1" }));
+        p.generate(&schema, &base, &extras, &empty_materialized()).await.unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(
+            (body["model"].as_str(), body["prompt"].as_str(), body["n"].as_u64(), body["size"].as_str(), body["quality"].as_str(), body["user"].as_str()),
+            (Some("gpt-image-2"), Some("a lighthouse"), Some(1), Some("1024x1024"), Some("low"), Some("u1")),
+            "{body}"
+        );
+
+        // The multipart edit path: one part each, and no `moderation`, which
+        // the edits endpoint does not take (W12).
+        let server = MockServer::start().await;
+        answered(&server, "/v1/images/edits").await;
+        let p = make_provider_with_base(&format!("{}/v1/images/generations", server.uri()));
+        extras.extra = Some(json!({ "model": "gpt-image-2.5-sunburst", "n": 8, "moderation": "low", "user": "u1" }));
+        p.generate(&schema, &base, &extras, &edit_refs()).await.unwrap();
+        let form = String::from_utf8_lossy(&server.received_requests().await.unwrap()[0].body).to_string();
+        for (part, count) in [("model", 1), ("n", 1), ("moderation", 0), ("user", 1)] {
+            assert_eq!(form.matches(&format!("name=\"{part}\"")).count(), count, "{part}: {form}");
+        }
+        assert!(form.contains("gpt-image-2\r\n") && !form.contains("gpt-image-2.5-sunburst"), "{form}");
+    }
+
+    /// W13: `api_base` names the API root (`https://api.openai.com/v1`), from
+    /// which generations, edits and the health check's `/models` are built;
+    /// a base set to the generations URL itself still works.
+    #[tokio::test]
+    async fn every_url_is_built_from_the_configured_root() {
+        for base in ["/v1", "/v1/images/generations"] {
+            let server = MockServer::start().await;
+            answered(&server, "/v1/images/generations").await;
+            answered(&server, "/v1/images/edits").await;
+            Mock::given(method("GET")).and(path("/v1/models")).respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] }))).expect(1).mount(&server).await;
+            let p = make_provider_with_base(&format!("{}{base}", server.uri()));
+            let schema = ref_schema("openai/gpt-image-2");
+            let extras = make_extras(Some("1024x1024"), None, None);
+            p.generate(&schema, &make_base("x", "openai/gpt-image-2"), &extras, &empty_materialized()).await.unwrap();
+            p.generate(&schema, &make_base("x", "openai/gpt-image-2"), &extras, &edit_refs()).await.unwrap();
+            assert!(p.health_check().await.healthy, "{base}");
+        }
+    }
+
+    /// W7: a call that timed out may still have run, and been billed: it is
+    /// never sent again.
+    #[tokio::test]
+    async fn a_timed_out_call_is_never_sent_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })).set_delay(std::time::Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        let mut p = make_provider_with_base(&format!("{}/v1", server.uri()));
+        p.client = Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let err = p
+            .generate(&ref_schema("openai/gpt-image-2"), &make_base("x", "openai/gpt-image-2"), &make_extras(Some("1024x1024"), None, None), &empty_materialized())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+    }
+
+    /// W14: a result URL is fetched only from a public address.
+    #[tokio::test]
+    async fn a_result_url_is_fetched_only_from_a_public_address() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [{ "url": "http://169.254.169.254/latest/meta-data" }] })))
+            .mount(&server)
+            .await;
+        // Only a legacy model answers with a URL; GPT Image models always
+        // return base64. One is reachable through `model_mapping`.
+        let mut p = OpenAiProvider::new();
+        p.configure(ProviderInstanceConfig {
+            api_key: "test-key".into(),
+            api_base: Some(format!("{}/v1", server.uri())),
+            model_mapping: [("openai/gpt-image-2".to_string(), "dall-e-3".to_string())].into_iter().collect(),
+            ..Default::default()
+        });
+        let mut extras = make_extras(Some("1024x1024"), None, None);
+        extras.response_format = "url".into();
+        let err = p.generate(&ref_schema("openai/gpt-image-2"), &make_base("x", "openai/gpt-image-2"), &extras, &empty_materialized()).await.unwrap_err();
+        assert!(matches!(&err, ProviderError::RequestFailed { message, retryable: false, .. } if message.contains("refused")), "{err:?}");
     }
 }

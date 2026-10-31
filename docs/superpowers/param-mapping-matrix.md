@@ -233,7 +233,7 @@ and `/v1/stats` read 0. A cancel also sends the terminal webhook.
 
 ## Image / Video
 
-Row inventory generated 2026-08-27 via:
+Row inventory generated 2026-08-27, recounted 2026-10-30 (the same query, read with the `yaml` package), via:
 
 ```python
 import glob, yaml, collections
@@ -252,22 +252,22 @@ model3d rows are re-tabulated in the dedicated 3D section further down, not
 repeated here):
 
 ```
-image   aspect_ratio     aspect_ratio  26  bfl/flux-kontext-max
-image   guidance_scale   float         13  bedrock/amazon.nova-canvas-v1:0
-image   negative_prompt  string        22  bedrock/amazon.nova-canvas-v1:0
-image   quality          string         4  bedrock/amazon.nova-canvas-v1:0
-image   seed             seed          39  bedrock/amazon.nova-canvas-v1:0
-image   size             size          25  bedrock/amazon.nova-canvas-v1:0
-image   steps            int           13  fal/auraflow
-image   strength         float          3  leonardo/diffusion-xl
-image   style            string        11  fal/recraft-v3
-video   aspect_ratio     aspect_ratio  24  bytedance/doubao-seedance-1-0-lite-i2v-250428
-video   duration_seconds float        35  bedrock/amazon.nova-reel-v1:1
-video   duration_seconds int           2  runway/gen4-turbo
-video   fps              int            3  bedrock/amazon.nova-reel-v1:1
-video   negative_prompt  string         3  kling/video-kling-v1-6
-video   resolution       string        23  bedrock/amazon.nova-reel-v1:1
-video   seed             seed          10  bedrock/amazon.nova-reel-v1:1
+image   aspect_ratio     aspect_ratio  29  bfl/flux-kontext-max
+image   guidance_scale   float         13  fal/auraflow
+image   negative_prompt  string        25  fal/sd35-medium
+image   quality          string         6  ideogram/ideogram-4-5-precise-edit
+image   seed             seed          50  bfl/flux-2-klein-9b
+image   size             size          37  bfl/flux-2-klein-9b
+image   steps            int           12  fal/auraflow
+image   strength         float          4  leonardo/diffusion-xl
+image   style            string        10  fal/recraft-v3
+video   aspect_ratio     aspect_ratio  26  bytedance/doubao-seedance-1-0-pro-250528
+video   duration_seconds float        37  bytedance/doubao-seedance-1-0-pro-250528
+video   duration_seconds int            4  minimax/MiniMax-H3
+video   fps              int            4  fal/ltx-2.3
+video   negative_prompt  string         4  kling/video-kling-v2-5-turbo
+video   resolution       string        31  bytedance/doubao-seedance-1-0-pro-250528
+video   seed             seed          13  bytedance/doubao-seedance-1-0-pro-250528
 ```
 
 ### fal adapters (audit 2026-10-30)
@@ -283,19 +283,37 @@ video   seed             seed          10  bedrock/amazon.nova-reel-v1:1
 | hosts | images run on fal's sync host (`https://fal.run`, or `options.sync_api_base`); `api_base` is the queue host video and 3D share | `images_run_on_fals_sync_host_beside_its_queue_host` | ✅ |
 | health | every fal adapter checks the key against the Platform API (`/v1/models/pricing`) | `health_check_validates_the_key_against_the_platform_api` (image, video, 3D) | ✅ wiremock |
 
+### Google and OpenAI image adapters (audit 2026-10-30)
+
+`extra` is filtered to the model's allowlist in both modes: strict refuses
+another key (`extra_key_unsupported`), lax drops it and reports `extra.<key>`
+in `X-Litegen-Dropped-Params` (`extra_lax_keeps_only_allowlisted_keys_and_reports_the_rest`).
+
+| behaviour | rule | proof | status |
+|---|---|---|---|
+| one image asked for | Google sends no `candidateCount`, OpenAI `n: 1` on both paths: litegen returns and bills one | `one_image_is_asked_for_and_extra_cannot_replace_what_litegen_sets` (Google), `one_image_is_asked_for_and_extra_cannot_replace_what_litegen_sends` (OpenAI) | ✅ wiremock |
+| owned fields | `extra` never replaces `model`, `prompt`, `n`, `size`, `quality`, `responseModalities`, `imageConfig`, …; only `imageSize` nests in Google's `imageConfig` (its only other member is `aspectRatio`); OpenAI's multipart edit takes no `moderation` | same | ✅ wiremock |
+| the final image | Google's last non-`thought` image; with none, `finishReason` / `blockReason` is the error, with Google's answer | `the_last_finished_image_is_kept_and_a_refusal_says_why` | ✅ wiremock |
+| reference types | a Google reference's `mimeType` is its bytes' type | `a_reference_is_labelled_with_its_real_type` | ✅ wiremock |
+| no second billed call | a call that timed out may have run: only a connection that never opened is retried | `a_timed_out_call_is_never_sent_again` (Google, OpenAI) | ✅ wiremock |
+| OpenAI URLs | built from the API root `api_base` (`https://api.openai.com/v1`; a generations URL still names the same root), health check included | `every_url_is_built_from_the_configured_root` | ✅ wiremock |
+| result downloads | OpenAI's legacy URL results: public addresses only, at most 64 MiB | `a_result_url_is_fetched_only_from_a_public_address` | ✅ |
+| catalog | `gemini-3.1-flash-lite-image` takes no `imageSize` (1K only); every Google and OpenAI row names its docs page; OpenAI rows take `safety_identifier` (`user` is deprecated) | `gemini_flash_lite_image_takes_no_image_size`, `every_google_and_openai_row_names_its_docs_url`, `openai_rows_take_a_safety_identifier` | ✅ |
+| drift | a model the vendor's own page or spec says "was shut down" is not live (Veo 3.1 previews, `gpt-image-1`); Google's "(Shut down)" rows are skipped; OpenAI's deprecations page is a `lifecycle` source | `scripts/model-drift/test/shutdown.test.mjs` | ✅ |
+
 ### Image
 
 | param | kind | validator rule | # models | Proof | Status |
 |---|---|---|---|---|---|
-| `aspect_ratio` | AspectRatio | enum `allowed` | 26 | validator: `aspect_ratio_not_allowed`. provider: `ideogram::tests::generates_ideogram_v3_json` (`body["aspect_ratio"]`), `minimax::tests::generates_image_01`, `luma::tests::generates_photon_image_via_polling`, `replicate::tests::generates_flux_dev_via_polling` (`body["input"]["aspect_ratio"]`). conformance: `runway_image_does_not_advertise_unmappable_ratios`, `stability_aspect_ratios_are_in_the_v2_enum`, `minimax_image_aspect_ratios_match_the_documented_enum`. | ✅ |
-| `guidance_scale` | Float | range | 12 | validator: `float_out_of_range`. provider: `fal::tests::generates_flux_dev_image` (`body["guidance_scale"]==3.5`), `replicate::tests::generates_flux_dev_via_polling` (`body["input"]["guidance"]==3.5`) and `replicate::tests::guidance_and_steps_use_each_models_own_input_names` (each model's own input name: FLUX `guidance`, SD3 `cfg`, fallback `guidance_scale`; corrected 2026-09-11, the adapter used to send `guidance_scale` to every model). conformance: n/a (not enum). | ✅ |
-| `seed` | Seed | range | 39 | validator: `seed_out_of_range`. provider: `fal::tests::generates_flux_dev_image` (`body["seed"]==42`), `bfl::tests::generates_flux_pro_via_polling_url` (`body["seed"]==7`), `replicate::tests::generates_flux_dev_via_polling` (`body["input"]["seed"]==123`). conformance: n/a. | ✅ |
-| `size` | Size | enum of `[w,h]` pairs | 25 | validator: `size_enum_must_match`, `size_enum_passes_when_matches`. provider: `bytedance::tests::generates_seedream` (`body["size"]=="2048x2048"`), `openai::tests::generates_dalle3_image_b64_json` (`body["size"]=="1024x1024"`), `recraft::tests::generates_recraftv3_image` (`body["size"]=="1024x1024"`). conformance: **no test** asserts a model's `size` dimension list against the vendor's accepted sizes — real gap. | 🟡 |
-| `quality` | String enum | enum + max_length | 4 | validator: **none** — no `validator_tests.rs` case sends `req.quality`. provider: `openai::tests::generates_dalle3_image_b64_json` (`body["quality"]=="high"`). conformance: `openai_image_quality_values_are_the_gpt_image_enum`. | 🟡 |
-| `style` | String enum | enum + max_length | 11 | validator: **none** — no case sends `req.style`. provider: `recraft::tests::generates_recraftv3_image` (`body["style"]=="digital_illustration"`); `openai::tests::generates_dalle3_image_b64_json` proves the *absence* case (`style` omitted for dall-e-3). conformance: `ideogram_style_values_match_the_documented_enum`. | 🟡 |
-| `negative_prompt` | String | max_length | 22 | validator: **none**. provider: `stability::tests::generates_sd3_large_via_v2_multipart` (asserts the multipart body contains the negative-prompt text, not a strict field-name+value pair). conformance: n/a. | 🟡 |
-| `strength` | Float | range | 3 | validator: **none** — no `strength_out_of_range` case exists (only `guidance_scale` is exercised for the Float kind). provider: strong — `stability::tests::image_to_image_sends_mode_image_to_image`, `strength_is_not_sent_for_text_to_image`, `image_to_image_defaults_strength_when_omitted` all assert presence/absence of the outbound `strength` multipart field. conformance: n/a. | 🟡 |
-| `steps` | Int | range | 13 | validator: `unsupported_param_strict_rejects` / `unsupported_param_lax_drops` prove the shared drop mechanism using `steps` as the literal example — this is genuine, param-named coverage, unlike the other rows above. No test exercises the *range* branch (`steps` out of `[min,max]`) specifically. provider: `fal::tests::generates_flux_dev_image` (`body["num_inference_steps"]==28` — **note the outbound rename `steps` → `num_inference_steps`**), `replicate::tests::generates_flux_dev_via_polling` (`body["input"]["num_inference_steps"]==28`) and `replicate::tests::guidance_and_steps_use_each_models_own_input_names` (each model's own input name: flux-dev `num_inference_steps`, flux-pro and SD3 `steps`, fallback `num_inference_steps`). Not universal: `stability.rs` sets `body["steps"]` (line 466) and the multipart `steps` field (line 375) with zero assertion. conformance: n/a. | 🟡 |
+| `aspect_ratio` | AspectRatio | enum `allowed` | 29 | validator: `aspect_ratio_not_allowed`. provider: `ideogram::tests::generates_ideogram_v3_json` (`body["aspect_ratio"]`), `minimax::tests::generates_image_01`, `luma::tests::generates_photon_image_via_polling`, `replicate::tests::generates_flux_dev_via_polling` (`body["input"]["aspect_ratio"]`). conformance: `runway_image_does_not_advertise_unmappable_ratios`, `stability_aspect_ratios_are_in_the_v2_enum`, `minimax_image_aspect_ratios_match_the_documented_enum`. | ✅ |
+| `guidance_scale` | Float | range | 13 | validator: `float_out_of_range`. provider: `fal::tests::generates_flux_dev_image` (`body["guidance_scale"]==3.5`), `replicate::tests::generates_flux_dev_via_polling` (`body["input"]["guidance"]==3.5`) and `replicate::tests::guidance_and_steps_use_each_models_own_input_names` (each model's own input name: FLUX `guidance`, SD3 `cfg`, fallback `guidance_scale`; corrected 2026-09-11, the adapter used to send `guidance_scale` to every model). conformance: n/a (not enum). | ✅ |
+| `seed` | Seed | range | 50 | validator: `seed_out_of_range`. provider: `fal::tests::generates_flux_dev_image` (`body["seed"]==42`), `bfl::tests::generates_flux_pro_via_polling_url` (`body["seed"]==7`), `replicate::tests::generates_flux_dev_via_polling` (`body["input"]["seed"]==123`). conformance: n/a. | ✅ |
+| `size` | Size | enum of `[w,h]` pairs | 37 | validator: `size_enum_must_match`, `size_enum_passes_when_matches`. provider: `bytedance::tests::generates_seedream` (`body["size"]=="2048x2048"`), `openai::tests::generates_dalle3_image_b64_json` (`body["size"]=="1024x1024"`), `recraft::tests::generates_recraftv3_image` (`body["size"]=="1024x1024"`). conformance: **no test** asserts a model's `size` dimension list against the vendor's accepted sizes — real gap. | 🟡 |
+| `quality` | String enum | enum + max_length | 6 | validator: **none** — no `validator_tests.rs` case sends `req.quality`. provider: `openai::tests::generates_dalle3_image_b64_json` (`body["quality"]=="high"`). conformance: `openai_image_quality_values_are_the_gpt_image_enum`. | 🟡 |
+| `style` | String enum | enum + max_length | 10 | validator: **none** — no case sends `req.style`. provider: `recraft::tests::generates_recraftv3_image` (`body["style"]=="digital_illustration"`); `openai::tests::generates_dalle3_image_b64_json` proves the *absence* case (`style` omitted for dall-e-3). conformance: `ideogram_style_values_match_the_documented_enum`. | 🟡 |
+| `negative_prompt` | String | max_length | 25 | validator: **none**. provider: `stability::tests::generates_sd3_large_via_v2_multipart` (asserts the multipart body contains the negative-prompt text, not a strict field-name+value pair). conformance: n/a. | 🟡 |
+| `strength` | Float | range | 4 | validator: **none** — no `strength_out_of_range` case exists (only `guidance_scale` is exercised for the Float kind). provider: strong — `stability::tests::image_to_image_sends_mode_image_to_image`, `strength_is_not_sent_for_text_to_image`, `image_to_image_defaults_strength_when_omitted` all assert presence/absence of the outbound `strength` multipart field. conformance: n/a. | 🟡 |
+| `steps` | Int | range | 12 | validator: `unsupported_param_strict_rejects` / `unsupported_param_lax_drops` prove the shared drop mechanism using `steps` as the literal example — this is genuine, param-named coverage, unlike the other rows above. No test exercises the *range* branch (`steps` out of `[min,max]`) specifically. provider: `fal::tests::generates_flux_dev_image` (`body["num_inference_steps"]==28` — **note the outbound rename `steps` → `num_inference_steps`**), `replicate::tests::generates_flux_dev_via_polling` (`body["input"]["num_inference_steps"]==28`) and `replicate::tests::guidance_and_steps_use_each_models_own_input_names` (each model's own input name: flux-dev `num_inference_steps`, flux-pro and SD3 `steps`, fallback `num_inference_steps`). Not universal: `stability.rs` sets `body["steps"]` (line 466) and the multipart `steps` field (line 375) with zero assertion. conformance: n/a. | 🟡 |
 
 ### Output format and transparency (L9)
 
@@ -559,12 +577,12 @@ even where provider evidence is strong.
 
 | param | kind | validator rule | # models | Proof | Status |
 |---|---|---|---|---|---|
-| `duration_seconds` | Float (35 models) / Int (2 models) | range | 37 | validator: none (`validate_video` untested). provider: `runway::tests::submits_runway_job_and_returns_handle` (`body["duration"]==5`) — **note the outbound key is `duration`, not `duration_seconds`; this row is exactly the kind of silent rename this doc exists to surface**. conformance: `vidu_q1_duration_and_resolution_match_the_model_map`, `bedrock_nova_reel_duration_matches_the_text_video_task`. | 🟡 |
-| `resolution` | String enum | enum | 23 | validator: none. provider: `google::tests::submits_veo_job_and_sends_api_key_header` (`body["parameters"]["resolution"]=="720p"`), `leonardo::tests::submits_image_to_video_and_polls` (`body["resolution"]=="RESOLUTION_720"`). conformance: `vidu_q1_duration_and_resolution_match_the_model_map`. | 🟡 |
-| `aspect_ratio` | AspectRatio | enum `allowed` | 24 | validator: none. provider: setters exist in `kling.rs`, `luma.rs`, `pixverse.rs`, `vidu.rs`, `fal.rs`; the only *assertion* found is a negative case, `fal::tests::*` (`body.get("aspect_ratio").is_none()` for ltx-video, which doesn't support it) — **no test proves the correct value reaches the body for a model that does support it**. conformance: `runway_video_aspect_ratios_are_in_the_gen4_enum`. | 🟡 |
-| `seed` | Seed | range | 10 | validator: none. provider: setters exist in `bedrock.rs`, `vidu.rs`, `pixverse.rs`, `runway.rs`, `fal.rs`, `replicate.rs` — **zero assertions on any of them**; a regression that dropped or mis-mapped video seed would go unnoticed by the suite. conformance: n/a. | 🟡 |
-| `negative_prompt` | String | max_length | 3 | validator: none. provider: setters exist in `kling.rs`, `pixverse.rs` — **zero assertions**. conformance: n/a. | 🟡 |
-| `fps` | Int | range | 3 | validator: none. provider: `bedrock.rs` sets `video_config["fps"]` — **zero assertions anywhere in the suite**. conformance: n/a. | 🟡 |
+| `duration_seconds` | Float (37 models) / Int (4 models) | range | 41 | validator: none (`validate_video` untested). provider: `runway::tests::submits_runway_job_and_returns_handle` (`body["duration"]==5`) — **note the outbound key is `duration`, not `duration_seconds`; this row is exactly the kind of silent rename this doc exists to surface**. conformance: `vidu_q1_duration_and_resolution_match_the_model_map`, `bedrock_nova_reel_duration_matches_the_text_video_task`. | 🟡 |
+| `resolution` | String enum | enum | 31 | validator: none. provider: `google::tests::submits_veo_job_and_sends_api_key_header` (`body["parameters"]["resolution"]=="720p"`), `leonardo::tests::submits_image_to_video_and_polls` (`body["resolution"]=="RESOLUTION_720"`). conformance: `vidu_q1_duration_and_resolution_match_the_model_map`. | 🟡 |
+| `aspect_ratio` | AspectRatio | enum `allowed` | 26 | validator: none. provider: setters exist in `kling.rs`, `luma.rs`, `pixverse.rs`, `vidu.rs`, `fal.rs`; the only *assertion* found is a negative case, `fal::tests::*` (`body.get("aspect_ratio").is_none()` for ltx-video, which doesn't support it) — **no test proves the correct value reaches the body for a model that does support it**. conformance: `runway_video_aspect_ratios_are_in_the_gen4_enum`. | 🟡 |
+| `seed` | Seed | range | 13 | validator: none. provider: setters exist in `bedrock.rs`, `vidu.rs`, `pixverse.rs`, `runway.rs`, `fal.rs`, `replicate.rs` — **zero assertions on any of them**; a regression that dropped or mis-mapped video seed would go unnoticed by the suite. conformance: n/a. | 🟡 |
+| `negative_prompt` | String | max_length | 4 | validator: none. provider: setters exist in `kling.rs`, `pixverse.rs` — **zero assertions**. conformance: n/a. | 🟡 |
+| `fps` | Int | range | 4 | validator: none. provider: `bedrock.rs` sets `video_config["fps"]` — **zero assertions anywhere in the suite**. conformance: n/a. | 🟡 |
 
 ### Video operations (3D doc §5, P2)
 

@@ -18,6 +18,7 @@ models:
     provider: google
     media_type: image
     display_name: Gemini 3.1 Flash Image (Nano Banana 2)
+    docs_url: https://ai.google.dev/gemini-api/docs/generate-content/image-generation
     # Deprecated 2026-10-06 with no shutdown date; Google's successor is
     # gemini-nano-banana-2.1. @see https://ai.google.dev/gemini-api/docs/deprecations (2026-10-12)
     description: "Nano Banana 2 (GA 2026-05-28). Deprecated 2026-10-06, no shutdown date announced;
@@ -88,6 +89,7 @@ models:
     provider: google
     media_type: image
     display_name: Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite)
+    docs_url: https://ai.google.dev/gemini-api/docs/generate-content/image-generation
     description: Fastest, cheapest Nano Banana 2 tier.
     # Standard tier: $30 per 1M image output tokens; a 1K image (1120 tokens) is
     # $0.0336. Verified 2026-09-11.
@@ -106,13 +108,17 @@ models:
       provider_format: { form: base64 }
       roles:
         init: { required: false, min_count: 0, max_count: 14 }
-    extra_allowlist: [imageSize]
+    # "Supported image_size values: 1024px (1K). (Note: 2K and 4K are
+    # unsupported)." 1K is the default, so nothing passes through.
+    # @see https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image (2026-10-30)
+    extra_allowlist: []
     tags: [text-to-image, image-to-image, fast]
 
   - id: google/gemini-2.5-flash-image
     provider: google
     media_type: image
     display_name: Gemini 2.5 Flash (image)
+    docs_url: https://ai.google.dev/gemini-api/docs/generate-content/image-generation
     # Google moved the shutdown from 2026-10-02 to 2027-03-15 and now names
     # gemini-3.1-flash-lite-image as the replacement.
     # @see https://ai.google.dev/gemini-api/docs/deprecations (2026-10-12)
@@ -145,6 +151,7 @@ models:
     provider: google
     media_type: image
     display_name: Gemini 3 Pro (image)
+    docs_url: https://ai.google.dev/gemini-api/docs/generate-content/image-generation
     description: Gemini 3 Pro image generation.
     # Standard tier: $120 per 1M image output tokens; a 1K/2K image (1120 tokens)
     # is $0.134 (4K: $0.24). Verified 2026-09-11.

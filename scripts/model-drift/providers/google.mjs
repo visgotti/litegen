@@ -31,6 +31,8 @@
 // image adapter's Imagen `:predict` branch is unreachable for carried models
 // (`resolve_model` never yields an `imagen-*` id).
 
+import { shutDownIds } from '../extract.mjs';
+
 const DOCS = 'https://ai.google.dev/gemini-api/docs';
 const DISCOVERY = 'https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta';
 
@@ -172,16 +174,22 @@ export default {
       url: `${DOCS}/models.md.txt`,
       expect: 'text',
       // Endpoint cells are ``` id ``` (a cell may hold several ids).
+      // A row marked "(Shut down)" lists a model that is gone (audit D2).
       extract: (md) =>
         section(md, '## Generative media models')
-          .filter((l) => l.startsWith('|'))
+          .filter((l) => l.startsWith('|') && !/\(Shut down\)/i.test(l))
           .flatMap((l) => [...l.matchAll(/```([^`]+)```/g)].flatMap((m) => m[1].trim().split(/\s+/))),
     },
     {
       key: 'veo',
       url: `${DOCS}/veo.md.txt`,
       expect: 'text',
-      extract: (md) => modelCodes(section(md, '## Model versions')),
+      // The page still lists the previews its own banner says "was shut
+      // down"; those are gone (audit D1).
+      extract: (md) => {
+        const dead = new Set(shutDownIds(md));
+        return modelCodes(section(md, '## Model versions')).filter((id) => !dead.has(id));
+      },
       snapshot: (md) =>
         // The parameter table, first column cut to the parameter name (its prose varies).
         `${section(md, '## Veo API parameters and specifications')

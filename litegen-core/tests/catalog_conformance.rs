@@ -3485,3 +3485,35 @@ fn every_fal_row_names_its_endpoint_page() {
         assert!(url.starts_with("https://fal.ai/models/") && url.ends_with("/api"), "{}: {url}", m.id);
     }
 }
+
+// ─── Google / OpenAI audit, 2026-10-30: C2, C3, S5 ─────────────────────────
+
+/// C2: "Supported `image_size` values: `1024px` (1K). (Note: 2K and 4K are
+/// unsupported)." The lite row let `imageSize` through.
+/// @see <https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image> (2026-10-30)
+#[test]
+fn gemini_flash_lite_image_takes_no_image_size() {
+    let reg = registry();
+    let lite = reg.get("google/gemini-3.1-flash-lite-image").expect("lite");
+    assert!(!lite.extra_allowlist.iter().any(|k| k == "imageSize"), "{:?}", lite.extra_allowlist);
+}
+
+/// C3: every Google and OpenAI row names the vendor page its fields were
+/// read from.
+#[test]
+fn every_google_and_openai_row_names_its_docs_url() {
+    for m in registry().all().filter(|m| m.provider == "google" || m.provider == "openai") {
+        let url = m.docs_url.as_deref().unwrap_or_else(|| panic!("{} names no docs_url", m.id));
+        assert!(url.starts_with("https://ai.google.dev/") || url.starts_with("https://developers.openai.com/"), "{}: {url}", m.id);
+    }
+}
+
+/// S5: "The Images API `user` parameter is deprecated. Send the same
+/// identifier as `safety_identifier` instead."
+/// @see <https://developers.openai.com/api/docs/guides/image-generation> (2026-10-30)
+#[test]
+fn openai_rows_take_a_safety_identifier() {
+    for m in registry().all().filter(|m| m.provider == "openai") {
+        assert!(m.extra_allowlist.iter().any(|k| k == "safety_identifier"), "{}: {:?}", m.id, m.extra_allowlist);
+    }
+}

@@ -56,6 +56,34 @@ function modelValues(schema) {
   return out.filter((v) => typeof v === 'string');
 }
 
+/**
+ * The backticked ids a text says WERE shut down: in each sentence, those
+ * before "was / were / has been / have been / is / are shut down" (a link
+ * around "shut down" allowed). The replacements named after it, and a
+ * shutdown still to come ("will be shut down"), are not.
+ */
+export function shutDownIds(text) {
+  const out = new Set();
+  for (const sentence of String(text).split(/(?<=[.!?])\s+(?=[A-Z`[(*])/)) {
+    const m = /\b(?:was|were|has been|have been|is|are)\s+\[?shut down\b/i.exec(sentence);
+    if (!m) continue;
+    for (const id of sentence.slice(0, m.index).matchAll(/`([^`\s]+)`/g)) out.add(id[1]);
+  }
+  return [...out];
+}
+
+/** Every string value in a parsed JSON or YAML document. */
+export function allStrings(doc) {
+  const out = [];
+  const visit = (n) => {
+    if (typeof n === 'string') out.push(n);
+    else if (Array.isArray(n)) n.forEach(visit);
+    else if (n && typeof n === 'object') Object.values(n).forEach(visit);
+  };
+  visit(doc);
+  return out;
+}
+
 /** Model ids the named endpoints accept (request body `model` const/enum). */
 export function openapiModelIds(doc, { paths, method = 'post' }) {
   return [...new Set(paths.flatMap((p) => requestSchemas(doc, p, method).flatMap(({ schema }) => modelValues(schema))))];

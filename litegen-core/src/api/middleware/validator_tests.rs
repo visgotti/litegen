@@ -234,8 +234,12 @@ models:
         assert_eq!(err.code, "extra_key_unsupported");
     }
 
+    /// Lax mode drops the `extra` keys a model does not allowlist, and says
+    /// so, as it does for params. Passed through, they reached the vendor and
+    /// could replace what litegen sends: `extra.model` ran a dearer model than
+    /// the one billed (vendor audits, 2026-10-30).
     #[test]
-    fn extra_lax_passes_through() {
+    fn extra_lax_keeps_only_allowlisted_keys_and_reports_the_rest() {
         use serde_json::json;
         let r = registry();
         let m = r.get("t/strict").unwrap();
@@ -243,7 +247,8 @@ models:
         req.base.strict = false;
         req.base.extra = Some(json!({"output_format": "png", "ghost": 1}));
         let out = validate_image(m, req).unwrap();
-        assert!(out.request.base.extra.is_some());
+        assert_eq!(out.request.base.extra, Some(json!({"output_format": "png"})));
+        assert!(out.dropped.iter().any(|d| d == "extra.ghost"), "{:?}", out.dropped);
     }
 
     // ─── Endpoint ↔ media-type family ───────────────────────────────────────

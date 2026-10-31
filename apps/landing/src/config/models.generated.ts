@@ -2258,7 +2258,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://ai.google.dev/gemini-api/docs"
+    "referenceUrl": "https://ai.google.dev/gemini-api/docs/generate-content/image-generation"
   },
   {
     "id": "google/gemini-3-pro-image",
@@ -2312,7 +2312,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-image",
       "multi-ref"
     ],
-    "referenceUrl": "https://ai.google.dev/gemini-api/docs"
+    "referenceUrl": "https://ai.google.dev/gemini-api/docs/generate-content/image-generation"
   },
   {
     "id": "google/gemini-3.1-flash-image",
@@ -2369,7 +2369,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://ai.google.dev/gemini-api/docs"
+    "referenceUrl": "https://ai.google.dev/gemini-api/docs/generate-content/image-generation"
   },
   {
     "id": "google/gemini-3.1-flash-lite-image",
@@ -2427,7 +2427,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-image",
       "fast"
     ],
-    "referenceUrl": "https://ai.google.dev/gemini-api/docs"
+    "referenceUrl": "https://ai.google.dev/gemini-api/docs/generate-content/image-generation"
   },
   {
     "id": "google/gemini-nano-banana-2.1",
@@ -4957,7 +4957,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-image",
       "inpainting"
     ],
-    "referenceUrl": "https://platform.openai.com/docs/guides/image-generation"
+    "referenceUrl": "https://developers.openai.com/api/reference/resources/images/methods/generate"
   },
   {
     "id": "openai/gpt-image-2.5-flare",
@@ -5039,7 +5039,7 @@ export const MODELS: ModelEntry[] = [
       "inpainting",
       "fast"
     ],
-    "referenceUrl": "https://platform.openai.com/docs/guides/image-generation"
+    "referenceUrl": "https://developers.openai.com/api/reference/resources/images/methods/generate"
   },
   {
     "id": "openai/gpt-image-2.5-sunburst",
@@ -5121,7 +5121,7 @@ export const MODELS: ModelEntry[] = [
       "inpainting",
       "premium"
     ],
-    "referenceUrl": "https://platform.openai.com/docs/guides/image-generation"
+    "referenceUrl": "https://developers.openai.com/api/reference/resources/images/methods/generate"
   },
   {
     "id": "pixellab/pixflux",

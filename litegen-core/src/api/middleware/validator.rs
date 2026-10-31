@@ -1888,23 +1888,25 @@ fn check_extra(
             Some("extra"),
         ));
     };
-    if !strict {
-        return Ok(());
-    }
+    // Only allowlisted keys reach the vendor, in either mode: strict refuses
+    // the rest, lax drops and reports them (`extra.<key>`), as it does for
+    // params. Passed through, a key could replace what the adapter sends —
+    // `extra.model` ran a dearer model than the one billed.
     let mut filtered = serde_json::Map::new();
     for (k, val) in obj {
         if schema.extra_allowlist.iter().any(|a| a == k) {
             filtered.insert(k.clone(), val.clone());
-        } else {
+        } else if strict {
             return Err(ValidationError::new(
                 "extra_key_unsupported",
                 format!("extra key '{}' not in allowlist for model '{}'", k, schema.id),
                 Some(&format!("extra.{}", k)),
             ));
+        } else {
+            dropped.push(format!("extra.{k}"));
         }
     }
     *extra = Some(Value::Object(filtered));
-    let _ = dropped; // currently strict mode either fails or keeps; lax leaves unchanged.
     Ok(())
 }
 
