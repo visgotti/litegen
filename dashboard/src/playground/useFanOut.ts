@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { client } from '../sdk-client';
 import type { ImageGenerationRequest, Model3dGenerationRequest } from '@litegen/sdk';
 import type { ResultTileState } from './types';
+import { fanOutJobs } from './params';
 
 const MAX_CONCURRENCY = 4;
 
@@ -85,7 +86,8 @@ type FanOutRequest = {
 interface FanOut {
   tiles: ResultTileState[];
   running: boolean;
-  run: (requests: FanOutRequest[]) => Promise<void>;
+  /** `imagesPerModel` is N: that many one-image requests per image model. */
+  run: (requests: FanOutRequest[], imagesPerModel?: number) => Promise<void>;
   cancel: () => void;
 }
 
@@ -105,7 +107,7 @@ export function useFanOut(): FanOut {
   const setTile = (key: string, p: Partial<ResultTileState>) =>
     setTiles(prev => prev.map(t => (t.key === key ? { ...t, ...p } : t)));
 
-  const run: FanOut['run'] = async (requests) => {
+  const run: FanOut['run'] = async (requests, imagesPerModel = 1) => {
     // Supersede whatever is in flight: abort it so its polling stops, and
     // ignore anything it still reports (`patch` below is a no-op once this
     // run is no longer the current one).
@@ -116,25 +118,21 @@ export function useFanOut(): FanOut {
       if (epoch.owns(ctrl)) setTile(key, p);
     };
 
-    // One tile per (model × n). `n` is meaningless for a mesh — the backend
-    // bills a 3D job flat per generation regardless of the field (same
-    // precedent as video) — so clamp to a single tile rather than seeding N
-    // duplicate viewers for one job.
-    const initial: ResultTileState[] = [];
-    for (const { modelId, mediaType, request } of requests) {
-      const n = mediaType === 'model3d' ? 1 : (request as { n?: number }).n ?? 1;
-      for (let i = 0; i < n; i++) {
-        initial.push({ key: `${modelId}#${i}`, modelId, index: i, status: 'queued', mediaType, request });
-      }
-    }
+    // One tile per call: N one-image requests per image model (litegen
+    // returns one image per request), and one job per 3D model — `n` is
+    // meaningless for a mesh, which is billed flat per generation.
+    const jobs = fanOutJobs(requests, imagesPerModel);
+    const initial: ResultTileState[] = jobs.map(({ key, modelId, index, mediaType, request }) => (
+      { key, modelId, index, status: 'queued', mediaType, request }
+    ));
     setTiles(initial);
 
-    // Bounded worker pool over the request list (n images come back in one call).
+    // Bounded worker pool over the calls.
     let cursor = 0;
     const worker = async () => {
-      while (cursor < requests.length && !ctrl.signal.aborted) {
-        const { modelId, mediaType, request } = requests[cursor++];
-        const keys = initial.filter(t => t.modelId === modelId).map(t => t.key);
+      while (cursor < jobs.length && !ctrl.signal.aborted) {
+        const { mediaType, request, key } = jobs[cursor++];
+        const keys = [key];
 
         if (mediaType === 'model3d') {
           keys.forEach(k => patch(k, { status: 'running' }));
@@ -221,7 +219,7 @@ export function useFanOut(): FanOut {
         }
       }
     };
-    await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENCY, requests.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENCY, jobs.length) }, worker));
     // A superseded run must not clear `running` — the run that replaced it is
     // still going, and hiding Cancel would strand it.
     if (epoch.owns(ctrl)) setRunning(false);

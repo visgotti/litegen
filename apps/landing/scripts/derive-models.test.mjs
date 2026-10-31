@@ -154,3 +154,9 @@ test('the real models/ directory derives a sane catalog', () => {
   assert.equal(sunburst.capabilities.textToImage, true);
   assert.equal(models.find((m) => m.id === 'openai/gpt-image-1'), undefined, 'gpt-image-1 is shut down');
 });
+
+test("deriveModel carries the model's task, generate when the row names none", () => {
+  const base = { provider: 'mock', media_type: 'model3d', prompt: {}, params: {} };
+  assert.equal(deriveModel({ ...base, id: 'mock/rig-3d', task: 'rig' }).task, 'rig');
+  assert.equal(deriveModel({ ...base, id: 'mock/mesh-3d' }).task, 'generate');
+});

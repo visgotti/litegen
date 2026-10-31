@@ -284,3 +284,79 @@ export async function copyToClipboard(text: string, clipboard: ClipboardLike | n
     return false;
   }
 }
+
+// ─── The scene manifest (3D doc §3D): what litegen measured on delivery ─────
+
+type Loose = Record<string, unknown>;
+const isObj = (v: unknown): v is Loose => v != null && typeof v === 'object' && !Array.isArray(v);
+const finite = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+const nums = (v: unknown): number[] => (Array.isArray(v) ? v.filter((x): x is number => typeof x === 'number' && Number.isFinite(x)) : []);
+
+/**
+ * A delivered mesh's manifest as label/value rows — its frame, size,
+ * materials, bounds, skin, parts and glTF extensions — or none when it
+ * carries no readable one (history replays stored bodies of any shape).
+ */
+export function sceneFacts(scene: unknown): Array<[string, string]> {
+  if (!isObj(scene) || typeof scene.units !== 'string') return [];
+  const rows: Array<[string, string]> = [];
+  const oriented = typeof scene.oriented_by === 'string' && scene.oriented_by ? ` (oriented by ${scene.oriented_by})` : '';
+  rows.push(['Units / up / front', `${scene.units} · ${String(scene.up ?? '—')} · ${String(scene.front ?? '—')}${oriented}`]);
+  const tris = finite(scene.triangle_count);
+  const verts = finite(scene.vertex_count);
+  if (tris != null && verts != null) {
+    rows.push(['Triangles / vertices', `${tris.toLocaleString('en-US')} · ${verts.toLocaleString('en-US')}`]);
+  }
+  const materials = Array.isArray(scene.materials) ? scene.materials.length : 0;
+  const uv = finite(scene.uv_sets) ?? 0;
+  rows.push(['Materials', `${materials} · ${uv} UV set${uv === 1 ? '' : 's'} · ${scene.vertex_colors === true ? 'vertex colours' : 'no vertex colours'}`]);
+  if (isObj(scene.bounds)) {
+    const min = nums(scene.bounds.min);
+    const max = nums(scene.bounds.max);
+    if (min.length === 3 && max.length === 3) {
+      rows.push(['Bounds', `${max.map((m, i) => (m - min[i]).toFixed(2)).join(' × ')} ${scene.units}`]);
+    }
+  }
+  if (isObj(scene.skin)) {
+    const joints = finite(scene.skin.joint_count);
+    const parts = [joints != null ? `${joints} joints` : null, scene.skin.skeleton, scene.skin.bind_pose]
+      .filter((p): p is string => typeof p === 'string' && p !== '');
+    if (parts.length) rows.push(['Skin', parts.join(' · ')]);
+  }
+  if (Array.isArray(scene.parts) && scene.parts.length) rows.push(['Parts', String(scene.parts.length)]);
+  const extensions = Array.isArray(scene.extensions_used) ? scene.extensions_used.filter(e => typeof e === 'string') : [];
+  if (extensions.length) rows.push(['Extensions', extensions.join(', ')]);
+  return rows;
+}
+
+export interface ClipRow {
+  name: string;
+  duration: string;
+  /** Whether the clip was asked to loop. */
+  loop: string;
+  /** Whether it plays in place, and who made it so. */
+  inPlace: string;
+  /** How far the root moves over the clip. */
+  travel: string;
+}
+
+/** The animation clips a delivered mesh carries, one row each. */
+export function clipRows(scene: unknown): ClipRow[] {
+  if (!isObj(scene) || !Array.isArray(scene.animations)) return [];
+  return scene.animations.filter(isObj).map(a => {
+    const duration = finite(a.duration_s);
+    const travel = nums(a.root_travel_m);
+    return {
+      name: typeof a.name === 'string' ? a.name : '—',
+      duration: duration != null ? `${duration.toFixed(2)} s` : '—',
+      loop: a.loop_requested === true ? 'yes' : a.loop_requested === false ? 'no' : '—',
+      inPlace: a.in_place === true ? (typeof a.in_place_by === 'string' && a.in_place_by ? `yes (${a.in_place_by})` : 'yes') : 'no',
+      travel: travel.length ? `${Math.hypot(...travel).toFixed(2)} m` : '—',
+    };
+  });
+}
+
+/** The vendor's own file, delivered beside litegen's normalised mesh, if any. */
+export function originalOf(assets: Model3dAsset[]): Model3dAsset | null {
+  return assets.find(a => a.kind === 'original') ?? null;
+}

@@ -34,7 +34,8 @@ export function ModelsReference() {
             m.id.toLowerCase().includes(q) ||
             m.provider.toLowerCase().includes(q) ||
             m.displayName.toLowerCase().includes(q) ||
-            m.tags.some((tag) => tag.toLowerCase().includes(q)),
+            m.tags.some((tag) => tag.toLowerCase().includes(q)) ||
+            m.task.toLowerCase().includes(q),
         )
       : MODELS;
     const byProvider = new Map<string, ModelEntry[]>();
@@ -108,6 +109,11 @@ export function ModelsReference() {
                           >
                             {m.output}
                           </span>
+                          {m.task !== 'generate' && (
+                            <span className={`${styles.badge} ${styles.task}`} data-task={m.task}>
+                              {m.task}
+                            </span>
+                          )}
                         </span>
                         <span className={styles.metaRow}>
                           {m.maxRefImages > 0 && (

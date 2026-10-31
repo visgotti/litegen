@@ -31,10 +31,7 @@ interface UnifiedParams {
   schemasById: Record<string, ModelSchema>;
   /** Per selected model, why it cannot run yet (empty array when it can). */
   problems: (modelIds: string[]) => Array<{ modelId: string; problems: string[] }>;
-  buildRequests: (
-    modelIds: string[],
-    mediaTypeOf?: (modelId: string) => 'image' | 'model3d',
-  ) => Array<{ modelId: string; request: ImageGenerationRequest }>;
+  buildRequests: (modelIds: string[]) => Array<{ modelId: string; request: ImageGenerationRequest }>;
 }
 
 const INITIAL: SharedFormState = { prompt: '', n: 1, strict: true, seed: '', params: {}, refs: [], extra: {} };
@@ -73,12 +70,12 @@ export function useUnifiedParams(selectedIds: string[], skip?: ReadonlySet<strin
   const problems = (modelIds: string[]) =>
     modelIds.map(id => ({ modelId: id, problems: schemasById[id] ? requestProblems(schemasById[id], form) : [] }));
 
-  const buildRequests: UnifiedParams['buildRequests'] = (modelIds, mediaTypeOf) =>
+  const buildRequests: UnifiedParams['buildRequests'] = (modelIds) =>
     modelIds
       .filter(id => schemasById[id])
       .map(id => ({
         modelId: id,
-        request: buildRequestForModel(id, schemasById[id], form, mediaTypeOf?.(id) ?? 'image'),
+        request: buildRequestForModel(id, schemasById[id], form),
       }));
 
   return { merged, roles, maxRefs, extras, form, params, setForm, setParam, resetParam, schemasById, problems, buildRequests };

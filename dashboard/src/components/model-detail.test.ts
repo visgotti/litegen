@@ -4,6 +4,7 @@ import {
   EXAMPLE_IMAGE_URL,
   buildCurl,
   capabilityLabels,
+  catalogFacts,
   describePrompt,
   describeSpec,
   exampleBody,
@@ -77,7 +78,8 @@ const rodin = {
   ref_inputs: { max_total: 5, roles: { init: { required: false, min_count: 0, max_count: 5 } } },
 } as unknown as ModelSchema;
 
-const info = (id: string, media_type: string) => ({ id, media_type }) as unknown as ModelInfo;
+const info = (id: string, media_type: string, capabilities: Record<string, unknown> = {}) =>
+  ({ id, media_type, capabilities }) as unknown as ModelInfo;
 
 describe('describeSpec', () => {
   it('says any combination is one job when every format shares it', () => {
@@ -171,5 +173,78 @@ describe('buildCurl', () => {
     expect(generationEndpoint(info('m', 'image'))).toBe('/v1/images/generations');
     expect(generationEndpoint(info('m', 'video'))).toBe('/v1/videos/generations');
     expect(generationEndpoint(info('m', 'model3d'))).toBe('/v1/models3d/generations');
+  });
+});
+
+// ─── What the drawer says about the 3D doc / PixelGenie catalog fields ───────
+
+/** Every boolean `ModelCapabilities` flag the API serves (the SDK's generated
+ *  type). A flag missing from the drawer's labels is invisible. */
+const SERVED_FLAGS = [
+  'lossy_only', 'native_pixel_art', 'supports_audio_toggle', 'supports_background_removal', 'supports_expand',
+  'supports_first_frame', 'supports_fixed_camera', 'supports_forced_palette', 'supports_image_to_3d',
+  'supports_image_to_image', 'supports_image_to_video', 'supports_inpainting', 'supports_keep_uvs',
+  'supports_keyframes', 'supports_last_frame', 'supports_layout', 'supports_loop', 'supports_mask_prompt',
+  'supports_multiview_to_3d', 'supports_palette', 'supports_pbr', 'supports_placement',
+  'supports_preserve_unmasked', 'supports_region_edit', 'supports_rig', 'supports_segmentation',
+  'supports_source_model', 'supports_source_video', 'supports_text_to_3d', 'supports_text_to_image',
+  'supports_text_to_video', 'supports_texture', 'supports_time_range', 'supports_transparent_background',
+];
+
+describe('the catalog fields the drawer shows', () => {
+  it('labels every boolean capability flag the API serves', () => {
+    const all = Object.fromEntries(SERVED_FLAGS.map(f => [f, true]));
+    expect(capabilityLabels(all)).toHaveLength(SERVED_FLAGS.length);
+  });
+
+  it("states the model's task and the facts that shape a request", () => {
+    const facts = catalogFacts(info('mock/keyframe-video', 'video', {
+      task: 'generate', max_keyframes: 8, keyframe_timing: 'any_time', duration_values: [2, 4],
+      supports_loop: true,
+    }));
+    expect(facts).toEqual([
+      ['Task', 'generate'],
+      ['Keyframes', 'up to 8 · any_time'],
+      ['Durations', '2 s, 4 s'],
+    ]);
+    expect(catalogFacts(info('mock/region-image', 'image', {
+      task: 'generate', region_input: 'box', mask_convention: 'white_edits', preserves_unmasked: 'pixel_exact',
+    }))).toEqual([
+      ['Task', 'generate'],
+      ['Region input', 'box'],
+      ['Mask convention', 'white_edits'],
+      ['Unmasked pixels', 'pixel_exact'],
+    ]);
+  });
+
+  it('says when a model retires and what replaces it', () => {
+    const m = { ...info('old/model', 'image', { task: 'generate' }), retires_at: '2026-12-01', replaced_by: 'new/model' } as ModelInfo;
+    expect(catalogFacts(m)).toContainEqual(['Retires', '2026-12-01 → new/model']);
+  });
+});
+
+describe('segmentation and operation models', () => {
+  const segment = info('mock/segment-image', 'image', { task: 'segment', segmentation_prompts: ['point', 'box', 'text'] });
+
+  it('sends segmentation to its own endpoint, with an image and a prompt', () => {
+    expect(generationEndpoint(segment)).toBe('/v1/images/segmentations');
+    expect(exampleBody(segment, null)).toEqual({
+      model: 'mock/segment-image', image: EXAMPLE_IMAGE_URL, prompts: [{ type: 'point', x: 256, y: 256 }],
+    });
+  });
+
+  it('names the source an operation reads', () => {
+    const rig = info('mock/rig-3d', 'model3d', { task: 'rig' });
+    const schema = { params: { source_model: { kind: 'source_model', formats: ['glb'] } }, prompt: { max_length: 0 } } as unknown as ModelSchema;
+    expect(exampleBody(rig, schema)).toEqual({ model: 'mock/rig-3d', source_model: { type: 'generation', value: '<generation id>' } });
+  });
+
+  it('summarises a structured param in words', () => {
+    expect(describeSpec({ kind: 'region', input: 'box', min_window_px: 256 })).toBe('region: a box, in pixels of the input image · at least 256 px');
+    expect(describeSpec({ kind: 'animation_list', max_items: 5, presets: [{ id: 'mock:idle' }, { id: 'mock:walk' }] }))
+      .toBe('animation_list: up to 5 clips · presets mock:idle, mock:walk');
+    expect(describeSpec({ kind: 'source_model', formats: ['glb'] })).toBe('source_model: a glb, by generation id or URL');
+    expect(describeSpec({ kind: 'palette', max_colors: 10 })).toBe('palette: up to 10 colours');
+    expect(describeSpec({ kind: 'layout', max_items: 8, kinds: ['object', 'text'] })).toBe('layout: up to 8 boxes · object, text');
   });
 });

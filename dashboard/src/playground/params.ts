@@ -217,8 +217,7 @@ export function mergeParams(
 ): MergedParam[] {
   const byName = new Map<string, { spec: AnySpec; models: string[] }>();
   for (const [modelId, schema] of Object.entries(schemasById)) {
-    const params = loose(schema).params;
-    if (!params) continue;
+    const params = paramsOf(schema);
     for (const [name, rawSpec] of Object.entries(params)) {
       if (skip.has(name)) continue;
       const spec = rawSpec as AnySpec;
@@ -266,6 +265,193 @@ export function clampToSpec(spec: AnySpec, value: unknown): unknown {
     return out;
   }
   return value;
+}
+
+// ─── Fields a model takes without declaring them ─────────────────────────────
+
+/** The server's caps on mask growth and the kept edge's feather (validator.rs). */
+export const MAX_MASK_GROW_PX = 100;
+export const MAX_FEATHER_PX = 256;
+
+/**
+ * Request fields a model takes by its shape rather than a declared param —
+ * the server's own rule (`check_image_edit`, `supports_preserve_unmasked`):
+ * wherever it takes a mask or a region, `mask_grow_px` widens it and
+ * `preserve_unmasked` (with `feather_px`) pastes the untouched pixels back.
+ */
+export function derivedParams(schema: ModelSchema | undefined): Record<string, AnySpec> {
+  const l = loose(schema);
+  const takesMask = l.ref_inputs?.roles?.mask != null;
+  const takesRegion = l.params?.region?.kind === 'region';
+  if (!takesMask && !takesRegion) return {};
+  return {
+    mask_grow_px: {
+      kind: 'int', min: 0, max: MAX_MASK_GROW_PX, label: 'Mask grow (px)',
+      description: 'Widen the mask or region by this many pixels before the edit.',
+    },
+    preserve_unmasked: {
+      kind: 'bool', default: false, label: 'Keep unmasked pixels',
+      description: 'Paste the original pixels back outside the mask or region.',
+    },
+    feather_px: {
+      kind: 'int', min: 0, max: MAX_FEATHER_PX, label: 'Feather (px)',
+      description: 'Soften the kept edge. Needs Keep unmasked pixels.',
+    },
+  };
+}
+
+/** A model's params: what it declares, plus what its shape implies. */
+export function paramsOf(schema: ModelSchema | undefined): Record<string, AnySpec> {
+  return { ...derivedParams(schema), ...(loose(schema).params ?? {}) };
+}
+
+// ─── Structured params: the draft a control edits, the value the wire takes ──
+
+/** Param kinds whose value is an object or a list the control builds up. */
+export const STRUCTURED = new Set([
+  'region', 'expand', 'time_range', 'palette', 'layout', 'animation_list',
+  'source_model', 'source_video', 'segmentation_prompts',
+]);
+
+type Draft = Record<string, unknown>;
+
+const isDraft = (v: unknown): v is Draft => v != null && typeof v === 'object' && !Array.isArray(v);
+const drafts = (v: unknown): Draft[] => (Array.isArray(v) ? v.filter(isDraft) : []);
+const text = (v: unknown): string => (typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : '');
+/** A typed number, or NaN when the field is blank or not a number. */
+const num = (v: unknown): number => (text(v) === '' ? NaN : Number(text(v)));
+const whole = (v: unknown): number | undefined => {
+  const n = num(v);
+  return Number.isInteger(n) && n >= 0 ? n : undefined;
+};
+const fraction = (v: unknown): number | undefined => {
+  const n = num(v);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined;
+};
+
+/** A legal clip name (validator.rs `animation_name_invalid`). */
+export const CLIP_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
+
+/** A layout draft's box when it lies inside the canvas with an area — the
+ *  server refuses the request otherwise — else undefined. */
+export function layoutBox(d: Draft): { x: number; y: number; w: number; h: number } | undefined {
+  const [x, y, w, h] = ['x', 'y', 'w', 'h'].map(k => fraction(d[k]));
+  if (x === undefined || y === undefined || !w || !h) return undefined;
+  return x + w <= 1 + 1e-9 && y + h <= 1 + 1e-9 ? { x, y, w, h } : undefined;
+}
+
+/**
+ * The wire form of a structured param's draft, or undefined while it is not
+ * complete enough to send. Incomplete is "unset", never a half-filled object
+ * the server would only reject.
+ */
+export function wireValue(spec: AnySpec, value: unknown): unknown {
+  const max = typeof spec.max_items === 'number' ? spec.max_items : Infinity;
+  switch (spec.kind) {
+    case 'region': {
+      // Pixels of the init image, top-left origin.
+      if (!isDraft(value)) return undefined;
+      const [x, y, w, h] = ['x', 'y', 'w', 'h'].map(k => whole(value[k]));
+      return x === undefined || y === undefined || !w || !h ? undefined : { x, y, w, h };
+    }
+    case 'expand': {
+      if (!isDraft(value)) return undefined;
+      const sides = ['left', 'top', 'right', 'bottom'].map(k => (text(value[k]) === '' ? 0 : whole(value[k])));
+      if (sides.some(s => s === undefined) || sides.every(s => s === 0)) return undefined;
+      const [left, top, right, bottom] = sides as number[];
+      return { left, top, right, bottom };
+    }
+    case 'time_range': {
+      if (!isDraft(value)) return undefined;
+      const start = num(value.start_s);
+      const end = num(value.end_s);
+      return Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end > start
+        ? { start_s: start, end_s: end }
+        : undefined;
+    }
+    case 'palette': {
+      const cap = typeof spec.max_colors === 'number' ? spec.max_colors : Infinity;
+      const out: string[] = [];
+      for (const c of Array.isArray(value) ? value : []) {
+        const hex = text(c).toLowerCase();
+        if (/^#[0-9a-f]{6}$/.test(hex) && !out.includes(hex) && out.length < cap) out.push(hex);
+      }
+      return out.length ? out : undefined;
+    }
+    case 'layout': {
+      // Fractions of the canvas: the output's size may not be known yet.
+      const out: Draft[] = [];
+      for (const d of drafts(value)) {
+        const box = layoutBox(d);
+        if (!box || out.length >= max) continue;
+        if (d.kind === 'text') {
+          if (text(d.text)) out.push({ kind: 'text', text: text(d.text), box });
+        } else if (d.kind === 'object') {
+          out.push(text(d.prompt) ? { kind: 'object', prompt: text(d.prompt), box } : { kind: 'object', box });
+        }
+      }
+      return out.length ? out : undefined;
+    }
+    case 'animation_list': {
+      // A clip's name is "1–64 characters of A–Z, a–z, 0–9, _ . -" and
+      // unique: a blank one is the preset's canonical name, else its id made
+      // legal; a typed one that is not legal is not sent.
+      const canonical = new Map(drafts(spec.presets).map(p => [text(p.id), text(p.canonical)]));
+      const names = new Set<string>();
+      const out: Draft[] = [];
+      for (const d of drafts(value)) {
+        const preset = text(d.preset);
+        const prompt = text(d.prompt);
+        if ((!preset && !prompt) || out.length >= max) continue;
+        const typed = text(d.name);
+        if (typed && !CLIP_NAME.test(typed)) continue;
+        let name = typed || canonical.get(preset) || preset.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 64) || `clip-${out.length + 1}`;
+        for (let n = 2; names.has(name); n++) name = `${(typed || canonical.get(preset) || preset.replace(/[^A-Za-z0-9_.-]/g, '_')).slice(0, 60)}-${n}`;
+        names.add(name);
+        const clip: Draft = { name };
+        if (preset) clip.preset = preset;
+        if (prompt) clip.prompt = prompt;
+        const duration = num(d.duration_s);
+        if (Number.isFinite(duration) && duration > 0) clip.duration_s = duration;
+        if (typeof d.loop === 'boolean') clip.loop = d.loop;
+        if (typeof d.in_place === 'boolean') clip.in_place = d.in_place;
+        out.push(clip);
+      }
+      return out.length ? out : undefined;
+    }
+    case 'source_model':
+    case 'source_video': {
+      // A generation id, or a URL with the container it holds.
+      if (!isDraft(value)) return undefined;
+      const type = value.type === 'url' || value.type === 'base64' ? value.type : 'generation';
+      const v = text(value.value);
+      if (!v) return undefined;
+      const format = text(value.format);
+      return format && type !== 'generation' ? { type, value: v, format } : { type, value: v };
+    }
+    case 'segmentation_prompts': {
+      const types = stringList(spec.types);
+      const out: Draft[] = [];
+      for (const d of drafts(value)) {
+        if (!types.includes(String(d.type)) || out.length >= max) continue;
+        if (d.type === 'point') {
+          const x = num(d.x);
+          const y = num(d.y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          const label = num(d.label);
+          out.push(label === 0 || label === 1 ? { type: 'point', x, y, label } : { type: 'point', x, y });
+        } else if (d.type === 'box') {
+          const [x, y, w, h] = ['x', 'y', 'w', 'h'].map(k => num(d[k]));
+          if ([x, y, w, h].every(Number.isFinite) && w > 0 && h > 0) out.push({ type: 'box', x, y, w, h });
+        } else if (d.type === 'text' && text(d.text)) {
+          out.push({ type: 'text', text: text(d.text) });
+        }
+      }
+      return out.length ? out : undefined;
+    }
+    default:
+      return value;
+  }
 }
 
 // ─── Prompt ──────────────────────────────────────────────────────────────────
@@ -386,7 +572,12 @@ export function refsForModel(schema: ModelSchema | undefined, refs: RefEntry[]):
     if (typeof spec.max_count === 'number' && n >= spec.max_count) continue;
     if (typeof ri.max_total === 'number' && out.length >= ri.max_total) break;
     perRole.set(r.role, n + 1);
-    out.push({ type: r.type, value: r.value, role: r.role });
+    const ref: ReferenceImage = { type: r.type, value: r.value, role: r.role };
+    // Only a keyframe is pinned in time (3D doc §5); a blank time is spread
+    // by the model's own keyframe_timing.
+    const t = r.role === 'keyframe' && r.time_s?.trim() ? Number(r.time_s) : NaN;
+    if (Number.isFinite(t)) ref.time_s = t;
+    out.push(ref);
   }
   return out;
 }
@@ -488,14 +679,11 @@ export function requestProblems(
 }
 
 /** Build a schema-valid request for one model: shared values, minus params the
- *  model doesn't declare, clamped to that model's own bounds. `mediaType`
- *  decides the family-specific fields (`n` is image-only: one 3D job is one
- *  result, billed flat). */
+ *  model doesn't declare, clamped to that model's own bounds. */
 export function buildRequestForModel(
   modelId: string,
   schema: ModelSchema,
   shared: SharedFormState,
-  mediaType: 'image' | 'model3d' = 'image',
 ): ImageGenerationRequest {
   const params = loose(schema).params ?? {};
   const body: Record<string, unknown> = { model: modelId };
@@ -504,7 +692,8 @@ export function buildRequestForModel(
   const prompt = promptForModel(schema, shared.prompt);
   if (prompt !== undefined) body.prompt = prompt;
   body.strict = shared.strict;
-  if (mediaType === 'image') body.n = shared.n;
+  // No `n`: litegen returns one image per request and refuses more (L13), so
+  // Compare mode makes N images as N requests (`fanOutJobs`).
   if (shared.seed !== '' && 'seed' in params) body.seed = parseInt(shared.seed, 10);
   return { ...body, ...schemaInputs(schema, shared) } as unknown as ImageGenerationRequest;
 }
@@ -519,7 +708,7 @@ export function schemaInputs(
   schema: ModelSchema | undefined,
   shared: Pick<SharedFormState, 'params'> & Partial<Pick<SharedFormState, 'refs' | 'extra'>>,
 ): Record<string, unknown> {
-  const params = loose(schema).params ?? {};
+  const params = paramsOf(schema);
   const body: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(shared.params)) {
     if (!(name in params)) continue;          // drop params this model doesn't support
@@ -528,6 +717,10 @@ export function schemaInputs(
     if ((params[name].kind === 'int' || params[name].kind === 'float') && typeof value === 'string') {
       v = Number(value);
       if (!Number.isFinite(v)) continue;
+    }
+    if (STRUCTURED.has(params[name].kind)) {
+      v = wireValue(params[name], v);
+      if (v === undefined) continue;          // still being filled in
     }
     v = clampToSpec(params[name], v);
     // An empty set means "unset", not "no formats": the API rejects an
@@ -542,6 +735,23 @@ export function schemaInputs(
   const extra = extraForModel(schema, shared.extra ?? {});
   if (extra) body.extra = extra;
   return body;
+}
+
+/**
+ * The calls one Compare run makes, one tile each: N one-image requests per
+ * image model (litegen returns one image per request), one job per 3D model.
+ */
+export function fanOutJobs<T extends { modelId: string; mediaType: 'image' | 'model3d'; request: object }>(
+  requests: T[],
+  imagesPerModel: number,
+): Array<T & { index: number; key: string }> {
+  const n = Math.max(1, Math.floor(imagesPerModel));
+  return requests.flatMap(r => {
+    const one = { ...(r.request as Record<string, unknown>) };
+    delete one.n;
+    const count = r.mediaType === 'image' ? n : 1;
+    return Array.from({ length: count }, (_, index) => ({ ...r, request: one as T['request'], index, key: `${r.modelId}#${index}` }));
+  });
 }
 
 // ─── Restoring a stored request (Playground history) ─────────────────────────

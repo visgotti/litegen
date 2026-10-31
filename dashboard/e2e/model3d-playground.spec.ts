@@ -290,29 +290,21 @@ test.describe('3D Playground inputs', () => {
     expect('n' in reqs[MESH_MODEL]).toBe(false);
   });
 
-  test('lax mode: params the model cannot take are dropped and named', async ({ page }) => {
+  test('a model that takes no seed or negative prompt is sent neither, in either mode', async ({ page }) => {
     await openSingleMode(page, MESH_MODEL);
     await page.getByTestId('playground-prompt').fill('a fox');
-    // mock/mesh-3d declares neither a seed nor a negative prompt.
-    await page.getByTestId('playground-seed').fill('7');
-    await page.getByTestId('playground-negative-prompt').fill('blurry');
+    // mock/mesh-3d declares neither: both controls are off, so a value left
+    // from another model can never reach it (strict mode would refuse it,
+    // lax mode drop it — X-Litegen-Dropped-Params, covered server-side).
+    await expect(page.getByTestId('playground-seed')).toBeDisabled();
+    await expect(page.getByTestId('playground-negative-prompt')).toBeDisabled();
     await page.getByTestId('playground-strict').uncheck();
     await page.getByTestId('playground-generate').click();
-
-    const dropped = page.getByTestId('playground-dropped');
-    await expect(dropped).toBeVisible({ timeout: JOB_TIMEOUT });
-    await expect(dropped).toContainText('seed');
-    await expect(dropped).toContainText('negative_prompt');
     await expect(page.getByTestId('playground-mesh')).toBeVisible({ timeout: JOB_TIMEOUT });
-  });
-
-  test('strict mode: the same request is refused, naming the param', async ({ page }) => {
-    await openSingleMode(page, MESH_MODEL);
-    await page.getByTestId('playground-prompt').fill('a fox');
-    await page.getByTestId('playground-seed').fill('7');
-    await page.getByTestId('playground-generate').click();
-    await expect(page.locator('.alert-error')).toContainText("seed not supported by 'mock/mesh-3d'", { timeout: JOB_TIMEOUT });
-    await expect(page.getByTestId('playground-mesh')).toHaveCount(0);
+    await expect(page.getByTestId('playground-dropped')).toHaveCount(0);
+    const body = await singleModeRequest(page);
+    expect(body).not.toHaveProperty('seed');
+    expect(body).not.toHaveProperty('negative_prompt');
   });
 });
 

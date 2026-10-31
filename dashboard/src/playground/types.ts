@@ -39,6 +39,8 @@ export interface RefEntry {
   value: string;
   /** The uploaded file's name, shown instead of a multi-megabyte data URL. */
   name?: string;
+  /** A `keyframe` reference's time in seconds from the clip's start, as typed. */
+  time_s?: string;
 }
 
 /** One reference-image role across the selected models. */

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import type { ParamSpec } from '@litegen/sdk';
-import { allShareOneJob, canAddToSet, derivableValues, paramDescription, paramLabel, sizeEnumOptions } from './params';
+import { STRUCTURED, allShareOneJob, canAddToSet, derivableValues, paramDescription, paramLabel, sizeEnumOptions } from './params';
+import StructuredParamField from './StructuredParamField';
 
 type AnySpec = { kind: string; [k: string]: unknown };
 
@@ -38,6 +39,19 @@ export default function ParamField({ name, spec, models, totalSelected, value, o
     case 'int':
     case 'float': {
       const range = s.min != null || s.max != null ? `${s.min ?? ''}–${s.max ?? ''}` : '';
+      // A model that takes only listed values (`duration_seconds` 5 or 10)
+      // is offered those, not a range it would refuse most of.
+      const listed = Array.isArray(s.values) ? (s.values as number[]).filter(v => typeof v === 'number') : [];
+      if (listed.length) {
+        control = (
+          <select className="input" id={`${tid}-input`} data-testid={tid} value={String(value ?? '')}
+            onChange={e => onChange(e.target.value)}>
+            {!hasDefault && <option value="">{MODEL_DEFAULT}</option>}
+            {listed.map(v => <option key={v} value={String(v)}>{v}</option>)}
+          </select>
+        );
+        break;
+      }
       control = (
         <input type="number" className="input" id={`${tid}-input`} data-testid={tid}
           min={s.min as number} max={s.max as number}
@@ -145,10 +159,12 @@ export default function ParamField({ name, spec, models, totalSelected, value, o
       );
       break;
     default:
-      control = (
-        <input type="text" className="input" id={`${tid}-input`} data-testid={tid}
-          value={String(value ?? '')} onChange={e => onChange(e.target.value)} />
-      );
+      control = STRUCTURED.has(s.kind)
+        ? <StructuredParamField tid={tid} spec={s} value={value} onChange={onChange} />
+        : (
+          <input type="text" className="input" id={`${tid}-input`} data-testid={tid}
+            value={String(value ?? '')} onChange={e => onChange(e.target.value)} />
+        );
   }
 
   // The description is both the label's tooltip and a visible help line:
@@ -156,7 +172,8 @@ export default function ParamField({ name, spec, models, totalSelected, value, o
   // applicability note sit OUTSIDE the <label>: a button inside a label with no
   // `for` becomes the label's control, so clicking the name would reset it.
   const description = paramDescription(spec);
-  const isSet = s.kind === 'string_array';
+  // Several inputs under one name: a group the name labels, not one input.
+  const isSet = s.kind === 'string_array' || STRUCTURED.has(s.kind);
   return (
     <div className="pg-param-row" role={isSet ? 'group' : undefined} aria-labelledby={isSet ? `${tid}-label` : undefined}>
       <div className="pg-param-head">

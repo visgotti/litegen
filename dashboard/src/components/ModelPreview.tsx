@@ -6,12 +6,15 @@ import {
 import ModelViewer, { type ModelViewerHandle, type ViewerBackground } from './ModelViewer';
 import {
   canPreviewMesh,
+  clipRows,
   copyToClipboard,
   formatBytes,
   formatDimensions,
   isBrowserImage,
   meshOf,
+  originalOf,
   previewOf,
+  sceneFacts,
   texturesOf,
   validAssets,
   type Dimensions,
@@ -44,6 +47,69 @@ function assetDetail(a: Model3dAsset): string {
   if (a.polycount != null) return `${a.polycount.toLocaleString()} polys`;
   if (a.width != null && a.height != null) return `${a.width} × ${a.height}`;
   return '—';
+}
+
+/**
+ * What litegen measured on delivery (3D doc §3D) — the manifest's frame,
+ * size, materials, bounds and skin, then the animation clips — and the
+ * vendor's own file kept beside the normalised mesh.
+ */
+function SceneSection({ mesh, original, testId }: { mesh: Model3dAsset; original: Model3dAsset | null; testId: string }) {
+  const facts = sceneFacts(mesh.scene);
+  const clips = clipRows(mesh.scene);
+  return (
+    <>
+      {facts.length > 0 && (
+        <>
+          <h4 className="mp-section-title">Scene</h4>
+          <dl className="mp-stats mp-scene" data-testid={`${testId}-scene`}>
+            {facts.map(([label, value]) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        </>
+      )}
+      {clips.length > 0 && (
+        <>
+          <h4 className="mp-section-title" id={`${testId}-clips-title`}>Clips ({clips.length})</h4>
+          <div className="mp-assets-wrap">
+            <table className="mp-assets" data-testid={`${testId}-clips`} aria-labelledby={`${testId}-clips-title`}>
+              <thead>
+                <tr>
+                  <th scope="col">Clip</th>
+                  <th scope="col">Length</th>
+                  <th scope="col">Loop</th>
+                  <th scope="col">In place</th>
+                  <th scope="col">Root travel</th>
+                </tr>
+              </thead>
+              <tbody>
+                {clips.map((c, i) => (
+                  <tr key={`${i}:${c.name}`} data-testid={`${testId}-clip-${i}`}>
+                    <td>{c.name}</td>
+                    <td>{c.duration}</td>
+                    <td>{c.loop}</td>
+                    <td>{c.inPlace}</td>
+                    <td>{c.travel}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+      {original && (
+        <p className="mp-original" data-testid={`${testId}-original`}>
+          The vendor’s own file, kept beside litegen’s normalised mesh:{' '}
+          <a href={original.url} target="_blank" rel="noreferrer">{upper(original.format)}</a>
+          {original.size_bytes != null && ` (${formatBytes(original.size_bytes)})`}
+        </p>
+      )}
+    </>
+  );
 }
 
 function AssetList({ assets, testId }: { assets: Model3dAsset[]; testId: string }) {
@@ -351,6 +417,8 @@ export default function ModelPreview({
           </dd>
         </div>
       </dl>
+
+      <SceneSection mesh={mesh} original={originalOf(assets)} testId={testId} />
 
       {thumbs.length > 0 && (
         <ul className="mp-thumbs" data-testid={`${testId}-thumbs`} aria-label="Preview and textures">

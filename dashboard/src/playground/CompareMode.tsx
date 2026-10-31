@@ -38,7 +38,10 @@ export default function CompareMode() {
 
   useEffect(() => {
     client.models.list()
-      .then(all => setModels(all.filter(m => m.media_type === 'image' || m.media_type === 'model3d')))
+      // Compare fans out generations: a segmentation model answers at its
+      // own endpoint, and video runs in Single mode.
+      .then(all => setModels(all.filter(m => m.media_type === 'model3d'
+        || (m.media_type === 'image' && (m.capabilities as { task?: string } | undefined)?.task !== 'segment'))))
       .catch(e => setError(e.message));
     setHistory(getMultiHistory());
   }, []);
@@ -55,14 +58,13 @@ export default function CompareMode() {
       return [...set];
     });
 
-  // buildRequests (useUnifiedParams) doesn't know media family — look it up
-  // from the loaded model list. Shared by the request builder, the cost
-  // preview and generate() so a 3D selection gets 3D-shaped bodies and goes to
-  // the 3D client calls instead of the image ones.
+  // The media family, from the loaded model list: the cost preview and
+  // generate() send a 3D selection to the 3D client calls instead of the
+  // image ones.
   const mediaTypeOf = (modelId: string): 'image' | 'model3d' =>
     models.find(m => m.id === modelId)?.media_type === 'model3d' ? 'model3d' : 'image';
 
-  const requests = buildRequests(selected, mediaTypeOf);
+  const requests = buildRequests(selected);
   const sig = JSON.stringify(requests);
   // A model the server would reject (no prompt where one is required, a
   // missing input image) blocks the run instead of failing its tile.
@@ -75,12 +77,14 @@ export default function CompareMode() {
     if (requests.length === 0 || blocked.length > 0) { setEstCost(null); return; }
     const handle = setTimeout(async () => {
       try {
+        // An image request is one image, so N of them cost N estimates.
         const estimates = await Promise.all(requests.map(r => {
-          const estimate = mediaTypeOf(r.modelId) === 'model3d'
+          const is3d = mediaTypeOf(r.modelId) === 'model3d';
+          const estimate = is3d
             ? client.models3d.estimateCost(r.request as Model3dGenerationRequest)
             : client.images.estimateCost(r.request);
           return estimate
-            .then(c => (c as { total_cost_usd?: number }).total_cost_usd ?? 0)
+            .then(c => ((c as { total_cost_usd?: number }).total_cost_usd ?? 0) * (is3d ? 1 : form.n))
             .catch(() => 0);
         }));
         setEstCost(estimates.reduce((a, b) => a + b, 0));
@@ -90,7 +94,7 @@ export default function CompareMode() {
     }, 400);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sig, blocked.length]);
+  }, [sig, blocked.length, form.n]);
 
   const generate = async (only?: string) => {
     setError('');
@@ -98,7 +102,7 @@ export default function CompareMode() {
     if (picked.length === 0 || picked.some(r => blocked.some(b => b.modelId === r.modelId))) return;
     setView('results');
     const reqs = picked.map(r => ({ ...r, mediaType: mediaTypeOf(r.modelId) }));
-    await run(reqs);
+    await run(reqs, form.n);
     const entry: MultiRunHistoryEntry = {
       id: crypto.randomUUID(),
       kind: 'multi',

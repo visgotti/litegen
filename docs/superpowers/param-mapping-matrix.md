@@ -231,6 +231,32 @@ and `/v1/stats` read 0. A cancel also sends the terminal webhook.
 | limits of every principal charged | management `a_cancelled_job_refunds_every_principal_it_was_charged_against` | ✅ |
 | the claim, in Postgres | `metadata_filters_and_refund_claims_against_postgres` | ✅ |
 
+## Dashboard Playground controls (Task 43)
+
+Every request field a catalog row can take has a control in the Playground
+(`dashboard/src/playground/`): a structured param edits a draft that
+`wireValue` turns into the wire form, and a half-filled one is not sent. Single
+mode runs image, segmentation (`/v1/images/segmentations`), video and 3D
+models; Compare mode compares image and 3D generation.
+
+| field | control | proof | status |
+|---|---|---|---|
+| `region` | x / y / width / height in pixels of the input image | vitest `sends a region only once all four sides are whole pixels`; e2e `a region edit sends the box, the mask growth and the kept pixels` (`mock/region-image`) | ✅ mock |
+| `mask_grow_px`, `preserve_unmasked`, `feather_px` | offered wherever a model takes a mask or a region (the server's rule; no catalog param declares them) | vitest `offers mask growth and keeping unmasked pixels wherever a mask or a region goes`; same e2e | ✅ mock |
+| `expand` | pixels per side, up to `max_px` | vitest `sends the sides of an expand that grow…`; e2e `an expand sends the sides that grow` (`mock/expand-image`) | ✅ mock |
+| `layout` | rows of kind, word or prompt, and a box as fractions; a box off the canvas is flagged and not sent | vitest `sends layout boxes as fractions…`; e2e `layout boxes go as fractions…` (`mock/layout-image`) | ✅ mock |
+| `palette` | colour swatches, up to `max_colors` | vitest `sends a palette as distinct #rrggbb colours…`; e2e `a palette goes as its colours…` (`mock/pixel-art-image`) | ✅ mock |
+| `background`, `output_format`, `views`, `skeleton`, `joint_naming`, `camera`, `replace`, `direction` | the generic select or set | e2e `background and output format go as chosen`, `multiview views go as the set ticked`, `a mesh of mine is rigged…`, `a clip runs with its camera, audio and loop…` | ✅ mock |
+| `duration_seconds` with listed `values` | only the listed lengths | e2e `a clip runs with its camera, audio and loop, at a listed length` (`mock/sprite-video`) | ✅ mock |
+| `audio`, `loop` | checkboxes | same | ✅ mock |
+| keyframe `reference_images[].time_s` | a time beside each keyframe image; blank lets the model spread them | vitest `sends each keyframe its time, and no other role one`; e2e `keyframes go with the times they are pinned at` (`mock/keyframe-video`) | ✅ mock |
+| `source_model`, `source_video` | a picker of the caller's completed generations of that kind (by id), a pasted id, or a URL with its format | vitest `sends a source by generation id or URL…`; e2e `a mesh of mine is rigged, then animated…`, `a clip of mine is picked by generation id to extend, then to retake…` | ✅ mock |
+| `time_range` | from / to in seconds | vitest `sends a time range only when it ends after it starts`; same e2e (`mock/retake-video`) | ✅ mock |
+| `animations` | rows of preset or motion prompt, name, loop, in place; a blank name is the preset's canonical name (`mock:walk` → `walk`), a typed one must be 1–64 of A–Z a–z 0–9 _ . - | vitest `sends each animation by a name the server takes…`; same e2e (`mock/animate-3d`) | ✅ mock |
+| segmentation `prompts` | rows of point, box or text, of the kinds the model takes; a text prompt alone | vitest `builds a segmentation request…`; e2e `an image is segmented by a point and a box…` (`mock/segment-image`) | ✅ mock |
+| results | an image, a clip (a GIF as an image), masks with scores and boxes, or the 3D inspector with the scene manifest, clips and the vendor's `original` file | vitest `scene-manifest.test.ts`; e2e above (`playground-video`, `playground-masks`, `playground-mesh-scene`, `playground-mesh-clips`) | ✅ mock |
+| model detail | `task`, every served capability flag, and the catalog facts (keyframes, durations, region input, mask convention, kept pixels, texture resolutions, layout and prompt kinds, lifecycle); segmentation's own endpoint and an operation's source in the copied curl | vitest `the catalog fields the drawer shows`, `segmentation and operation models`; e2e `states an operation's task, and a keyframe model's keyframes and lengths` | ✅ mock |
+
 ## Image / Video
 
 Row inventory generated 2026-08-27, recounted 2026-10-30 (the same query, read with the `yaml` package), via:

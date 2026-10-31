@@ -24,6 +24,8 @@ export interface ModelEntry {
   description: string;
   mediaType: 'image' | 'video' | 'model3d';
   output: 'image' | 'video' | 'model3d';
+  /** generate, or the operation the model performs on a source. */
+  task: string;
   capabilities: {
     textToImage: boolean;
     imageToImage: boolean;
@@ -54,6 +56,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Black Forest Labs FLUX.2 klein 9B — sub-second, step-distilled",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -114,6 +117,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Black Forest Labs FLUX.2 max — the highest-quality FLUX.2",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -174,6 +178,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Black Forest Labs FLUX.2 pro — recommended default for image",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -233,6 +238,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Black Forest Labs FLUX.1 dev (hosted) text-to-image.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -284,6 +290,7 @@ export const MODELS: ModelEntry[] = [
     "description": "FLUX.1 Kontext max image editing.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -352,6 +359,7 @@ export const MODELS: ModelEntry[] = [
     "description": "FLUX.1 Kontext image editing (input_image base64 or URL).",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -420,6 +428,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Black Forest Labs FLUX 1.1 pro text-to-image (Redux image_prompt ref).",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -478,6 +487,7 @@ export const MODELS: ModelEntry[] = [
     "description": "FLUX 1.1 pro Ultra — high-resolution, aspect-ratio based.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -537,6 +547,7 @@ export const MODELS: ModelEntry[] = [
     "description": "ByteDance Seedance 1.0 Pro text/image-to-video (first/last frame).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -625,6 +636,7 @@ export const MODELS: ModelEntry[] = [
     "description": "ByteDance Dreamina Seedance 2.0 mini text/image-to-video (first/last frame), with generated audio.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -703,6 +715,7 @@ export const MODELS: ModelEntry[] = [
     "description": "ByteDance Seedance 1.0 Pro Fast text-to-video and first-frame image-to-video.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -786,6 +799,7 @@ export const MODELS: ModelEntry[] = [
     "description": "ByteDance Seedream 4.0 text-to-image + multi-reference edit.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -828,6 +842,7 @@ export const MODELS: ModelEntry[] = [
     "description": "ByteDance Seedream 4.5 text-to-image + multi-reference edit.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -870,6 +885,7 @@ export const MODELS: ModelEntry[] = [
     "description": "ByteDance Seedream 5.0 lite text-to-image + multi-reference edit.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -912,6 +928,7 @@ export const MODELS: ModelEntry[] = [
     "description": "",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -967,6 +984,7 @@ export const MODELS: ModelEntry[] = [
     "description": "BiRefNet v2 background removal on Fal, up to a 2304 px working resolution: one image in, the same image with its background made transparent out.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -1018,6 +1036,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Bria's RMBG 2.0 on Fal: one image in, the same image with its background made transparent out.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -1059,6 +1078,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Black Forest Labs FLUX.2 dev text-to-image on Fal.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -1124,6 +1144,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Flux Dev on Fal.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -1188,6 +1209,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Flux Pro hosted on Fal.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -1238,6 +1260,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Fast Flux on Fal.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -1303,6 +1326,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Tencent Hunyuan3D v2 via Fal. Image-to-3D only, GLB only — litegen derives obj/stl/ply from it.",
     "mediaType": "model3d",
     "output": "model3d",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -1368,6 +1392,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Tencent Hunyuan3D 3.1 Pro via Fal, from one image or from up to eight views of one subject (front required; back, left, right, top, bottom, front-left and front-right optional). GLB out; litegen derives the other containers.",
     "mediaType": "model3d",
     "output": "model3d",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -1487,6 +1512,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Deemos Rodin via Fal. Text- or image-to-3D, and the only fal 3D endpoint that lets you pick the container.",
     "mediaType": "model3d",
     "output": "model3d",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -1616,6 +1642,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Lightricks LTX-2.3 Pro text- and image-to-video with native audio, 1080p to 4K.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -1691,6 +1718,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Meshy's auto-rigger via Fal: a textured humanoid GLB in, a rigged GLB (and Meshy's own FBX) out. The character must face +Z with clearly defined limbs. litegen sends no animation, so none is billed.",
     "mediaType": "model3d",
     "output": "model3d",
+    "task": "rig",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -1760,6 +1788,7 @@ export const MODELS: ModelEntry[] = [
     "description": "",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -1805,6 +1834,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Meta's Segment Anything Model 3 on Fal: a mask for the object points and boxes pick out, or one for every instance of a thing named.",
     "mediaType": "image",
     "output": "image",
+    "task": "segment",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -1844,6 +1874,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Meta's Segment Anything Model 3.1 on Fal: a mask for the object points and boxes pick out, or one for every instance of a thing named.",
     "mediaType": "image",
     "output": "image",
+    "task": "segment",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -1883,6 +1914,7 @@ export const MODELS: ModelEntry[] = [
     "description": "",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -1951,6 +1983,7 @@ export const MODELS: ModelEntry[] = [
     "description": "",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -2010,6 +2043,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Microsoft TRELLIS via Fal. Image-to-3D only, GLB only — litegen derives obj/stl/ply from it.",
     "mediaType": "model3d",
     "output": "model3d",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -2070,6 +2104,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Tripo H3.1 via Fal: two to four views of one subject make one mesh. Tripo reads its views by position — front, left, back, right — so view-front and view-left are required and view-right needs view-back. litegen sends them in Tripo's order whatever order they arrive in.",
     "mediaType": "model3d",
     "output": "model3d",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -2165,6 +2200,7 @@ export const MODELS: ModelEntry[] = [
     "description": "",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -2214,6 +2250,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Gemini 2.5 Flash image generation. Deprecated; shuts down 2027-03-15 — migrate to google/gemini-3.1-flash-lite-image.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -2267,6 +2304,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Gemini 3 Pro image generation.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -2321,6 +2359,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Nano Banana 2 (GA 2026-05-28). Deprecated 2026-10-06, no shutdown date announced; Google's successor is gemini-nano-banana-2.1.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -2378,6 +2417,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Fastest, cheapest Nano Banana 2 tier.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -2436,6 +2476,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Google's successor to Nano Banana 2 (gemini-3.1-flash-image), GA 2026-10-06.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -2493,6 +2534,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Tencent Hunyuan text-to-image (async SubmitHunyuanImageJob).",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -2555,6 +2597,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Tencent Hunyuan text/image-to-video (async SubmitHunyuanToVideoJob on vclm).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -2613,6 +2656,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Tencent Hunyuan image-to-video at 480p/720p/1080p (async SubmitImageToVideoGeneralJob on vclm).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -2679,6 +2723,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Edits part of an image, keeping its size: a region becomes Ideogram's own box (`context_window`, at least 256 px a side within 1:6–6:1 — litegen enlarges a smaller one and sends the exact area as the mask), and a mask goes in Ideogram's black-edits convention. Pixels the edit did not meaningfully change come back exactly.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": true,
@@ -2750,6 +2795,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Ideogram 3.0 text-to-image with style/character reference images.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -2836,6 +2882,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Ideogram 3.0 with QUALITY rendering speed.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -2922,6 +2969,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Ideogram 3.0 with TURBO rendering speed (faster, cheaper).",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -3008,6 +3056,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Ideogram 4.0 text-to-image, Ideogram's flagship for prompt fidelity and text rendering.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -3080,6 +3129,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Ideogram 4.0 with QUALITY rendering speed.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -3153,6 +3203,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Ideogram 4.0 with TURBO rendering speed (faster, cheaper).",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -3226,6 +3277,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Kling Image 2.1 text-to-image, image-to-image and subject/face reference.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -3282,6 +3334,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Kling Image 3.0 text-to-image and image-to-image.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -3338,6 +3391,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Kling 2.5 Turbo text/image-to-video (first frame + image_tail last frame).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -3402,6 +3456,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Kling 2.6 text/image-to-video with optional native audio.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -3471,6 +3526,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Kling 3.0 text/image-to-video with native audio, multi-shot and up to 4K.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -3540,6 +3596,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Leonardo image generation (default Diffusion XL model). Add more models via providers.leonardo.model_mapping.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -3599,6 +3656,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Kling 2.5 Turbo served through Leonardo's first-party API.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -3655,6 +3713,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Leonardo Motion 2.0 image-to-video.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -3706,6 +3765,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Google Veo 3.1 served through Leonardo's first-party API (start-frame image-to-video).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -3764,6 +3824,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Google Veo 3.1 Fast served through Leonardo's first-party API (start-frame image-to-video).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -3822,6 +3883,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Luma Dream Machine text/image-to-video (sent as ray-2) with first and last keyframes, 5 or 9 s, optional loop.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -3901,6 +3963,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Luma Photon text-to-image with image/style/character references.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -3978,6 +4041,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Faster, cheaper Photon variant.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -4056,6 +4120,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Luma Ray 2 text/image-to-video with first and last keyframes, 5 or 9 s, 540p to 4K, optional loop.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -4135,6 +4200,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Luma Ray Flash 2 text/image-to-video, faster and cheaper than Ray 2, with first and last keyframes, 5 or 9 s, optional loop.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -4215,6 +4281,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Up to ten clips from Meshy's animation library on a rig made by meshy/rig on the same Meshy account — Meshy animates only its own rig, so any other source is refused 422 `source_not_chainable` — merged into one file in request order. Each action at most once per request.",
     "mediaType": "model3d",
     "output": "model3d",
+    "task": "animate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -4276,6 +4343,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Meshy's auto-rigger: a textured character GLB facing +Z in, a rigged GLB out (with Meshy's own FBX when one is promised). Humanoids by default; `skeleton: quadruped` for four-legged characters. Chain meshy/animate onto the result.",
     "mediaType": "model3d",
     "output": "model3d",
+    "task": "rig",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -4352,6 +4420,7 @@ export const MODELS: ModelEntry[] = [
     "description": "MiniMax image-01 text-to-image with subject reference.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -4403,6 +4472,7 @@ export const MODELS: ModelEntry[] = [
     "description": "MiniMax H3 text-to-video, image-to-video (first/last frame) and reference-to-video, up to 2K.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -4482,6 +4552,7 @@ export const MODELS: ModelEntry[] = [
     "description": "MiniMax H3 Max, the fast H3 variant — text-to-video, image-to-video (first/last frame) and reference-to-video.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -4562,6 +4633,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Hailuo 02 text-to-video and image-to-video (first/last frame).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -4626,6 +4698,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Hailuo 2.3 text-to-video and image-to-video.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -4684,6 +4757,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Hailuo 2.3 Fast image-to-video (requires a first-frame image).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -4743,6 +4817,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Subject-reference video (character consistency from a face photo).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -4793,6 +4868,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Text-to-video with camera-movement instructions.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -4835,6 +4911,7 @@ export const MODELS: ModelEntry[] = [
     "description": "OpenAI GPT Image 2. Text-to-image plus prompt-driven editing and inpainting via the images/edits endpoint. Arbitrary resolutions (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1).",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -4914,6 +4991,7 @@ export const MODELS: ModelEntry[] = [
     "description": "OpenAI GPT Image 2.5 Flare, OpenAI's fastest model for high-quality everyday image generation. Text-to-image plus prompt-driven editing and inpainting via the images/edits endpoint. Arbitrary resolutions (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1); adds the `xhigh` and `max` quality settings.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -4996,6 +5074,7 @@ export const MODELS: ModelEntry[] = [
     "description": "OpenAI GPT Image 2.5 Sunburst, OpenAI's most capable image model, for workflows where editing precision matters most. Text-to-image plus prompt-driven editing and inpainting via the images/edits endpoint. Arbitrary resolutions (both dimensions divisible by 16, aspect ratio between 1:3 and 3:1); adds the `xhigh` and `max` quality settings.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -5078,6 +5157,7 @@ export const MODELS: ModelEntry[] = [
     "description": "PixelLab's pixflux: native pixel art from text at 16–400 px a side, never upscaled, in a forced palette when one is sent.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -5139,6 +5219,7 @@ export const MODELS: ModelEntry[] = [
     "description": "PixVerse C1 cinematic text/image-to-video + first/last-frame transition, 1-15s, optional native audio.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -5227,6 +5308,7 @@ export const MODELS: ModelEntry[] = [
     "description": "PixVerse v3.5 text/image-to-video.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -5299,6 +5381,7 @@ export const MODELS: ModelEntry[] = [
     "description": "PixVerse v4.5 text/image-to-video.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -5371,6 +5454,7 @@ export const MODELS: ModelEntry[] = [
     "description": "PixVerse v5 text/image-to-video.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -5449,6 +5533,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Keyframe-to-video on PixVerse v5. Two to 31 `keyframe` images, the first at 0 s and each at a whole second, become one clip that passes through each in turn and ends on the last; the prompt describes every segment.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -5502,6 +5587,7 @@ export const MODELS: ModelEntry[] = [
     "description": "PixVerse V6 text/image-to-video + first/last-frame transition, 1-15s, optional native audio.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -5589,6 +5675,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Recraft V2 raster image generation.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -5666,6 +5753,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Recraft V2 vector (SVG) image generation (the cheapest vector model).",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -5744,6 +5832,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Recraft V3 raster image generation.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -5824,6 +5913,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Recraft V3 vector (SVG) image generation.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -5886,6 +5976,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Recraft V4.1 raster image generation (current default).",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -5946,6 +6037,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Recraft V4.1 Pro raster image generation.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -6006,6 +6098,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Recraft V4.1 Pro vector (SVG) image generation.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -6052,6 +6145,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Recraft V4.1 vector (SVG) image generation.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -6098,6 +6192,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Recraft's Remove Background: one image in, the subject on a transparent background out.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -6149,6 +6244,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Recraft's Replace Background: finds the init image's background and redraws it from the prompt, keeping the subject.",
     "mediaType": "image",
     "output": "image",
+    "task": "background_swap",
     "capabilities": {
       "textToImage": false,
       "imageToImage": true,
@@ -6205,6 +6301,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Black Forest Labs FLUX1.1 [pro] via Replicate.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -6267,6 +6364,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Flux Dev — open weights via Replicate.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -6352,6 +6450,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Black Forest Labs Flux Pro via Replicate.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -6421,6 +6520,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Fastest Flux variant.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -6492,6 +6592,7 @@ export const MODELS: ModelEntry[] = [
     "description": "SD3 hosted on Replicate.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -6571,6 +6672,7 @@ export const MODELS: ModelEntry[] = [
     "description": "SDXL hosted on Replicate.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -6638,6 +6740,7 @@ export const MODELS: ModelEntry[] = [
     "description": "AnimateDiff text-to-video on Replicate (lucataco/animate-diff).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -6683,6 +6786,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Runway Gen-4 text-to-image with @tag reference images.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -6739,6 +6843,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Faster, cheaper Gen-4 image (requires at least one reference image).",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": true,
@@ -6795,6 +6900,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Runway Gen-4 Turbo image-to-video (requires a first-frame image).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -6858,6 +6964,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Runway Gen-4.5, the highest-quality Runway video tier.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -6918,6 +7025,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Fast, affordable image generation.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -7008,6 +7116,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Replaces the masked part of an image (Stability's Inpaint). The mask is white-edits, Stability's own convention, and `mask_grow_px` goes to its `grow_mask` (sent as 0 unless asked: Stability's default is 5). A region is sent drawn as the mask.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": true,
@@ -7070,6 +7179,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Stability's Outpaint: grows the init image's canvas by up to 2,000 px a side, filling the new space, optionally guided by a prompt.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": true,
@@ -7133,6 +7243,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Stability's Remove Background: one image in, the subject on a transparent background out.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -7184,6 +7295,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Latest Stability AI model with excellent prompt adherence.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -7263,6 +7375,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Faster, cheaper SD3 variant.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -7329,6 +7442,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Stable Diffusion 3.5 Medium (2.5B parameters) — a balance of",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -7408,6 +7522,7 @@ export const MODELS: ModelEntry[] = [
     "description": "High-quality general purpose image generation.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": true,
@@ -7497,6 +7612,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Stability's Search and Replace: finds what `mask_prompt` names in the init image and replaces it with what the prompt describes.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": true,
@@ -7564,6 +7680,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Highest-quality Stability generation.",
     "mediaType": "image",
     "output": "image",
+    "task": "generate",
     "capabilities": {
       "textToImage": true,
       "imageToImage": false,
@@ -7631,6 +7748,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Adds up to five preset clips to a rig made by tripo/rig on the same Tripo account — Tripo retargets only onto its own rig's task id, so any other source is refused 422 `source_not_chainable`. Humanoid presets play on humanoid rigs, the creature walks on creature rigs.",
     "mediaType": "model3d",
     "output": "model3d",
+    "task": "animate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -7692,6 +7810,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Turns one image of a subject into its front, left, back and right views, one image each, named by `view` with its `yaw_deg`. Takes no prompt. Tripo makes all four every time; `views` picks which come back and in what order, and the call is billed once either way.",
     "mediaType": "image",
     "output": "image",
+    "task": "multiview",
     "capabilities": {
       "textToImage": false,
       "imageToImage": true,
@@ -7750,6 +7869,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Rigs a mesh with Tripo's auto-rigger after Tripo's free rig-check says it can (a mesh it cannot rig is refused 422 `not_riggable`, billed nothing). Humanoids and `other` use Tripo's v3.0 rig model, creatures v2.5; `joint_naming` maps onto Tripo's `spec` for humanoids. A source from a Tripo generation on the same account goes by its task id; anything else is uploaded.",
     "mediaType": "model3d",
     "output": "model3d",
+    "task": "rig",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -7827,6 +7947,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Vidu 2.0 image/reference to video (no text-to-video).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -7902,6 +8023,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Vidu Q1 text/image/reference/start-end to video.",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -7978,6 +8100,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Vidu Q2 Pro high-quality image/reference to video (no text-to-video).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -8056,6 +8179,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Vidu Q2 Pro Fast image-to-video and start-end to video (fast, low price; no text-to-video).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -8121,6 +8245,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Vidu Q3 Pro text/image/start-end to video with native audio (no reference-to-video).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,
@@ -8199,6 +8324,7 @@ export const MODELS: ModelEntry[] = [
     "description": "Vidu Q3 Turbo text/image/reference/start-end to video with native audio (faster, cheaper Q3).",
     "mediaType": "video",
     "output": "video",
+    "task": "generate",
     "capabilities": {
       "textToImage": false,
       "imageToImage": false,

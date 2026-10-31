@@ -24,7 +24,67 @@ const CAP_LABELS: Record<string, string> = {
   supports_texture: 'Textures',
   supports_pbr: 'PBR materials',
   supports_rig: 'Auto-rigging',
+  supports_source_model: 'Reads a source mesh',
+  supports_keep_uvs: 'Keeps UVs',
+  supports_placement: 'Placement',
+  supports_keyframes: 'Timed keyframes',
+  supports_fixed_camera: 'Fixed camera',
+  supports_audio_toggle: 'Audio on/off',
+  supports_loop: 'Loop',
+  supports_source_video: 'Reads a source clip',
+  supports_time_range: 'Time range',
+  supports_region_edit: 'Region edit',
+  supports_mask_prompt: 'Mask by prompt',
+  supports_preserve_unmasked: 'Keep unmasked pixels',
+  supports_expand: 'Expand canvas',
+  supports_layout: 'Layout boxes',
+  supports_segmentation: 'Segmentation',
+  supports_background_removal: 'Background removal',
+  supports_transparent_background: 'Transparent background',
+  supports_palette: 'Palette',
+  supports_forced_palette: 'Forced palette',
+  native_pixel_art: 'Native pixel art',
+  lossy_only: 'Lossy output only',
 };
+
+type Caps = Record<string, unknown>;
+const listOf = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+
+/**
+ * The model's non-boolean catalog fields as label/value rows: its `task`,
+ * then what shapes a request — keyframes, durations, the region and mask
+ * conventions, texture resolutions, layout and prompt kinds — and when it
+ * retires. Fields the model does not report are left out.
+ */
+export function catalogFacts(model: ModelInfo): Array<[string, string]> {
+  const c = (model.capabilities ?? {}) as Caps;
+  const rows: Array<[string, string]> = [];
+  const add = (label: string, value: unknown) => {
+    if (value != null && value !== '') rows.push([label, String(value)]);
+  };
+  add('Task', c.task);
+  if (c.max_keyframes != null) {
+    add('Keyframes', `up to ${String(c.max_keyframes)}${c.keyframe_timing ? ` · ${String(c.keyframe_timing)}` : ''}`);
+  }
+  const durations = listOf(c.duration_values);
+  if (durations.length) add('Durations', durations.map(d => `${String(d)} s`).join(', '));
+  add('Region input', c.region_input);
+  add('Mask convention', c.mask_convention);
+  add('Unmasked pixels', c.preserves_unmasked);
+  const textures = listOf(c.texture_resolutions);
+  if (textures.length) add('Texture resolutions', `${textures.join(', ')} px`);
+  const layout = listOf(c.layout_kinds);
+  if (layout.length) add('Layout boxes', layout.join(', '));
+  const prompts = listOf(c.segmentation_prompts);
+  if (prompts.length) add('Segmentation prompts', prompts.join(', '));
+  const directions = listOf(c.directions);
+  if (directions.length) add('Directions', directions.join(', '));
+  if (c.pixel_size != null) add('Pixel size', typeof c.pixel_size === 'object' ? JSON.stringify(c.pixel_size) : c.pixel_size);
+  add('Extend output', c.extend_output);
+  if (model.deprecated_at) add('Deprecated', model.deprecated_at);
+  if (model.retires_at) add('Retires', `${model.retires_at}${model.replaced_by ? ` → ${model.replaced_by}` : ''}`);
+  return rows;
+}
 
 /** Labels for the capability flags a model reports as true, CAP_LABELS order. */
 export function capabilityLabels(capabilities: unknown): string[] {
@@ -37,6 +97,31 @@ type AnySpec = { kind?: string; [k: string]: unknown };
 /** Compact one-line summary of a param spec (kind + allowed/range + default). */
 export function describeSpec(spec: AnySpec): string {
   const kind = spec.kind ?? 'value';
+  const strs = (v: unknown): string[] => listOf(v).filter((x): x is string => typeof x === 'string');
+  switch (kind) {
+    case 'region':
+      return `region: a ${String(spec.input ?? 'box')}, in pixels of the input image`
+        + (spec.min_window_px != null ? ` · at least ${String(spec.min_window_px)} px` : '');
+    case 'animation_list': {
+      const presets = listOf(spec.presets).map(p => (p as { id?: unknown }).id).filter((id): id is string => typeof id === 'string');
+      return `animation_list: up to ${String(spec.max_items ?? '')} clips`
+        + (presets.length ? ` · presets ${presets.join(', ')}` : '')
+        + (spec.text_to_motion != null ? ' · or from a prompt' : '');
+    }
+    case 'source_model':
+    case 'source_video':
+      return `${kind}: a ${strs(spec.formats).join('/') || 'file'}, by generation id or URL`;
+    case 'palette':
+      return `palette: up to ${String(spec.max_colors ?? '')} colours${spec.forced === true ? ' (forced)' : ''}`;
+    case 'layout':
+      return `layout: up to ${String(spec.max_items ?? '')} boxes · ${strs(spec.kinds).join(', ')}`;
+    case 'expand':
+      return `expand: pixels per side${spec.max_px != null ? `, up to ${String(spec.max_px)}` : ''}${spec.centered_only === true ? ' · centred only' : ''}`;
+    case 'time_range':
+      return `time_range: start_s–end_s${spec.min_window_s != null ? ` · at least ${String(spec.min_window_s)} s` : ''}`;
+    case 'segmentation_prompts':
+      return `segmentation_prompts: ${strs(spec.types).join(', ')} · up to ${String(spec.max_items ?? '')}`;
+  }
   if (kind === 'string_array') {
     // `max_items` counts provider jobs, and formats in `derivable_values` share
     // one — say so, or "glb | obj | stl | ply · max 1" reads as "pick one".
@@ -102,6 +187,15 @@ export const EXAMPLE_IMAGE_URL = 'https://example.com/input.png';
  * reads the prompt is not shown one.
  */
 export function exampleBody(model: ModelInfo, schema: ModelSchema | null | undefined): Record<string, unknown> {
+  const caps = (model.capabilities ?? {}) as Caps;
+  if (caps.task === 'segment') {
+    // `/v1/images/segmentations`: an image and what to select in it.
+    const kind = listOf(caps.segmentation_prompts)[0] ?? 'point';
+    const prompt = kind === 'text' ? { type: 'text', text: 'the main object' }
+      : kind === 'box' ? { type: 'box', x: 0, y: 0, w: 256, h: 256 }
+        : { type: 'point', x: 256, y: 256 };
+    return { model: model.id, image: EXAMPLE_IMAGE_URL, prompts: [prompt] };
+  }
   const body: Record<string, unknown> = { model: model.id };
   const usage = schema ? promptUsage(schema) : 'required';
   if (usage !== 'unused') {
@@ -118,11 +212,17 @@ export function exampleBody(model: ModelInfo, schema: ModelSchema | null | undef
     }
   }
   if (refs.length) body.reference_images = refs;
+  // An operation reads a source by generation id (`GET /v1/generations/{id}`).
+  const params = ((schema as unknown as { params?: Record<string, AnySpec> } | null | undefined)?.params) ?? {};
+  for (const [name, spec] of Object.entries(params)) {
+    if (spec.kind === 'source_model' || spec.kind === 'source_video') body[name] = { type: 'generation', value: '<generation id>' };
+  }
   return body;
 }
 
 /** The family endpoint a model's generations go to. */
 export function generationEndpoint(model: ModelInfo): string {
+  if ((model.capabilities as Caps | undefined)?.task === 'segment') return '/v1/images/segmentations';
   return model.media_type === 'model3d' ? '/v1/models3d/generations'
     : model.media_type === 'video' ? '/v1/videos/generations'
     : '/v1/images/generations';

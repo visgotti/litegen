@@ -144,6 +144,14 @@
   border-color: color-mix(in srgb, var(--success) 50%, var(--border-strong));
 }
 
+/* An operation on a source (rig, animate, extend, segment …), not a fresh
+   generation: worth a glance before choosing the model. */
+.task {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--text) 40%, var(--border-strong));
+  font-style: italic;
+}
+
 .metaRow {
   display: flex;
   align-items: center;

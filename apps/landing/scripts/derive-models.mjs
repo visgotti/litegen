@@ -104,6 +104,9 @@ export function deriveModel(m) {
     description: m.description ?? '',
     mediaType: m.media_type,
     output: m.media_type,
+    // What a request to it does: generate, or an operation on a source
+    // (rig, animate, texture, extend, segment …); the YAML default is generate.
+    task: typeof m.task === 'string' ? m.task : 'generate',
     capabilities: {
       textToImage: caps.text_to_image === true,
       imageToImage: caps.image_to_image === true,
@@ -165,6 +168,8 @@ export interface ModelEntry {
   description: string;
   mediaType: 'image' | 'video' | 'model3d';
   output: 'image' | 'video' | 'model3d';
+  /** generate, or the operation the model performs on a source. */
+  task: string;
   capabilities: {
     textToImage: boolean;
     imageToImage: boolean;

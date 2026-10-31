@@ -104,6 +104,18 @@ export default function RefImagesField({ roles, refs, maxTotal, totalSelected, o
                     <span className="pg-ref-name" title={x.type === 'url' ? x.value : x.name}>
                       {x.type === 'url' ? x.value : `${x.name ?? 'upload'} (inline)`}
                     </span>
+                    {/* A keyframe is pinned at a time (3D doc §5); blank lets
+                        the model spread its keyframes itself. */}
+                    {r.role === 'keyframe' && (
+                      <label className="pg-ref-time">
+                        at
+                        <input type="number" className="input" min={0} step="any" placeholder="auto"
+                          data-testid={`${tid}-time-${i}`} aria-label={`Keyframe ${i + 1} time in seconds`}
+                          value={x.time_s ?? ''} disabled={disabled}
+                          onChange={e => onChange(refs.map(y => (y.id === x.id ? { ...y, time_s: e.target.value } : y)))} />
+                        s
+                      </label>
+                    )}
                     <button type="button" className="pg-ref-remove" aria-label={`Remove ${roleLabel(r.role).toLowerCase()} ${i + 1}`}
                       data-testid={`${tid}-remove-${i}`} disabled={disabled}
                       onClick={() => onChange(refs.filter(y => y.id !== x.id))}>

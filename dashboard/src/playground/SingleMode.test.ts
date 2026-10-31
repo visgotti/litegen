@@ -32,15 +32,15 @@ const form = {
   negativePrompt: '',
   seed: '',
   size: '1024x1024',
-  n: 4,
   strict: true,
 };
 
 describe('buildGenerationBody', () => {
-  it('sends size and n for an image model', () => {
+  // One image per request: the validator refuses n > 1 (L13), so n is never sent.
+  it('sends size, and no n, for an image model', () => {
     const body = buildGenerationBody({ ...form, model: 'mock/visual-image-gen' }, 'image');
     expect(body.size).toBe('1024x1024');
-    expect(body.n).toBe(4);
+    expect(body).not.toHaveProperty('n');
   });
 
   // Model3dGenerationRequest has no `size` at all and ignores `n`: serde drops

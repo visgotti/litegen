@@ -352,12 +352,12 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
 
   await page.locator('[data-testid="playground-prompt"]').fill('a playwright cat');
 
-  // Uncheck strict so negative_prompt is accepted
+  // Lax mode: the run still goes, whatever the model cannot take
   const strictCheckbox = page.locator('[data-testid="playground-strict"]');
   await strictCheckbox.uncheck();
 
-  // Fill negative prompt (exercising the field per spec)
-  await page.locator('[data-testid="playground-negative-prompt"]').fill('blurry, low quality');
+  // mock/visual-image-gen takes no negative prompt, so the field is off.
+  await expect(page.locator('[data-testid="playground-negative-prompt"]')).toBeDisabled();
 
   await page.locator('[data-testid="playground-generate"]').click();
 

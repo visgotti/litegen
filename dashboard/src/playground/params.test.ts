@@ -358,26 +358,27 @@ describe('buildRequestForModel', () => {
   });
 
   it('sends only what the user set', () => {
-    const body = buildRequestForModel('mock/mesh-3d', mesh, state({}), 'model3d') as unknown as Record<string, unknown>;
+    const body = buildRequestForModel('mock/mesh-3d', mesh, state({})) as unknown as Record<string, unknown>;
     expect(body).toEqual({ model: 'mock/mesh-3d', prompt: 'a fox', strict: true });
   });
 
   it('sends a set value, converting a typed number', () => {
     const body = buildRequestForModel('mock/mesh-3d', mesh,
-      state({ params: { target_polycount: '20000', texture: false } }), 'model3d') as unknown as Record<string, unknown>;
+      state({ params: { target_polycount: '20000', texture: false } })) as unknown as Record<string, unknown>;
     expect(body.target_polycount).toBe(20000);
     expect(body.texture).toBe(false);
   });
 
   it('drops a typed number that does not parse', () => {
     const body = buildRequestForModel('mock/mesh-3d', mesh,
-      state({ params: { target_polycount: 'abc' } }), 'model3d') as unknown as Record<string, unknown>;
+      state({ params: { target_polycount: 'abc' } })) as unknown as Record<string, unknown>;
     expect('target_polycount' in body).toBe(false);
   });
 
   it('sends n for images only — one 3D job is one result', () => {
-    expect(buildRequestForModel('m', schemaOf({}), state({ n: 3 }), 'image')).toHaveProperty('n', 3);
-    expect(buildRequestForModel('m', schemaOf({}), state({ n: 3 }), 'model3d')).not.toHaveProperty('n');
+    // One image per request (the validator refuses n > 1): N images are N
+    // requests, and one 3D job is one result.
+    expect(buildRequestForModel('m', schemaOf({}), state({ n: 3 }))).not.toHaveProperty('n');
   });
 
   it('sends seed only to a model that declares it', () => {
@@ -449,7 +450,7 @@ describe('refsForModel', () => {
   });
 
   it('puts the refs on the request built for the model', () => {
-    const body = buildRequestForModel('fal/trellis', trellisSchema, state({ prompt: '', refs: [ref('init')] }), 'model3d') as unknown as Record<string, unknown>;
+    const body = buildRequestForModel('fal/trellis', trellisSchema, state({ prompt: '', refs: [ref('init')] })) as unknown as Record<string, unknown>;
     expect(body.reference_images).toEqual([{ type: 'url', value: 'https://img.test/init.png', role: 'init' }]);
   });
 });
@@ -570,8 +571,8 @@ describe('promptForModel', () => {
   it('keeps a mixed Compare run from sending TRELLIS the shared prompt', () => {
     // Strict mode answers a prompt on a no-prompt model with a 400.
     const shared = state({ prompt: 'a fox', refs: [ref('init')] });
-    const trellisBody = buildRequestForModel('fal/trellis', trellisSchema, shared, 'model3d') as unknown as Record<string, unknown>;
-    const rodinBody = buildRequestForModel('fal/hyper3d-rodin', rodinSchema, shared, 'model3d') as unknown as Record<string, unknown>;
+    const trellisBody = buildRequestForModel('fal/trellis', trellisSchema, shared) as unknown as Record<string, unknown>;
+    const rodinBody = buildRequestForModel('fal/hyper3d-rodin', rodinSchema, shared) as unknown as Record<string, unknown>;
     expect('prompt' in trellisBody).toBe(false);
     expect(rodinBody.prompt).toBe('a fox');
   });

@@ -7,8 +7,12 @@ import {
   removePlaygroundHistory,
 } from '../playground-history';
 import type { PlaygroundHistoryEntry } from '../playground-history';
-import type { ModelInfo, Model3dGenerationRequest, Model3dGenerationResponse, Model3dAsset, ParamSpec } from '@litegen/sdk';
+import type {
+  ModelInfo, Model3dGenerationRequest, Model3dGenerationResponse, Model3dAsset, ParamSpec,
+  VideoGenerationRequest, VideoGenerationResponse,
+} from '@litegen/sdk';
 import ModelPreview from '../components/ModelPreview';
+import { videoResultIsImage } from '../components/generation-output';
 import ParamField from './ParamField';
 import RefImagesField from './RefImagesField';
 import ExtraParamsField from './ExtraParamsField';
@@ -26,9 +30,10 @@ import {
   schemaInputs,
   sizeEnumOptions,
   sortModels,
+  wireValue,
 } from './params';
 import { inlineRefCount, withoutInlineRefs } from './ref-images';
-import type { Availability } from './types';
+import type { Availability, MergedRole, RefEntry } from './types';
 import { MODEL3D_POLL_TIMEOUT_MS } from './useFanOut';
 
 type Tab = 'image' | 'request' | 'response';
@@ -52,6 +57,99 @@ const GROUPS: Array<{ availability: Availability; label: string }> = [
 function meshAssetsFromResponse(body: Record<string, unknown>): Model3dAsset[] | null {
   const assets = (body as { assets?: unknown }).assets;
   return Array.isArray(assets) ? (assets as Model3dAsset[]) : null;
+}
+
+/** What a run submits and shows: a segmentation model answers masks at its
+ *  own endpoint (`/v1/images/segmentations`), every other image model an
+ *  image, and video and 3D models a polled job. */
+export type RunKind = 'image' | 'segment' | 'model3d' | 'video';
+
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper, exported for its unit test
+export function runKindOf(model: ModelInfo | undefined): RunKind {
+  if (model?.media_type === 'model3d') return 'model3d';
+  if (model?.media_type === 'video') return 'video';
+  return (model?.capabilities as { task?: string } | undefined)?.task === 'segment' ? 'segment' : 'image';
+}
+
+/** The image a segmentation run selects in: one, with no role of its own in
+ *  the schema (the request's `image` field), so the form offers it here. */
+const SEGMENT_IMAGE_ROLE = 'image';
+
+function segmentImageRole(modelId: string): MergedRole {
+  return { role: SEGMENT_IMAGE_ROLE, maxCount: 1, minCount: 1, models: [modelId], requiredBy: [modelId] };
+}
+
+/** A segmentation request — `model`, the `image` and its `prompts` — or the
+ *  reasons it cannot be sent yet. */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper, exported for its unit test
+export function buildSegmentationBody(
+  modelId: string,
+  promptsSpec: ParamSpec | undefined,
+  shared: { params: Record<string, unknown>; refs: RefEntry[] },
+): { body: Record<string, unknown>; problems: string[] } {
+  const image = shared.refs.find(r => r.role === SEGMENT_IMAGE_ROLE)?.value;
+  const prompts = promptsSpec ? wireValue(promptsSpec as unknown as { kind: string }, shared.params.prompts) : undefined;
+  const problems: string[] = [];
+  if (!image) problems.push('needs an image to segment');
+  const sent = Array.isArray(prompts) ? (prompts as Array<{ type?: string }>) : [];
+  if (!sent.length) problems.push('needs a point, box or text prompt');
+  // "a text prompt selects every instance of what it names and cannot be
+  // mixed with point or box prompts" (validator.rs).
+  else if (sent.some(p => p.type === 'text') && sent.length > 1) {
+    problems.push('takes a text prompt alone, not with point or box prompts or a second text prompt');
+  }
+  return { body: { model: modelId, image, prompts }, problems };
+}
+
+/** Extract a video result from a stored/live response body, if it's one. */
+function videoUrlFromResponse(body: Record<string, unknown>): string | null {
+  const url = (body as { video_url?: unknown }).video_url;
+  return typeof url === 'string' ? url : null;
+}
+
+/** Extract segmentation masks from a stored/live response body, if it's one. */
+function masksFromResponse(body: Record<string, unknown>): SegmentMask[] | null {
+  const masks = (body as { masks?: unknown }).masks;
+  return Array.isArray(masks) ? (masks as SegmentMask[]) : null;
+}
+
+interface SegmentMask {
+  png_base64: string;
+  score: number | null;
+  box: { x: number; y: number; w: number; h: number };
+}
+
+/** Submit a video job and poll it to completion, as a 3D one. */
+async function generateVideoJob(
+  body: Record<string, unknown>,
+  onProgress: (p: number) => void,
+  onDropped: (params: string[]) => void,
+  signal: AbortSignal,
+): Promise<VideoGenerationResponse> {
+  const pollOpts = { intervalMs: 1500, timeoutMs: MODEL3D_POLL_TIMEOUT_MS };
+  const job = client.videos.generate(body as VideoGenerationRequest, pollOpts);
+  const submitted = await job.submitted;
+  onDropped(await job.droppedParams);
+  onProgress(submitted.progress ?? 0);
+  let final = submitted;
+  for await (const update of client.videos.poll(submitted.id, { ...pollOpts, signal })) {
+    final = update;
+    onProgress(update.progress ?? 0);
+  }
+  if (final.status !== 'completed') {
+    throw new Error(final.error ?? `job ${final.status}`);
+  }
+  if (!final.video_url) {
+    throw new Error('completed without a video');
+  }
+  return final;
+}
+
+/** A finished clip: a GIF (the mocks') as an image, anything else as a video. */
+function VideoClip({ url }: { url: string }) {
+  return videoResultIsImage(url)
+    ? <img data-testid="playground-video" src={url} alt="Generated clip" />
+    : <video data-testid="playground-video" src={url} controls autoPlay loop muted playsInline />;
 }
 
 /** Submit a 3D job and poll it to completion, reporting progress as it goes.
@@ -93,7 +191,6 @@ export interface FormState {
   negativePrompt: string;
   seed: string;
   size: string;
-  n: number;
   strict: boolean;
 }
 
@@ -118,22 +215,22 @@ export interface FormState {
 // eslint-disable-next-line react-refresh/only-export-components -- pure helper, exported for its unit test
 export function buildGenerationBody(
   form: FormState,
-  mediaType: 'image' | 'model3d',
+  mediaType: 'image' | 'model3d' | 'video',
   prompt: 'required' | 'optional' | 'unused' = 'required',
   declared?: Record<string, unknown>,
 ): Record<string, unknown> {
-  const isModel3d = mediaType === 'model3d';
+  const imageOnly = mediaType === 'image';
   const body: Record<string, unknown> = { model: form.model };
   // A model that takes no prompt (`prompt.max_length == 0`) must not be sent
   // one — strict mode rejects it — even if one is left over from the model
   // selected before. A blank prompt is simply omitted: the field is optional.
   if (prompt !== 'unused' && form.prompt.trim() !== '') body.prompt = form.prompt;
-  if (!isModel3d) body.n = form.n;
+  // No `n`: litegen returns one image per request and refuses more (L13).
   body.strict = form.strict;
   const takes = (name: string) => declared === undefined || name in declared;
   if (form.negativePrompt && takes('negative_prompt')) body.negative_prompt = form.negativePrompt;
   if (form.seed && takes('seed')) body.seed = parseInt(form.seed, 10);
-  if (!isModel3d && form.size) body.size = form.size;
+  if (imageOnly && form.size) body.size = form.size;
   return body;
 }
 
@@ -166,7 +263,6 @@ const DEFAULT_FORM: FormState = {
   negativePrompt: '',
   seed: '',
   size: '',
-  n: 1,
   strict: true,
 };
 
@@ -178,8 +274,10 @@ export default function SingleMode() {
   const [requestJson, setRequestJson] = useState<string>('');
   const [responseJson, setResponseJson] = useState<string>('');
   const [imageData, setImageData] = useState<{ b64_json?: string | null; url?: string | null } | null>(null);
-  const [resultMediaType, setResultMediaType] = useState<'image' | 'model3d'>('image');
+  const [resultMediaType, setResultMediaType] = useState<RunKind>('image');
   const [meshAssets, setMeshAssets] = useState<Model3dAsset[]>([]);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [masks, setMasks] = useState<SegmentMask[]>([]);
   const [droppedParams, setDroppedParams] = useState<string[]>([]);
   const [progress, setProgress] = useState<number | null>(null);
   const [history, setHistory] = useState<PlaygroundHistoryEntry[]>([]);
@@ -190,8 +288,12 @@ export default function SingleMode() {
   const unified = useUnifiedParams(form.model ? [form.model] : [], DEDICATED);
   const schema = unified.schemasById[form.model];
   const selected = models.find(m => m.id === form.model);
-  const isModel3dSelected = selected?.media_type === 'model3d';
-  const mediaType: 'image' | 'model3d' = isModel3dSelected ? 'model3d' : 'image';
+  const kind = runKindOf(selected);
+  const isModel3dSelected = kind === 'model3d';
+  // Size and N belong to image generation only.
+  const imageOnlyOff = kind !== 'image';
+  const mediaType: 'image' | 'model3d' | 'video' = kind === 'segment' ? 'image' : kind;
+  const refRoles = kind === 'segment' ? [segmentImageRole(form.model)] : unified.roles;
 
   const declaredParams = schema ? ((schema.params ?? {}) as Record<string, ParamSpec>) : undefined;
   const takesNegativePrompt = declaredParams === undefined || 'negative_prompt' in declaredParams;
@@ -200,17 +302,20 @@ export default function SingleMode() {
   const sizeOptions = sizeSpec ? sizeEnumOptions(sizeSpec) : [];
   const size = effectiveSize(form.size, sizeOptions);
 
+  const promptsSpec = declaredParams?.prompts;
   // Before the schema arrives, only the prompt can be judged.
-  const problems = schema
-    ? requestProblems(schema, { prompt: form.prompt, refs: unified.form.refs })
-    : form.prompt.trim() ? [] : ['needs a prompt'];
+  const problems = kind === 'segment'
+    ? buildSegmentationBody(form.model, promptsSpec, unified.form).problems
+    : schema
+      ? requestProblems(schema, { prompt: form.prompt, refs: unified.form.refs })
+      : form.prompt.trim() ? [] : ['needs a prompt'];
 
   // Load every image and 3D model on mount, mock and real alike — the full
   // inspector lives here, so every model has to be reachable from it.
   useEffect(() => {
     client.models.list()
       .then(allModels => {
-        const usable = sortModels(allModels.filter(m => m.media_type === 'image' || m.media_type === 'model3d'));
+        const usable = sortModels(allModels.filter(m => ['image', 'model3d', 'video'].includes(m.media_type)));
         setModels(usable);
         if (usable.length > 0) {
           // Prefer the visual mock model so the Playground shows real visible
@@ -250,31 +355,45 @@ export default function SingleMode() {
   const usage = schema ? promptUsage(schema) : 'required';
   const promptMax = promptMaxLength(schema);
 
-  /** The full request: the dedicated fields plus the schema-driven ones. */
-  const buildBody = (): Record<string, unknown> => ({
-    ...buildGenerationBody({ ...form, size }, mediaType, usage, declaredParams),
-    ...schemaInputs(schema, unified.form),
-  });
+  /** The full request: the dedicated fields plus the schema-driven ones. A
+   *  segmentation request is its own shape: the image and the prompts. */
+  const buildBody = (): Record<string, unknown> => kind === 'segment'
+    ? buildSegmentationBody(form.model, promptsSpec, unified.form).body
+    : {
+      ...buildGenerationBody({ ...form, size }, mediaType, usage, declaredParams),
+      ...schemaInputs(schema, unified.form),
+    };
 
   /** Runs one request for `model` and records it; shared by Generate and Re-submit. */
   const runRequest = async (model: string, prompt: string, body: Record<string, unknown>) => {
-    const isModel3d = models.find(m => m.id === model)?.media_type === 'model3d';
+    const runKind = runKindOf(models.find(m => m.id === model));
     const ctrl = new AbortController();
     runCtrl.current = ctrl;
     setLoading(true);
     setError('');
     setProgress(null);
     setDroppedParams([]);
-    setResultMediaType(isModel3d ? 'model3d' : 'image');
-    if (isModel3d) setMeshAssets([]); else setImageData(null);
+    setResultMediaType(runKind);
+    setMeshAssets([]);
+    setImageData(null);
+    setVideoUrl(null);
+    setMasks([]);
     setRequestJson(JSON.stringify(body, null, 2));
 
     try {
       let responseBody: Record<string, unknown>;
-      if (isModel3d) {
+      if (runKind === 'model3d') {
         const final = await generateModel3dJob(body, setProgress, setDroppedParams, ctrl.signal);
         setMeshAssets(final.assets ?? []);
         responseBody = final as unknown as Record<string, unknown>;
+      } else if (runKind === 'video') {
+        const final = await generateVideoJob(body, setProgress, setDroppedParams, ctrl.signal);
+        setVideoUrl(final.video_url ?? null);
+        responseBody = final as unknown as Record<string, unknown>;
+      } else if (runKind === 'segment') {
+        const res = await client.images.segment(body as unknown as Parameters<typeof client.images.segment>[0]);
+        setMasks((res.masks ?? []) as SegmentMask[]);
+        responseBody = res as unknown as Record<string, unknown>;
       } else {
         // Cast body to ImageGenerationRequest — the server accepts extra fields gracefully.
         const res = await client.images.generate(body as Parameters<typeof client.images.generate>[0]);
@@ -318,7 +437,6 @@ export default function SingleMode() {
       negativePrompt: (req.negative_prompt as string) ?? '',
       seed: req.seed != null ? String(req.seed) : '',
       size: (req.size as string) ?? '',
-      n: (req.n as number) ?? 1,
       strict: req.strict != null ? (req.strict as boolean) : true,
     }));
     unified.setForm(prev => ({
@@ -331,15 +449,22 @@ export default function SingleMode() {
     setResponseJson(JSON.stringify(entry.responseBody, null, 2));
     setDroppedParams([]);
     const assets = meshAssetsFromResponse(entry.responseBody);
+    const clip = videoUrlFromResponse(entry.responseBody);
+    const storedMasks = masksFromResponse(entry.responseBody);
+    setMeshAssets(assets ?? []);
+    setVideoUrl(clip);
+    setMasks(storedMasks ?? []);
+    setImageData(null);
     if (assets) {
       setResultMediaType('model3d');
-      setMeshAssets(assets);
-      setImageData(null);
+    } else if (clip) {
+      setResultMediaType('video');
+    } else if (storedMasks) {
+      setResultMediaType('segment');
     } else {
       const respData = entry.responseBody as { data?: Array<{ b64_json?: string; url?: string }> };
       setResultMediaType('image');
       setImageData(respData?.data?.[0] ?? null);
-      setMeshAssets([]);
     }
     setActiveTab('image');
   };
@@ -359,8 +484,12 @@ export default function SingleMode() {
     }
     // Small delay to let state settle before firing
     await new Promise(r => setTimeout(r, 0));
-    const isModel3d = models.find(m => m.id === entry.model)?.media_type === 'model3d';
-    const body = isModel3d ? omitImageOnlyParams(entry.requestBody) : entry.requestBody;
+    const entryKind = runKindOf(models.find(m => m.id === entry.model));
+    // An entry stored before n was refused may carry n > 1; one image is what
+    // a request makes now.
+    const imageBody = { ...entry.requestBody };
+    delete imageBody.n;
+    const body = entryKind === 'model3d' || entryKind === 'video' ? omitImageOnlyParams(entry.requestBody) : imageBody;
     await runRequest(entry.model, entry.prompt, body);
   };
 
@@ -434,7 +563,7 @@ export default function SingleMode() {
                 rows={3}
                 value={form.prompt}
                 onChange={e => setForm(prev => ({ ...prev, prompt: e.target.value }))}
-                placeholder={isModel3dSelected ? 'Describe the 3D model...' : 'Describe the image...'}
+                placeholder={isModel3dSelected ? 'Describe the 3D model...' : kind === 'video' ? 'Describe the clip...' : 'Describe the image...'}
               />
               {promptMax != null && (
                 <span className="pg-param-description" data-testid="playground-prompt-count">
@@ -444,7 +573,7 @@ export default function SingleMode() {
             </div>
           )}
 
-          <RefImagesField roles={unified.roles} refs={unified.form.refs} maxTotal={unified.maxRefs}
+          <RefImagesField roles={refRoles} refs={unified.form.refs} maxTotal={kind === 'segment' ? 1 : unified.maxRefs}
             totalSelected={1} disabled={loading}
             onChange={refs => unified.setForm(prev => ({ ...prev, refs }))} />
 
@@ -484,7 +613,7 @@ export default function SingleMode() {
                   className="input"
                   style={{ width: '100%' }}
                   value={size}
-                  disabled={isModel3dSelected}
+                  disabled={imageOnlyOff}
                   onChange={e => setForm(prev => ({ ...prev, size: e.target.value }))}
                 >
                   {sizeOptions.map(s => (
@@ -498,43 +627,34 @@ export default function SingleMode() {
                   className="input"
                   style={{ width: '100%', boxSizing: 'border-box' }}
                   value={size}
-                  disabled={isModel3dSelected}
+                  disabled={imageOnlyOff}
                   onChange={e => setForm(prev => ({ ...prev, size: e.target.value }))}
                   placeholder="e.g. 1024x1024"
                 />
               )}
             </div>
-            <div className="playground-form-group">
-              <label>N (1–4)</label>
-              <input
-                data-testid="playground-n"
-                type="number"
-                className="input"
-                style={{ width: '100%', boxSizing: 'border-box' }}
-                min={1}
-                max={4}
-                value={form.n}
-                disabled={isModel3dSelected}
-                onChange={e => setForm(prev => ({ ...prev, n: parseInt(e.target.value, 10) || 1 }))}
-              />
-            </div>
+
           </div>
 
-          {/* Disabled rather than removed so the controls stay in place as the
-              model changes; the body omits them entirely for 3D. */}
-          {isModel3dSelected && (
+          {/* Disabled rather than removed so the control stays in place as the
+              model changes; the body omits it for anything but an image. */}
+          {imageOnlyOff && (
             <p
               data-testid="playground-3d-param-note"
               style={{ margin: '-4px 0 12px', fontSize: 12, color: 'var(--text-muted, #8b949e)' }}
             >
-              Size and N don’t apply to 3D models — one job returns one mesh.
+              {kind === 'model3d' ? 'Size doesn’t apply to 3D models — one job returns one mesh.'
+                : kind === 'video' ? 'Size doesn’t apply to video models — they take a resolution or aspect ratio.'
+                  : 'Size doesn’t apply to segmentation — the image comes back as masks.'}
             </p>
           )}
 
           {unified.merged.length > 0 && (
             <div className="pg-params" data-testid="playground-params">
               {unified.merged.map(p => (
-                <ParamField key={p.name} name={p.name} spec={p.spec} models={p.models}
+                // Keyed by model too: a model switch starts every control
+                // afresh, a source picker's list of generations included.
+                <ParamField key={`${form.model}:${p.name}`} name={p.name} spec={p.spec} models={p.models}
                   totalSelected={1} value={unified.params[p.name]}
                   onChange={v => unified.setParam(p.name, v)}
                   onReset={p.name in unified.form.params ? () => unified.resetParam(p.name) : undefined} />
@@ -585,7 +705,7 @@ export default function SingleMode() {
               className={`playground-tab${activeTab === 'image' ? ' active' : ''}`}
               onClick={() => setActiveTab('image')}
             >
-              {resultMediaType === 'model3d' ? '3D Model' : 'Image'}
+              {resultMediaType === 'model3d' ? '3D Model' : resultMediaType === 'video' ? 'Video' : resultMediaType === 'segment' ? 'Masks' : 'Image'}
             </button>
             <button
               data-testid="playground-tab-request"
@@ -612,7 +732,27 @@ export default function SingleMode() {
 
           {activeTab === 'image' && (
             <div className="playground-image-area">
-              {resultMediaType === 'model3d' ? (
+              {resultMediaType === 'video' ? (
+                videoUrl ? <VideoClip key={videoUrl} url={videoUrl} /> : (
+                  <span style={{ color: '#8b949e' }}>
+                    {progress != null ? `generating… ${progress}%` : 'No clip yet'}
+                  </span>
+                )
+              ) : resultMediaType === 'segment' ? (
+                masks.length > 0 ? (
+                  <ul className="pg-masks" data-testid="playground-masks">
+                    {masks.map((m, i) => (
+                      <li key={i} data-testid={`playground-mask-${i}`}>
+                        <img src={`data:image/png;base64,${m.png_base64}`} alt={`Mask ${i + 1}`} />
+                        <span>
+                          {m.score != null ? `score ${m.score.toFixed(2)} · ` : ''}
+                          box {m.box.x},{m.box.y} {m.box.w}×{m.box.h}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : <span style={{ color: '#8b949e' }}>No masks yet</span>
+              ) : resultMediaType === 'model3d' ? (
                 meshAssets.length > 0 ? (
                   // The single result has the user's full attention, so it
                   // gets the inspector; Compare-mode tiles stay compact.

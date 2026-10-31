@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { client } from '../sdk-client';
 import type { ModelInfo, ModelSchema } from '@litegen/sdk';
 import { showToast } from './toast-store';
-import { buildCurl, capabilityLabels, describePrompt, describeSpec, refRoleRows } from './model-detail';
+import { buildCurl, capabilityLabels, catalogFacts, describePrompt, describeSpec, refRoleRows } from './model-detail';
 import { docsUrlOf } from '../playground/params';
 
 /** The schema fetch, tagged with the model it belongs to: the drawer derives
@@ -29,6 +29,7 @@ export default function ModelDetail({ model, onClose }: { model: ModelInfo; onCl
   const err = current?.err ?? '';
 
   const caps = capabilityLabels(model.capabilities);
+  const facts = catalogFacts(model);
   // ModelCapabilities.supported_sizes is string[] | undefined
   const sizes: string[] = (model.capabilities?.supported_sizes as string[] | undefined) ?? [];
   // A 3D model has no supported_sizes; output_formats is the analogous fact.
@@ -83,6 +84,16 @@ export default function ModelDetail({ model, onClose }: { model: ModelInfo; onCl
         {formats.length > 0 && (
           <div data-testid="model-detail-formats" style={{ marginTop: 10, color: '#8b949e', fontSize: 13 }}>
             Formats: <span style={{ color: '#e6edf3' }}>{formats.join(', ')}</span>
+          </div>
+        )}
+        {facts.length > 0 && (
+          <div data-testid="model-detail-facts" style={{ marginTop: 10 }}>
+            {facts.map(([label, value]) => (
+              <div key={label} data-testid={`model-detail-fact-${label.toLowerCase().replace(/[^a-z]+/g, '-')}`} style={row}>
+                <span style={{ color: '#8b949e' }}>{label}</span>
+                <span style={{ color: '#e6edf3', fontFamily: 'monospace', textAlign: 'right' }}>{value}</span>
+              </div>
+            ))}
           </div>
         )}
       </div>
