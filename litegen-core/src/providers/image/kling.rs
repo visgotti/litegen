@@ -193,15 +193,17 @@ impl ImageProvider for KlingImageProvider {
         }
         // Reference image as base64 (no data: prefix) or URL. A `subject` is
         // Kling's subject reference ("`image_reference` … `subject`, `face`");
-        // without it the image is plain image-to-image.
+        // without it the image is plain image-to-image. The type the caller
+        // names (`extra.image_reference`, allowlisted) is the one sent.
+        let named = extras.extra.as_ref().and_then(|e| e.get("image_reference")).and_then(Value::as_str);
         for r in &materialized.refs {
             match &r.form {
                 MaterializedRefForm::Base64(b64) => body["image"] = Value::String(b64.clone()),
                 MaterializedRefForm::Url(u) => body["image"] = Value::String(u.clone()),
                 _ => continue,
             }
-            if r.role == "subject" {
-                body["image_reference"] = Value::String("subject".into());
+            if let Some(kind) = named.or((r.role == "subject").then_some("subject")) {
+                body["image_reference"] = Value::String(kind.into());
             }
         }
         // `extra` adds the endpoint's own fields; it cannot replace one litegen
@@ -420,6 +422,24 @@ mod tests {
         let _ = make_provider(&server.uri()).generate(&ref_schema("kling/kling-v2-1"), &base, &make_extras(), &subject_ref()).await;
         let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
         assert_eq!((body["n"].as_u64(), body["image_reference"].as_str()), (Some(1), Some("subject")), "{body}");
+    }
+
+    /// K10: a caller who names the reference type (`extra.image_reference`,
+    /// allowlisted: "`subject`, `face`") gets it; `subject` is only the
+    /// default for a `subject` reference that names none.
+    #[tokio::test]
+    async fn a_face_reference_the_caller_names_is_sent_as_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "code": 1, "message": "stop here" })))
+            .mount(&server)
+            .await;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "image_reference": "face" }));
+        let base = make_base("a knight", "kling/kling-v2-1");
+        let _ = make_provider(&server.uri()).generate(&ref_schema("kling/kling-v2-1"), &base, &extras, &subject_ref()).await;
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body["image_reference"].as_str(), Some("face"), "{body}");
     }
 
     /// K9: "In the Image-to-Image scenario … negative prompts are not

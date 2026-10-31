@@ -147,3 +147,21 @@ async fn an_unrigged_source_is_refused_before_anything_is_billed() {
     assert_eq!(body["error"]["code"], "source_not_rigged", "{body}");
     assert_eq!(db.count_generations(None).await.unwrap(), 1, "only the source");
 }
+
+/// 3D doc §7: `supports_animation` means "takes `animations`", whatever the
+/// task — the evidence PixelGenie reads for `model3d.animate` — and §2 rule
+/// 5 serves the rig params as flags too.
+#[tokio::test]
+async fn the_listing_says_which_models_animate_and_what_a_rig_takes() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let resp = app.clone().oneshot(Request::get("/v1/models?media_type=model3d").body(Body::empty()).unwrap()).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 16 * 1024 * 1024).await.unwrap();
+    let list: Value = serde_json::from_slice(&bytes).unwrap();
+    let caps = |id: &str| -> Value {
+        list["data"].as_array().unwrap().iter().find(|m| m["id"] == id).unwrap_or_else(|| panic!("{id} listed"))["capabilities"].clone()
+    };
+    let (animate, rig, mesh) = (caps("mock/animate-3d"), caps("mock/rig-3d"), caps("mock/mesh-3d"));
+    assert_eq!((animate["supports_animation"].as_bool(), mesh["supports_animation"].as_bool()), (Some(true), Some(false)), "{animate}");
+    assert_eq!((rig["supports_skeleton"].as_bool(), rig["supports_joint_naming"].as_bool()), (Some(true), Some(true)), "{rig}");
+    assert_eq!((mesh["supports_skeleton"].as_bool(), mesh["supports_joint_naming"].as_bool()), (Some(false), Some(false)), "{mesh}");
+}

@@ -146,6 +146,8 @@ models:
     capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
     prompt: { required: true, max_length: 2000 }
     params:
+      # 3D doc §4: "A mask-only vendor receives the box drawn as a mask".
+      region: { kind: region, input: mask, label: Region, description: The rectangle to edit, sent drawn as the mask. }
       negative_prompt: { kind: string, max_length: 2000 }
       seed: { kind: seed, min: 0, max: 4294967294 }
       steps: { kind: int, min: 10, max: 50, default: 30 }

@@ -213,6 +213,13 @@ async fn main() -> anyhow::Result<()> {
     // The local backend keeps assets on disk for the configured retention
     // (never under 7 days); S3 retention is the bucket's lifecycle policy.
     if config.image_storage.backend != "s3" {
+        // Every kept result is written here, after its vendor billed it: a
+        // directory litegen cannot write is a refusal to start, not a
+        // failure at every delivery.
+        if let Err(e) = litegen::proxy::storage::check_local_dir_writable(&config.image_storage.local_dir()) {
+            tracing::error!("{e}");
+            std::process::exit(1);
+        }
         litegen::proxy::storage::spawn_retention_sweeper(
             config.image_storage.local_dir(),
             config.image_storage.retention_days(),

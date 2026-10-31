@@ -385,9 +385,9 @@ fn vidu_q1_duration_and_resolution_match_the_model_map() {
     let reg = registry();
     let schema = reg.get("vidu/viduq1").expect("viduq1 missing");
     match schema.params.get("duration_seconds") {
-        Some(ParamSpec::Float(f)) => {
-            assert_eq!(f.min, Some(5.0), "viduq1 is 5s only");
-            assert_eq!(f.max, Some(5.0), "viduq1 is 5s only");
+        Some(ParamSpec::Int(f)) => {
+            assert_eq!(f.min, Some(5), "viduq1 is 5s only");
+            assert_eq!(f.max, Some(5), "viduq1 is 5s only");
         }
         other => panic!("viduq1 duration_seconds is {other:?}"),
     }
@@ -1159,13 +1159,26 @@ fn vidu_rows_allowlist_only_fields_their_bodies_take() {
 /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/start-end-to-video.md>
 /// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/reference-to-video.md>, read 2026-10-12
 #[test]
+fn every_vidu_row_takes_whole_seconds() {
+    // C5: "| `duration` | `integer` |" on every Vidu page. Declared in whole
+    // seconds, a fraction is rounded before the price — never billed as 5.5 s
+    // and sent as 5.
+    let reg = registry();
+    let vidu: Vec<_> = reg.served().into_iter().filter(|m| m.provider == "vidu").collect();
+    assert!(!vidu.is_empty());
+    for m in &vidu {
+        assert!(matches!(m.params.get("duration_seconds"), Some(ParamSpec::Int(_))), "{}: {:?}", m.id, m.params.get("duration_seconds"));
+    }
+}
+
+#[test]
 fn vidu_q2_pro_duration_and_resolution_hold_on_every_endpoint() {
     let reg = registry();
     let schema = reg.get("vidu/viduq2-pro").expect("viduq2-pro missing");
     match schema.params.get("duration_seconds") {
-        Some(ParamSpec::Float(f)) => {
-            assert_eq!(f.min, Some(1.0), "viduq2-pro accepts 1s clips");
-            assert_eq!(f.max, Some(10.0), "every viduq2-pro endpoint goes to 10s");
+        Some(ParamSpec::Int(f)) => {
+            assert_eq!(f.min, Some(1), "viduq2-pro accepts 1s clips");
+            assert_eq!(f.max, Some(10), "every viduq2-pro endpoint goes to 10s");
         }
         other => panic!("viduq2-pro duration_seconds is {other:?}"),
     }
@@ -2142,9 +2155,9 @@ fn vidu_q3_turbo_serves_every_endpoint_the_adapter_routes_to() {
         assert!(roles.contains_key(role), "vidu/viduq3-turbo is missing the {role} role");
     }
     match schema.params.get("duration_seconds") {
-        Some(ParamSpec::Float(f)) => {
-            assert_eq!(f.min, Some(3.0), "reference2video takes viduq3-turbo from 3s");
-            assert_eq!(f.max, Some(16.0), "q3 models go to 16s");
+        Some(ParamSpec::Int(f)) => {
+            assert_eq!(f.min, Some(3), "reference2video takes viduq3-turbo from 3s");
+            assert_eq!(f.max, Some(16), "q3 models go to 16s");
         }
         other => panic!("viduq3-turbo duration_seconds is {other:?}"),
     }
@@ -2187,9 +2200,9 @@ fn vidu_q3_pro_has_no_reference_to_video_mode() {
         "vidu/viduq3-pro declares a reference role; reference2video does not accept viduq3-pro"
     );
     match schema.params.get("duration_seconds") {
-        Some(ParamSpec::Float(f)) => {
-            assert_eq!(f.min, Some(1.0), "viduq3-pro accepts 1s clips");
-            assert_eq!(f.max, Some(16.0), "q3 models go to 16s");
+        Some(ParamSpec::Int(f)) => {
+            assert_eq!(f.min, Some(1), "viduq3-pro accepts 1s clips");
+            assert_eq!(f.max, Some(16), "q3 models go to 16s");
         }
         other => panic!("viduq3-pro duration_seconds is {other:?}"),
     }
@@ -2254,9 +2267,9 @@ fn vidu_q2_pro_fast_is_image_to_video_only() {
         "viduq2-pro-fast resolutions (no 540p)"
     );
     match schema.params.get("duration_seconds") {
-        Some(ParamSpec::Float(f)) => {
-            assert_eq!(f.min, Some(1.0), "viduq2-pro-fast accepts 1s clips");
-            assert_eq!(f.max, Some(10.0), "start-end2video takes viduq2-pro-fast to 10s");
+        Some(ParamSpec::Int(f)) => {
+            assert_eq!(f.min, Some(1), "viduq2-pro-fast accepts 1s clips");
+            assert_eq!(f.max, Some(10), "start-end2video takes viduq2-pro-fast to 10s");
         }
         other => panic!("viduq2-pro-fast duration_seconds is {other:?}"),
     }
@@ -3749,4 +3762,20 @@ fn every_bfl_ideogram_recraft_and_stability_row_names_its_docs_url() {
             m.id
         );
     }
+}
+
+/// 3D doc §4: "A mask-only vendor receives the box drawn as a mask" — so
+/// every model that takes a mask takes `region` too, as its own box or drawn
+/// as its mask; without it a region is refused (strict) or dropped (lax).
+#[test]
+fn every_model_that_takes_a_mask_takes_a_region() {
+    let reg = registry();
+    let mut lacking = Vec::new();
+    for m in reg.served() {
+        let takes_mask = m.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("mask"));
+        if takes_mask && !matches!(m.params.get("region"), Some(ParamSpec::Region(_))) {
+            lacking.push(m.id.clone());
+        }
+    }
+    assert!(lacking.is_empty(), "take a mask but no region: {lacking:?}");
 }

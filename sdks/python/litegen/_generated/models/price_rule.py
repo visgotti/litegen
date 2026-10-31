@@ -21,6 +21,10 @@ class PriceRule:
         Attributes:
             add_usd (Union[None, Unset, float]):
             multiply (Union[None, Unset, float]):
+            multiply_per_megapixel_above (Union[None, Unset, float]): Scale the price by the image's `megapixels` over this
+                many, for an
+                image larger than this: a vendor that bills by output size (OpenAI's
+                image tokens) past the size its base price is for.
             per_item (Union[None, Unset, str]): The list `per_item_usd` counts (`animations`, `views`, `keyframes`).
             per_item_usd (Union[None, Unset, float]):
             per_megapixel_usd (Union[None, Unset, float]):
@@ -34,6 +38,7 @@ class PriceRule:
 
     add_usd: Union[None, Unset, float] = UNSET
     multiply: Union[None, Unset, float] = UNSET
+    multiply_per_megapixel_above: Union[None, Unset, float] = UNSET
     per_item: Union[None, Unset, str] = UNSET
     per_item_usd: Union[None, Unset, float] = UNSET
     per_megapixel_usd: Union[None, Unset, float] = UNSET
@@ -53,6 +58,12 @@ class PriceRule:
             multiply = UNSET
         else:
             multiply = self.multiply
+
+        multiply_per_megapixel_above: Union[None, Unset, float]
+        if isinstance(self.multiply_per_megapixel_above, Unset):
+            multiply_per_megapixel_above = UNSET
+        else:
+            multiply_per_megapixel_above = self.multiply_per_megapixel_above
 
         per_item: Union[None, Unset, str]
         if isinstance(self.per_item, Unset):
@@ -94,6 +105,8 @@ class PriceRule:
             field_dict["add_usd"] = add_usd
         if multiply is not UNSET:
             field_dict["multiply"] = multiply
+        if multiply_per_megapixel_above is not UNSET:
+            field_dict["multiply_per_megapixel_above"] = multiply_per_megapixel_above
         if per_item is not UNSET:
             field_dict["per_item"] = per_item
         if per_item_usd is not UNSET:
@@ -132,6 +145,19 @@ class PriceRule:
             return cast(Union[None, Unset, float], data)
 
         multiply = _parse_multiply(d.pop("multiply", UNSET))
+
+        def _parse_multiply_per_megapixel_above(
+            data: object,
+        ) -> Union[None, Unset, float]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, float], data)
+
+        multiply_per_megapixel_above = _parse_multiply_per_megapixel_above(
+            d.pop("multiply_per_megapixel_above", UNSET)
+        )
 
         def _parse_per_item(data: object) -> Union[None, Unset, str]:
             if data is None:
@@ -188,6 +214,7 @@ class PriceRule:
         price_rule = cls(
             add_usd=add_usd,
             multiply=multiply,
+            multiply_per_megapixel_above=multiply_per_megapixel_above,
             per_item=per_item,
             per_item_usd=per_item_usd,
             per_megapixel_usd=per_megapixel_usd,

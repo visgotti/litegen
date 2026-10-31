@@ -391,6 +391,18 @@ models:
         assert_eq!(resolve_duration_seconds(r.get("v/none").unwrap(), None), 5.0);
     }
 
+    /// A vendor that takes whole seconds makes the rounded length, so the
+    /// request carries the rounded length on: the price and the vendor see
+    /// the same seconds (C5) — never 8.4 s billed for an 8 s clip.
+    #[test]
+    fn a_whole_second_duration_is_rounded_for_the_price_and_the_vendor_alike() {
+        let r = video_registry();
+        let mut req = vid_json("v/eight");
+        req.duration_seconds = Some(8.4);
+        let out = validate_video(r.get("v/eight").unwrap(), req).unwrap();
+        assert_eq!(out.request.duration_seconds, Some(8.0));
+    }
+
     /// The range check still applies to a value the caller actually sent.
     #[test]
     fn an_explicit_duration_outside_the_range_is_still_rejected() {

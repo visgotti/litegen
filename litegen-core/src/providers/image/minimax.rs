@@ -153,22 +153,17 @@ impl ImageProvider for MiniMaxImageProvider {
             })?;
 
         let status = resp.status();
-        let data: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse MiniMax response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
+        let data = crate::providers::read_vendor_json(resp, "MiniMax").await?;
 
         // MiniMax returns HTTP 200 with base_resp.status_code != 0 on logical errors.
         let code = data["base_resp"]["status_code"].as_i64().unwrap_or(0);
-        if !status.is_success() || code != 0 {
+        if code != 0 {
             let msg = data["base_resp"]["status_msg"].as_str().unwrap_or("Unknown error").to_string();
             return Err(ProviderError::RequestFailed {
                 message: format!("MiniMax API error ({code}): {msg}"),
                 status_code: Some(status.as_u16()),
                 provider_error: Some(data),
-                retryable: status.as_u16() >= 500,
+                retryable: false,
             });
         }
 
@@ -327,5 +322,21 @@ mod tests {
         p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
         let err = p.generate(&ref_schema("minimax/image-01"), &make_base("x", "minimax/image-01"), &make_extras(), &crate::proxy::materializer::MaterializedRequest::default()).await.unwrap_err();
         assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+    }
+
+    /// W14: a gateway's 5xx page is not JSON and a 429 turned the call away;
+    /// both are judged by their status before any parse and may be sent again.
+    #[tokio::test]
+    async fn a_gateway_page_or_a_rate_limit_may_be_sent_again() {
+        for (status, body) in [(502, "<html>bad gateway</html>"), (429, "too many requests")] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(body)).mount(&server).await;
+            let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+            let err = make_provider(&server.uri())
+                .generate(&ref_schema("minimax/image-01"), &make_base("x", "minimax/image-01"), &make_extras(), &materialized)
+                .await
+                .unwrap_err();
+            assert!(err.is_retryable(), "{status}: {err:?}");
+        }
     }
 }

@@ -219,11 +219,11 @@ pub async fn generate_image(
     let charge_key = key_ctx.as_ref().and_then(|c| c.key_id);
     // This request's own price (3D doc §3G): what the quote said and the
     // charge will take.
-    let price = crate::capabilities::pricing::request_price_usd(
+    let price = charged_price(&state, crate::capabilities::pricing::request_price_usd(
         &validated.schema,
         &validated.request.base,
         &serde_json::to_value(&extras).unwrap_or_default(),
-    );
+    ));
     let reserved = match reserve_quota(&state, charge_key, price).await {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -410,7 +410,7 @@ pub async fn segment_image(
     // Reserved at the row's price before the vendor is called; settled to the
     // charge, or released when nothing came back (as generate_image does).
     let charge_key = key_ctx.as_ref().and_then(|c| c.key_id);
-    let price = crate::capabilities::pricing::row_price_usd(schema);
+    let price = charged_price(&state, crate::capabilities::pricing::row_price_usd(schema));
     let reserved = match reserve_quota(&state, charge_key, price).await {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -541,10 +541,26 @@ pub async fn generate_video(
         Err(e) => return validation_rejection_response(&e.to_string(), 400, &validated.schema.id),
     };
 
+    // Resolve the calling app's BYO credential for this model's provider (see
+    // `generate_image`). Server-side failures early-return a 500.
+    let app_creds = match resolve_org_provider_credential(&state, &key_ctx, &validated.schema.provider).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if app_creds.is_none() && !state.router.has_video_provider(&validated.schema.provider).await {
+        return provider_not_configured_response(&validated.schema.provider);
+    }
+    // Which vendor account the job runs on: a vendor that extends only its
+    // own generations takes only those made on this account (3D doc §5).
+    let vendor_account = match (&app_creds, key_ctx.as_ref().and_then(|c| c.org_id.as_deref())) {
+        (Some(_), Some(org)) => format!("org:{org}"),
+        _ => "platform".to_string(),
+    };
+
     // 3D doc §5: a video operation's source, read and measured before
     // anything is reserved.
     let source = match validated.request.source_video.as_ref() {
-        Some(src) => match resolve_source_video(&state, key_ctx.as_ref(), &validated.schema, src, validated.request.time_range).await {
+        Some(src) => match resolve_source_video(&state, key_ctx.as_ref(), &validated.schema, src, validated.request.time_range, &vendor_account).await {
             Ok(s) => Some(s),
             Err(resp) => return resp,
         },
@@ -569,26 +585,16 @@ pub async fn generate_video(
         r#loop: validated.request.r#loop,
     };
 
-    // Resolve the calling app's BYO credential for this model's provider (see
-    // `generate_image`). Server-side failures early-return a 500.
-    let app_creds = match resolve_org_provider_credential(&state, &key_ctx, &validated.schema.provider).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
-    if app_creds.is_none() && !state.router.has_video_provider(&validated.schema.provider).await {
-        return provider_not_configured_response(&validated.schema.provider);
-    }
-
     // Reserve the estimated cost against the key's quota BEFORE dispatch, then
     // settle to the actual cost on success / release on failure.
     let charge_key = key_ctx.as_ref().and_then(|c| c.key_id);
     // This request's own price (3D doc §3G): what the quote said and the
     // charge will take.
-    let price = crate::capabilities::pricing::request_price_usd(
+    let price = charged_price(&state, crate::capabilities::pricing::request_price_usd(
         &validated.schema,
         &validated.request.base,
         &serde_json::to_value(&extras).unwrap_or_default(),
-    );
+    ));
     let reserved = match reserve_quota(&state, charge_key, price).await {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -607,6 +613,7 @@ pub async fn generate_video(
     let attributed = limits.attribution();
 
     let segments = plan_segments(&validated.schema, &extras);
+    let cancel_creds = app_creds.clone();
     match state.router.generate_video(&validated.schema, &validated.request.base, &extras, &materialized, app_creds).await {
         Ok(mut response) => {
             response.segments = segments.clone();
@@ -614,11 +621,9 @@ pub async fn generate_video(
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
 
-            // Settle the reservation to the actual cost. Who it was charged
-            // against goes on the row, for a refund if the job fails (L18).
+            // Who it was charged against goes on the row, for a refund if the
+            // job fails (L18). The reservation is settled with the row below.
             let charged_to = limits.charged_to();
-            settle_quota(&state, charge_key, reserved, cost).await;
-            limits.settle(&state, cost).await;
 
             // Build video artifact
             let video_artifact = {
@@ -667,7 +672,9 @@ pub async fn generate_video(
             // after a restart. Run in a task the handler awaits, so a client that
             // disconnects now cannot cancel the writes for a job the vendor took.
             let vendor_job = provider_job_id_for_insert.clone();
+            let (cancel_provider, cancel_model) = (provider.clone(), model.clone());
             let writes = {
+                let state = state.clone();
                 let db = db.clone();
                 let id = id.clone();
                 tokio::spawn(async move {
@@ -678,7 +685,7 @@ pub async fn generate_video(
                         tracing::warn!(generation_id = %id, error = %e, "failed to log the video request");
                     }
                     crate::management::enforce::attribute(&db, &id, &attributed).await;
-                    db.insert_generation(
+                    let inserted = db.insert_generation(
                         &id,
                         key_id_for_insert.as_ref(),
                         &model,
@@ -688,8 +695,20 @@ pub async fn generate_video(
                         cost,
                         org_id.as_deref(),
                         app_id.as_deref(),
-                    ).await?;
-                    let mut recorded = serde_json::json!({ "request": request, "billing": { "limits": charged_to } });
+                    ).await;
+                    // Settled to the actual cost once the job has its row; the
+                    // caller of a job litegen could not record is told it
+                    // failed, so it is charged nothing and its log says so.
+                    let charge = if inserted.is_ok() { cost } else { 0.0 };
+                    settle_quota(&state, charge_key, reserved, charge).await;
+                    limits.settle(&state, charge).await;
+                    if let Err(e) = inserted {
+                        if let Err(e) = db.update_request_log_status(&id, "failed", Some("generation_record_failed")).await {
+                            tracing::warn!(generation_id = %id, error = %e, "failed to mark the unrecorded video request failed");
+                        }
+                        return Err(e);
+                    }
+                    let mut recorded = serde_json::json!({ "request": request, "billing": { "limits": charged_to }, "vendor_account": vendor_account });
                     if let Some(segments) = &segments {
                         recorded["segments"] = serde_json::json!(segments);
                     }
@@ -699,16 +718,27 @@ pub async fn generate_video(
                     Ok::<(), sqlx::Error>(())
                 })
             };
-            match writes.await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    tracing::error!(generation_id = %id, error = %e, "video row could not be written; failing the submit");
-                    return generation_record_failed_response(&id, vendor_job.as_deref(), &e.to_string());
+            let failure = match writes.await {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(format!("{e}")),
+                Err(e) => Some(format!("{e}")),
+            };
+            if let Some(err) = failure {
+                tracing::error!(generation_id = %id, error = %err, "video row could not be written; failing the submit");
+                // Nothing will ever poll this job: let it go here, and stop it
+                // at the vendor (best effort), as the 3D path does.
+                state.router.forget_video_job(&id).await;
+                if let Some(job) = vendor_job.clone() {
+                    let state = state.clone();
+                    tokio::spawn(async move {
+                        let Some(vendor) = state.router.registry.video_provider_for_request(&cancel_provider, cancel_creds).await else { return };
+                        let handle = crate::providers::VideoGenerationHandle { provider_job_id: job, provider: cancel_provider, model: cancel_model };
+                        if let Err(e) = vendor.cancel(&handle).await {
+                            tracing::warn!(error = %e, "could not cancel an unrecorded video job at the vendor");
+                        }
+                    });
                 }
-                Err(e) => {
-                    tracing::error!(generation_id = %id, error = %e, "video submit bookkeeping task failed");
-                    return generation_record_failed_response(&id, vendor_job.as_deref(), &e.to_string());
-                }
+                return generation_record_failed_response(&id, vendor_job.as_deref(), &err);
             }
             // The artifact is diagnostic only, so it alone stays off the response path.
             tokio::spawn(async move {
@@ -757,13 +787,22 @@ pub async fn get_video_status(
         Some(o) => o,
         None => return forbidden_no_org(),
     };
-    if let Ok(Some(gen)) = state.db.get_generation(&id).await {
+    // Read once: a row that cannot be read is an error, never a pass to the
+    // router's in-flight job, which may be another tenant's.
+    let row = match state.db.get_generation(&id).await {
+        Ok(row) => row,
+        Err(e) => {
+            error!(generation_id = %id, error = %e, "could not read the video row");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response("the generation could not be read; retry shortly", 500))).into_response();
+        }
+    };
+    if let Some(gen) = row.as_ref() {
         if gen.org_id.as_deref() != Some(ctx_org) {
             return (StatusCode::NOT_FOUND, Json(error_response("Not found", 404))).into_response();
         }
         // Read:own boundary (same as get_generation) when the row is persisted.
         if let Err(resp) = authorize_generation_for_session(
-            &state, key_ctx.as_ref(), &gen,
+            &state, key_ctx.as_ref(), gen,
             crate::auth::permissions::Permission::GenerationReadAny,
             crate::auth::permissions::Permission::GenerationReadOwn,
             "generation:read:own",
@@ -776,11 +815,10 @@ pub async fn get_video_status(
         // `cancelled`. Release the router entry too, as the 3D path does.
         if gen.media_type == "video" && gen.status.is_terminal() {
             state.router.forget_video_job(&id).await;
-            return (StatusCode::OK, Json(serde_json::to_value(video_response_from_row(&gen)).unwrap())).into_response();
+            return (StatusCode::OK, Json(serde_json::to_value(video_response_from_row(gen)).unwrap())).into_response();
         }
     }
     // Keep a finished video in the tenant's own bucket, as the poller does.
-    let row = state.db.get_generation(&id).await.ok().flatten();
     let app_id = row.as_ref()
         .and_then(|g| g.app_id.clone())
         .or_else(|| key_ctx.as_ref().and_then(|c| c.app_id.clone()));
@@ -913,6 +951,7 @@ async fn resolve_source_video(
     schema: &crate::capabilities::ModelSchema,
     src: &crate::types::SourceRef,
     time_range: Option<crate::types::TimeRange>,
+    vendor_account: &str,
 ) -> Result<crate::providers::VideoSource, axum::response::Response> {
     use crate::proxy::model3d_source::SourceError;
     use crate::types::SourceKind;
@@ -924,6 +963,14 @@ async fn resolve_source_video(
         Some(crate::capabilities::ParamSpec::SourceVideo(s)) => s,
         _ => return Err(refuse(SourceError::FormatUnsupported("this model takes no source_video".into()))),
     };
+    let not_chainable = |msg: String| {
+        (StatusCode::BAD_REQUEST, Json(crate::api::middleware::validator::err_body("source_not_chainable", &msg, Some("source_video"), &schema.id))).into_response()
+    };
+    // A vendor that works only on its own earlier generations takes no URL
+    // or upload: refused before anything is fetched.
+    if spec.own_generations_only && src.kind != SourceKind::Generation {
+        return Err(not_chainable(format!("'{}' works only on its own vendor's generations, made on this account: send one's generation id", schema.id)));
+    }
     let (bytes, content_type, vendor_job_id) = match src.kind {
         SourceKind::Generation => {
             let gen = readable_generation(state, key_ctx, &src.value)
@@ -935,9 +982,15 @@ async fn resolve_source_video(
             if gen.status != GenerationStatus::Completed {
                 return Err(refuse(SourceError::NotReady(format!("generation {} has not finished", gen.id))));
             }
-            if spec.own_generations_only && gen.provider != schema.provider {
-                let msg = format!("'{}' extends only its own vendor's generations; {} was made by {}", schema.id, gen.id, gen.provider);
-                return Err((StatusCode::BAD_REQUEST, Json(crate::api::middleware::validator::err_body("source_not_chainable", &msg, Some("source_video"), &schema.id))).into_response());
+            // The account that made it: rows from before it was recorded ran
+            // on the platform's.
+            let made_on = gen.metadata.as_ref().and_then(|m| m.get("vendor_account")).and_then(|v| v.as_str()).unwrap_or("platform");
+            let own = gen.provider == schema.provider && made_on == vendor_account;
+            if spec.own_generations_only && !own {
+                return Err(not_chainable(format!(
+                    "'{}' works only on its own vendor's generations, made on this account; {} was made by {} on another",
+                    schema.id, gen.id, gen.provider
+                )));
             }
             let asset = generation_assets(&gen)
                 .into_iter()
@@ -957,7 +1010,7 @@ async fn resolve_source_video(
                 }
             }
             let (bytes, ct) = found.ok_or_else(|| refuse(SourceError::NotFound(format!("generation {}'s video is no longer stored", gen.id))))?;
-            let vendor_job = (gen.provider == schema.provider).then(|| gen.provider_job_id.clone()).flatten();
+            let vendor_job = own.then(|| gen.provider_job_id.clone()).flatten();
             (bytes::Bytes::from(bytes), ct, vendor_job)
         }
         SourceKind::Base64 => {
@@ -971,12 +1024,10 @@ async fn resolve_source_video(
         SourceKind::Url => {
             crate::util::ssrf::validate_public_url(&src.value).await.map_err(|e| refuse(SourceError::Fetch(e)))?;
             let client = crate::util::ssrf::no_redirect_download_client(std::time::Duration::from_secs(120), std::time::Duration::from_secs(30));
-            let resp = client.get(&src.value).send().await.map_err(|e| refuse(SourceError::Fetch(format!("source_video could not be fetched: {}", e.without_url()))))?;
-            if !resp.status().is_success() {
-                return Err(refuse(SourceError::Fetch(format!("source_video answered HTTP {}", resp.status()))));
-            }
-            let bytes = resp.bytes().await.map_err(|e| refuse(SourceError::Fetch(format!("source_video could not be read: {}", e.without_url()))))?;
-            (bytes, video_content_type(src.format.as_deref()), None)
+            let (bytes, _) = crate::util::ssrf::download_capped(&client, &src.value, crate::proxy::model3d_source::MAX_SOURCE_BYTES)
+                .await
+                .map_err(|e| refuse(crate::proxy::model3d_source::fetch_error(e)))?;
+            (bytes::Bytes::from(bytes), video_content_type(src.format.as_deref()), None)
         }
     };
     let media = crate::proxy::video_probe::probe(&bytes);
@@ -1361,11 +1412,11 @@ pub async fn generate_3d(
     let charge_key = key_ctx.as_ref().and_then(|c| c.key_id);
     // This request's own price (3D doc §3G): what the quote said and the
     // charge will take.
-    let price = crate::capabilities::pricing::request_price_usd(
+    let price = charged_price(&state, crate::capabilities::pricing::request_price_usd(
         &validated.schema,
         &validated.request.base,
         &serde_json::to_value(&extras).unwrap_or_default(),
-    );
+    ));
     let reserved = match reserve_quota(&state, charge_key, price).await {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -1457,8 +1508,6 @@ pub async fn generate_3d(
                 let db = db.clone();
                 let id = id.clone();
                 tokio::spawn(async move {
-                    settle_quota(&state, charge_key, reserved, cost).await;
-                    limits.settle(&state, cost).await;
                     let provider_job_id = state.router.get_model3d_provider_job_id(&id).await;
                     let stage_context = state.router.get_model3d_stage_context(&id).await;
 
@@ -1479,11 +1528,21 @@ pub async fn generate_3d(
                     }
                     crate::management::enforce::attribute(&db, &id, &attributed).await;
                     // A job with no row cannot be polled, resumed or reaped, so
-                    // the submit fails rather than answer with its id (L2).
-                    db.insert_generation(
+                    // the submit fails rather than answer with its id (L2) — and
+                    // a submit that failed is charged nothing and logged failed.
+                    let inserted = db.insert_generation(
                         &id, key_id.as_ref(), &model, &provider, "model3d",
                         provider_job_id.as_deref(), cost, org_id.as_deref(), app_id.as_deref(),
-                    ).await.map_err(|e| (e, provider_job_id.clone()))?;
+                    ).await;
+                    let charge = if inserted.is_ok() { cost } else { 0.0 };
+                    settle_quota(&state, charge_key, reserved, charge).await;
+                    limits.settle(&state, charge).await;
+                    if inserted.is_err() {
+                        if let Err(e) = db.update_request_log_status(&id, "failed", Some("generation_record_failed")).await {
+                            tracing::warn!(generation_id = %id, error = %e, "failed to mark the unrecorded 3d request failed");
+                        }
+                    }
+                    inserted.map_err(|e| (e, provider_job_id.clone()))?;
                     // The containers promised to this caller, recorded on the row so
                     // the poller and the row-answered path can enforce them — neither
                     // can reach the router's in-memory job map, and the row outlives
@@ -2141,6 +2200,9 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             // capability can never say yes to a param the validator refuses.
             supports_pbr: declares_bool(s, "pbr"),
             supports_rig: declares_bool(s, "rig"),
+            supports_animation: matches!(s.params.get("animations"), Some(crate::capabilities::ParamSpec::AnimationList(_))),
+            supports_skeleton: s.params.contains_key("skeleton"),
+            supports_joint_naming: s.params.contains_key("joint_naming"),
             supports_texture: declares_bool(s, "texture"),
             supports_source_model: matches!(s.params.get("source_model"), Some(crate::capabilities::ParamSpec::SourceModel(_))),
             output_formats: if s.media_type == crate::capabilities::MediaType::Image { image_formats.clone() } else { extract_output_formats(s) },
@@ -2183,6 +2245,7 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             },
             supports_mask_prompt: matches!(s.params.get("mask_prompt"), Some(crate::capabilities::ParamSpec::String(_))),
             supports_preserve_unmasked: takes_mask || region.is_some(),
+            supports_mask_grow: takes_mask || region.is_some(),
             supports_source_video: matches!(s.params.get("source_video"), Some(crate::capabilities::ParamSpec::SourceVideo(_))),
             native_pixel_art: s.capabilities.native_pixel_art,
             pixel_size: match s.params.get("size") {
@@ -4010,6 +4073,20 @@ pub async fn get_model3d_asset_bytes(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
 ) -> impl IntoResponse {
+    // Only litegen's own result files: never anything else under the asset
+    // directory or in the bucket, and never a published reference, whose own
+    // route checks its expiry.
+    let own = [
+        crate::proxy::storage::MODEL3D_PATH_PREFIX,
+        crate::proxy::storage::VIDEO_PATH_PREFIX,
+        crate::proxy::storage::IMAGE_RESULT_PATH_PREFIX,
+    ]
+    .iter()
+    .any(|p| key.strip_prefix(p).is_some_and(|rest| rest.starts_with('/')))
+        && !key.split('/').any(|part| part == ".." || part.is_empty());
+    if !own {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
     match state.router.model3d_store.get(&key).await.ok().flatten() {
         Some((bytes, content_type)) => (
             StatusCode::OK,
@@ -4017,6 +4094,8 @@ pub async fn get_model3d_asset_bytes(
                 (axum::http::header::CONTENT_TYPE, content_type),
                 // Meshes are immutable once written and keyed by generation id.
                 (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
+                (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                (axum::http::header::CONTENT_SECURITY_POLICY, "sandbox".to_string()),
             ],
             bytes,
         )
@@ -4042,6 +4121,10 @@ pub async fn get_published_ref(
             [
                 (axum::http::header::CONTENT_TYPE, content_type),
                 (axum::http::header::CACHE_CONTROL, "private, max-age=3600".to_string()),
+                // On litegen's own origin: never sniffed into anything else,
+                // and sandboxed if a browser renders it.
+                (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                (axum::http::header::CONTENT_SECURITY_POLICY, "sandbox".to_string()),
             ],
             bytes,
         )
@@ -4676,16 +4759,17 @@ async fn materialized_bytes(form: &crate::proxy::materializer::MaterializedRefFo
         MaterializedRefForm::MultipartField { bytes, .. } => Ok(bytes.to_vec()),
         MaterializedRefForm::Url(u) if u.starts_with("data:") => b64(u.split_once(',').map_or("", |(_, d)| d)),
         MaterializedRefForm::Url(u) => {
-            crate::util::ssrf::check_public_url(u).await.map_err(|e| format!("the image URL was refused: {e:?}"))?;
-            let resp = reqwest::get(u).await.map_err(|e| format!("the image could not be fetched: {}", e.without_url()))?;
-            if !resp.status().is_success() {
-                return Err(format!("the image URL answered HTTP {}", resp.status()));
+            use crate::util::ssrf::CappedDownloadError;
+            crate::util::ssrf::check_public_url(u).await.map_err(|e| format!("the image URL was refused: {e}"))?;
+            // The no-redirect client: a public host must not 3xx this fetch
+            // into a private one after the check above.
+            let client = crate::util::ssrf::no_redirect_download_client(std::time::Duration::from_secs(60), std::time::Duration::from_secs(30));
+            match crate::util::ssrf::download_capped(&client, u, MAX_EDIT_IMAGE_BYTES as u64).await {
+                Ok((bytes, _)) => Ok(bytes),
+                Err(CappedDownloadError::Transport(why)) => Err(format!("the image could not be fetched: {why}")),
+                Err(CappedDownloadError::Status(status)) => Err(format!("the image URL answered HTTP {status}")),
+                Err(CappedDownloadError::TooLarge { .. }) => Err(format!("the image is over {MAX_EDIT_IMAGE_BYTES} bytes")),
             }
-            let bytes = resp.bytes().await.map_err(|e| format!("the image could not be fetched: {}", e.without_url()))?;
-            if bytes.len() > MAX_EDIT_IMAGE_BYTES {
-                return Err(format!("the image is over {MAX_EDIT_IMAGE_BYTES} bytes"));
-            }
-            Ok(bytes.to_vec())
         }
     }
 }
@@ -4784,6 +4868,13 @@ async fn apply_image_edit(
     Ok(Some(crate::providers::ImageEdit { window: prepared.window, vendor_grow_px: prepared.vendor_grow_px, preserve }))
 }
 
+/// What a request will be charged: its price with the markup in effect (3D
+/// doc §3G) — what its quote says, its reservation and limits hold, and the
+/// router's charge takes.
+fn charged_price(state: &AppState, price: f64) -> f64 {
+    crate::providers::apply_markup(price, state.router.cost_markup_percent()).1
+}
+
 /// The error answer for a generation the router could not run, marked as
 /// having reached a vendor when it did — which is what an `Idempotency-Key`
 /// records and replays. A vendor timeout names the vendor's job, when it had
@@ -4799,7 +4890,7 @@ fn generation_error_response(e: &crate::proxy::router::ProxyError) -> axum::resp
                 "message": e.to_string(),
                 "type": kind,
                 "code": kind,
-                "retryable": vendor.retryable(),
+                "retryable": e.retryable(),
                 "provider_error": vendor,
                 "vendor_job_id": vendor_job_id,
             }
@@ -4811,7 +4902,7 @@ fn generation_error_response(e: &crate::proxy::router::ProxyError) -> axum::resp
                 "message": e.to_string(),
                 "type": "vendor_timeout",
                 "code": "vendor_timeout",
-                "retryable": true,
+                "retryable": e.retryable(),
                 "vendor_job_id": vendor_job_id,
             }
         }),

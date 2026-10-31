@@ -54,6 +54,8 @@ export interface MergedRole {
   models: string[];
   /** Models that will reject the request without enough images in this role. */
   requiredBy: string[];
+  /** The image goes inline, so only an upload is offered (a segmentation's). */
+  uploadOnly?: boolean;
 }
 
 /** One provider-passthrough key (`extra_allowlist`) across the selected models. */

@@ -3053,6 +3053,12 @@ export interface components {
              */
             segmentation_prompts?: components["schemas"]["SegmentationPromptType"][];
             supported_sizes?: string[];
+            /**
+             * @description Takes `animations`: one clip per entry, whatever the task (3D doc
+             *     §3C) — a rig or generate model that returns clips in the same call
+             *     as well as an `animate` one.
+             */
+            supports_animation?: boolean;
             /** @description Takes `audio: false` (or `true`) to leave audio out (or in). */
             supports_audio_toggle?: boolean;
             /**
@@ -3072,6 +3078,8 @@ export interface components {
             supports_image_to_image: boolean;
             supports_image_to_video?: boolean;
             supports_inpainting?: boolean;
+            /** @description Takes `joint_naming` (3D doc §3B). */
+            supports_joint_naming?: boolean;
             /** @description Takes `keep_uvs`. */
             supports_keep_uvs?: boolean;
             /** @description Takes `keyframe` references, each pinned at its `time_s` (3D doc §5). */
@@ -3081,6 +3089,11 @@ export interface components {
             supports_layout?: boolean;
             /** @description Takes `loop: true`. */
             supports_loop?: boolean;
+            /**
+             * @description Takes `mask_grow_px`: litegen widens the mask or region of any model
+             *     taking one, or asks a vendor that grows its own (3D doc §4).
+             */
+            supports_mask_grow?: boolean;
             /** @description Takes `mask_prompt` (3D doc §4). */
             supports_mask_prompt?: boolean;
             /** @description Accepts several `view-*` reference images (multiview-to-3D). */
@@ -3105,6 +3118,11 @@ export interface components {
             supports_rig?: boolean;
             /** @description Serves `POST /v1/images/segmentations` (PixelGenie L7). */
             supports_segmentation?: boolean;
+            /**
+             * @description Takes `skeleton`; `params.skeleton.enum_values` lists what it rigs
+             *     (3D doc §3B).
+             */
+            supports_skeleton?: boolean;
             /** @description Takes `source_model`: an operation on an existing mesh. */
             supports_source_model?: boolean;
             /** @description Works on a `source_video` (3D doc §5). */
@@ -3843,6 +3861,13 @@ export interface components {
             add_usd?: number | null;
             /** Format: double */
             multiply?: number | null;
+            /**
+             * Format: double
+             * @description Scale the price by the image's `megapixels` over this many, for an
+             *     image larger than this: a vendor that bills by output size (OpenAI's
+             *     image tokens) past the size its base price is for.
+             */
+            multiply_per_megapixel_above?: number | null;
             /** @description The list `per_item_usd` counts (`animations`, `views`, `keyframes`). */
             per_item?: string | null;
             /** Format: double */
@@ -4094,6 +4119,12 @@ export interface components {
             convention?: null | components["schemas"]["MaskConvention"];
             /** Format: int32 */
             max_count: number;
+            /**
+             * Format: double
+             * @description The latest a `keyframe` may sit, for a model with no duration param
+             *     to bound its clip: the longest clip it makes or prices.
+             */
+            max_time_s?: number | null;
             /** Format: int32 */
             min_count: number;
             /**
@@ -4274,6 +4305,12 @@ export interface components {
              */
             front: string;
             materials: components["schemas"]["SceneMaterial"][];
+            /**
+             * @description What delivery could not keep or do for this file: a texture litegen
+             *     could not decode, a joint naming the rig could not take, what this
+             *     container cannot hold of the scene. Empty when nothing was lost.
+             */
+            notes?: string[];
             /** @description `vendor` (it arrived so) or `litegen` (litegen turned it). */
             oriented_by: string;
             /**

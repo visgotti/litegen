@@ -79,6 +79,15 @@ describe('wireValue: what a structured control sends', () => {
     expect(wireValue({ kind: 'source_model' }, { type: 'generation', value: '' })).toBeUndefined();
   });
 
+  it('sends a URL source with the format its select shows, even one never changed', () => {
+    // A one-format select never fires onChange: what it shows is still sent,
+    // or the server refuses the source (source_format_required).
+    expect(wireValue({ kind: 'source_model', formats: ['glb'] }, { type: 'url', value: 'https://x/mesh.glb' }))
+      .toEqual({ type: 'url', value: 'https://x/mesh.glb', format: 'glb' });
+    expect(wireValue({ kind: 'source_video', formats: ['gif', 'mp4'] }, { type: 'url', value: 'https://x/clip.gif' }))
+      .toEqual({ type: 'url', value: 'https://x/clip.gif', format: 'gif' });
+  });
+
   it('sends segmentation prompts of the kinds the model takes', () => {
     const spec = { kind: 'segmentation_prompts', types: ['point', 'text'], max_items: 16 };
     expect(wireValue(spec, [
@@ -103,6 +112,13 @@ describe('fields a model takes without declaring them', () => {
     expect(Object.keys(derivedParams(regioned)).sort()).toEqual(['feather_px', 'mask_grow_px', 'preserve_unmasked']);
     expect(derivedParams(plain)).toEqual({});
     expect(mergeParams({ m: masked }).map(p => p.name)).toContain('mask_grow_px');
+  });
+
+  it('offers placement on every 3D model, as the server applies it to any mesh it delivers', () => {
+    const mesh = schema({ media_type: 'model3d', params: {} });
+    expect(Object.keys(derivedParams(mesh)).sort()).toEqual(['center', 'ground', 'height_m']);
+    expect(schemaInputs(mesh, { params: { ground: true, center: true, height_m: '1.8' } })).toEqual({ ground: true, center: true, height_m: 1.8 });
+    expect(derivedParams(schema({ media_type: 'image', params: {} }))).toEqual({});
   });
 
   it('sends them to the models that take them only', () => {
@@ -156,11 +172,15 @@ describe('what a run is', () => {
 
   it('builds a segmentation request from the image and its prompts, or says what is missing', () => {
     const spec = { kind: 'segmentation_prompts', types: ['point', 'text'], max_items: 4 } as unknown as Parameters<typeof buildSegmentationBody>[1];
-    const refs: RefEntry[] = [{ id: '1', role: 'image', type: 'url', value: 'https://x/a.png' }];
+    const refs: RefEntry[] = [{ id: '1', role: 'image', type: 'base64', value: 'data:image/png;base64,iVBORw0KGgo=', name: 'a.png' }];
     expect(buildSegmentationBody('mock/segment-image', spec, { params: { prompts: [{ type: 'text', text: 'the cat' }] }, refs })).toEqual({
-      body: { model: 'mock/segment-image', image: 'https://x/a.png', prompts: [{ type: 'text', text: 'the cat' }] },
+      body: { model: 'mock/segment-image', image: 'data:image/png;base64,iVBORw0KGgo=', prompts: [{ type: 'text', text: 'the cat' }] },
       problems: [],
     });
+    // The endpoint takes the image itself ("base64, or a data: URI"), never a URL.
+    const byUrl: RefEntry[] = [{ id: '2', role: 'image', type: 'url', value: 'https://x/a.png' }];
+    expect(buildSegmentationBody('mock/segment-image', spec, { params: { prompts: [{ type: 'text', text: 'the cat' }] }, refs: byUrl }).problems)
+      .toEqual(['segments an uploaded image, not a URL']);
     expect(buildSegmentationBody('mock/segment-image', spec, { params: {}, refs: [] }).problems)
       .toEqual(['needs an image to segment', 'needs a point, box or text prompt']);
     // "a text prompt selects every instance of what it names and cannot be

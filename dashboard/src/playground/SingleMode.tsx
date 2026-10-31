@@ -32,7 +32,7 @@ import {
   sortModels,
   wireValue,
 } from './params';
-import { inlineRefCount, withoutInlineRefs } from './ref-images';
+import { inlineRefCount, withoutInlineMasks, withoutInlineRefs } from './ref-images';
 import type { Availability, MergedRole, RefEntry } from './types';
 import { MODEL3D_POLL_TIMEOUT_MS } from './useFanOut';
 
@@ -72,11 +72,12 @@ export function runKindOf(model: ModelInfo | undefined): RunKind {
 }
 
 /** The image a segmentation run selects in: one, with no role of its own in
- *  the schema (the request's `image` field), so the form offers it here. */
+ *  the schema (the request's `image` field), so the form offers it here —
+ *  as an upload, since the endpoint takes the image itself, not a URL. */
 const SEGMENT_IMAGE_ROLE = 'image';
 
 function segmentImageRole(modelId: string): MergedRole {
-  return { role: SEGMENT_IMAGE_ROLE, maxCount: 1, minCount: 1, models: [modelId], requiredBy: [modelId] };
+  return { role: SEGMENT_IMAGE_ROLE, maxCount: 1, minCount: 1, models: [modelId], requiredBy: [modelId], uploadOnly: true };
 }
 
 /** A segmentation request — `model`, the `image` and its `prompts` — or the
@@ -87,10 +88,13 @@ export function buildSegmentationBody(
   promptsSpec: ParamSpec | undefined,
   shared: { params: Record<string, unknown>; refs: RefEntry[] },
 ): { body: Record<string, unknown>; problems: string[] } {
-  const image = shared.refs.find(r => r.role === SEGMENT_IMAGE_ROLE)?.value;
+  const ref = shared.refs.find(r => r.role === SEGMENT_IMAGE_ROLE);
+  // "The image: base64, or a `data:` URI" — the endpoint fetches no URL.
+  const image = ref?.type === 'base64' ? ref.value : undefined;
   const prompts = promptsSpec ? wireValue(promptsSpec as unknown as { kind: string }, shared.params.prompts) : undefined;
   const problems: string[] = [];
-  if (!image) problems.push('needs an image to segment');
+  if (ref && !image) problems.push('segments an uploaded image, not a URL');
+  else if (!image) problems.push('needs an image to segment');
   const sent = Array.isArray(prompts) ? (prompts as Array<{ type?: string }>) : [];
   if (!sent.length) problems.push('needs a point, box or text prompt');
   // "a text prompt selects every instance of what it names and cannot be
@@ -114,7 +118,8 @@ function masksFromResponse(body: Record<string, unknown>): SegmentMask[] | null 
 }
 
 interface SegmentMask {
-  png_base64: string;
+  /** Absent on a run restored from history, which keeps no mask images. */
+  png_base64?: string;
   score: number | null;
   box: { x: number; y: number; w: number; h: number };
 }
@@ -410,7 +415,7 @@ export default function SingleMode() {
         timestamp: new Date().toISOString(),
         // Uploaded images are megabytes of base64; localStorage holds ~5 MB.
         requestBody: withoutInlineRefs(body),
-        responseBody,
+        responseBody: withoutInlineMasks(responseBody),
         ...(inlineRefCount(body) > 0 ? { strippedRefs: inlineRefCount(body) } : {}),
       });
       refreshHistory();
@@ -743,7 +748,9 @@ export default function SingleMode() {
                   <ul className="pg-masks" data-testid="playground-masks">
                     {masks.map((m, i) => (
                       <li key={i} data-testid={`playground-mask-${i}`}>
-                        <img src={`data:image/png;base64,${m.png_base64}`} alt={`Mask ${i + 1}`} />
+                        {m.png_base64
+                          ? <img src={`data:image/png;base64,${m.png_base64}`} alt={`Mask ${i + 1}`} />
+                          : <span className="pg-structured-note">mask image not kept in history</span>}
                         <span>
                           {m.score != null ? `score ${m.score.toFixed(2)} · ` : ''}
                           box {m.box.x},{m.box.y} {m.box.w}×{m.box.h}

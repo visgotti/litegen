@@ -470,7 +470,7 @@ fn forbidden_response(msg: &str) -> Response {
 fn internal_error_response(msg: &str) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({"error":{"message":msg,"type":"internal_error","code":500}})),
+        Json(serde_json::json!({"error":{"message":msg,"type":"internal_error","code":"internal_error"}})),
     ).into_response()
 }
 

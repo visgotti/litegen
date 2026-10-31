@@ -9886,6 +9886,10 @@
                             "type": "string"
                         }
                     },
+                    "supports_animation": {
+                        "type": "boolean",
+                        "description": "Takes `animations`: one clip per entry, whatever the task (3D doc\n\u00a73C) \u2014 a rig or generate model that returns clips in the same call\nas well as an `animate` one."
+                    },
                     "supports_audio_toggle": {
                         "type": "boolean",
                         "description": "Takes `audio: false` (or `true`) to leave audio out (or in)."
@@ -9922,6 +9926,10 @@
                     "supports_inpainting": {
                         "type": "boolean"
                     },
+                    "supports_joint_naming": {
+                        "type": "boolean",
+                        "description": "Takes `joint_naming` (3D doc \u00a73B)."
+                    },
                     "supports_keep_uvs": {
                         "type": "boolean",
                         "description": "Takes `keep_uvs`."
@@ -9940,6 +9948,10 @@
                     "supports_loop": {
                         "type": "boolean",
                         "description": "Takes `loop: true`."
+                    },
+                    "supports_mask_grow": {
+                        "type": "boolean",
+                        "description": "Takes `mask_grow_px`: litegen widens the mask or region of any model\ntaking one, or asks a vendor that grows its own (3D doc \u00a74)."
                     },
                     "supports_mask_prompt": {
                         "type": "boolean",
@@ -9976,6 +9988,10 @@
                     "supports_segmentation": {
                         "type": "boolean",
                         "description": "Serves `POST /v1/images/segmentations` (PixelGenie L7)."
+                    },
+                    "supports_skeleton": {
+                        "type": "boolean",
+                        "description": "Takes `skeleton`; `params.skeleton.enum_values` lists what it rigs\n(3D doc \u00a73B)."
                     },
                     "supports_source_model": {
                         "type": "boolean",
@@ -12122,6 +12138,14 @@
                         ],
                         "format": "double"
                     },
+                    "multiply_per_megapixel_above": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "Scale the price by the image's `megapixels` over this many, for an\nimage larger than this: a vendor that bills by output size (OpenAI's\nimage tokens) past the size its base price is for."
+                    },
                     "per_item": {
                         "type": [
                             "string",
@@ -12891,6 +12915,14 @@
                         "format": "int32",
                         "minimum": 0
                     },
+                    "max_time_s": {
+                        "type": [
+                            "number",
+                            "null"
+                        ],
+                        "format": "double",
+                        "description": "The latest a `keyframe` may sit, for a model with no duration param\nto bound its clip: the longest clip it makes or prices."
+                    },
                     "min_count": {
                         "type": "integer",
                         "format": "int32",
@@ -13424,6 +13456,13 @@
                         "items": {
                             "$ref": "#/components/schemas/SceneMaterial"
                         }
+                    },
+                    "notes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "What delivery could not keep or do for this file: a texture litegen\ncould not decode, a joint naming the rig could not take, what this\ncontainer cannot hold of the scene. Empty when nothing was lost."
                     },
                     "oriented_by": {
                         "type": "string",

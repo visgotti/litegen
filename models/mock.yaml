@@ -253,11 +253,11 @@ models:
     media_type: image
     display_name: Mock Slow Image
     description: >-
-      Answers after 30 seconds, longer than any vendor timeout a test sets
-      (server.vendor_timeout_secs), so the first attempt always times out. A
-      timed-out vendor call is never sent again: the request is answered 504
-      vendor_timeout and the mock counts exactly one call. Use with an
-      Idempotency-Key to see the 504 replayed.
+      Answers after a day, longer than any vendor timeout litegen can be set
+      to wait (server.vendor_timeout_secs), so the first attempt always times
+      out. A timed-out vendor call is never sent again: the request is
+      answered 504 vendor_timeout and the mock counts exactly one call. Use
+      with an Idempotency-Key to see the 504 replayed.
     pricing: { base_cost_usd: 0.0 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 1000 }
@@ -778,6 +778,30 @@ models:
       replace: { kind: string, enum_values: [video, audio, both], default: video, label: Replace, description: The track to regenerate. }
     extra_allowlist: []
     tags: [mock, test, retake]
+
+  - id: mock/edit-video
+    provider: mock
+    media_type: video
+    task: video_edit
+    display_name: Mock Edit Video
+    description: >-
+      A whole-clip edit, like Luma's: regenerates every frame of a GIF
+      source, at the source's frame rate and length. Takes only the mock
+      vendor's own earlier generations, made on the same account — a URL or
+      an upload is refused with source_not_chainable before billing.
+    pricing: { base_cost_usd: 0.0 }
+    capabilities: {}
+    prompt: { required: true, max_length: 1000 }
+    params:
+      source_video:
+        kind: source_video
+        formats: [gif]
+        max_duration_s: 60
+        own_generations_only: true
+        label: Source clip
+        description: A clip this vendor made, on this account.
+    extra_allowlist: []
+    tags: [mock, test, video-edit]
 
   # ─── Preservation and background swap (PixelGenie 3D doc §4, P2) ──────────
   - id: mock/sloppy-edit-image

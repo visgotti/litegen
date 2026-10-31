@@ -194,18 +194,17 @@ pub async fn fetch_url_source(url: &str, spec: &ParamSpecSourceModel) -> Result<
         std::time::Duration::from_secs(300),
         std::time::Duration::from_secs(60),
     );
-    let resp = client.get(url).send().await.map_err(|e| SourceError::Fetch(format!("the source could not be fetched: {}", e.without_url())))?;
-    if !resp.status().is_success() {
-        return Err(SourceError::Fetch(format!("the source URL answered HTTP {}", resp.status())));
+    crate::util::ssrf::download_capped(&client, url, max).await.map(|(bytes, _)| bytes).map_err(fetch_error)
+}
+
+/// A URL source's download failure, as the caller's answer.
+pub fn fetch_error(e: crate::util::ssrf::CappedDownloadError) -> SourceError {
+    use crate::util::ssrf::CappedDownloadError;
+    match e {
+        CappedDownloadError::Transport(why) => SourceError::Fetch(format!("the source could not be fetched: {why}")),
+        CappedDownloadError::Status(status) => SourceError::Fetch(format!("the source URL answered HTTP {status}")),
+        CappedDownloadError::TooLarge { bytes, max } => SourceError::TooLarge { bytes, max },
     }
-    if let Some(n) = resp.content_length().filter(|n| *n > max) {
-        return Err(SourceError::TooLarge { bytes: n, max });
-    }
-    let bytes = resp.bytes().await.map_err(|e| SourceError::Fetch(format!("the source could not be fetched: {}", e.without_url())))?;
-    if bytes.len() as u64 > max {
-        return Err(SourceError::TooLarge { bytes: bytes.len() as u64, max });
-    }
-    Ok(bytes.to_vec())
 }
 
 /// Decode a base64 source (a `data:` prefix is allowed).

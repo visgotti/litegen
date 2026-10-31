@@ -20,9 +20,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY --from=builder /build/litegen-core/target/release/litegen /app/litegen
 COPY models /app/models
+# Kept results (meshes, videos, images, published references) live under
+# /app/data/assets, written by the unprivileged user below: the directory is
+# created and owned by it here, and is a volume so results outlive the
+# container. litegen refuses to start when it cannot write there.
+RUN mkdir -p /app/data/assets && chown -R 1000:1000 /app/data
+VOLUME ["/app/data"]
 ENV LITEGEN_MODELS_DIR=/app/models \
     LITEGEN__SERVER__HOST=0.0.0.0 \
-    LITEGEN__SERVER__PORT=4000
+    LITEGEN__SERVER__PORT=4000 \
+    LITEGEN__IMAGE_STORAGE__LOCAL_DIR=/app/data/assets
 # Set LITEGEN__SERVER__PUBLIC_BASE_URL to the origin clients reach this
 # container on (e.g. https://api.example.com). 3D asset URLs are minted
 # absolute from it; the default derives from the bind host, which inside a

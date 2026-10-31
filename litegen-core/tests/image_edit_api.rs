@@ -156,4 +156,9 @@ async fn the_listing_says_how_each_model_edits_part_of_an_image() {
     // A caller always sends white-edits; OpenAI's own convention stays in the catalog row.
     let plain = caps("mock/image-gen");
     assert_eq!((plain["supports_region_edit"].as_bool(), plain.get("mask_convention")), (Some(false), None), "{plain}");
+    // §2 rule 5: `mask_grow_px` is served as a flag wherever it is taken.
+    assert_eq!(
+        (region["supports_mask_grow"].as_bool(), inpaint["supports_mask_grow"].as_bool(), plain["supports_mask_grow"].as_bool()),
+        (Some(true), Some(true), Some(false)),
+    );
 }

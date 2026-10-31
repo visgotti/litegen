@@ -83,6 +83,11 @@ async fn spawn_app_no_secrets() -> TestApp {
 }
 
 async fn spawn_app_cfg(extra_providers: &[(&str, Value)], secrets_key: Option<[u8; 32]>) -> TestApp {
+    spawn_app_cfg_with(extra_providers, secrets_key, |_| {}).await
+}
+
+/// [`spawn_app_cfg`] with `tweak` applied to the config before anything is built.
+async fn spawn_app_cfg_with(extra_providers: &[(&str, Value)], secrets_key: Option<[u8; 32]>, tweak: impl FnOnce(&mut AppConfig)) -> TestApp {
     let tmp = tempfile::NamedTempFile::new().expect("tempfile");
     let url = format!("sqlite://{}?mode=rwc", tmp.path().display());
     let db: Arc<dyn DatabaseStore> = Arc::new(
@@ -98,6 +103,7 @@ async fn spawn_app_cfg(extra_providers: &[(&str, Value)], secrets_key: Option<[u
     // the mock the public way: add a `mock` provider entry to the config and run
     // `init_from_config`, which has a credential-exempt `"mock"` arm.
     let mut app_config = AppConfig::default();
+    tweak(&mut app_config);
     app_config.providers.insert(
         "mock".to_string(),
         serde_json::from_value(serde_json::json!({ "enabled": true }))
@@ -791,6 +797,56 @@ async fn a_reservation_holds_the_requests_own_price() {
         .post_with("/v1/videos/generations", json!({ "model": "mock/priced-video", "prompt": "x" }), &[("authorization", &auth)])
         .await;
     assert_eq!(short.status, 200, "the default $0.50 clip fits: {} {:?}", short.status, short.body);
+}
+
+/// A row that cannot be read is never a pass to the router's in-flight job:
+/// another tenant must not read a video because the database failed.
+#[tokio::test]
+async fn a_video_is_not_readable_across_tenants_when_its_row_cannot_be_read() {
+    let app = spawn_app().await;
+    let mut a = Client::new(&app.base);
+    let (_, secret_a) = signup_app_and_key(&mut a, "vid-owner").await;
+    let mut b = Client::new(&app.base);
+    let (_, secret_b) = signup_app_and_key(&mut b, "vid-other").await;
+    let mut owner = Client::new(&app.base);
+    let started = owner
+        .post_with("/v1/videos/generations", json!({ "model": "mock/video-gen", "prompt": "x" }), &[("authorization", &format!("Bearer {secret_a}"))])
+        .await;
+    assert_eq!(started.status, 200, "{:?}", started.body);
+    let id = started.body["id"].as_str().unwrap().to_string();
+
+    let url = format!("sqlite://{}?mode=rwc", app.db_path().display());
+    let pool = sqlx::sqlite::SqlitePool::connect(&url).await.expect("open sqlite");
+    sqlx::query("ALTER TABLE generations RENAME TO generations_away").execute(&pool).await.expect("hide the rows");
+    pool.close().await;
+
+    let mut other = Client::new(&app.base);
+    let read = other.get_with(&format!("/v1/videos/{id}"), &[("authorization", &format!("Bearer {secret_b}"))]).await;
+    assert_eq!(read.status, 500, "an unreadable row is an error, never another tenant's job: {:?}", read.body);
+}
+
+/// With a markup the charge is the marked-up price, so the reservation and
+/// the limits hold that price too: a key can never be charged past its quota.
+#[tokio::test]
+async fn a_reservation_holds_the_marked_up_price_it_will_charge() {
+    let app = spawn_app_cfg_with(&[], Some([7u8; 32]), |c| c.cost_markup_percent = 10.0).await;
+    let mut c = Client::new(&app.base);
+    signup(&mut c, &unique_email("markup"), "MarkupOrg").await;
+    let csrf = c.csrf().await;
+    let created = c
+        .post_with(
+            "/v1/keys",
+            json!({ "name": "markup-key", "token_quota": 0.52, "scopes": "generate,read" }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(created.status, 201, "create key failed: {:?}", created.body);
+    let auth = format!("Bearer {}", created.body["key"].as_str().unwrap());
+    let mut bearer = Client::new(&app.base);
+    let clip = bearer
+        .post_with("/v1/videos/generations", json!({ "model": "mock/priced-video", "prompt": "x" }), &[("authorization", &auth)])
+        .await;
+    assert_eq!(clip.status, 402, "$0.50 + 10% = $0.55 against $0.52 left: {} {:?}", clip.status, clip.body);
 }
 
 // ─── Test 11: a read-only key cannot generate (scope enforcement) ──────────────

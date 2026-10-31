@@ -45,6 +45,12 @@ impl RefPublisher {
     /// litegen's public address is not one the internet can reach: a vendor
     /// would fail to fetch it, after the submit.
     pub async fn publish(&self, bytes: &[u8], content_type: &str) -> Result<String, String> {
+        // Served on litegen's own origin, so only an image, typed by what its
+        // bytes are — never the type a caller's `data:` prefix claimed.
+        let _ = content_type;
+        let Some(content_type) = crate::proxy::materializer::sniff_image_mime(bytes) else {
+            return Err("a reference published for a vendor must be a PNG, JPEG, WebP or GIF image".into());
+        };
         if !is_public_origin(&self.base_url) {
             return Err(format!(
                 "this model fetches its references by URL, and litegen has no public address to publish one at \
@@ -97,20 +103,18 @@ pub fn sweep_expired_refs(root: &std::path::Path, now: i64) -> usize {
         .count()
 }
 
-/// Whether a vendor on the internet could reach `base`: not loopback, not a
-/// private or link-local address, not a single-label or `.local` name.
+/// Whether a vendor on the internet could reach `base` over HTTPS (L4): an
+/// `https` origin, not a loopback, private, link-local or carrier-grade NAT
+/// address, not a single-label or `.local` name.
 fn is_public_origin(base: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(base) else { return false };
+    if url.scheme() != "https" {
+        return false;
+    }
     let Some(host) = url.host_str() else { return false };
     let host = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return match ip {
-            std::net::IpAddr::V4(v4) => !(v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()),
-            std::net::IpAddr::V6(v6) => {
-                let first = v6.segments()[0];
-                !(v6.is_loopback() || v6.is_unspecified() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80)
-            }
-        };
+        return !crate::util::ssrf::is_disallowed_ip(ip);
     }
     host.contains('.') && !(host.ends_with(".localhost") || host.ends_with(".local") || host.ends_with(".internal"))
 }
@@ -127,9 +131,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn only_an_image_is_published_and_it_is_typed_by_its_bytes() {
+        let p = publisher(REF_URL_TTL);
+        assert!(p.publish(b"<html><script>alert(1)</script></html>", "text/html").await.is_err(), "not an image");
+        let png = crate::providers::image::mock::MockProvider::placeholder_png();
+        let url = p.publish(&png, "text/html").await.unwrap();
+        let (_, content_type) = p.get(url.rsplit('/').next().unwrap()).await.unwrap().unwrap();
+        assert_eq!(content_type, "image/png", "the type its bytes are, whatever the caller said");
+    }
+
+    #[tokio::test]
+    async fn a_reference_is_published_only_at_a_public_https_origin() {
+        let png = crate::providers::image::mock::MockProvider::placeholder_png();
+        for base in ["http://litegen.example.com", "https://100.64.0.7", "https://127.0.0.1", "https://localhost"] {
+            let dir = tempfile::tempdir().unwrap().keep();
+            let store: std::sync::Arc<dyn crate::proxy::storage::ImageStorage> =
+                std::sync::Arc::new(crate::proxy::storage::LocalModel3dStorage::new(dir, base.into()));
+            assert!(RefPublisher::new(store, base.into()).publish(&png, "image/png").await.is_err(), "{base}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_published_ref_expires_within_the_hour() {
         let p = publisher(REF_URL_TTL);
-        let url = p.publish(b"\x89PNGbytes", "image/png").await.unwrap();
+        let url = p.publish(&crate::providers::image::mock::MockProvider::placeholder_png(), "image/png").await.unwrap();
         let token = url.rsplit('/').next().unwrap();
         let expiry: i64 = token.split('-').next().unwrap().parse().unwrap();
         let now = chrono::Utc::now().timestamp();
@@ -144,8 +169,9 @@ mod tests {
             std::sync::Arc::new(crate::proxy::storage::LocalModel3dStorage::new(dir.clone(), "https://litegen.example.com".into()));
         let expired = RefPublisher::new(store.clone(), "https://litegen.example.com".into()).with_ttl(std::time::Duration::ZERO);
         let live = RefPublisher::new(store, "https://litegen.example.com".into());
-        expired.publish(b"old", "image/png").await.unwrap();
-        let keep = live.publish(b"new", "image/png").await.unwrap();
+        let png = crate::providers::image::mock::MockProvider::placeholder_png();
+        expired.publish(&png, "image/png").await.unwrap();
+        let keep = live.publish(&png, "image/png").await.unwrap();
         // Something else under the asset root is not a ref, and stays.
         std::fs::create_dir_all(dir.join("litegen/3d/x")).unwrap();
         std::fs::write(dir.join("litegen/3d/x/model.glb"), b"glTF").unwrap();
@@ -157,7 +183,7 @@ mod tests {
     #[tokio::test]
     async fn an_expired_or_unknown_token_is_not_served() {
         let p = publisher(std::time::Duration::ZERO);
-        let url = p.publish(b"bytes", "image/png").await.unwrap();
+        let url = p.publish(&crate::providers::image::mock::MockProvider::placeholder_png(), "image/png").await.unwrap();
         let token = url.rsplit('/').next().unwrap();
         assert!(p.get(token).await.unwrap().is_none(), "expired");
         let live = publisher(REF_URL_TTL);

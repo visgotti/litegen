@@ -128,7 +128,9 @@ models:
     #   Credits", US$0.200. One tier per listed length (1–10, 15, 20, 25 and
     #   30 s) and resolution (360p and 540p share theirs; litegen sends 540p
     #   when none is asked for); "For durations not listed, refer to the
-    #   current production pricing table" — those bill the 5 s price.
+    #   current production pricing table" — those bill the next listed tier
+    #   up (11–14 s the 15 s price, and so on), never less than a shorter
+    #   listed clip. A keyframe past 30 s is refused (`max_time_s`).
     pricing:
       base_cost_usd: 0.20
       variable_pricing:
@@ -174,6 +176,55 @@ models:
         - { when: { duration_seconds: 20, resolution: 1080p }, usd: 2.13333 }
         - { when: { duration_seconds: 25, resolution: 1080p }, usd: 2.66667 }
         - { when: { duration_seconds: 30, resolution: 1080p }, usd: 3.2 }
+        # Unlisted lengths: the next listed tier up.
+        - { when: { duration_seconds: 11 }, usd: 0.6 }
+        - { when: { duration_seconds: 12 }, usd: 0.6 }
+        - { when: { duration_seconds: 13 }, usd: 0.6 }
+        - { when: { duration_seconds: 14 }, usd: 0.6 }
+        - { when: { duration_seconds: 16 }, usd: 0.8 }
+        - { when: { duration_seconds: 17 }, usd: 0.8 }
+        - { when: { duration_seconds: 18 }, usd: 0.8 }
+        - { when: { duration_seconds: 19 }, usd: 0.8 }
+        - { when: { duration_seconds: 21 }, usd: 1.0 }
+        - { when: { duration_seconds: 22 }, usd: 1.0 }
+        - { when: { duration_seconds: 23 }, usd: 1.0 }
+        - { when: { duration_seconds: 24 }, usd: 1.0 }
+        - { when: { duration_seconds: 26 }, usd: 1.2 }
+        - { when: { duration_seconds: 27 }, usd: 1.2 }
+        - { when: { duration_seconds: 28 }, usd: 1.2 }
+        - { when: { duration_seconds: 29 }, usd: 1.2 }
+        - { when: { duration_seconds: 11, resolution: 720p }, usd: 0.8 }
+        - { when: { duration_seconds: 12, resolution: 720p }, usd: 0.8 }
+        - { when: { duration_seconds: 13, resolution: 720p }, usd: 0.8 }
+        - { when: { duration_seconds: 14, resolution: 720p }, usd: 0.8 }
+        - { when: { duration_seconds: 16, resolution: 720p }, usd: 1.06667 }
+        - { when: { duration_seconds: 17, resolution: 720p }, usd: 1.06667 }
+        - { when: { duration_seconds: 18, resolution: 720p }, usd: 1.06667 }
+        - { when: { duration_seconds: 19, resolution: 720p }, usd: 1.06667 }
+        - { when: { duration_seconds: 21, resolution: 720p }, usd: 1.33333 }
+        - { when: { duration_seconds: 22, resolution: 720p }, usd: 1.33333 }
+        - { when: { duration_seconds: 23, resolution: 720p }, usd: 1.33333 }
+        - { when: { duration_seconds: 24, resolution: 720p }, usd: 1.33333 }
+        - { when: { duration_seconds: 26, resolution: 720p }, usd: 1.6 }
+        - { when: { duration_seconds: 27, resolution: 720p }, usd: 1.6 }
+        - { when: { duration_seconds: 28, resolution: 720p }, usd: 1.6 }
+        - { when: { duration_seconds: 29, resolution: 720p }, usd: 1.6 }
+        - { when: { duration_seconds: 11, resolution: 1080p }, usd: 1.6 }
+        - { when: { duration_seconds: 12, resolution: 1080p }, usd: 1.6 }
+        - { when: { duration_seconds: 13, resolution: 1080p }, usd: 1.6 }
+        - { when: { duration_seconds: 14, resolution: 1080p }, usd: 1.6 }
+        - { when: { duration_seconds: 16, resolution: 1080p }, usd: 2.13333 }
+        - { when: { duration_seconds: 17, resolution: 1080p }, usd: 2.13333 }
+        - { when: { duration_seconds: 18, resolution: 1080p }, usd: 2.13333 }
+        - { when: { duration_seconds: 19, resolution: 1080p }, usd: 2.13333 }
+        - { when: { duration_seconds: 21, resolution: 1080p }, usd: 2.66667 }
+        - { when: { duration_seconds: 22, resolution: 1080p }, usd: 2.66667 }
+        - { when: { duration_seconds: 23, resolution: 1080p }, usd: 2.66667 }
+        - { when: { duration_seconds: 24, resolution: 1080p }, usd: 2.66667 }
+        - { when: { duration_seconds: 26, resolution: 1080p }, usd: 3.2 }
+        - { when: { duration_seconds: 27, resolution: 1080p }, usd: 3.2 }
+        - { when: { duration_seconds: 28, resolution: 1080p }, usd: 3.2 }
+        - { when: { duration_seconds: 29, resolution: 1080p }, usd: 3.2 }
     capabilities: { image_to_video: true }
     prompt: { required: true, max_length: 2048 }
     params:
@@ -188,7 +239,8 @@ models:
         field_map:
           keyframe: image
       roles:
-        keyframe: { required: true, min_count: 2, max_count: 31, timing: any, time_step_s: 1.0 }
+        # At most the 30 s of the longest priced tier.
+        keyframe: { required: true, min_count: 2, max_count: 31, timing: any, time_step_s: 1.0, max_time_s: 30.0 }
     # motion_mode fast doubles the price: it waits for variable pricing.
     extra_allowlist: []
     tags: [image-to-video, keyframes]

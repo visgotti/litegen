@@ -120,6 +120,8 @@ impl PriceRule {
             rate * facts.number(list)
         } else if let Some(k) = self.multiply {
             price * k
+        } else if let Some(anchor) = self.multiply_per_megapixel_above {
+            price * (facts.number("megapixels") / anchor).max(1.0)
         } else if let Some(usd) = self.add_usd {
             price + usd
         } else {
@@ -129,7 +131,7 @@ impl PriceRule {
 
     /// How many effects the rule names: exactly one is valid.
     pub fn effects(&self) -> usize {
-        [self.usd, self.per_second_usd, self.per_megapixel_usd, self.per_item_usd, self.multiply, self.add_usd]
+        [self.usd, self.per_second_usd, self.per_megapixel_usd, self.per_item_usd, self.multiply, self.multiply_per_megapixel_above, self.add_usd]
             .iter()
             .filter(|e| e.is_some())
             .count()
@@ -241,6 +243,21 @@ models:
         let m = row("      {}", "        - { when: { views: '*' }, add_usd: 0.15 }");
         let views = unit_price_usd(&m, &PriceFacts::new(&m, &base(Value::Null, json!([{ "type": "url", "value": "u", "role": "view-front" }])), &json!({})));
         assert!((views - 0.65).abs() < 1e-9, "{views}");
+    }
+
+    /// OpenAI bills a larger image by its output tokens, which grow with its
+    /// pixels: the price scales past the anchor size, never below it.
+    #[test]
+    fn a_megapixel_multiplier_scales_an_image_larger_than_its_anchor() {
+        let m = row_of(
+            "image",
+            "      size: { kind: size, mode: freeform, min_width: 16, max_width: 4096, min_height: 16, max_height: 4096 }",
+            "        - { multiply_per_megapixel_above: 1.048576 }",
+        );
+        let at = |size: &str| price(&m, json!({ "size": size }));
+        assert!((at("2048x2048") - 4.0 * at("1024x1024")).abs() < 1e-9, "{} vs {}", at("2048x2048"), at("1024x1024"));
+        assert!((at("512x512") - at("1024x1024")).abs() < 1e-9, "never below the anchor");
+        assert!((price(&m, json!({})) - at("1024x1024")).abs() < 1e-9, "no size is the anchor");
     }
 
     #[test]

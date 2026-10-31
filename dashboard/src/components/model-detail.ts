@@ -24,6 +24,9 @@ const CAP_LABELS: Record<string, string> = {
   supports_texture: 'Textures',
   supports_pbr: 'PBR materials',
   supports_rig: 'Auto-rigging',
+  supports_animation: 'Animation clips',
+  supports_skeleton: 'Skeleton choice',
+  supports_joint_naming: 'Joint naming',
   supports_source_model: 'Reads a source mesh',
   supports_keep_uvs: 'Keeps UVs',
   supports_placement: 'Placement',
@@ -36,6 +39,7 @@ const CAP_LABELS: Record<string, string> = {
   supports_region_edit: 'Region edit',
   supports_mask_prompt: 'Mask by prompt',
   supports_preserve_unmasked: 'Keep unmasked pixels',
+  supports_mask_grow: 'Mask growth',
   supports_expand: 'Expand canvas',
   supports_layout: 'Layout boxes',
   supports_segmentation: 'Segmentation',
@@ -179,6 +183,9 @@ export function refRoleRows(schema: ModelSchema | null | undefined): RefRoleRow[
 
 /** Placeholder input the curl example uses for a required reference image. */
 export const EXAMPLE_IMAGE_URL = 'https://example.com/input.png';
+/** What a copied segmentation call carries: the image itself, since
+ *  `/v1/images/segmentations` takes "base64, or a `data:` URI", not a URL. */
+export const EXAMPLE_IMAGE_BASE64 = '<base64 PNG, JPEG, WebP or GIF, or a data: URI>';
 
 /**
  * A request body that would pass this model's validation — what "Copy as curl"
@@ -194,7 +201,7 @@ export function exampleBody(model: ModelInfo, schema: ModelSchema | null | undef
     const prompt = kind === 'text' ? { type: 'text', text: 'the main object' }
       : kind === 'box' ? { type: 'box', x: 0, y: 0, w: 256, h: 256 }
         : { type: 'point', x: 256, y: 256 };
-    return { model: model.id, image: EXAMPLE_IMAGE_URL, prompts: [prompt] };
+    return { model: model.id, image: EXAMPLE_IMAGE_BASE64, prompts: [prompt] };
   }
   const body: Record<string, unknown> = { model: model.id };
   const usage = schema ? promptUsage(schema) : 'required';

@@ -182,21 +182,7 @@ impl VideoProvider for ByteDanceVideoProvider {
                 retryable: e.is_connect(),
             })?;
 
-        let status = resp.status();
-        let data: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse ByteDance response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
-        if !status.is_success() {
-            return Err(ProviderError::RequestFailed {
-                message: format!("ByteDance API error: {data}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(data),
-                retryable: status.as_u16() >= 500,
-            });
-        }
+        let data = crate::providers::read_vendor_json(resp, "ByteDance").await?;
 
         let id = data["id"].as_str().ok_or_else(|| ProviderError::RequestFailed {
             message: "ByteDance response missing task id".to_string(),
@@ -495,5 +481,21 @@ mod tests {
         p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
         let err = p.generate(&ref_schema("bytedance/doubao-seedance-1-0-pro-250528"), &make_base("x", "bytedance/doubao-seedance-1-0-pro-250528"), &make_extras(), &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() }).await.unwrap_err();
         assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+    }
+
+    /// W14: a gateway's 5xx page is not JSON and a 429 turned the call away;
+    /// both are judged by their status before any parse and may be sent again.
+    #[tokio::test]
+    async fn a_gateway_page_or_a_rate_limit_may_be_sent_again() {
+        for (status, body) in [(502, "<html>bad gateway</html>"), (429, "{\"code\":\"rate_limited\"}")] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(body)).mount(&server).await;
+            let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+            let err = make_provider(&server.uri())
+                .generate(&ref_schema("bytedance/doubao-seedance-1-0-pro-250528"), &make_base("x", "bytedance/doubao-seedance-1-0-pro-250528"), &make_extras(), &materialized)
+                .await
+                .unwrap_err();
+            assert!(err.is_retryable(), "{status}: {err:?}");
+        }
     }
 }

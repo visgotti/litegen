@@ -62,6 +62,9 @@ class ModelCapabilities:
             `box`, `text`. Empty when it
             does not segment.
         supported_sizes (Union[Unset, List[str]]):
+        supports_animation (Union[Unset, bool]): Takes `animations`: one clip per entry, whatever the task (3D doc
+            §3C) — a rig or generate model that returns clips in the same call
+            as well as an `animate` one.
         supports_audio_toggle (Union[Unset, bool]): Takes `audio: false` (or `true`) to leave audio out (or in).
         supports_background_removal (Union[Unset, bool]): Takes one `init` image and returns it as an RGBA PNG with its
             background removed (PixelGenie L8).
@@ -72,11 +75,14 @@ class ModelCapabilities:
         supports_image_to_3d (Union[Unset, bool]): Accepts one `init` reference image (image-to-3D).
         supports_image_to_video (Union[Unset, bool]):
         supports_inpainting (Union[Unset, bool]):
+        supports_joint_naming (Union[Unset, bool]): Takes `joint_naming` (3D doc §3B).
         supports_keep_uvs (Union[Unset, bool]): Takes `keep_uvs`.
         supports_keyframes (Union[Unset, bool]): Takes `keyframe` references, each pinned at its `time_s` (3D doc §5).
         supports_last_frame (Union[Unset, bool]):
         supports_layout (Union[Unset, bool]): Takes `layout` (3D doc §4).
         supports_loop (Union[Unset, bool]): Takes `loop: true`.
+        supports_mask_grow (Union[Unset, bool]): Takes `mask_grow_px`: litegen widens the mask or region of any model
+            taking one, or asks a vendor that grows its own (3D doc §4).
         supports_mask_prompt (Union[Unset, bool]): Takes `mask_prompt` (3D doc §4).
         supports_multiview_to_3d (Union[Unset, bool]): Accepts several `view-*` reference images (multiview-to-3D).
         supports_palette (Union[Unset, bool]): Takes `palette`, as a hint or forced.
@@ -89,6 +95,8 @@ class ModelCapabilities:
         supports_region_edit (Union[Unset, bool]): Takes `region` (3D doc §4).
         supports_rig (Union[Unset, bool]): Takes the `rig` param.
         supports_segmentation (Union[Unset, bool]): Serves `POST /v1/images/segmentations` (PixelGenie L7).
+        supports_skeleton (Union[Unset, bool]): Takes `skeleton`; `params.skeleton.enum_values` lists what it rigs
+            (3D doc §3B).
         supports_source_model (Union[Unset, bool]): Takes `source_model`: an operation on an existing mesh.
         supports_source_video (Union[Unset, bool]): Works on a `source_video` (3D doc §5).
         supports_text_to_3d (Union[Unset, bool]): Accepts a prompt with no reference images (text-to-3D).
@@ -132,6 +140,7 @@ class ModelCapabilities:
     region_input: Union[None, RegionInput, Unset] = UNSET
     segmentation_prompts: Union[Unset, List[SegmentationPromptType]] = UNSET
     supported_sizes: Union[Unset, List[str]] = UNSET
+    supports_animation: Union[Unset, bool] = UNSET
     supports_audio_toggle: Union[Unset, bool] = UNSET
     supports_background_removal: Union[Unset, bool] = UNSET
     supports_expand: Union[Unset, bool] = UNSET
@@ -141,11 +150,13 @@ class ModelCapabilities:
     supports_image_to_3d: Union[Unset, bool] = UNSET
     supports_image_to_video: Union[Unset, bool] = UNSET
     supports_inpainting: Union[Unset, bool] = UNSET
+    supports_joint_naming: Union[Unset, bool] = UNSET
     supports_keep_uvs: Union[Unset, bool] = UNSET
     supports_keyframes: Union[Unset, bool] = UNSET
     supports_last_frame: Union[Unset, bool] = UNSET
     supports_layout: Union[Unset, bool] = UNSET
     supports_loop: Union[Unset, bool] = UNSET
+    supports_mask_grow: Union[Unset, bool] = UNSET
     supports_mask_prompt: Union[Unset, bool] = UNSET
     supports_multiview_to_3d: Union[Unset, bool] = UNSET
     supports_palette: Union[Unset, bool] = UNSET
@@ -155,6 +166,7 @@ class ModelCapabilities:
     supports_region_edit: Union[Unset, bool] = UNSET
     supports_rig: Union[Unset, bool] = UNSET
     supports_segmentation: Union[Unset, bool] = UNSET
+    supports_skeleton: Union[Unset, bool] = UNSET
     supports_source_model: Union[Unset, bool] = UNSET
     supports_source_video: Union[Unset, bool] = UNSET
     supports_text_to_3d: Union[Unset, bool] = UNSET
@@ -277,6 +289,8 @@ class ModelCapabilities:
         if not isinstance(self.supported_sizes, Unset):
             supported_sizes = self.supported_sizes
 
+        supports_animation = self.supports_animation
+
         supports_audio_toggle = self.supports_audio_toggle
 
         supports_background_removal = self.supports_background_removal
@@ -295,6 +309,8 @@ class ModelCapabilities:
 
         supports_inpainting = self.supports_inpainting
 
+        supports_joint_naming = self.supports_joint_naming
+
         supports_keep_uvs = self.supports_keep_uvs
 
         supports_keyframes = self.supports_keyframes
@@ -304,6 +320,8 @@ class ModelCapabilities:
         supports_layout = self.supports_layout
 
         supports_loop = self.supports_loop
+
+        supports_mask_grow = self.supports_mask_grow
 
         supports_mask_prompt = self.supports_mask_prompt
 
@@ -322,6 +340,8 @@ class ModelCapabilities:
         supports_rig = self.supports_rig
 
         supports_segmentation = self.supports_segmentation
+
+        supports_skeleton = self.supports_skeleton
 
         supports_source_model = self.supports_source_model
 
@@ -391,6 +411,8 @@ class ModelCapabilities:
             field_dict["segmentation_prompts"] = segmentation_prompts
         if supported_sizes is not UNSET:
             field_dict["supported_sizes"] = supported_sizes
+        if supports_animation is not UNSET:
+            field_dict["supports_animation"] = supports_animation
         if supports_audio_toggle is not UNSET:
             field_dict["supports_audio_toggle"] = supports_audio_toggle
         if supports_background_removal is not UNSET:
@@ -409,6 +431,8 @@ class ModelCapabilities:
             field_dict["supports_image_to_video"] = supports_image_to_video
         if supports_inpainting is not UNSET:
             field_dict["supports_inpainting"] = supports_inpainting
+        if supports_joint_naming is not UNSET:
+            field_dict["supports_joint_naming"] = supports_joint_naming
         if supports_keep_uvs is not UNSET:
             field_dict["supports_keep_uvs"] = supports_keep_uvs
         if supports_keyframes is not UNSET:
@@ -419,6 +443,8 @@ class ModelCapabilities:
             field_dict["supports_layout"] = supports_layout
         if supports_loop is not UNSET:
             field_dict["supports_loop"] = supports_loop
+        if supports_mask_grow is not UNSET:
+            field_dict["supports_mask_grow"] = supports_mask_grow
         if supports_mask_prompt is not UNSET:
             field_dict["supports_mask_prompt"] = supports_mask_prompt
         if supports_multiview_to_3d is not UNSET:
@@ -437,6 +463,8 @@ class ModelCapabilities:
             field_dict["supports_rig"] = supports_rig
         if supports_segmentation is not UNSET:
             field_dict["supports_segmentation"] = supports_segmentation
+        if supports_skeleton is not UNSET:
+            field_dict["supports_skeleton"] = supports_skeleton
         if supports_source_model is not UNSET:
             field_dict["supports_source_model"] = supports_source_model
         if supports_source_video is not UNSET:
@@ -636,6 +664,8 @@ class ModelCapabilities:
 
         supported_sizes = cast(List[str], d.pop("supported_sizes", UNSET))
 
+        supports_animation = d.pop("supports_animation", UNSET)
+
         supports_audio_toggle = d.pop("supports_audio_toggle", UNSET)
 
         supports_background_removal = d.pop("supports_background_removal", UNSET)
@@ -654,6 +684,8 @@ class ModelCapabilities:
 
         supports_inpainting = d.pop("supports_inpainting", UNSET)
 
+        supports_joint_naming = d.pop("supports_joint_naming", UNSET)
+
         supports_keep_uvs = d.pop("supports_keep_uvs", UNSET)
 
         supports_keyframes = d.pop("supports_keyframes", UNSET)
@@ -663,6 +695,8 @@ class ModelCapabilities:
         supports_layout = d.pop("supports_layout", UNSET)
 
         supports_loop = d.pop("supports_loop", UNSET)
+
+        supports_mask_grow = d.pop("supports_mask_grow", UNSET)
 
         supports_mask_prompt = d.pop("supports_mask_prompt", UNSET)
 
@@ -681,6 +715,8 @@ class ModelCapabilities:
         supports_rig = d.pop("supports_rig", UNSET)
 
         supports_segmentation = d.pop("supports_segmentation", UNSET)
+
+        supports_skeleton = d.pop("supports_skeleton", UNSET)
 
         supports_source_model = d.pop("supports_source_model", UNSET)
 
@@ -729,6 +765,7 @@ class ModelCapabilities:
             region_input=region_input,
             segmentation_prompts=segmentation_prompts,
             supported_sizes=supported_sizes,
+            supports_animation=supports_animation,
             supports_audio_toggle=supports_audio_toggle,
             supports_background_removal=supports_background_removal,
             supports_expand=supports_expand,
@@ -738,11 +775,13 @@ class ModelCapabilities:
             supports_image_to_3d=supports_image_to_3d,
             supports_image_to_video=supports_image_to_video,
             supports_inpainting=supports_inpainting,
+            supports_joint_naming=supports_joint_naming,
             supports_keep_uvs=supports_keep_uvs,
             supports_keyframes=supports_keyframes,
             supports_last_frame=supports_last_frame,
             supports_layout=supports_layout,
             supports_loop=supports_loop,
+            supports_mask_grow=supports_mask_grow,
             supports_mask_prompt=supports_mask_prompt,
             supports_multiview_to_3d=supports_multiview_to_3d,
             supports_palette=supports_palette,
@@ -752,6 +791,7 @@ class ModelCapabilities:
             supports_region_edit=supports_region_edit,
             supports_rig=supports_rig,
             supports_segmentation=supports_segmentation,
+            supports_skeleton=supports_skeleton,
             supports_source_model=supports_source_model,
             supports_source_video=supports_source_video,
             supports_text_to_3d=supports_text_to_3d,

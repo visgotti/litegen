@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ModelInfo, ModelSchema } from '@litegen/sdk';
 import {
+  EXAMPLE_IMAGE_BASE64,
   EXAMPLE_IMAGE_URL,
   buildCurl,
   capabilityLabels,
@@ -189,6 +190,7 @@ const SERVED_FLAGS = [
   'supports_preserve_unmasked', 'supports_region_edit', 'supports_rig', 'supports_segmentation',
   'supports_source_model', 'supports_source_video', 'supports_text_to_3d', 'supports_text_to_image',
   'supports_text_to_video', 'supports_texture', 'supports_time_range', 'supports_transparent_background',
+  'supports_animation', 'supports_skeleton', 'supports_joint_naming', 'supports_mask_grow',
 ];
 
 describe('the catalog fields the drawer shows', () => {
@@ -229,7 +231,7 @@ describe('segmentation and operation models', () => {
   it('sends segmentation to its own endpoint, with an image and a prompt', () => {
     expect(generationEndpoint(segment)).toBe('/v1/images/segmentations');
     expect(exampleBody(segment, null)).toEqual({
-      model: 'mock/segment-image', image: EXAMPLE_IMAGE_URL, prompts: [{ type: 'point', x: 256, y: 256 }],
+      model: 'mock/segment-image', image: EXAMPLE_IMAGE_BASE64, prompts: [{ type: 'point', x: 256, y: 256 }],
     });
   });
 

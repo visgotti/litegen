@@ -1743,6 +1743,14 @@ export const MODELS: ModelEntry[] = [
         "kind": "source_model"
       },
       {
+        "name": "skeleton",
+        "kind": "string",
+        "enum": [
+          "humanoid"
+        ],
+        "default": "humanoid"
+      },
+      {
         "name": "height_m",
         "kind": "float",
         "default": 1.7
@@ -4972,6 +4980,10 @@ export const MODELS: ModelEntry[] = [
           "high"
         ],
         "default": "auto"
+      },
+      {
+        "name": "region",
+        "kind": "region"
       }
     ],
     "pricing": {
@@ -5054,6 +5066,10 @@ export const MODELS: ModelEntry[] = [
           "max"
         ],
         "default": "auto"
+      },
+      {
+        "name": "region",
+        "kind": "region"
       }
     ],
     "pricing": {
@@ -5137,6 +5153,10 @@ export const MODELS: ModelEntry[] = [
           "max"
         ],
         "default": "auto"
+      },
+      {
+        "name": "region",
+        "kind": "region"
       }
     ],
     "pricing": {
@@ -7565,6 +7585,10 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "region",
+        "kind": "region"
+      },
+      {
         "name": "negative_prompt",
         "kind": "string"
       },
@@ -7992,7 +8016,7 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "duration_seconds",
-        "kind": "float",
+        "kind": "int",
         "default": 4,
         "min": 4,
         "max": 8
@@ -8070,7 +8094,7 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "duration_seconds",
-        "kind": "float",
+        "kind": "int",
         "default": 5,
         "min": 5,
         "max": 5
@@ -8147,7 +8171,7 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "duration_seconds",
-        "kind": "float",
+        "kind": "int",
         "default": 5,
         "min": 1,
         "max": 10
@@ -8214,7 +8238,7 @@ export const MODELS: ModelEntry[] = [
     "params": [
       {
         "name": "duration_seconds",
-        "kind": "float",
+        "kind": "int",
         "default": 5,
         "min": 1,
         "max": 10
@@ -8291,7 +8315,7 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "duration_seconds",
-        "kind": "float",
+        "kind": "int",
         "default": 5,
         "min": 1,
         "max": 16
@@ -8376,7 +8400,7 @@ export const MODELS: ModelEntry[] = [
       },
       {
         "name": "duration_seconds",
-        "kind": "float",
+        "kind": "int",
         "default": 5,
         "min": 3,
         "max": 16

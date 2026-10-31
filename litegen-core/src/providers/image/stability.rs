@@ -747,6 +747,9 @@ impl Default for ModelCapabilities {
             supports_multiview_to_3d: false,
             supports_pbr: false,
             supports_rig: false,
+            supports_animation: false,
+            supports_skeleton: false,
+            supports_joint_naming: false,
             supports_texture: false,
             supports_source_model: false,
             output_formats: Vec::new(),
@@ -762,6 +765,7 @@ impl Default for ModelCapabilities {
             texture_resolutions: Vec::new(), supports_keep_uvs: false, supports_placement: false, supports_expand: false,
             supports_layout: false, layout_kinds: Vec::new(), supports_mask_prompt: false,
             supports_preserve_unmasked: false,
+            supports_mask_grow: false,
             supports_source_video: false, extend_output: None, supports_time_range: false,
             native_pixel_art: false, pixel_size: None, supports_palette: false, supports_forced_palette: false, directions: Vec::new(),
         }

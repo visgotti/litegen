@@ -451,15 +451,16 @@ impl ImageStorage for LocalModel3dStorage {
     }
 }
 
-/// Delete every file under `root` last modified more than `retention` before
-/// `now`, then every directory that leaves empty (never `root` itself).
-/// Returns how many files were deleted. Best-effort: an entry that cannot be
-/// read or removed is skipped, and the next sweep tries again.
+/// Delete every file litegen keeps under `root` — its own `litegen/` tree,
+/// never anything else in the directory — last modified more than
+/// `retention` before `now`, then every directory that leaves empty (never
+/// `root` itself). Returns how many files were deleted. Best-effort: an entry
+/// that cannot be read or removed is skipped, and the next sweep tries again.
 pub fn sweep_expired(root: &std::path::Path, retention: std::time::Duration, now: std::time::SystemTime) -> usize {
     let cutoff = now.checked_sub(retention).unwrap_or(std::time::UNIX_EPOCH);
     let mut removed = 0;
     // Explicit stacks: a directory walk must not recurse on attacker-shaped depth.
-    let mut dirs = vec![root.to_path_buf()];
+    let mut dirs = vec![root.join("litegen")];
     let mut visited = Vec::new();
     while let Some(dir) = dirs.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
@@ -485,6 +486,20 @@ pub fn sweep_expired(root: &std::path::Path, retention: std::time::Duration, now
         }
     }
     removed
+}
+
+/// Whether litegen can keep files under `dir`, the local backend's asset
+/// directory: it is created if missing, then written to and read back.
+pub fn check_local_dir_writable(dir: &std::path::Path) -> Result<(), String> {
+    let fail = |e: std::io::Error| {
+        format!("litegen cannot write its asset directory {} ({e}); make it writable by the user litegen runs as, or set image_storage.local_dir", dir.display())
+    };
+    std::fs::create_dir_all(dir).map_err(fail)?;
+    let probe = dir.join(format!(".litegen-write-check-{}", std::process::id()));
+    std::fs::write(&probe, b"ok").map_err(fail)?;
+    let read = std::fs::read(&probe).map_err(fail);
+    let _ = std::fs::remove_file(&probe);
+    read.map(|_| ())
 }
 
 /// Run [`sweep_expired`] over `root` every hour, off the async runtime.
@@ -677,6 +692,35 @@ mod model3d_storage_tests {
         assert!(!old.parent().unwrap().exists(), "and so does the directory it emptied");
         assert!(new.exists(), "a fresh file stays");
         assert!(dir.path().exists(), "the root itself is never removed");
+    }
+
+    /// The shipped image ran as a user who could not write its asset
+    /// directory, so every kept result failed at delivery, after the vendor
+    /// billed it. litegen now says so at startup instead.
+    #[cfg(unix)]
+    #[test]
+    fn an_asset_directory_litegen_cannot_write_is_named_at_startup() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        assert!(check_local_dir_writable(&dir.path().join("data/assets")).is_ok(), "created and writable");
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let err = check_local_dir_writable(&locked.join("assets")).unwrap_err();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(err.contains("assets"), "names the directory: {err}");
+    }
+
+    #[test]
+    fn the_sweeper_leaves_whatever_is_not_litegens_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let theirs = dir.path().join("backups/litegen.db");
+        std::fs::create_dir_all(theirs.parent().unwrap()).unwrap();
+        std::fs::write(&theirs, b"x").unwrap();
+        let now = std::time::SystemTime::now();
+        std::fs::File::options().write(true).open(&theirs).unwrap().set_modified(now - std::time::Duration::from_secs(30 * 86_400)).unwrap();
+        assert_eq!(sweep_expired(dir.path(), std::time::Duration::from_secs(7 * 86_400), now), 0);
+        assert!(theirs.exists(), "a file litegen did not write under its asset root stays");
     }
 
     #[test]

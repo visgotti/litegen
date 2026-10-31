@@ -6,6 +6,10 @@ services:
   litegen:
     image: ${LITEGEN_IMAGE:?LITEGEN_IMAGE must be set}
     restart: unless-stopped
+    # Kept results (meshes, videos, images, published references) outlive
+    # the container; litegen refuses to start if it cannot write here.
+    volumes:
+      - litegen_assets:/app/data
     ports:
       - "4000:4000"
     environment:
@@ -69,3 +73,4 @@ services:
 
 volumes:
   litegen_db:
+  litegen_assets:

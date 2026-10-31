@@ -83,3 +83,35 @@ async fn every_error_code_is_a_string() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "no openai configured: {body}");
     assert!(body["error"]["code"].is_string(), "{body}");
 }
+
+/// A verdict with no HTTP status is the vendor's last word, not an outage: a
+/// moderated BFL job says not to retry — the same request would be moderated
+/// again, and paid for again.
+#[tokio::test]
+async fn a_moderated_job_says_not_to_retry() {
+    let server = MockServer::start().await;
+    let polling_url = format!("{}/v1/get_result?id=bfl-mod", server.uri());
+    Mock::given(method("POST"))
+        .and(path("/v1/flux-dev"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "bfl-mod", "polling_url": polling_url })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/get_result"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "bfl-mod", "status": "Content Moderated" })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap().keep();
+    let uri = server.uri();
+    let (app, _db) = harness::app_with(&dir, move |cfg| {
+        cfg.providers.insert("bfl".into(), serde_json::from_value(json!({ "enabled": true, "api_key": "k", "api_base": uri })).unwrap());
+    })
+    .await;
+    let req = Request::post("/v1/images/generations")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({ "model": "bfl/flux-dev", "prompt": "a lighthouse" }).to_string()))
+        .unwrap();
+    let (status, body) = call(&app, req).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    assert_eq!(body["error"]["retryable"], json!(false), "{body}");
+}

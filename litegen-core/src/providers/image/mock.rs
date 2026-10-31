@@ -13,16 +13,18 @@ use super::visual_mock::generate_visual_image_png;
 /// The model that answers slower than any vendor timeout litegen waits for.
 const SLOW_MODEL: &str = "mock/slow-image";
 
-/// How long `mock/slow-image` takes: longer than any test's vendor timeout.
-const SLOW_MODEL_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long `mock/slow-image` takes: a day, longer than any vendor timeout
+/// litegen can be set to wait (L doc §6: it "times out on its first attempt").
+const SLOW_MODEL_DELAY: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
-static SLOW_IMAGE_CALLS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static SLOW_IMAGE_CALLS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-/// How many times `mock/slow-image` has been called in this process: one per
-/// vendor attempt, which is what PixelGenie L1 counts. A timed-out call is
-/// never re-sent, so each request that reaches it adds exactly one.
-pub fn slow_image_calls() -> u32 {
-    SLOW_IMAGE_CALLS.load(std::sync::atomic::Ordering::SeqCst)
+/// How many times `mock/slow-image` has been called with `prompt` in this
+/// process: one per vendor attempt, which is what PixelGenie L1 counts. A
+/// timed-out call is never re-sent, so each request that reaches it adds
+/// exactly one. By prompt, so tests running side by side count their own.
+pub fn slow_image_calls(prompt: &str) -> u32 {
+    SLOW_IMAGE_CALLS.lock().unwrap_or_else(|p| p.into_inner()).iter().filter(|p| *p == prompt).count() as u32
 }
 
 /// The edit mocks (3D doc §4): `mock/inpainting-image` takes a white-edits
@@ -456,7 +458,7 @@ impl ImageProvider for MockProvider {
         _materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         if model.id == SLOW_MODEL {
-            SLOW_IMAGE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            SLOW_IMAGE_CALLS.lock().unwrap_or_else(|p| p.into_inner()).push(base.prompt.clone());
             tokio::time::sleep(SLOW_MODEL_DELAY).await;
         }
         let mut metadata = HashMap::new();
@@ -632,6 +634,21 @@ mod tests {
             preserve_unmasked: None, feather_px: None,
             palette: None, directions: None,
         }
+    }
+
+    /// L doc §6: the slow mock "times out on its first attempt" whatever the
+    /// vendor timeout is set to, the 120 s default and the 600 s ceiling of a
+    /// route included — not only below a 30 s one.
+    #[tokio::test(start_paused = true)]
+    async fn the_slow_mock_outlasts_any_vendor_timeout() {
+        let schema = ref_schema(SLOW_MODEL);
+        let provider = MockProvider::new();
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(3600),
+            provider.generate(&schema, &make_base("x", SLOW_MODEL), &make_extras(), &empty_materialized()),
+        )
+        .await;
+        assert!(out.is_err(), "still answering after an hour");
     }
 
     #[tokio::test]

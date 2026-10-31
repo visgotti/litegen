@@ -176,10 +176,109 @@ pub fn no_redirect_download_client(timeout: std::time::Duration, idle: std::time
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+/// Why [`download_capped`] returned no body.
+#[derive(Debug)]
+pub enum CappedDownloadError {
+    /// The request could not be sent, or its body broke off.
+    Transport(String),
+    /// The host answered with this non-success status.
+    Status(reqwest::StatusCode),
+    /// The body is over `max` bytes: `bytes` is its declared length, or what
+    /// had arrived when litegen stopped reading.
+    TooLarge { bytes: u64, max: u64 },
+}
+
+/// Download `url` with `client` — one of the no-redirect clients above, after
+/// [`check_public_url`] passed — into memory, with its `Content-Type`, never
+/// holding more than `max` bytes: a declared length over it is refused before
+/// reading, and the body is streamed against it, so a missing or dishonest
+/// `Content-Length` cannot make litegen buffer whatever a host sends.
+pub async fn download_capped(client: &reqwest::Client, url: &str, max: u64) -> Result<(Vec<u8>, Option<String>), CappedDownloadError> {
+    let mut resp = client.get(url).send().await.map_err(|e| CappedDownloadError::Transport(e.without_url().to_string()))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(CappedDownloadError::Status(status));
+    }
+    if let Some(n) = resp.content_length().filter(|n| *n > max) {
+        return Err(CappedDownloadError::TooLarge { bytes: n, max });
+    }
+    let content_type = resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(str::to_string);
+    let mut bytes = Vec::with_capacity(resp.content_length().unwrap_or(0) as usize);
+    while let Some(chunk) = resp.chunk().await.map_err(|e| CappedDownloadError::Transport(e.without_url().to_string()))? {
+        let seen = (bytes.len() + chunk.len()) as u64;
+        if seen > max {
+            return Err(CappedDownloadError::TooLarge { bytes: seen, max });
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok((bytes, content_type))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// A host that answers with a chunked body (no `Content-Length`), sends
+    /// `total` bytes of it and then stalls without ending it.
+    async fn stalling_chunked_host(total: usize) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut req = [0u8; 4096];
+                    let _ = sock.read(&mut req).await;
+                    let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nTransfer-Encoding: chunked\r\n\r\n").await;
+                    let chunk = vec![7u8; 64 * 1024];
+                    for _ in 0..total / chunk.len() {
+                        if sock.write_all(format!("{:x}\r\n", chunk.len()).as_bytes()).await.is_err()
+                            || sock.write_all(&chunk).await.is_err()
+                            || sock.write_all(b"\r\n").await.is_err()
+                        {
+                            return;
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                });
+            }
+        });
+        format!("http://{addr}/clip.mp4")
+    }
+
+    #[tokio::test]
+    async fn a_body_past_the_cap_is_refused_while_it_streams() {
+        let url = stalling_chunked_host(4 * 1024 * 1024).await;
+        let client = no_redirect_download_client(std::time::Duration::from_secs(60), std::time::Duration::from_secs(30));
+        let got = tokio::time::timeout(std::time::Duration::from_secs(10), download_capped(&client, &url, 1024 * 1024))
+            .await
+            .expect("refused once the cap is passed, not after waiting for the whole body");
+        assert!(matches!(got, Err(CappedDownloadError::TooLarge { max: 1048576, .. })), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn a_download_reports_its_status_or_returns_the_body_and_its_type() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/gone")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+        Mock::given(method("GET")).and(path("/moved"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", "http://169.254.169.254/latest"))
+            .mount(&server).await;
+        Mock::given(method("GET")).and(path("/ok"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(vec![1u8; 10], "image/png"))
+            .mount(&server).await;
+        let client = no_redirect_download_client(std::time::Duration::from_secs(10), std::time::Duration::from_secs(5));
+        let got = download_capped(&client, &format!("{}/gone", server.uri()), 100).await;
+        assert!(matches!(got, Err(CappedDownloadError::Status(s)) if s == 404), "{got:?}");
+        let got = download_capped(&client, &format!("{}/moved", server.uri()), 100).await;
+        assert!(matches!(got, Err(CappedDownloadError::Status(s)) if s == 302), "a redirect is not followed: {got:?}");
+        let got = download_capped(&client, &format!("{}/ok", server.uri()), 9).await;
+        assert!(matches!(got, Err(CappedDownloadError::TooLarge { bytes: 10, max: 9 })), "{got:?}");
+        let (bytes, ct) = download_capped(&client, &format!("{}/ok", server.uri()), 10).await.unwrap();
+        assert_eq!((bytes, ct.as_deref()), (vec![1u8; 10], Some("image/png")));
+    }
 
     #[tokio::test]
     async fn a_lookup_failure_is_told_apart_from_a_refusal() {

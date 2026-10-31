@@ -55,6 +55,10 @@ pub struct IdeogramProvider {
     key_pool: Option<ApiKeyPool>,
     auth: AuthSpec,
     client: Client,
+    /// Fetches the result: no redirects, no key.
+    asset_client: Client,
+    /// Results only from public addresses; tests serve them from loopback.
+    pub(crate) public_assets_only: bool,
 }
 
 impl IdeogramProvider {
@@ -67,6 +71,11 @@ impl IdeogramProvider {
                 .timeout(std::time::Duration::from_secs(180))
                 .build()
                 .expect("failed to build HTTP client"),
+            asset_client: crate::util::ssrf::no_redirect_download_client(
+                std::time::Duration::from_secs(120),
+                std::time::Duration::from_secs(30),
+            ),
+            public_assets_only: true,
         }
     }
 
@@ -195,24 +204,10 @@ impl IdeogramProvider {
                 message: format!("Ideogram request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
+                // The generation is the call: one that timed out may have run.
+                retryable: crate::providers::may_resend_after(&e, true),
             })?;
-
-        let status = resp.status();
-        let data: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse Ideogram response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
-        if !status.is_success() {
-            return Err(ProviderError::RequestFailed {
-                message: format!("Ideogram API error: {data}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(data),
-                retryable: status.as_u16() >= 500,
-            });
-        }
+        let data = crate::providers::read_vendor_json(resp, "Ideogram").await?;
 
         let first = &data["data"][0];
         let image_url = match first["url"].as_str() {
@@ -232,7 +227,11 @@ impl IdeogramProvider {
             }
         };
 
-        let bytes = self.fetch_image_bytes(image_url).await?;
+        // Billed already: a result that will not download is a failure, never
+        // a reason for the router to generate again. A result on the
+        // configured API host is that host's own; any other must be public.
+        let own = crate::providers::model3d::fal::same_origin_url(self.api_base(), Some(image_url)).is_some();
+        let bytes = super::fetch_result(&self.asset_client, image_url, self.public_assets_only && !own, "ideogram image").await?;
         let mut metadata = HashMap::new();
         metadata.insert("url".to_string(), Value::String(image_url.to_string()));
         if let Some(seed) = first["seed"].as_i64() {
@@ -252,32 +251,6 @@ impl IdeogramProvider {
         ar.replace(':', "x")
     }
 
-    async fn fetch_image_bytes(&self, url: &str) -> Result<Vec<u8>, ProviderError> {
-        let resp = self.client.get(url).send().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to fetch Ideogram image: {e}"),
-            status_code: e.status().map(|s| s.as_u16()),
-            provider_error: None,
-            retryable: true,
-        })?;
-        if !resp.status().is_success() {
-            return Err(ProviderError::RequestFailed {
-                message: format!("Ideogram image URL returned HTTP {}", resp.status()),
-                status_code: Some(resp.status().as_u16()),
-                provider_error: None,
-                retryable: false,
-            });
-        }
-        Ok(resp
-            .bytes()
-            .await
-            .map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to read Ideogram image bytes: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
-            })?
-            .to_vec())
-    }
 }
 
 impl Default for IdeogramProvider {
@@ -491,6 +464,7 @@ mod tests {
         };
         cfg.credentials.api_key = Some("id-key".to_string());
         p.configure(cfg);
+        p.public_assets_only = false;
         p
     }
 
@@ -526,6 +500,45 @@ mod tests {
             layout: None, mask_prompt: None,
             preserve_unmasked: None, feather_px: None,
             palette: None, directions: None,
+        }
+    }
+
+    /// S6 I1: Ideogram bills the generation once it answers, so a result
+    /// that will not download is never asked for by a second generation.
+    #[tokio::test]
+    async fn a_result_that_will_not_download_is_never_generated_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/ideogram-v3/generate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": [{ "url": "http://127.0.0.1:1/gone.png", "seed": 1, "is_image_safe": true }]
+            })))
+            .mount(&server)
+            .await;
+        let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+        let err = make_provider(&server.uri())
+            .generate(&ref_schema("ideogram/ideogram-v3"), &make_base("x", "ideogram/ideogram-v3"), &make_extras(), &materialized)
+            .await
+            .unwrap_err();
+        assert!(!err.is_retryable(), "{err:?}");
+    }
+
+    /// A gateway's 5xx page and a 429 turned the call away, judged by their
+    /// status before any parse; a 400 is Ideogram's refusal.
+    #[tokio::test]
+    async fn a_gateway_page_or_a_rate_limit_may_be_sent_again() {
+        for (status, body, retryable) in [(503, "<html>bad gateway</html>", true), (429, "slow down", true), (400, "{\"error\":\"bad\"}", false)] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(body)).mount(&server).await;
+            let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+            let err = make_provider(&server.uri())
+                .generate(&ref_schema("ideogram/ideogram-v3"), &make_base("x", "ideogram/ideogram-v3"), &make_extras(), &materialized)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, ProviderError::RequestFailed { retryable: r, status_code: Some(s), .. } if *r == retryable && *s == status),
+                "{status}: {err:?}"
+            );
         }
     }
 

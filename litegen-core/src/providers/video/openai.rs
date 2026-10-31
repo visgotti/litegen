@@ -226,7 +226,7 @@ impl VideoProvider for OpenAiVideoProvider {
                 message: format!("Sora request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
+                retryable: crate::providers::may_resend_after(&e, true),
             })?;
 
         let status = resp.status();
@@ -333,7 +333,7 @@ impl VideoProvider for OpenAiVideoProvider {
                 message: format!("Failed to fetch Sora video content: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
+                retryable: crate::providers::may_resend_after(&e, false),
             })?;
             if !content_resp.status().is_success() {
                 return Err(ProviderError::RequestFailed {

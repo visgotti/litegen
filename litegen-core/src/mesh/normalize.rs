@@ -267,7 +267,8 @@ pub fn remove_root_motion(scene: &mut Scene, anim: usize) -> bool {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TranscodeReport {
     pub changed: bool,
-    /// Textures dropped because they could not be decoded (KTX2/Basis).
+    /// Textures dropped because they could not be decoded — a KTX2 (Basis)
+    /// one, or a WebP one that is broken — each named with its format.
     pub dropped: Vec<String>,
 }
 
@@ -339,20 +340,25 @@ pub fn transcode_textures(scene: &mut Scene) -> TranscodeReport {
                         img.format = ImageFormat::Png;
                         report.changed = true;
                     } else {
-                        dead_images.push(i);
+                        dead_images.push((i, "WebP"));
                     }
                 }
-                Err(_) => dead_images.push(i),
+                Err(_) => dead_images.push((i, "WebP")),
             },
-            ImageFormat::Ktx2 => dead_images.push(i),
+            ImageFormat::Ktx2 => dead_images.push((i, "KTX2")),
             ImageFormat::Png | ImageFormat::Jpeg => {}
         }
     }
     if dead_images.is_empty() {
         return report;
     }
-    let dead_textures: Vec<usize> =
-        scene.textures.iter().enumerate().filter(|(_, t)| dead_images.contains(&t.image)).map(|(i, _)| i).collect();
+    let dead_textures: Vec<usize> = scene
+        .textures
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| dead_images.iter().any(|(i, _)| *i == t.image))
+        .map(|(i, _)| i)
+        .collect();
     for m in &mut scene.materials {
         for slot in [
             &mut m.base_color_texture,
@@ -367,8 +373,8 @@ pub fn transcode_textures(scene: &mut Scene) -> TranscodeReport {
             }
         }
     }
-    for i in dead_images {
-        report.dropped.push(scene.images[i].name.clone().unwrap_or_else(|| format!("image {i}")));
+    for (i, format) in dead_images {
+        report.dropped.push(format!("{} ({format})", scene.images[i].name.clone().unwrap_or_else(|| format!("image {i}"))));
     }
     super::pose::prune_unused_textures(scene);
     report

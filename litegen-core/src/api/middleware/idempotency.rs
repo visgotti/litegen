@@ -191,10 +191,28 @@ pub async fn idempotency_middleware(State(state): State<Arc<AppState>>, req: Req
         Ok(IdempotencyBegin::Started) => {}
     }
 
-    let resp = next.run(Request::from_parts(parts, Body::from(bytes))).await;
+    // Run and record in a task of its own: a client that hangs up mid-call
+    // drops this future, not the request, so the vendor call still finishes
+    // and its outcome is stored — the client's retry replays it instead of
+    // waiting out a stale "in progress" record and running (and billing) again.
+    let run = tokio::spawn(async move {
+        let resp = next.run(Request::from_parts(parts, Body::from(bytes))).await;
+        settle(&state, &scope, &key, resp).await
+    });
+    match run.await {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::error!(error = %e, "an idempotent request's task failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "the request failed").into_response()
+        }
+    }
+}
 
+/// Record `resp` under its key — or free the key when no vendor was called —
+/// and hand it back.
+async fn settle(state: &AppState, scope: &str, key: &str, resp: Response) -> Response {
     if resp.extensions().get::<VendorAttempted>().is_none() {
-        if let Err(e) = state.db.idempotency_release(&scope, &key).await {
+        if let Err(e) = state.db.idempotency_release(scope, key).await {
             tracing::warn!(error = %e, "failed to release an unspent idempotency key");
         }
         return resp;
@@ -218,7 +236,7 @@ pub async fn idempotency_middleware(State(state): State<Arc<AppState>>, req: Req
             .collect(),
         body: rbytes.to_vec(),
     };
-    if let Err(e) = state.db.idempotency_complete(&scope, &key, &stored).await {
+    if let Err(e) = state.db.idempotency_complete(scope, key, &stored).await {
         // The vendor was called and this response is the only record of it;
         // answer it anyway. A retry with the key finds the run in progress
         // until it goes stale.

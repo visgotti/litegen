@@ -852,7 +852,7 @@ impl FalModel3dProvider {
             message: format!("fal 3d submit failed: {e}"),
             status_code: e.status().map(|s| s.as_u16()),
             provider_error: None,
-            retryable: e.is_timeout() || e.is_connect(),
+            retryable: crate::providers::may_resend_after(&e, true),
         })?;
         let retry_hint = needs_retry(resp.headers());
         let error_type = header(resp.headers(), "x-fal-error-type").map(str::to_string);

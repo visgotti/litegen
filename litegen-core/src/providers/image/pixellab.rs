@@ -136,7 +136,7 @@ impl ImageProvider for PixelLabProvider {
             message: format!("PixelLab request failed: {e}"),
             status_code: e.status().map(|s| s.as_u16()),
             provider_error: None,
-            retryable: e.is_timeout() || e.is_connect(),
+            retryable: crate::providers::may_resend_after(&e, true),
         })?;
         let status = resp.status();
         let answer: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {

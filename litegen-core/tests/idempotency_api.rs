@@ -107,7 +107,7 @@ async fn a_timed_out_vendor_call_is_never_resent() {
     let dir = tempfile::tempdir().unwrap();
     let (app, db) = harness::app_with(dir.path(), |c| c.server.vendor_timeout_secs = Some(1)).await;
     let body = json!({ "model": "mock/slow-image", "prompt": "a slow lighthouse" });
-    let before = litegen::providers::image::mock::slow_image_calls();
+    let before = litegen::providers::image::mock::slow_image_calls("a slow lighthouse");
 
     let first = {
         let app = app.clone();
@@ -123,11 +123,29 @@ async fn a_timed_out_vendor_call_is_never_resent() {
     let (s1, _, b1) = first.await.unwrap();
     assert_eq!(s1, StatusCode::GATEWAY_TIMEOUT, "{b1}");
     assert_eq!(b1["error"]["code"], "vendor_timeout", "{b1}");
-    assert_eq!(litegen::providers::image::mock::slow_image_calls() - before, 1, "one vendor call, never re-sent");
+    assert_eq!(litegen::providers::image::mock::slow_image_calls("a slow lighthouse") - before, 1, "one vendor call, never re-sent");
 
     let (s3, h3, b3) = post(&app, "/v1/images/generations", Some("pg-slow"), &body).await;
     assert_eq!(s3, StatusCode::GATEWAY_TIMEOUT, "{b3}");
     assert!(replayed(&h3), "the outcome is replayed, not re-run");
-    assert_eq!(litegen::providers::image::mock::slow_image_calls() - before, 1);
+    assert_eq!(litegen::providers::image::mock::slow_image_calls("a slow lighthouse") - before, 1);
     assert_eq!(request_logs(&db).await, 1);
+}
+
+/// A client that hangs up mid-call does not strand its key: the request runs
+/// to its end and its outcome is recorded, so the retry the client makes is
+/// a replay — never a 409 for minutes, then a second, billed run.
+#[tokio::test]
+async fn a_client_that_hangs_up_mid_call_gets_the_recorded_outcome_on_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, _db) = harness::app_with(dir.path(), |c| c.server.vendor_timeout_secs = Some(1)).await;
+    let body = json!({ "model": "mock/slow-image", "prompt": "a lighthouse, abandoned" });
+
+    let hung_up = tokio::time::timeout(std::time::Duration::from_millis(300), post(&app, "/v1/images/generations", Some("pg-hangup"), &body)).await;
+    assert!(hung_up.is_err(), "the client gave up before the vendor answered");
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+
+    let (s, h, b) = post(&app, "/v1/images/generations", Some("pg-hangup"), &body).await;
+    assert_eq!(s, StatusCode::GATEWAY_TIMEOUT, "{b}");
+    assert!(replayed(&h), "the abandoned run's outcome, replayed: {b}");
 }

@@ -72,6 +72,10 @@ async fn limits_contract(db: &dyn DatabaseStore) {
     assert!(!store.reserve_limits_spend(EntityType::Key, &uid("nope"), 1.0).await.unwrap(), "missing row");
     assert_eq!(store.charge_limits_spend(EntityType::Key, &key, -2.5).await.unwrap(), Some(7.5));
     assert_eq!(store.charge_limits_spend(EntityType::Key, &uid("nope"), 1.0).await.unwrap(), None);
+    // A refund for a job charged in an earlier window, after the reset, never
+    // leaves the new window below zero — credit the cap would then grant.
+    assert_eq!(store.charge_limits_spend(EntityType::Key, &key, -20.0).await.unwrap(), Some(0.0));
+    assert_eq!(store.charge_limits_spend(EntityType::Key, &key, 7.5).await.unwrap(), Some(7.5));
 
     // Soft alert is recorded once per window.
     let now = Utc::now();

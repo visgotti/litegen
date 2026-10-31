@@ -4,6 +4,15 @@
 mod tests {
     use std::sync::Arc;
 
+    #[tokio::test]
+    async fn an_internal_error_names_its_code_as_a_string() {
+        let resp = crate::api::middleware::internal_error_response("the key store is unreachable");
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "internal_error", "{v}");
+    }
+
     use axum::{
         body::Body,
         extract::Request,

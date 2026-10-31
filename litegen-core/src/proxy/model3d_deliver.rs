@@ -254,6 +254,7 @@ fn manifest(
         } else {
             None
         },
+        notes: Vec::new(),
     })
 }
 
@@ -400,25 +401,28 @@ pub fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
     }
     let transcode = normalize::transcode_textures(&mut scene);
     changed |= transcode.changed;
-    let mut failures: Vec<(String, String)> =
-        transcode.dropped.into_iter().map(|t| ("texture".to_string(), format!("{t} could not be decoded and was left out (KTX2)"))).collect();
-    failures.extend(naming_note.map(|n| ("joint_naming".to_string(), n)));
+    // What delivery could not do, named on every mesh it delivers (and logged).
+    let mut notes: Vec<String> =
+        transcode.dropped.into_iter().map(|t| format!("texture {t} could not be decoded and was left out")).collect();
+    notes.extend(naming_note);
+    let mut failures: Vec<(String, String)> = notes.iter().map(|n| ("delivery".to_string(), n.clone())).collect();
 
     // ── Deliver ──
-    let mut out: Vec<Model3dFile> = Vec::new();
-    if !changed {
-        let (files, report) = crate::proxy::model3d_convert::synthesize_missing_formats(vendor_meshes, &requested);
-        failures.extend(report.failures);
-        out.extend(files);
-    } else {
-        for fmt in &requested {
-            let Some(target) = MeshFormat::parse(fmt) else {
-                failures.push((fmt.clone(), "not a container litegen writes".into()));
-                continue;
-            };
-            match crate::mesh::write_scene(&scene, target, WriteOptions::default()) {
-                Ok(w) => match w.package.files.into_iter().next() {
-                    Some(file) => out.push(Model3dFile {
+    // A container written from the scene, with what it could not hold.
+    let mut losses: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut write = |fmt: &str, failures: &mut Vec<(String, String)>| -> Option<Model3dFile> {
+        let Some(target) = MeshFormat::parse(fmt) else {
+            failures.push((fmt.to_string(), "not a container litegen writes".into()));
+            return None;
+        };
+        match crate::mesh::write_scene(&scene, target, WriteOptions::default()) {
+            Ok(w) => {
+                losses.insert(
+                    target.as_str().to_string(),
+                    w.losses.iter().map(|l| format!("{}: {} ({})", l.kind, l.what, l.why)).collect(),
+                );
+                match w.package.files.into_iter().next() {
+                    Some(file) => Some(Model3dFile {
                         kind: Model3dAssetKind::Mesh,
                         format: target.as_str().to_string(),
                         content_type: crate::proxy::storage::model3d_content_type(target.as_str(), "application/octet-stream").to_string(),
@@ -428,10 +432,30 @@ pub fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
                         height: None,
                         manifest: None,
                     }),
-                    None => failures.push((fmt.clone(), "the writer produced no file".into())),
-                },
-                Err(e) => failures.push((fmt.clone(), e.to_string())),
+                    None => {
+                        failures.push((fmt.to_string(), "the writer produced no file".into()));
+                        None
+                    }
+                }
             }
+            Err(e) => {
+                failures.push((fmt.to_string(), e.to_string()));
+                None
+            }
+        }
+    };
+    let mut out: Vec<Model3dFile> = Vec::new();
+    if !changed {
+        // The vendor's files as they came; a promised container it did not
+        // send is written from the scene read from them.
+        let have: Vec<String> = vendor_meshes.iter().map(|m| m.format.to_ascii_lowercase()).collect();
+        for fmt in crate::types::missing_model3d_formats(&requested, &have) {
+            out.extend(write(&fmt, &mut failures));
+        }
+        out.splice(0..0, vendor_meshes);
+    } else {
+        for fmt in &requested {
+            out.extend(write(fmt, &mut failures));
         }
         for mut m in vendor_meshes {
             m.kind = Model3dAssetKind::Original;
@@ -439,7 +463,11 @@ pub fn deliver(files: Vec<Model3dFile>, plan: &DeliveryPlan) -> Delivered {
         }
     }
     for f in out.iter_mut().filter(|f| f.kind == Model3dAssetKind::Mesh) {
-        f.manifest = manifest(&f.bytes, &f.format.to_ascii_lowercase(), plan, oriented_by, &litegen_in_place);
+        let format = f.format.to_ascii_lowercase();
+        f.manifest = manifest(&f.bytes, &format, plan, oriented_by, &litegen_in_place).map(|mut m| {
+            m.notes = notes.iter().cloned().chain(losses.get(&format).cloned().unwrap_or_default()).collect();
+            m
+        });
     }
     out.extend(others);
     Delivered { files: out, fatal: None, failures }
@@ -630,6 +658,50 @@ mod tests {
         let file = animated(&[("Armature|walk", &[0.0, 1.0])]);
         let m = manifest(&file, "glb", &clip_plan(&["walk"]), "vendor", &[]).unwrap();
         assert_eq!(m.animations[0].name, "Armature|walk");
+    }
+
+    /// 3D doc §3C: clips are keyed at the requested `fps` — litegen's own
+    /// resampling when the vendor keyed them at another rate, the only way
+    /// fps is honoured for a vendor without the setting.
+    #[test]
+    fn clips_a_vendor_keyed_at_another_rate_are_delivered_at_the_requested_fps() {
+        let plan = DeliveryPlan { fps: Some(4), ..clip_plan(&["walk"]) };
+        let d = deliver(vec![mesh("glb", animated(&[("walk", &[0.0, 0.5, 1.0])]))], &plan);
+        assert!(d.fatal.is_none(), "{:?}", d.fatal);
+        let glb = d.files.iter().find(|f| f.kind == Model3dAssetKind::Mesh && f.format == "glb").expect("a delivered glb");
+        let scene = crate::mesh::read_scene(&glb.bytes, MeshFormat::Glb, &crate::mesh::package::NoSidecars).unwrap().scene;
+        assert_eq!(scene.animations[0].channels[0].times, vec![0.0, 0.25, 0.5, 0.75, 1.0]);
+    }
+
+    /// 3D doc §3B, §3C: what delivery could not do reaches the caller on the
+    /// asset — a naming the rig cannot take, a texture left out (named by
+    /// what it was), and what a derived container lost — not only the log.
+    #[test]
+    fn what_delivery_could_not_do_is_named_on_the_asset() {
+        // A joint naming litegen cannot read this rig in.
+        let mut s = crate::providers::model3d::humanoid::rigged_humanoid(&crate::providers::model3d::humanoid::MOCK_JOINTS);
+        for n in &mut s.nodes {
+            n.name = n.name.as_ref().map(|_| "bone".to_string());
+        }
+        let renamed = crate::mesh::glb::write_scene(&s).unwrap();
+        let naming = DeliveryPlan { joint_naming: Some("unity".into()), ..plan(&["glb"], Some(("+y", "+z"))) };
+        let d = deliver(vec![mesh("glb", renamed)], &naming);
+        let notes = &d.files.iter().find(|f| f.kind == Model3dAssetKind::Mesh).unwrap().manifest.as_ref().unwrap().notes;
+        assert!(notes.iter().any(|n| n.contains("unity")), "{notes:?}");
+
+        // A WebP texture that will not decode is named as WebP, not KTX2.
+        let mut scene = crate::mesh::fixtures::textured();
+        scene.images[0].format = crate::mesh::scene::ImageFormat::Webp;
+        scene.images[0].data = b"RIFF\x10\x00\x00\x00WEBPVP8 broken".to_vec();
+        let d = deliver(vec![mesh("glb", crate::mesh::glb::write_scene(&scene).unwrap())], &plan(&["glb"], Some(("+y", "+z"))));
+        let notes = &d.files.iter().find(|f| f.kind == Model3dAssetKind::Mesh).unwrap().manifest.as_ref().unwrap().notes;
+        assert!(notes.iter().any(|n| n.contains("WebP") && !n.contains("KTX2")), "{notes:?}");
+
+        // Two clips, delivered as USDZ too: what that container cannot hold is named on it.
+        let two = animated(&[("walk", &[0.0, 1.0]), ("run", &[0.0, 0.5])]);
+        let d = deliver(vec![mesh("glb", two)], &DeliveryPlan { requested_formats: vec!["glb".into(), "usdz".into()], ..clip_plan(&["walk", "run"]) });
+        let usdz = d.files.iter().find(|f| f.kind == Model3dAssetKind::Mesh && f.format == "usdz").expect("a usdz");
+        assert!(!usdz.manifest.as_ref().map(|m| m.notes.clone()).unwrap_or_default().is_empty(), "the clip USDZ cannot keep is named");
     }
 
     #[test]

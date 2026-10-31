@@ -99,7 +99,9 @@ impl CapabilityRegistry {
         use sha2::Digest;
         let mut served = self.served();
         served.sort_by(|a, b| a.id.cmp(&b.id));
-        let bytes = serde_json::to_vec(&served).unwrap_or_default();
+        // Over a key-sorted form: several fields are hash maps, whose order
+        // differs between processes, and so between replicas.
+        let bytes = serde_json::to_vec(&canonical(serde_json::to_value(&served).unwrap_or_default())).unwrap_or_default();
         let digest = sha2::Sha256::digest(&bytes);
         digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
     }
@@ -152,6 +154,19 @@ impl CapabilityRegistry {
 
     pub fn is_disabled(&self, id: &str) -> bool {
         self.disabled.read().unwrap_or_else(|p| p.into_inner()).contains(id)
+    }
+}
+
+/// `v` with every object's keys in order, at every depth.
+fn canonical(v: serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            serde_json::Value::Object(entries.into_iter().map(|(k, v)| (k, canonical(v))).collect())
+        }
+        serde_json::Value::Array(items) => serde_json::Value::Array(items.into_iter().map(canonical).collect()),
+        other => other,
     }
 }
 
@@ -253,5 +268,14 @@ models:
         let a = registry("2999-12-31").catalog_version();
         assert_eq!(a, registry("2999-12-31").catalog_version());
         assert_ne!(a, registry("2999-12-30").catalog_version());
+    }
+
+    /// Two processes or replicas serving one catalog report one version: the
+    /// fingerprint cannot follow a map's per-instance iteration order.
+    #[test]
+    fn the_catalog_version_is_a_function_of_the_catalog_alone() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../models");
+        let versions: Vec<String> = (0..4).map(|_| CapabilityRegistry::from_dir(&dir).unwrap().catalog_version()).collect();
+        assert!(versions.windows(2).all(|w| w[0] == w[1]), "{versions:?}");
     }
 }

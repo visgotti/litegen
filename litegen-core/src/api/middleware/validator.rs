@@ -404,6 +404,9 @@ pub fn validate_video(
                         Some("duration_seconds"),
                     ));
                 }
+                // The vendor makes whole seconds: the price, and every
+                // adapter, see the length it makes (C5).
+                req.duration_seconds = Some(v as f64);
             }
             _ => {} // no spec → accept default; provider may further constrain
         }
@@ -1701,6 +1704,9 @@ fn check_keyframes(schema: &ModelSchema, req: &mut VideoGenerationRequest) -> Re
                 Some(d) => format!("keyframe time {t} s is outside the {d} s clip"),
                 None => format!("keyframe time {t} s is negative"),
             }));
+        }
+        if let Some(max) = spec.max_time_s.filter(|max| duration.is_none() && t > max + EPS) {
+            return Err(out_of_range(format!("keyframe time {t} s is past the {max} s '{}' makes at most", schema.id)));
         }
         if let Some(step) = spec.time_step_s {
             if ((t / step).round() * step - t).abs() > EPS {

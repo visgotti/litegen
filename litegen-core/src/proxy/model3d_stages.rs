@@ -33,7 +33,7 @@ pub const STAGE_START_GRACE: chrono::Duration = chrono::Duration::minutes(10);
 /// failed or a claim was interrupted. `handle` carries any new stage context.
 pub async fn advance(
     db: &Arc<dyn DatabaseStore>,
-    provider: &dyn Model3dProvider,
+    provider: &Arc<dyn Model3dProvider>,
     gen_id: &str,
     handle: &mut Model3dGenerationHandle,
     poll: &mut Model3dGenerationPollResult,
@@ -52,23 +52,42 @@ pub async fn advance(
     poll.status = GenerationStatus::Processing;
     poll.files.clear();
 
-    match db.claim_generation_stage(gen_id, &stage, claimant).await {
-        Ok(true) => match provider.start_stage(handle, &stage).await {
-            Ok(mut ctx) => {
-                // The convention every observer reads back: the context names
-                // the stage it belongs to.
-                if ctx.is_object() {
-                    ctx["stage"] = serde_json::Value::String(stage.clone());
-                }
-                persist_stage_context(db, gen_id, &ctx).await;
-                handle.stage_context = Some(ctx);
+    // The claim, the billed start and its record run as one task of their
+    // own: an observer dropped mid-way — a client's GET that hung up — must
+    // not leave the stage claimed and started at the vendor but never
+    // recorded, which fails the generation as interrupted after the vendor
+    // billed the stage. Awaited, so this observer still reports it.
+    let claimed = {
+        let (db, provider, gen_id, stage, claimant, handle) =
+            (db.clone(), provider.clone(), gen_id.to_string(), stage.clone(), claimant.to_string(), handle.clone());
+        tokio::spawn(async move {
+            match db.claim_generation_stage(&gen_id, &stage, &claimant).await {
+                Ok(true) => Ok(Some(match provider.start_stage(&handle, &stage).await {
+                    Ok(mut ctx) => {
+                        // The convention every observer reads back: the
+                        // context names the stage it belongs to.
+                        if ctx.is_object() {
+                            ctx["stage"] = serde_json::Value::String(stage.clone());
+                        }
+                        persist_stage_context(&db, &gen_id, &ctx).await;
+                        Ok(ctx)
+                    }
+                    Err(e) => Err(e.to_string()),
+                })),
+                Ok(false) => Ok(None),
+                Err(e) => Err(e.to_string()),
             }
-            Err(e) => {
-                poll.status = GenerationStatus::Failed;
-                poll.error = Some(format!("could not start the {stage} stage: {e}"));
-            }
-        },
-        Ok(false) => match held_claim(db, gen_id, &stage).await {
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("the stage task failed: {e}")))
+    };
+    match claimed {
+        Ok(Some(Ok(ctx))) => handle.stage_context = Some(ctx),
+        Ok(Some(Err(e))) => {
+            poll.status = GenerationStatus::Failed;
+            poll.error = Some(format!("could not start the {stage} stage: {e}"));
+        }
+        Ok(None) => match held_claim(db, gen_id, &stage).await {
             // The other observer started it: poll the stage it recorded.
             HeldClaim::Started(ctx) => handle.stage_context = Some(ctx),
             HeldClaim::Interrupted(at) => {

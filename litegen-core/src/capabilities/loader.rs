@@ -391,10 +391,17 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         if rule.per_second_usd.is_some() && m.media_type != MediaType::Video {
             return Err(bad(format!("model '{}' pricing rule: per_second_usd is for video models", m.id)));
         }
-        if rule.per_megapixel_usd.is_some() && m.media_type != MediaType::Image {
-            return Err(bad(format!("model '{}' pricing rule: per_megapixel_usd is for image models", m.id)));
+        if m.media_type != MediaType::Image {
+            if let Some(field) = [("per_megapixel_usd", rule.per_megapixel_usd), ("multiply_per_megapixel_above", rule.multiply_per_megapixel_above)]
+                .into_iter()
+                .find_map(|(name, v)| v.map(|_| name))
+            {
+                return Err(bad(format!("model '{}' pricing rule: {field} is for image models", m.id)));
+            }
         }
-        if [rule.usd, rule.per_second_usd, rule.per_megapixel_usd, rule.per_item_usd, rule.multiply].iter().flatten().any(|v| *v < 0.0) {
+        if [rule.usd, rule.per_second_usd, rule.per_megapixel_usd, rule.per_item_usd, rule.multiply].iter().flatten().any(|v| *v < 0.0)
+            || rule.multiply_per_megapixel_above.is_some_and(|v| v <= 0.0)
+        {
             return Err(bad(format!("model '{}' pricing rule has a negative price or factor", m.id)));
         }
         for fact in rule.when.keys() {

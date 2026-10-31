@@ -827,6 +827,89 @@ pub enum CancelOutcome {
 
 // ─── Shared Helpers ─────────────────────────────────────────────────────────
 
+/// Whether a request that failed in transit may be sent again (PixelGenie
+/// L1). One that never connected reached nobody. Once sent, a `billed` call —
+/// a submit, or a generation answered in one call — may have been accepted
+/// and charged whatever the client saw, so its timeout is final; a read (a
+/// poll, a result download) may always be asked again.
+pub fn may_resend_after(e: &reqwest::Error, billed: bool) -> bool {
+    e.is_connect() || (!billed && e.is_timeout())
+}
+
+/// A vendor's JSON answer, judged by its status before its body (PixelGenie
+/// L15): a 5xx — often a gateway's page that is not JSON —, a 408 or a 429
+/// turned the call away and may be sent again; any other error status is the
+/// vendor's own refusal, its body kept as `provider_error` when it is JSON.
+pub(crate) async fn read_vendor_json(resp: reqwest::Response, vendor: &str) -> Result<serde_json::Value, ProviderError> {
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| ProviderError::RequestFailed {
+        message: format!("{vendor}'s answer could not be read: {e}"),
+        status_code: Some(status.as_u16()),
+        provider_error: None,
+        retryable: false,
+    })?;
+    let body = serde_json::from_str::<serde_json::Value>(&text).ok();
+    if !status.is_success() {
+        let shown = body.as_ref().map(|b| b.to_string()).unwrap_or_else(|| text.chars().take(200).collect());
+        return Err(ProviderError::RequestFailed {
+            message: format!("{vendor} answered HTTP {}: {shown}", status.as_u16()),
+            status_code: Some(status.as_u16()),
+            provider_error: body,
+            retryable: status.is_server_error() || matches!(status.as_u16(), 408 | 429),
+        });
+    }
+    body.ok_or_else(|| ProviderError::RequestFailed {
+        message: format!("{vendor} answered HTTP {} with a body that is not JSON", status.as_u16()),
+        status_code: Some(status.as_u16()),
+        provider_error: None,
+        retryable: false,
+    })
+}
+
+#[cfg(test)]
+mod resend_tests {
+    use super::may_resend_after;
+
+    #[tokio::test]
+    async fn a_timed_out_billed_call_is_never_sent_again_but_a_read_may_be() {
+        use wiremock::{matchers::any, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(any()).respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(5))).mount(&server).await;
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let timed_out = client.get(server.uri()).send().await.unwrap_err();
+        assert!(timed_out.is_timeout(), "{timed_out}");
+        assert!(!may_resend_after(&timed_out, true), "a submit that timed out may have been accepted and billed");
+        assert!(may_resend_after(&timed_out, false), "a poll or a download is asked again");
+        let refused = client.get("http://127.0.0.1:1/").send().await.unwrap_err();
+        assert!(refused.is_connect(), "{refused}");
+        assert!(may_resend_after(&refused, true), "a call that never connected reached nobody");
+    }
+
+    /// Every adapter takes the rule above rather than its own: an inline
+    /// `is_timeout()` resend re-bills a job the vendor accepted.
+    #[test]
+    fn no_adapter_decides_for_itself_that_a_timed_out_call_may_be_sent_again() {
+        fn walk(dir: &std::path::Path, found: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, found);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    for (n, line) in text.lines().enumerate() {
+                        if line.contains(concat!("retry", "able:")) && line.contains(concat!("is_time", "out()")) {
+                            found.push(format!("{}:{}", path.display(), n + 1));
+                        }
+                    }
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/providers"), &mut found);
+        assert!(found.is_empty(), "use may_resend_after: {found:#?}");
+    }
+}
+
 /// Apply a configurable markup percentage to a base cost.
 pub fn apply_markup(base_cost_usd: f64, markup_percent: f64) -> (f64, f64) {
     let markup = base_cost_usd * (markup_percent / 100.0);

@@ -17,6 +17,8 @@ class RefRoleSpec:
         max_count (int):
         min_count (int):
         convention (Union[MaskConvention, None, Unset]):
+        max_time_s (Union[None, Unset, float]): The latest a `keyframe` may sit, for a model with no duration param
+            to bound its clip: the longest clip it makes or prices.
         native_grow (Union[Unset, bool]): The mask role's vendor grows masks itself (Stability's `grow_mask`):
             `mask_grow_px` goes to it, explicitly, instead of litegen dilating.
         required (Union[Unset, bool]):
@@ -28,6 +30,7 @@ class RefRoleSpec:
     max_count: int
     min_count: int
     convention: Union[MaskConvention, None, Unset] = UNSET
+    max_time_s: Union[None, Unset, float] = UNSET
     native_grow: Union[Unset, bool] = UNSET
     required: Union[Unset, bool] = UNSET
     time_step_s: Union[None, Unset, float] = UNSET
@@ -46,6 +49,12 @@ class RefRoleSpec:
             convention = self.convention.value
         else:
             convention = self.convention
+
+        max_time_s: Union[None, Unset, float]
+        if isinstance(self.max_time_s, Unset):
+            max_time_s = UNSET
+        else:
+            max_time_s = self.max_time_s
 
         native_grow = self.native_grow
 
@@ -75,6 +84,8 @@ class RefRoleSpec:
         )
         if convention is not UNSET:
             field_dict["convention"] = convention
+        if max_time_s is not UNSET:
+            field_dict["max_time_s"] = max_time_s
         if native_grow is not UNSET:
             field_dict["native_grow"] = native_grow
         if required is not UNSET:
@@ -110,6 +121,15 @@ class RefRoleSpec:
 
         convention = _parse_convention(d.pop("convention", UNSET))
 
+        def _parse_max_time_s(data: object) -> Union[None, Unset, float]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, float], data)
+
+        max_time_s = _parse_max_time_s(d.pop("max_time_s", UNSET))
+
         native_grow = d.pop("native_grow", UNSET)
 
         required = d.pop("required", UNSET)
@@ -144,6 +164,7 @@ class RefRoleSpec:
             max_count=max_count,
             min_count=min_count,
             convention=convention,
+            max_time_s=max_time_s,
             native_grow=native_grow,
             required=required,
             time_step_s=time_step_s,

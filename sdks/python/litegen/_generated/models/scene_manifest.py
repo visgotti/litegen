@@ -36,6 +36,9 @@ class SceneManifest:
             vertex_colors (bool):
             vertex_count (int):
             bounds (Union['SceneBounds', None, Unset]):
+            notes (Union[Unset, List[str]]): What delivery could not keep or do for this file: a texture litegen
+                could not decode, a joint naming the rig could not take, what this
+                container cannot hold of the scene. Empty when nothing was lost.
             parts (Union[List['ScenePart'], None, Unset]): A `segment` model's parts: one glTF node each, named with the
                 vendor's label or `part_<n>`. Absent on every other model's mesh.
             skin (Union['SceneSkin', None, Unset]):
@@ -53,6 +56,7 @@ class SceneManifest:
     vertex_colors: bool
     vertex_count: int
     bounds: Union["SceneBounds", None, Unset] = UNSET
+    notes: Union[Unset, List[str]] = UNSET
     parts: Union[List["ScenePart"], None, Unset] = UNSET
     skin: Union["SceneSkin", None, Unset] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -97,6 +101,10 @@ class SceneManifest:
         else:
             bounds = self.bounds
 
+        notes: Union[Unset, List[str]] = UNSET
+        if not isinstance(self.notes, Unset):
+            notes = self.notes
+
         parts: Union[List[Dict[str, Any]], None, Unset]
         if isinstance(self.parts, Unset):
             parts = UNSET
@@ -136,6 +144,8 @@ class SceneManifest:
         )
         if bounds is not UNSET:
             field_dict["bounds"] = bounds
+        if notes is not UNSET:
+            field_dict["notes"] = notes
         if parts is not UNSET:
             field_dict["parts"] = parts
         if skin is not UNSET:
@@ -201,6 +211,8 @@ class SceneManifest:
 
         bounds = _parse_bounds(d.pop("bounds", UNSET))
 
+        notes = cast(List[str], d.pop("notes", UNSET))
+
         def _parse_parts(data: object) -> Union[List["ScenePart"], None, Unset]:
             if data is None:
                 return data
@@ -253,6 +265,7 @@ class SceneManifest:
             vertex_colors=vertex_colors,
             vertex_count=vertex_count,
             bounds=bounds,
+            notes=notes,
             parts=parts,
             skin=skin,
         )

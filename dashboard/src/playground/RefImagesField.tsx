@@ -127,13 +127,17 @@ export default function RefImagesField({ roles, refs, maxTotal, totalSelected, o
             )}
             {canAdd && (
               <div className="pg-ref-add">
-                <input type="url" className="input" placeholder="https://… image URL" data-testid={`${tid}-url`}
-                  aria-label={`${roleLabel(r.role)} URL`}
-                  value={drafts[r.role] ?? ''}
-                  onChange={e => setDrafts(prev => ({ ...prev, [r.role]: e.target.value }))}
-                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addUrl(r.role); } }} />
-                <button type="button" className="btn btn-secondary" data-testid={`${tid}-add-url`}
-                  disabled={!(drafts[r.role] ?? '').trim()} onClick={() => addUrl(r.role)}>Add</button>
+                {!r.uploadOnly && (
+                  <>
+                    <input type="url" className="input" placeholder="https://… image URL" data-testid={`${tid}-url`}
+                      aria-label={`${roleLabel(r.role)} URL`}
+                      value={drafts[r.role] ?? ''}
+                      onChange={e => setDrafts(prev => ({ ...prev, [r.role]: e.target.value }))}
+                      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addUrl(r.role); } }} />
+                    <button type="button" className="btn btn-secondary" data-testid={`${tid}-add-url`}
+                      disabled={!(drafts[r.role] ?? '').trim()} onClick={() => addUrl(r.role)}>Add</button>
+                  </>
+                )}
                 <label className="btn btn-secondary pg-ref-upload">
                   Upload
                   <input type="file" accept="image/*" data-testid={`${tid}-file`} className="pg-ref-file"

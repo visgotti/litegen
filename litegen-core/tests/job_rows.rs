@@ -48,6 +48,34 @@ async fn a_video_submit_whose_row_cannot_be_written_fails() {
     assert_eq!(body["error"]["code"], "generation_record_failed", "{body}");
 }
 
+/// The caller was told the submit failed, so it is neither billed nor left
+/// running: its log row says failed, and nothing tracks the job any more.
+#[tokio::test]
+async fn an_unrecorded_video_job_is_logged_failed_and_let_go() {
+    use litegen::db::DatabaseStore;
+    let (app, db, raw, _dir) = app_on_file().await;
+    refuse_generation_inserts(&raw).await;
+    let (status, body) = post(&app, "/v1/videos/generations", &json!({ "model": "mock/video-gen", "prompt": "a wave" })).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    let logs = db.get_request_logs(1, 10).await.unwrap().0;
+    assert_eq!(logs.len(), 1, "{logs:?}");
+    assert_eq!(logs[0].status, litegen::types::GenerationStatus::Failed, "{logs:?}");
+    let resp = app.clone().oneshot(Request::get(format!("/v1/videos/{}", logs[0].id)).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "the router let the job go");
+}
+
+#[tokio::test]
+async fn an_unrecorded_3d_job_is_logged_failed() {
+    use litegen::db::DatabaseStore;
+    let (app, db, raw, _dir) = app_on_file().await;
+    refuse_generation_inserts(&raw).await;
+    let (status, body) = post(&app, "/v1/models3d/generations", &json!({ "model": "mock/mesh-3d", "prompt": "a chair" })).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    let logs = db.get_request_logs(1, 10).await.unwrap().0;
+    assert_eq!(logs.len(), 1, "{logs:?}");
+    assert_eq!(logs[0].status, litegen::types::GenerationStatus::Failed, "{logs:?}");
+}
+
 #[tokio::test]
 async fn a_3d_submit_whose_row_cannot_be_written_fails() {
     let (app, _db, raw, _dir) = app_on_file().await;

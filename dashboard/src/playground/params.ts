@@ -11,6 +11,7 @@ type AnySpec = { kind: string; [k: string]: unknown };
 /** The slice of a served `ModelSchema` the Playground reads, all optional:
  *  schemas arrive as unvalidated JSON, so every field is checked before use. */
 interface LooseSchema {
+  media_type?: string;
   params?: Record<string, AnySpec>;
   prompt?: { required?: boolean; max_length?: number | null };
   ref_inputs?: {
@@ -272,15 +273,30 @@ export function clampToSpec(spec: AnySpec, value: unknown): unknown {
 /** The server's caps on mask growth and the kept edge's feather (validator.rs). */
 export const MAX_MASK_GROW_PX = 100;
 export const MAX_FEATHER_PX = 256;
+/** The tallest a mesh is scaled to (validator.rs MAX_PLACEMENT_HEIGHT_M). */
+export const MAX_PLACEMENT_HEIGHT_M = 10_000;
 
 /**
  * Request fields a model takes by its shape rather than a declared param —
  * the server's own rule (`check_image_edit`, `supports_preserve_unmasked`):
  * wherever it takes a mask or a region, `mask_grow_px` widens it and
- * `preserve_unmasked` (with `feather_px`) pastes the untouched pixels back.
+ * `preserve_unmasked` (with `feather_px`) pastes the untouched pixels back;
+ * and every 3D model's mesh is placed (`ground`, `center`, `height_m`). A
+ * model that declares one of these itself keeps its own spec (`paramsOf`).
  */
 export function derivedParams(schema: ModelSchema | undefined): Record<string, AnySpec> {
   const l = loose(schema);
+  // 3D doc §3D: litegen places any mesh it delivers (`supports_placement`).
+  if (l.media_type === 'model3d') {
+    return {
+      ground: { kind: 'bool', default: false, label: 'Ground', description: "Put the mesh's lowest point at y = 0." },
+      center: { kind: 'bool', default: false, label: 'Center', description: "Centre the mesh's bounds on x and z." },
+      height_m: {
+        kind: 'float', min: 0.001, max: MAX_PLACEMENT_HEIGHT_M, label: 'Height (m)',
+        description: 'Scale the mesh to this height, in metres.',
+      },
+    };
+  }
   const takesMask = l.ref_inputs?.roles?.mask != null;
   const takesRegion = l.params?.region?.kind === 'region';
   if (!takesMask && !takesRegion) return {};
@@ -426,7 +442,9 @@ export function wireValue(spec: AnySpec, value: unknown): unknown {
       const type = value.type === 'url' || value.type === 'base64' ? value.type : 'generation';
       const v = text(value.value);
       if (!v) return undefined;
-      const format = text(value.format);
+      // The format the select shows: a one-format select never changes, and
+      // a URL source without one is refused (source_format_required).
+      const format = text(value.format) || stringList(spec.formats)[0];
       return format && type !== 'generation' ? { type, value: v, format } : { type, value: v };
     }
     case 'segmentation_prompts': {

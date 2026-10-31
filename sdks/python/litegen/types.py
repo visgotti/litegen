@@ -145,8 +145,9 @@ class PriceRule(TypedDict):
     ``"*"`` meaning any value present — the rule's one effect applies: a price
     (``usd``), a rate (``per_second_usd``, ``per_megapixel_usd``,
     ``per_item_usd`` × the ``per_item`` count) or an adjustment
-    (``multiply``, ``add_usd``). ``/cost``, the quota reservation and the
-    charge all use them.
+    (``multiply``, ``add_usd``, or ``multiply_per_megapixel_above``: the
+    price × megapixels ÷ that anchor, for an image larger than it).
+    ``/cost``, the quota reservation and the charge all use them.
     """
 
     when: NotRequired[dict[str, Any]]
@@ -156,6 +157,7 @@ class PriceRule(TypedDict):
     per_item_usd: NotRequired[float | None]
     per_item: NotRequired[str | None]
     multiply: NotRequired[float | None]
+    multiply_per_megapixel_above: NotRequired[float | None]
     add_usd: NotRequired[float | None]
 
 
@@ -563,6 +565,10 @@ class SceneManifest(TypedDict):
     """glTF extensions the file uses. None is ever required."""
     parts: NotRequired[list[ScenePart] | None]
     """A ``segment`` model's parts; absent on every other model's mesh."""
+    notes: NotRequired[list[str]]
+    """What delivery could not keep or do for this file: a texture it could
+    not decode, a joint naming the rig could not take, what this container
+    cannot hold. Absent when nothing was lost."""
 
 
 class Model3dAsset(TypedDict):

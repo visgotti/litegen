@@ -1101,6 +1101,11 @@ pub struct SceneManifest {
     /// vendor's label or `part_<n>`. Absent on every other model's mesh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parts: Option<Vec<ScenePart>>,
+    /// What delivery could not keep or do for this file: a texture litegen
+    /// could not decode, a joint naming the rig could not take, what this
+    /// container cannot hold of the scene. Empty when nothing was lost.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// One part of a segmented mesh, measured by litegen.
@@ -1436,6 +1441,18 @@ pub struct ModelCapabilities {
     /// Takes the `rig` param.
     #[serde(default)]
     pub supports_rig: bool,
+    /// Takes `animations`: one clip per entry, whatever the task (3D doc
+    /// §3C) — a rig or generate model that returns clips in the same call
+    /// as well as an `animate` one.
+    #[serde(default)]
+    pub supports_animation: bool,
+    /// Takes `skeleton`; `params.skeleton.enum_values` lists what it rigs
+    /// (3D doc §3B).
+    #[serde(default)]
+    pub supports_skeleton: bool,
+    /// Takes `joint_naming` (3D doc §3B).
+    #[serde(default)]
+    pub supports_joint_naming: bool,
     /// Takes the `texture` param.
     #[serde(default)]
     pub supports_texture: bool,
@@ -1526,6 +1543,10 @@ pub struct ModelCapabilities {
     /// mask or a region (3D doc §4).
     #[serde(default)]
     pub supports_preserve_unmasked: bool,
+    /// Takes `mask_grow_px`: litegen widens the mask or region of any model
+    /// taking one, or asks a vendor that grows its own (3D doc §4).
+    #[serde(default)]
+    pub supports_mask_grow: bool,
     /// Works on a `source_video` (3D doc §5).
     #[serde(default)]
     pub supports_source_video: bool,

@@ -28,6 +28,7 @@ fn ref_bytes_for_role(materialized: &MaterializedRequest, role: &str) -> Option<
 /// The video operation mocks (3D doc §5).
 const EXTEND_MODEL: &str = "mock/extend-video";
 const RETAKE_MODEL: &str = "mock/retake-video";
+const EDIT_MODEL: &str = "mock/edit-video";
 
 /// A GIF's frames as the `gif` crate reads them — indexed, each with the
 /// palette it was drawn with — so they can be written back exactly.
@@ -76,16 +77,19 @@ fn write_gif(w: u16, h: u16, frames: &[gif::Frame<'static>]) -> Result<Vec<u8>, 
     Ok(out)
 }
 
-/// `mock/extend-video` and `mock/retake-video`: the source's frames copied
-/// exactly where the plan keeps them, new frames where it generates. An
-/// extend adds `duration_seconds` of frames after (`forward`, the default) or
-/// before (`backward`) the source and returns the whole clip; a retake
-/// regenerates every frame starting inside `time_range`.
+/// `mock/extend-video`, `mock/retake-video` and `mock/edit-video`: the
+/// source's frames copied exactly where the plan keeps them, new frames where
+/// it generates. An extend adds `duration_seconds` of frames after
+/// (`forward`, the default) or before (`backward`) the source and returns the
+/// whole clip; a retake regenerates every frame starting inside `time_range`;
+/// an edit regenerates every frame.
 fn operate_on_source(model_id: &str, extras: &VideoExtras) -> Result<Vec<u8>, ProviderError> {
     let source = extras.source.as_ref().ok_or_else(|| ProviderError::InvalidRequest(format!("{model_id} needs a source_video")))?;
     let (w, h, frames) = gif_frames(&source.bytes)?;
     let delay = frames.first().map_or(10, |f| f.delay.max(1));
-    let out = if model_id == EXTEND_MODEL {
+    let out = if model_id == EDIT_MODEL {
+        frames.iter().flat_map(|f| generated_frames(w, h, 1, f.delay)).collect()
+    } else if model_id == EXTEND_MODEL {
         let added = generated_frames(w, h, (extras.duration_seconds * 100.0 / f64::from(delay)).round() as usize, delay);
         match extras.direction.as_deref() {
             Some("backward") => [added, frames].concat(),
@@ -119,7 +123,8 @@ fn should_render_visual_video(model_id: &str) -> bool {
         "mock/priced-video" |
         "mock/sprite-video" |
         EXTEND_MODEL |
-        RETAKE_MODEL
+        RETAKE_MODEL |
+        EDIT_MODEL
     )
 }
 
@@ -169,7 +174,7 @@ impl VideoProvider for MockVideoProvider {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
     ) -> Result<VideoGenerationHandle, ProviderError> {
-        if model.id == EXTEND_MODEL || model.id == RETAKE_MODEL {
+        if [EXTEND_MODEL, RETAKE_MODEL, EDIT_MODEL].contains(&model.id.as_str()) {
             let job_id = uuid::Uuid::new_v4().to_string();
             global_store().put(job_id.clone(), operate_on_source(&model.id, extras)?).await;
             return Ok(VideoGenerationHandle { provider_job_id: job_id, provider: "mock".to_string(), model: model.id.clone() });

@@ -64,21 +64,49 @@ export function readAsDataUrl(file: Blob): Promise<string> {
  * mangled one.
  */
 export function withoutInlineRefs(body: Record<string, unknown>): Record<string, unknown> {
+  let rest = body;
+  // A segmentation's `image` is always the image itself.
+  if (inlineImage(body)) {
+    rest = { ...rest };
+    delete rest.image;
+  }
   const refs = body.reference_images;
-  if (!Array.isArray(refs)) return body;
+  if (!Array.isArray(refs)) return rest;
   const kept = refs.filter(r => (r as { type?: unknown } | null)?.type !== 'base64');
-  if (kept.length === refs.length) return body;
-  const rest = { ...body };
+  if (kept.length === refs.length) return rest;
+  rest = { ...rest };
   if (kept.length) rest.reference_images = kept;
   else delete rest.reference_images;
   return rest;
+}
+
+/** Whether `body` carries a segmentation's inline `image`. */
+function inlineImage(body: Record<string, unknown>): boolean {
+  return typeof body.image === 'string' && !isFetchableUrl(body.image);
 }
 
 /** How many inline (base64) reference images `withoutInlineRefs` would remove
  *  from `body` — what a history entry must ask for again before re-running. */
 export function inlineRefCount(body: Record<string, unknown>): number {
   const refs = body.reference_images;
-  return Array.isArray(refs)
+  const inline = Array.isArray(refs)
     ? refs.filter(r => (r as { type?: unknown } | null)?.type === 'base64').length
     : 0;
+  return inline + (inlineImage(body) ? 1 : 0);
+}
+
+/** A segmentation answer without its mask PNGs, which are as large as the
+ *  image: what history keeps (the boxes and scores). */
+export function withoutInlineMasks(response: Record<string, unknown>): Record<string, unknown> {
+  const masks = response.masks;
+  if (!Array.isArray(masks)) return response;
+  return {
+    ...response,
+    masks: masks.map(m => {
+      if (!m || typeof m !== 'object') return m;
+      const kept = { ...(m as Record<string, unknown>) };
+      delete kept.png_base64;
+      return kept;
+    }),
+  };
 }

@@ -14,7 +14,7 @@ models:
     prompt: { required: true, max_length: 5000 }
     params:
       # Model Map: viduq1 is 5s only, 1080p only.
-      duration_seconds: { kind: float, min: 5.0, max: 5.0, default: 5.0 }
+      duration_seconds: { kind: int, min: 5, max: 5, default: 5 }
       resolution:
         kind: string
         enum_values: [1080p]
@@ -48,7 +48,7 @@ models:
     capabilities: { image_to_video: true }
     prompt: { required: true, max_length: 5000 }
     params:
-      duration_seconds: { kind: float, min: 4.0, max: 8.0, default: 4.0 }
+      duration_seconds: { kind: int, min: 4, max: 8, default: 4 }
       resolution:
         kind: string
         enum_values: [360p, 720p, 1080p]
@@ -87,7 +87,7 @@ models:
       # 1-10s and 540p hold on img2video, start-end2video and reference2video
       # (start-end2video went from 1-8s to 1-10s by 2026-10-12):
       # https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/start-end-to-video.md
-      duration_seconds: { kind: float, min: 1.0, max: 10.0, default: 5.0 }
+      duration_seconds: { kind: int, min: 1, max: 10, default: 5 }
       resolution:
         kind: string
         enum_values: [540p, 720p, 1080p]
@@ -135,7 +135,7 @@ models:
       # text2video / img2video / start-end2video take 1-16s, but reference2video
       # takes 3-16s; one range serves every endpoint, so the floor is 3s.
       # https://platform.vidu.com/docs/reference-to-video.md
-      duration_seconds: { kind: float, min: 3.0, max: 16.0, default: 5.0 }
+      duration_seconds: { kind: int, min: 3, max: 16, default: 5 }
       resolution:
         kind: string
         enum_values: [540p, 720p, 1080p]
@@ -186,7 +186,7 @@ models:
       audio: { kind: bool, default: true }
       # 1-16s at 540p / 720p / 1080p on text2video, img2video and start-end2video.
       # https://platform.vidu.com/docs/start-end-to-video.md
-      duration_seconds: { kind: float, min: 1.0, max: 16.0, default: 5.0 }
+      duration_seconds: { kind: int, min: 1, max: 16, default: 5 }
       resolution:
         kind: string
         enum_values: [540p, 720p, 1080p]
@@ -232,7 +232,7 @@ models:
       # 1-10s on both endpoints (start-end2video went from 1-8s to 1-10s by
       # 2026-10-12). 720p / 1080p only (no 540p) on both.
       # https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/start-end-to-video.md
-      duration_seconds: { kind: float, min: 1.0, max: 10.0, default: 5.0 }
+      duration_seconds: { kind: int, min: 1, max: 10, default: 5 }
       resolution:
         kind: string
         enum_values: [720p, 1080p]

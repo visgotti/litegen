@@ -250,7 +250,7 @@ pub(crate) async fn poll_once(
                 };
                 // A vendor flow's next billed stage, or its new continuation
                 // state — the same bookkeeping the client's poll applies.
-                crate::proxy::model3d_stages::advance(db, provider.as_ref(), &gen.id, &mut handle, &mut poll, "poller").await;
+                crate::proxy::model3d_stages::advance(db, &provider, &gen.id, &mut handle, &mut poll, "poller").await;
 
                 // Re-host NOW, in the same tick that observed completion: several
                 // vendors expire their download URLs within minutes, so the bytes
@@ -1164,6 +1164,14 @@ mod poller_tests {
     /// every `start_stage` call, which is what a vendor would bill.
     struct StagedModel3dProvider {
         starts: std::sync::atomic::AtomicU32,
+        /// How long starting stage two takes at the vendor.
+        start_delay: std::time::Duration,
+        /// A context the vendor hands back on stage one's poll.
+        poll_context: Option<serde_json::Value>,
+    }
+
+    fn staged_provider() -> StagedModel3dProvider {
+        StagedModel3dProvider { starts: Default::default(), start_delay: std::time::Duration::from_millis(30), poll_context: None }
     }
 
     #[async_trait::async_trait]
@@ -1199,8 +1207,8 @@ mod poller_tests {
                     files: vec![],
                     error: None,
                     metadata: Default::default(),
-                    stage_context: None,
-                    next_stage: Some("two".into()),
+                    stage_context: self.poll_context.clone(),
+                    next_stage: self.poll_context.is_none().then(|| "two".into()),
                 },
                 _ => crate::providers::Model3dGenerationPollResult {
                     status: crate::types::GenerationStatus::Completed,
@@ -1229,7 +1237,7 @@ mod poller_tests {
             stage: &str,
         ) -> Result<serde_json::Value, crate::providers::ProviderError> {
             // Widen the window in which a second observer could also start it.
-            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            tokio::time::sleep(self.start_delay).await;
             self.starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(serde_json::json!({ "stage": stage, "task": "vendor-task-2" }))
         }
@@ -1303,7 +1311,7 @@ mod poller_tests {
     #[tokio::test]
     async fn two_observers_start_a_billed_stage_exactly_once() {
         let db: Arc<dyn DatabaseStore> = in_memory_db().await;
-        let provider = Arc::new(StagedModel3dProvider { starts: Default::default() });
+        let provider = Arc::new(staged_provider());
         let (registry, router, id) = staged_job(&db, provider.clone()).await;
         let store = test_3d_store();
 
@@ -1325,10 +1333,41 @@ mod poller_tests {
         assert_eq!(row.status, crate::types::GenerationStatus::Completed, "{:?}", row.error_message);
     }
 
+    /// A client that hangs up while its poll starts a billed stage does not
+    /// strand it half-started: the start and its record finish anyway, so
+    /// the next observer polls stage two instead of failing the generation as
+    /// interrupted after the vendor billed the stage.
+    #[tokio::test]
+    async fn a_stage_a_hung_up_poll_was_starting_is_recorded_all_the_same() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let provider = Arc::new(StagedModel3dProvider { start_delay: std::time::Duration::from_millis(400), ..staged_provider() });
+        let (_registry, router, id) = staged_job(&db, provider.clone()).await;
+        let hung_up = tokio::time::timeout(std::time::Duration::from_millis(150), router.get_model3d_status(&id, None, None, &db)).await;
+        assert!(hung_up.is_err(), "the client gave up while stage two was starting");
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let meta = db.get_generation(&id).await.unwrap().unwrap().metadata.unwrap();
+        assert_eq!(meta["stage_context"]["stage"], "two", "{meta}");
+        assert_eq!(provider.starts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// A context a vendor hands back on a poll (a new task id, a result URL)
+    /// reaches the row, so an observer rebuilding the handle after a restart
+    /// polls with it (3D skill: stage_context).
+    #[tokio::test]
+    async fn a_context_a_poll_hands_back_reaches_the_row() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let ctx = serde_json::json!({ "stage": "one", "result_url": "https://vendor.example/r/7" });
+        let provider = Arc::new(StagedModel3dProvider { poll_context: Some(ctx.clone()), ..staged_provider() });
+        let (_registry, router, id) = staged_job(&db, provider).await;
+        router.get_model3d_status(&id, None, None, &db).await.unwrap();
+        let meta = db.get_generation(&id).await.unwrap().unwrap().metadata.unwrap();
+        assert_eq!(meta["stage_context"], ctx, "{meta}");
+    }
+
     #[tokio::test]
     async fn a_started_stage_reaches_the_row_for_the_next_observer() {
         let db: Arc<dyn DatabaseStore> = in_memory_db().await;
-        let provider = Arc::new(StagedModel3dProvider { starts: Default::default() });
+        let provider = Arc::new(staged_provider());
         let (registry, router, id) = staged_job(&db, provider.clone()).await;
 
         // The client's poll starts stage two…
@@ -1350,7 +1389,7 @@ mod poller_tests {
     #[tokio::test]
     async fn an_interrupted_stage_start_fails_the_generation_instead_of_resending() {
         let db: Arc<dyn DatabaseStore> = in_memory_db().await;
-        let provider = Arc::new(StagedModel3dProvider { starts: Default::default() });
+        let provider = Arc::new(staged_provider());
         let (registry, _router, id) = staged_job(&db, provider.clone()).await;
         // A claim from a process that died before it could record stage two.
         let at = (chrono::Utc::now() - chrono::Duration::minutes(11)).to_rfc3339();
@@ -1368,7 +1407,7 @@ mod poller_tests {
     #[tokio::test]
     async fn a_fresh_claim_by_another_observer_just_waits() {
         let db: Arc<dyn DatabaseStore> = in_memory_db().await;
-        let provider = Arc::new(StagedModel3dProvider { starts: Default::default() });
+        let provider = Arc::new(staged_provider());
         let (registry, _router, id) = staged_job(&db, provider.clone()).await;
         db.merge_generation_metadata_if_active(&id, &serde_json::json!({
             "stage_claims": { "two": { "by": "the-client", "at": chrono::Utc::now().to_rfc3339() } },

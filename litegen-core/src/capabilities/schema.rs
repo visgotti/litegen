@@ -169,6 +169,11 @@ pub struct PriceRule {
     pub per_item: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multiply: Option<f64>,
+    /// Scale the price by the image's `megapixels` over this many, for an
+    /// image larger than this: a vendor that bills by output size (OpenAI's
+    /// image tokens) past the size its base price is for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multiply_per_megapixel_above: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub add_usd: Option<f64>,
 }
@@ -626,6 +631,10 @@ pub struct RefRoleSpec {
     /// of it (PixVerse: whole seconds). A time off it is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_step_s: Option<f64>,
+    /// The latest a `keyframe` may sit, for a model with no duration param
+    /// to bound its clip: the longest clip it makes or prices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_time_s: Option<f64>,
 }
 
 /// Where a model's keyframes may sit in the clip.

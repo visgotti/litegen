@@ -364,7 +364,10 @@ impl TripoModel3dProvider {
                 presets.len()
             )));
         }
-        let mut body = json!({ "input": input, "animations": presets, "out_format": Self::out_format(extras) });
+        // Always glb: an fbx litegen reads keeps one take, so Tripo's own fbx
+        // of several clips would fail delivery after Tripo billed it; every
+        // promised container is derived from the glb (3D doc §3C).
+        let mut body = json!({ "input": input, "animations": presets, "out_format": "glb" });
         // One flag for the whole call: it keeps every clip in place, so it is
         // sent only when every clip asks. Otherwise litegen holds the ones
         // that do (`model3d_deliver`).
@@ -975,6 +978,20 @@ mod tests {
         }));
         assert_eq!(h.stage_context, Some(json!({ "task_id": "anim-1" })));
         assert_eq!(x.source.as_ref().unwrap().delivery(), Some(SourceDelivery::VendorTask));
+    }
+
+    /// 3D doc §3C: the promised containers are derived from the one file
+    /// Tripo returns. An FBX litegen reads keeps one take, so a retarget of
+    /// several clips asks for Tripo's glb — every clip in it — and the fbx
+    /// is derived from it; asked for Tripo's own fbx, the delivery's clip
+    /// count fails after Tripo has billed.
+    #[tokio::test]
+    async fn a_retarget_is_asked_for_tripos_glb_even_when_an_fbx_is_promised() {
+        let server = MockServer::start().await;
+        let mut x = animate_extras(Some("rig-task-9"), clips(&[("walk", "preset:walk", None), ("run", "preset:run", None)]));
+        x.output_formats = vec!["fbx".into()];
+        let (_, body) = retarget(&server, &x).await;
+        assert_eq!(body["out_format"], "glb", "{body}");
     }
 
     #[tokio::test]

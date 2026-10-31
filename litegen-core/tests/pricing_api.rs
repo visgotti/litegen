@@ -30,6 +30,20 @@ async fn quote_and_charge(app: &axum::Router, media: &str, body: Value) -> (f64,
     (quote["total_cost_usd"].as_f64().unwrap(), done["usage"]["cost_usd"].as_f64().unwrap())
 }
 
+/// An app with `vendors` configured (a placeholder key: a quote calls no
+/// vendor), so their rows can be quoted.
+async fn quoting_app(vendors: &[&str]) -> axum::Router {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let vendors: Vec<String> = vendors.iter().map(|v| v.to_string()).collect();
+    harness::app_with(&dir, move |cfg| {
+        for v in &vendors {
+            cfg.providers.insert(v.clone(), serde_json::from_value(json!({ "enabled": true, "api_key": "k" })).unwrap());
+        }
+    })
+    .await
+    .0
+}
+
 fn close(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-9
 }
@@ -55,4 +69,53 @@ async fn a_mesh_is_priced_by_its_multipliers_and_add_ons() {
     let (app, _db) = harness::app_with_mock_3d().await;
     let (quote, charge) = quote_and_charge(&app, "models3d", json!({ "model": "mock/priced-3d", "prompt": "x", "texture": true, "pbr": true })).await;
     assert!(close(quote, 0.35) && close(charge, 0.35), "$0.10 × 3 + $0.05: quote {quote}, charge {charge}");
+}
+
+/// OpenAI prices an image by its output tokens: by quality ("high" is 2× the
+/// medium image the row's base is) and by size past 1024². The quote — and so
+/// the reservation and the charge — say so (it used to bill every request at
+/// the 1024² medium price).
+/// @see <https://developers.openai.com/api/docs/guides/image-generation> (Calculating costs)
+#[tokio::test]
+async fn an_openai_image_is_quoted_by_its_quality_and_its_size() {
+    let app = quoting_app(&["openai"]).await;
+    let quote = |body: Value| {
+        let app = app.clone();
+        async move {
+            let (s, q) = post(&app, "/v1/images/cost", body).await;
+            assert_eq!(s, StatusCode::OK, "{q}");
+            q["total_cost_usd"].as_f64().unwrap()
+        }
+    };
+    let medium = quote(json!({ "model": "openai/gpt-image-2", "prompt": "x", "size": "1024x1024", "quality": "medium" })).await;
+    assert!(close(medium, 0.053), "{medium}");
+    let high = quote(json!({ "model": "openai/gpt-image-2", "prompt": "x", "size": "1024x1024", "quality": "high" })).await;
+    assert!(close(high, 0.106), "{high}");
+    let big = quote(json!({ "model": "openai/gpt-image-2", "prompt": "x", "size": "2048x2048", "quality": "medium" })).await;
+    assert!(close(big, 0.212), "{big}");
+    let max = quote(json!({ "model": "openai/gpt-image-2.5-sunburst", "prompt": "x", "size": "1024x1024", "quality": "max" })).await;
+    assert!(close(max, 0.0132 * 16.0), "{max}");
+}
+
+/// PixVerse Multi-Transition prices fixed lengths ("1–10, 15, 20, 25 and 30
+/// s"): a clip of an unlisted length bills the next listed tier up — never
+/// the 5 s base — and a keyframe past the longest priced length is refused
+/// before anything is billed.
+/// @see <https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md> (2026-10-30)
+#[tokio::test]
+async fn a_multi_transition_clip_of_an_unlisted_length_bills_the_next_tier_up() {
+    let app = quoting_app(&["pixverse"]).await;
+    let keyframes = |last: f64| json!([
+        { "type": "url", "value": "https://x/a.png", "role": "keyframe", "time_s": 0.0 },
+        { "type": "url", "value": "https://x/b.png", "role": "keyframe", "time_s": last },
+    ]);
+    let body = |last: f64| json!({ "model": "pixverse/v5-multi-transition", "prompt": "x", "resolution": "1080p", "reference_images": keyframes(last) });
+    let (s, q) = post(&app, "/v1/videos/cost", body(29.0)).await;
+    assert_eq!(s, StatusCode::OK, "{q}");
+    assert!(close(q["total_cost_usd"].as_f64().unwrap(), 3.2), "29 s at 1080p bills the 30 s tier: {q}");
+    let (s, q) = post(&app, "/v1/videos/cost", body(12.0)).await;
+    assert_eq!(s, StatusCode::OK, "{q}");
+    assert!(close(q["total_cost_usd"].as_f64().unwrap(), 1.6), "12 s bills the 15 s tier: {q}");
+    let (s, q) = post(&app, "/v1/videos/cost", body(31.0)).await;
+    assert_eq!((s, q["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("keyframe_time_out_of_range")), "{q}");
 }

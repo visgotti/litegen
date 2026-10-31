@@ -780,6 +780,14 @@ models:
         requires_texture: true
         label: Source mesh
         description: A textured humanoid facing +Z, sent to fal inline (at most 100 MB, 320,000 faces).
+      # §3B: "A model lists the ones it rigs" — Meshy on fal rigs humanoids
+      # only ("Non-humanoid assets" are unsuitable); fal takes no field for it.
+      skeleton:
+        kind: string
+        enum_values: [humanoid]
+        default: humanoid
+        label: Skeleton
+        description: What it rigs. Meshy on fal rigs humanoids only.
       height_m:
         kind: float
         default: 1.7

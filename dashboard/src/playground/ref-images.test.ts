@@ -6,6 +6,7 @@ import {
   inlineBytes,
   isFetchableUrl,
   inlineRefCount,
+  withoutInlineMasks,
   withoutInlineRefs,
 } from './ref-images';
 
@@ -97,5 +98,36 @@ describe('inlineRefCount', () => {
   it('is zero without reference images', () => {
     expect(inlineRefCount({ model: 'm' })).toBe(0);
     expect(inlineRefCount({ model: 'm', reference_images: 'nope' })).toBe(0);
+  });
+});
+
+describe('what a history entry keeps', () => {
+  it('drops a segmentation run\'s inline image and mask PNGs, and counts the image to ask for again', () => {
+    const body = { model: 'mock/segment-image', image: 'data:image/png;base64,iVBORw0KGgo=', prompts: [{ type: 'point', x: 1, y: 2 }] };
+    expect(withoutInlineRefs(body)).toEqual({ model: 'mock/segment-image', prompts: [{ type: 'point', x: 1, y: 2 }] });
+    expect(inlineRefCount(body)).toBe(1);
+    const response = { masks: [{ png_base64: 'iVBORw0KGgo=', box: { x: 0, y: 0, w: 1, h: 1 }, score: 0.9 }] };
+    expect(withoutInlineMasks(response)).toEqual({ masks: [{ box: { x: 0, y: 0, w: 1, h: 1 }, score: 0.9 }] });
+  });
+});
+
+describe('a history write that cannot be stored', () => {
+  it('never fails the run it records', async () => {
+    const store = new Map<string, string>();
+    const full = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: () => { throw new DOMException('quota exceeded', 'QuotaExceededError'); },
+      removeItem: (k: string) => { store.delete(k); },
+    };
+    const saved = (globalThis as { localStorage?: unknown }).localStorage;
+    (globalThis as { localStorage?: unknown }).localStorage = full;
+    try {
+      const { pushPlaygroundHistory } = await import('../playground-history');
+      expect(() => pushPlaygroundHistory({
+        id: '1', model: 'm', prompt: 'p', timestamp: '2026-10-31T00:00:00Z', requestBody: {}, responseBody: {},
+      })).not.toThrow();
+    } finally {
+      (globalThis as { localStorage?: unknown }).localStorage = saved;
+    }
   });
 });

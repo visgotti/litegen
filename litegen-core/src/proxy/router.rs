@@ -220,7 +220,7 @@ impl ProxyRouter {
         let start = Instant::now();
 
         // 1. Check cache
-        if let Some(cached) = self.cache.get_image(tenant, &schema.id, base, extras).await {
+        if let Some(cached) = self.cache.get_image(tenant, &schema.id, base, extras, materialized).await {
             info!(model = %schema.id, "Cache hit for image generation");
             return Ok(cached);
         }
@@ -322,7 +322,7 @@ impl ProxyRouter {
 
         // 4. Store in cache
         self.cache
-            .put_image(tenant, &schema.id, base, extras, &response)
+            .put_image(tenant, &schema.id, base, extras, materialized, &response)
             .await;
 
         info!(
@@ -392,6 +392,7 @@ impl ProxyRouter {
                     provider: schema.provider.clone(),
                     vendor: VendorError::from_provider(&unreadable),
                     vendor_job_id: None,
+                    retryable: false,
                 }
             })?;
         let (_, total) = apply_markup(crate::capabilities::pricing::row_price_usd(schema), self.cost_markup_percent());
@@ -847,14 +848,14 @@ impl ProxyRouter {
         let limit = self.config.server.vendor_timeout();
         match tokio::time::timeout(limit, provider.preflight(schema, extras)).await {
             Ok(Ok(p)) => Ok(p),
-            Ok(Err(e)) => Err(ProxyError::ProviderError {
+            Ok(Err(e)) => Err(ProxyError::PreflightFailed {
                 provider: schema.provider.clone(),
-                error: format!("preflight failed: {e}"),
+                error: e.to_string(),
                 retryable: e.is_retryable(),
             }),
-            Err(_) => Err(ProxyError::ProviderError {
+            Err(_) => Err(ProxyError::PreflightFailed {
                 provider: schema.provider.clone(),
-                error: format!("preflight did not finish within {}s", limit.as_secs()),
+                error: format!("it did not finish within {}s", limit.as_secs()),
                 retryable: true,
             }),
         }
@@ -1017,7 +1018,7 @@ impl ProxyRouter {
         // the same bookkeeping the poller applies, so whichever observer sees
         // a stage boundary first handles it — once.
         let before = handle.stage_context.clone();
-        crate::proxy::model3d_stages::advance(db, provider.as_ref(), id, &mut handle, &mut poll, "client").await;
+        crate::proxy::model3d_stages::advance(db, &provider, id, &mut handle, &mut poll, "client").await;
         if handle.stage_context != before {
             if let Some(job) = self.model3d_jobs.write().await.get_mut(id) {
                 job.handle.stage_context = handle.stage_context.clone();
@@ -1582,7 +1583,7 @@ async fn preserve_output(mut output: GenerationOutput, p: crate::proxy::preserve
             provider_error: None,
             retryable: false,
         };
-        ProxyError::VendorFailed { model: schema.id.clone(), provider: schema.provider.clone(), vendor: VendorError::from_provider(&unreadable), vendor_job_id: None }
+        ProxyError::VendorFailed { model: schema.id.clone(), provider: schema.provider.clone(), vendor: VendorError::from_provider(&unreadable), vendor_job_id: None, retryable: false }
     })
 }
 
@@ -1699,25 +1700,15 @@ pub async fn rehost_video(
                 std::time::Duration::from_secs(600),
                 std::time::Duration::from_secs(60),
             );
-            let resp = client.get(url).send().await.map_err(|e| format!("download failed: {}", e.without_url()))?;
-            if !resp.status().is_success() {
-                return Err(format!("download answered HTTP {}", resp.status()));
-            }
-            if resp.content_length().is_some_and(|n| n as usize > MAX_VIDEO_BYTES) {
-                return Err("the video is larger than litegen keeps".into());
-            }
-            let ct = resp
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-                .or_else(|| content_type.map(str::to_string))
-                .unwrap_or_else(|| "video/mp4".into());
-            let bytes = resp.bytes().await.map_err(|e| format!("download failed: {}", e.without_url()))?;
-            if bytes.len() > MAX_VIDEO_BYTES {
-                return Err("the video is larger than litegen keeps".into());
-            }
-            (bytes.to_vec(), ct)
+            use crate::util::ssrf::CappedDownloadError;
+            let (bytes, ct) = match crate::util::ssrf::download_capped(&client, url, MAX_VIDEO_BYTES as u64).await {
+                Ok(got) => got,
+                Err(CappedDownloadError::Transport(why)) => return Err(format!("download failed: {why}")),
+                Err(CappedDownloadError::Status(status)) => return Err(format!("download answered HTTP {status}")),
+                Err(CappedDownloadError::TooLarge { .. }) => return Err("the video is larger than litegen keeps".into()),
+            };
+            let ct = ct.or_else(|| content_type.map(str::to_string)).unwrap_or_else(|| "video/mp4".into());
+            (bytes, ct)
         }
     };
     let format = match ct.split(';').next().unwrap_or("").trim() {
@@ -1818,6 +1809,15 @@ pub enum ProxyError {
         retryable: bool,
     },
 
+    /// The vendor's free preflight (3D doc §3B) failed: nothing was
+    /// submitted, so nothing was billed.
+    #[error("{provider} preflight failed: {error}")]
+    PreflightFailed {
+        provider: String,
+        error: String,
+        retryable: bool,
+    },
+
     /// The vendor refused the request (its 4xx, PixelGenie L15): sending it
     /// unchanged again will not help.
     #[error("{provider} rejected the request for model {model}: {}{}", vendor.message, vendor_job_id.as_ref().map(|j| format!(" (vendor job {j})")).unwrap_or_default())]
@@ -1836,6 +1836,10 @@ pub enum ProxyError {
         provider: String,
         vendor: VendorError,
         vendor_job_id: Option<String>,
+        /// Whether the same request may work later: by the vendor's status,
+        /// or, with none, by the adapter's verdict; never once the vendor
+        /// accepted the job.
+        retryable: bool,
     },
 
     #[error("Internal error: {0}")]
@@ -1864,7 +1868,7 @@ impl ProxyError {
             Self::ProviderNotConfigured(_) => 424,
             Self::NoDeployments { .. } => 503,
             Self::AllDeploymentsFailed { .. } => 502,
-            Self::ProviderError { retryable, .. } => {
+            Self::ProviderError { retryable, .. } | Self::PreflightFailed { retryable, .. } => {
                 if *retryable { 502 } else { 400 }
             }
             Self::Internal(_) => 500,
@@ -1878,6 +1882,19 @@ impl ProxyError {
         }
     }
 
+    /// Whether the same request may work if sent again (PixelGenie L15) —
+    /// never once the vendor accepted a job, which may still run and bill.
+    pub fn retryable(&self) -> bool {
+        match self {
+            Self::VendorTimeout { vendor_job_id, .. } => vendor_job_id.is_none(),
+            Self::VendorFailed { retryable, .. } => *retryable,
+            Self::VendorRejected { .. } => false,
+            Self::ProviderError { retryable, .. } | Self::PreflightFailed { retryable, .. } => *retryable,
+            Self::NoDeployments { .. } | Self::AllDeploymentsFailed { .. } | Self::Internal(_) => true,
+            Self::ModelNotFound { .. } | Self::ProviderNotConfigured(_) | Self::NotFound(_) => false,
+        }
+    }
+
     /// Whether this failure happened after a vendor was called — i.e. whether
     /// the vendor may have done (and billed) work. An `Idempotency-Key`
     /// records such an outcome; a refusal before any vendor call does not
@@ -1885,8 +1902,10 @@ impl ProxyError {
     pub fn reached_vendor(&self) -> bool {
         match self {
             Self::ModelNotFound { .. } | Self::ProviderNotConfigured(_) | Self::NoDeployments { .. } => false,
-            Self::AllDeploymentsFailed { .. }
-            | Self::ProviderError { .. }
+            // Built only when no deployment was asked: every circuit open,
+            // every provider missing.
+            Self::AllDeploymentsFailed { .. } | Self::PreflightFailed { .. } => false,
+            Self::ProviderError { .. }
             | Self::VendorTimeout { .. }
             | Self::VendorRejected { .. }
             | Self::VendorFailed { .. } => true,
@@ -1946,7 +1965,12 @@ fn failure(model: &str, provider: &str, last: Option<ProviderError>, vendor_job_
             ProxyError::VendorRejected { model, provider, vendor: VendorError::from_provider(&err), vendor_job_id }
         }
         ProviderError::RequestFailed { .. } | ProviderError::RateLimited { .. } => {
-            ProxyError::VendorFailed { model, provider, vendor: VendorError::from_provider(&err), vendor_job_id }
+            let vendor = VendorError::from_provider(&err);
+            // A status says; with none (a moderation verdict, a task that
+            // failed) the adapter's own verdict does. A job the vendor took
+            // may still run and bill, so it is never one to send again.
+            let retryable = vendor_job_id.is_none() && if vendor.status.is_some() { vendor.retryable() } else { err.is_retryable() };
+            ProxyError::VendorFailed { model, provider, vendor, vendor_job_id, retryable }
         }
         _ => ProxyError::ProviderError { provider, error: with_vendor_job(err.to_string(), vendor_job_id), retryable: false },
     }
@@ -2262,5 +2286,89 @@ mod model3d_router_tests {
         let out = router.generate_model3d(&schema, &base, &extras, &refs, None).await;
         assert!(matches!(out, Err(ProxyError::VendorTimeout { .. })), "{:?}", out.err());
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "a timed-out submit must not be sent again");
+    }
+
+    /// A vendor whose free preflight is down.
+    struct PreflightOutage;
+
+    #[async_trait::async_trait]
+    impl crate::providers::Model3dProvider for PreflightOutage {
+        fn name(&self) -> &str { "mock" }
+        fn configure(&mut self, _c: crate::providers::ProviderInstanceConfig) {}
+        fn is_configured(&self) -> bool { true }
+        async fn preflight(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _e: &crate::providers::Model3dExtras,
+        ) -> Result<crate::providers::Preflight, crate::providers::ProviderError> {
+            Err(crate::providers::ProviderError::RequestFailed {
+                message: "rig-check answered HTTP 503".into(), status_code: Some(503), provider_error: None, retryable: true,
+            })
+        }
+        async fn generate(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _b: &crate::types::BaseGenerationRequest,
+            _e: &crate::providers::Model3dExtras,
+            _r: &crate::proxy::materializer::MaterializedRequest,
+        ) -> Result<crate::providers::Model3dGenerationHandle, crate::providers::ProviderError> {
+            unreachable!("a failed preflight submits nothing")
+        }
+        async fn poll_status(
+            &self,
+            _h: &crate::providers::Model3dGenerationHandle,
+        ) -> Result<crate::providers::Model3dGenerationPollResult, crate::providers::ProviderError> {
+            unreachable!()
+        }
+        async fn estimate_cost(
+            &self,
+            _m: &crate::capabilities::ModelSchema,
+            _r: &crate::types::Model3dGenerationRequest,
+        ) -> Result<crate::types::CostEstimate, crate::providers::ProviderError> {
+            unreachable!()
+        }
+        async fn health_check(&self) -> crate::providers::HealthCheckResult {
+            unreachable!()
+        }
+    }
+
+    /// The preflight bills nothing (3D doc §3B) and a request no deployment
+    /// was asked to run reached no vendor, so neither failure spends an
+    /// `Idempotency-Key`: the client's retry runs again instead of replaying
+    /// the failure for 24 hours.
+    #[tokio::test]
+    async fn a_failed_preflight_or_an_unattempted_request_never_reached_a_billed_call() {
+        assert!(!ProxyError::AllDeploymentsFailed { model: "m".into(), last_error: None }.reached_vendor());
+        let registry = Arc::new(crate::proxy::registry::ProviderRegistry::new());
+        registry.register_mock_model3d(Arc::new(PreflightOutage)).await;
+        let router = ProxyRouter::new(
+            registry,
+            Arc::new(crate::proxy::cache::GenerationCache::new(&crate::config::CacheGlobalConfig::default())),
+            Arc::new(crate::config::AppConfig::default()),
+            Arc::new(crate::proxy::storage::LocalStore),
+        );
+        let schema = crate::capabilities::ModelSchema {
+            id: "mock/rig-3d".into(), provider: "mock".into(), media_type: crate::capabilities::MediaType::Model3d,
+            task: Default::default(), native_orientation: None, preserves_unmasked: None,
+            display_name: "rig".into(), description: String::new(), docs_url: None,
+            pricing: crate::capabilities::ModelPricing { base_cost_usd: 0.0, variable_pricing: Vec::new() },
+            capabilities: Default::default(),
+            prompt: crate::capabilities::PromptSpec { required: false, min_length: None, max_length: None },
+            params: Default::default(), ref_inputs: None, extra_allowlist: vec![], tags: vec![],
+            deprecated_at: None, retires_at: None, replaced_by: None, status: Default::default(),
+        };
+        let extras = crate::providers::Model3dExtras {
+            output_formats: vec!["glb".into()],
+            texture: None, pbr: None, target_polycount: None,
+            symmetry: None, topology: None, rig: None, extra: None,
+            source: None,
+            animations: Vec::new(), fps: None,
+            skeleton: None, joint_naming: None, height_m: None, preflight: None,
+            texture_resolution: None, keep_uvs: None,
+            ground: None, center: None,
+        };
+        let err = router.preflight_model3d(&schema, &extras, None).await.unwrap_err();
+        assert!(!err.reached_vendor(), "{err:?}");
+        assert_eq!(err.status_code(), 502, "a retryable outage: {err:?}");
     }
 }

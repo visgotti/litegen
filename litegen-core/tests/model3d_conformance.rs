@@ -199,7 +199,10 @@ fn fal_meshy_rig_takes_a_textured_glb_within_meshys_limits() {
     assert_eq!(src.formats, ["glb"]);
     assert_eq!((src.max_bytes, src.max_faces, src.requires_texture), (Some(100_000_000), Some(320_000), true));
     assert!(matches!(m.params.get("height_m"), Some(ParamSpec::Float(_))));
-    assert!(!m.params.contains_key("skeleton"), "Meshy on fal rigs humanoids");
+    // §3B: "A model lists the ones it rigs in `enum_values`" — Meshy on fal
+    // rigs humanoids ("Non-humanoid assets" are unsuitable), so a request
+    // naming `skeleton: humanoid` is served, not refused.
+    assert_eq!(string_enum(m, "skeleton"), ["humanoid"]);
     // Meshy names its own joints; litegen renames them (3D doc §3B, P2).
     assert_eq!(string_enum(m, "joint_naming"), ["vendor", "vrm", "unity", "mixamo"]);
     assert!((m.pricing.base_cost_usd - 0.20).abs() < 1e-9, "no animation is sent, so none is billed");

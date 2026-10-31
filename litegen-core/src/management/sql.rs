@@ -318,10 +318,13 @@ macro_rules! impl_management_store {
             }
 
             async fn charge_limits_spend(&self, entity_type: EntityType, entity_id: &str, delta: f64) -> Result<Option<f64>, sqlx::Error> {
-                let sql = $sql(
-                    "UPDATE entity_limits SET spend_usd = spend_usd + ? \
-                     WHERE entity_type = ? AND entity_id = ? RETURNING spend_usd",
-                );
+                // Never below zero: a refund for a job charged before the
+                // window reset would otherwise leave the new window in credit.
+                let greatest = if stringify!($db).contains("Postgres") { "GREATEST" } else { "MAX" };
+                let sql = $sql(&format!(
+                    "UPDATE entity_limits SET spend_usd = {greatest}(spend_usd + ?, 0) \
+                     WHERE entity_type = ? AND entity_id = ? RETURNING spend_usd"
+                ));
                 let row: Option<(f64,)> = sqlx::query_as(&sql)
                     .bind(delta)
                     .bind(entity_type.as_str())

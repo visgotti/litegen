@@ -53,6 +53,12 @@ async fn a_url_only_vendor_fetches_the_upload_from_an_unguessable_litegen_url() 
     // After the request returned, as an async vendor fetches it.
     let resp = app.clone().oneshot(Request::get(format!("/v1/refs/{token}")).body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+    // Served on litegen's own origin, so never as anything but the image its
+    // bytes are: no sniffing, and sandboxed if a browser renders it.
+    let h = resp.headers().clone();
+    assert_eq!(h.get("content-type").and_then(|v| v.to_str().ok()), Some("image/png"));
+    assert_eq!(h.get("x-content-type-options").and_then(|v| v.to_str().ok()), Some("nosniff"));
+    assert_eq!(h.get("content-security-policy").and_then(|v| v.to_str().ok()), Some("sandbox"));
     assert_eq!(resp.headers()["content-type"], "image/png");
     let bytes = axum::body::to_bytes(resp.into_body(), 16 * 1024 * 1024).await.unwrap();
     assert_eq!(bytes.as_ref(), image.as_slice());
@@ -93,4 +99,22 @@ async fn fal_trellis_still_receives_the_upload_inline_as_a_data_uri() {
     let sent: Vec<_> = server.received_requests().await.unwrap().into_iter().filter(|r| r.url.path() == "/fal-ai/trellis").collect();
     let body: Value = serde_json::from_slice(&sent[0].body).unwrap();
     assert!(body["image_url"].as_str().is_some_and(|u| u.starts_with("data:image/png;base64,")), "{body}");
+}
+
+
+/// A published reference is never reachable through the asset route, which
+/// checks no expiry; and that route serves only litegen's own result files,
+/// never anything else under the asset directory or in the bucket.
+#[tokio::test]
+async fn only_litegens_own_result_files_are_served_from_the_asset_route() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("private")).unwrap();
+    std::fs::write(dir.path().join("private/notes.txt"), b"not an asset").unwrap();
+    std::fs::create_dir_all(dir.path().join("litegen/refs")).unwrap();
+    std::fs::write(dir.path().join("litegen/refs/1-expired.png"), b"\x89PNG").unwrap();
+    let (app, _db) = harness::app_with_mock_3d_assets_in(dir.path()).await;
+    for key in ["private/notes.txt", "litegen/refs/1-expired.png"] {
+        let resp = app.clone().oneshot(Request::get(format!("/v1/models3d/assets/{key}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{key}");
+    }
 }

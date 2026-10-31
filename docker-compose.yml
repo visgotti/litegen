@@ -26,6 +26,10 @@ services:
       retries: 3
       start_period: 30s
     restart: unless-stopped
+    # Kept results (meshes, videos, images, published references) outlive
+    # the container; litegen refuses to start if it cannot write here.
+    volumes:
+      - litegen_assets:/app/data
 
   db:
     image: postgres:16-alpine
@@ -44,3 +48,4 @@ services:
 
 volumes:
   litegen_db:
+  litegen_assets:

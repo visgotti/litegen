@@ -147,3 +147,38 @@ async fn the_listing_says_what_each_operation_works_on() {
     assert_eq!((retake["task"].as_str(), retake["supports_time_range"].as_bool()), (Some("retake"), Some(true)), "{retake}");
     assert_eq!(caps("mock/video-gen")["supports_source_video"], false);
 }
+
+/// 3D doc §5: a whole-clip edit (`task: video_edit`) regenerates every frame
+/// of its source, at the source's rate and length, and the job says the
+/// whole clip was generated.
+#[tokio::test]
+async fn a_whole_clip_edit_regenerates_every_frame_of_its_source() {
+    let (app, _db) = harness::app_with_mock_3d().await;
+    let src = source(&app).await;
+    let done = finished(&app, json!({ "model": "mock/edit-video", "prompt": "make it night", "source_video": on(&src) })).await;
+    assert!(close(&done["media"]["duration_s"], 2.0), "{done}");
+    assert_eq!(done["segments"], json!([{ "start_s": 0.0, "end_s": 2.0, "origin": "generated" }]), "{done}");
+    let (before, after) = (frames(&app, src["id"].as_str().unwrap()).await, frames(&app, done["id"].as_str().unwrap()).await);
+    assert_eq!(after.len(), before.len());
+    assert!(before.iter().zip(&after).all(|(a, b)| a != b), "every frame regenerated");
+}
+
+/// 3D doc §5: "Luma and Kling accept only their own earlier generations. So
+/// for them, litegen accepts only sources made on that vendor account, and
+/// refuses any other with `source_not_chainable`" — a URL or an upload is
+/// never the vendor's own, and is refused before anything is fetched or
+/// billed.
+#[tokio::test]
+async fn a_model_that_edits_only_its_own_generations_refuses_any_other_source() {
+    use litegen::db::DatabaseStore;
+    let (app, db) = harness::app_with_mock_3d().await;
+    let logged = db.get_request_logs(1, 100).await.unwrap().0.len();
+    for source_video in [
+        json!({ "type": "url", "value": "http://127.0.0.1:9/clip.gif", "format": "gif" }),
+        json!({ "type": "base64", "value": "R0lGODlhAQABAAAAACw=", "format": "gif" }),
+    ] {
+        let (s, resp) = post(&app, json!({ "model": "mock/edit-video", "prompt": "x", "source_video": source_video })).await;
+        assert_eq!((s.as_u16(), resp["error"]["code"].as_str()), (400, Some("source_not_chainable")), "{resp}");
+    }
+    assert_eq!(db.get_request_logs(1, 100).await.unwrap().0.len(), logged, "nothing billed");
+}

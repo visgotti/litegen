@@ -282,7 +282,7 @@ impl MiniMaxVideoProvider {
 
         Ok(VideoGenerationPollResult {
             status,
-            progress: if status == GenerationStatus::Completed { 100 } else { 50 },
+            progress: if status.is_terminal() { 100 } else { 50 },
             video_url: video_url.filter(|_| status == GenerationStatus::Completed),
             video_data: None,
             content_type: Some("video/mp4".into()),
@@ -436,20 +436,17 @@ impl VideoProvider for MiniMaxVideoProvider {
             })?;
 
         let status = resp.status();
-        let data: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse MiniMax response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
+        let data = crate::providers::read_vendor_json(resp, "MiniMax").await?;
         let code = data["base_resp"]["status_code"].as_i64().unwrap_or(0);
-        if !status.is_success() || code != 0 {
+        if code != 0 {
             let msg = data["base_resp"]["status_msg"].as_str().unwrap_or("Unknown error").to_string();
             return Err(ProviderError::RequestFailed {
                 message: format!("MiniMax API error ({code}): {msg}"),
                 status_code: Some(status.as_u16()),
                 provider_error: Some(data),
-                retryable: status.as_u16() >= 500,
+                // "`1002`, Rate limit triggered, please try again later"
+                // @see <https://platform.minimax.io/docs/api-reference/video-generation-t2v.md> (2026-10-30)
+                retryable: code == 1002,
             });
         }
 
@@ -873,10 +870,33 @@ mod tests {
         let failed = provider.poll_status(&v2_handle("t-failed", "minimax/MiniMax-H3")).await.unwrap();
         assert_eq!(failed.status, GenerationStatus::Failed);
         assert_eq!(failed.error.as_deref(), Some("video description contains sensitive content"));
+        assert_eq!(failed.progress, 100, "W15: a terminal poll is done");
 
         let done = provider.poll_status(&v2_handle("t-done", "minimax/MiniMax-H3-Max")).await.unwrap();
         assert_eq!(done.status, GenerationStatus::Completed);
         assert_eq!(done.video_url.as_deref(), Some("https://cdn.minimax/h3.mp4"));
+    }
+
+    /// W14: v1 rate limiting comes as HTTP 200 with "`1002`, Rate limit
+    /// triggered, please try again later", or as a plain 429; a gateway's 5xx
+    /// page is not JSON. Each turned the call away and may be sent again.
+    #[tokio::test]
+    async fn a_turned_away_v1_submit_may_be_sent_again() {
+        let cases = [
+            (200, json!({ "base_resp": { "status_code": 1002, "status_msg": "Rate limit triggered, please try again later" } }).to_string()),
+            (429, "too many requests".to_string()),
+            (502, "<html>bad gateway</html>".to_string()),
+        ];
+        for (status, body) in cases {
+            let server = MockServer::start().await;
+            Mock::given(method("POST")).respond_with(ResponseTemplate::new(status).set_body_string(body.clone())).mount(&server).await;
+            let materialized = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+            let err = make_provider(&server.uri())
+                .generate(&ref_schema("minimax/MiniMax-Hailuo-02"), &make_base("x", "minimax/MiniMax-Hailuo-02"), &make_extras(), &materialized)
+                .await
+                .unwrap_err();
+            assert!(err.is_retryable(), "{status} {body}: {err:?}");
+        }
     }
 
     #[tokio::test]
