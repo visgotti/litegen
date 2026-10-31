@@ -137,7 +137,7 @@ unit price per delivered output, so the three agree.
 | per megapixel | `fal/flux-pro` 0.04, `fal/flux-dev` 0.025, `fal/flux-schnell` 0.003, `fal/flux-2` 0.012, `fal/sd35-medium` 0.02 | `per_megapixel_usd` | fal's "per megapixels" (llms.txt); how fal counts or rounds megapixels is undocumented **(unverified)** | 🟡 |
 | per second | `runway/gen4.5` 0.12, `runway/gen4-turbo` 0.05; `kling/video-kling-v2-5-turbo`, `-v2-6`, `-v3` by `extra.mode` / `extra.sound`; `minimax/MiniMax-H3`, `-H3-Max` by `resolution`; `vidu/viduq3-turbo` 0.055, `viduq3-pro` 0.10 (720p; other resolutions unpublished in the rows), `viduq2-pro-fast` $0.04 + $0.01/s after the first; `fal/ltx-2.3` by `resolution`; `pixverse/v6`, `pixverse/c1` by `resolution` and `extra.generate_audio_switch` | `per_second_usd` (+ `add_usd`) | each row's quoted vendor rate | 🟡 |
 | fixed tiers | `pixverse/v5` (5 s / 8 s × resolution), `pixverse/v5-multi-transition` (1–10, 15, 20, 25, 30 s × resolution), `ideogram/ideogram-4-5-precise-edit` (quality) | `usd` by value | rows' quoted tables | 🟡 |
-| multipliers and add-ons | `fal/hyper3d-rodin` HighPack ×3, `fal/hunyuan3d-v2` textured ×3, `fal/hunyuan3d-v3.1-pro` +$0.15 each for PBR, views, a face count, `fal/tripo-h3.1-multiview` $0.20 untextured | `multiply`, `add_usd`, `usd` | fal llms.txt quotes | 🟡 |
+| multipliers and add-ons | `fal/recraft-v3` vector style ×2, `fal/hyper3d-rodin` HighPack ×3, `fal/hunyuan3d-v2` textured ×3, `fal/hunyuan3d-v3.1-pro` +$0.15 each for PBR, views, a face count, `fal/tripo-h3.1-multiview` $0.20 untextured | `multiply`, `add_usd`, `usd` | fal llms.txt quotes | 🟡 |
 | per clip | `tripo/animate` $0.10, `meshy/animate` $0.06 | `per_item_usd` × `animations` | Tripo pricing; Meshy provisional | 🟡 |
 
 PixVerse states "225 Credits = USD 1" (2026-10-30); its rows were priced at
@@ -253,7 +253,7 @@ repeated here):
 
 ```
 image   aspect_ratio     aspect_ratio  26  bfl/flux-kontext-max
-image   guidance_scale   float         12  bedrock/amazon.nova-canvas-v1:0
+image   guidance_scale   float         13  bedrock/amazon.nova-canvas-v1:0
 image   negative_prompt  string        22  bedrock/amazon.nova-canvas-v1:0
 image   quality          string         4  bedrock/amazon.nova-canvas-v1:0
 image   seed             seed          39  bedrock/amazon.nova-canvas-v1:0
@@ -269,6 +269,19 @@ video   negative_prompt  string         3  kling/video-kling-v1-6
 video   resolution       string        23  bedrock/amazon.nova-reel-v1:1
 video   seed             seed          10  bedrock/amazon.nova-reel-v1:1
 ```
+
+### fal adapters (audit 2026-10-30)
+
+| behaviour | rule | proof | status |
+|---|---|---|---|
+| owned fields | `extra` adds an endpoint's knobs but never replaces `prompt`, `image_size`, `seed`, `image_url`, `duration`, …; `num_images` and `sync_mode` are never sent (fal bills every image it makes; litegen keeps one) | `extra_cannot_replace_what_litegen_sends_and_num_images_is_never_sent` (image), `extra_cannot_replace_what_litegen_sends` (video) | ✅ wiremock |
+| no second billed run | a send that may have reached fal, and any result download after a 2xx, is never retried; a sync 5xx follows `X-Fal-Needs-Retry` | `a_result_that_will_not_download_after_fal_ran_is_never_run_again`, `fals_errors_are_read_whole_whatever_their_shape` | ✅ wiremock |
+| errors | every fal error shape (a `detail` array, a `detail` string with `error_type`, a gateway page) is read whole before its status is judged | same; video `fals_verdicts_fail_the_job_and_a_gateway_page_is_asked_again` | ✅ wiremock |
+| queue URLs | the URLs fal returned only when they are on the configured base; else rebuilt with the app id (a URL with the endpoint path is a 405) | `a_job_is_polled_and_cancelled_at_the_configured_base_by_its_app_id` | ✅ wiremock |
+| verdicts | `COMPLETED` with `error`, or a result answering the model's error, fails the job on every arm; a gateway page is asked again | `fals_verdicts_fail_the_job_and_a_gateway_page_is_asked_again` | ✅ wiremock |
+| result downloads | public addresses only, at most 64 MiB, no redirects | `a_result_is_fetched_only_from_a_public_address` | ✅ |
+| hosts | images run on fal's sync host (`https://fal.run`, or `options.sync_api_base`); `api_base` is the queue host video and 3D share | `images_run_on_fals_sync_host_beside_its_queue_host` | ✅ |
+| health | every fal adapter checks the key against the Platform API (`/v1/models/pricing`) | `health_check_validates_the_key_against_the_platform_api` (image, video, 3D) | ✅ wiremock |
 
 ### Image
 

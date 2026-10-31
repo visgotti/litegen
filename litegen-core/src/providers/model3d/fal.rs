@@ -61,11 +61,11 @@ use crate::types::*;
 
 /// fal's queue API. `api_base` in the provider config overrides it, which is
 /// how the tests point the adapter at a local mock.
-const DEFAULT_QUEUE_BASE: &str = "https://queue.fal.run";
+pub(crate) const DEFAULT_QUEUE_BASE: &str = "https://queue.fal.run";
 
 /// fal's Platform API, used only to check a key. `options.platform_api_base`
 /// overrides it.
-const DEFAULT_PLATFORM_BASE: &str = "https://api.fal.ai/v1";
+pub(crate) const DEFAULT_PLATFORM_BASE: &str = "https://api.fal.ai/v1";
 
 /// The endpoint `health_check` asks the price of — any public id will do.
 const HEALTH_CHECK_ENDPOINT: &str = "fal-ai/trellis";
@@ -479,7 +479,7 @@ fn vendor_format(spec: &EndpointSpec, requested: &[String]) -> Option<String> {
 
 /// Whether asking again can help: a server-side failure, a timeout, or fal's
 /// concurrency limiter (429 — two runs at once on a new account).
-fn transient(status: StatusCode) -> bool {
+pub(crate) fn transient(status: StatusCode) -> bool {
     status.is_server_error()
         || status == StatusCode::REQUEST_TIMEOUT
         || status == StatusCode::TOO_MANY_REQUESTS
@@ -496,7 +496,7 @@ fn transient(status: StatusCode) -> bool {
 ///
 /// @see <https://fal.ai/docs/documentation/model-apis/errors>
 /// @see <https://fal.ai/docs/documentation/model-apis/request-errors>
-fn fal_error_message(body: &Value) -> String {
+pub(crate) fn fal_error_message(body: &Value) -> String {
     if let Some(s) = body["detail"].as_str().filter(|s| !s.is_empty()) {
         return match body["error_type"].as_str().filter(|t| !t.is_empty()) {
             Some(t) => format!("{s} ({t})"),
@@ -568,27 +568,37 @@ fn file_url(v: &Value) -> Option<(&str, &str)> {
 }
 
 /// A response header as text, if present.
-fn header<'a>(headers: &'a reqwest::header::HeaderMap, name: &str) -> Option<&'a str> {
+pub(crate) fn header<'a>(headers: &'a reqwest::header::HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name).and_then(|v| v.to_str().ok()).map(str::trim).filter(|v| !v.is_empty())
 }
 
 /// fal's `X-Fal-Needs-Retry`, when it sent one.
-fn needs_retry(headers: &reqwest::header::HeaderMap) -> Option<bool> {
+pub(crate) fn needs_retry(headers: &reqwest::header::HeaderMap) -> Option<bool> {
     header(headers, "x-fal-needs-retry").map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
 }
 
 /// One reply from a fal queue URL, read whole: status, fal's error-type header,
 /// and the body — parsed when it is JSON, kept as text either way.
-struct QueueReply {
-    status: StatusCode,
-    error_type: Option<String>,
-    json: Option<Value>,
-    text: String,
+pub(crate) struct QueueReply {
+    pub(crate) status: StatusCode,
+    pub(crate) error_type: Option<String>,
+    pub(crate) json: Option<Value>,
+    pub(crate) text: String,
 }
 
 impl QueueReply {
+    /// Read a reply whole: its status, fal's error-type header, and its body —
+    /// parsed when it is JSON, kept as text either way.
+    pub(crate) async fn read(resp: reqwest::Response) -> Result<Self, reqwest::Error> {
+        let status = resp.status();
+        let error_type = header(resp.headers(), "x-fal-error-type").map(str::to_string);
+        let text = resp.text().await?;
+        let json = serde_json::from_str(&text).ok();
+        Ok(Self { status, error_type, json, text })
+    }
+
     /// What went wrong, in fal's words when it sent any.
-    fn describe(&self) -> String {
+    pub(crate) fn describe(&self) -> String {
         match &self.json {
             Some(j) => {
                 let msg = fal_error_message(j);
@@ -609,7 +619,7 @@ impl QueueReply {
     /// definitive. A transient code counts only when it carries fal's own error
     /// envelope — a stored request error (`error_type`) or a model error
     /// (`detail` array) — and not, say, a gateway's HTML page.
-    fn is_verdict(&self) -> bool {
+    pub(crate) fn is_verdict(&self) -> bool {
         if !transient(self.status) {
             return true;
         }
@@ -626,6 +636,59 @@ impl QueueReply {
             provider_error: self.json,
             retryable,
         }
+    }
+}
+
+/// The owner and app of an endpoint id, which is all a queue URL names:
+/// `fal-ai/hyper3d/rodin` → `fal-ai/hyper3d`. Used whenever the URLs fal
+/// returned at submit cannot be (they were lost, or a configured base makes
+/// them untrusted): a URL with the endpoint path answers 405.
+///
+/// @see <https://fal.ai/docs/documentation/model-apis/inference/queue> — Verbatim: "These URLs use
+/// only the owner and the app (`fal-ai/flux`), not the full model ID."
+pub(crate) fn queue_app(endpoint: &str) -> String {
+    endpoint.splitn(3, '/').take(2).collect::<Vec<_>>().join("/")
+}
+
+/// `candidate` when it is on `base`'s origin, else `None`: the API key
+/// travels with every queue call, so a URL fal names anywhere else is rebuilt
+/// from the configured base instead of trusted.
+pub(crate) fn same_origin_url(base: &str, candidate: Option<&str>) -> Option<String> {
+    let candidate = candidate.filter(|u| !u.is_empty())?;
+    let url = reqwest::Url::parse(candidate).ok()?;
+    let base = reqwest::Url::parse(base).ok()?;
+    let same = url.scheme() == base.scheme()
+        && url.host_str() == base.host_str()
+        && url.port_or_known_default() == base.port_or_known_default();
+    same.then(|| candidate.to_string())
+}
+
+/// Check a fal key against the Platform API — the price of one public
+/// endpoint. Free, read-only, and authenticated: 401 or 403 means the key is
+/// bad. Every fal adapter shares it; `rest.alpha.fal.ai/tokens/current`, the
+/// route the image and video adapters used, now answers 404 for every key.
+///
+/// @see <https://fal.ai/docs/platform-apis/v1/models/pricing> — Verbatim: "Authentication:
+/// Required. Users must provide a valid API key."
+pub(crate) async fn platform_key_check(client: &Client, platform_base: &str, api_key: &str) -> HealthCheckResult {
+    let url = format!("{}/models/pricing?endpoint_id={HEALTH_CHECK_ENDPOINT}", platform_base.trim_end_matches('/'));
+    let start = std::time::Instant::now();
+    let reply = client
+        .get(&url)
+        .header("Authorization", format!("Key {api_key}"))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
+    let latency_ms = Some(start.elapsed().as_millis() as u64);
+    match reply {
+        Ok(r) if r.status().is_success() => HealthCheckResult { healthy: true, message: "fal API key valid".into(), latency_ms },
+        Ok(r) if matches!(r.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => HealthCheckResult {
+            healthy: false,
+            message: format!("fal rejected the API key (HTTP {})", r.status().as_u16()),
+            latency_ms,
+        },
+        Ok(r) => HealthCheckResult { healthy: false, message: format!("fal returned HTTP {}", r.status().as_u16()), latency_ms },
+        Err(e) => HealthCheckResult { healthy: false, message: format!("fal health check failed: {e}"), latency_ms },
     }
 }
 
@@ -716,21 +779,11 @@ impl FalModel3dProvider {
     /// so a URL from anywhere else is rebuilt from the base instead — the key
     /// is never sent to a host the operator did not configure.
     fn trusted_queue_url(&self, candidate: Option<&str>) -> Option<String> {
-        let candidate = candidate.filter(|u| !u.is_empty())?;
-        let url = reqwest::Url::parse(candidate).ok()?;
-        let base = reqwest::Url::parse(self.queue_base()).ok()?;
-        let same_origin = url.scheme() == base.scheme()
-            && url.host_str() == base.host_str()
-            && url.port_or_known_default() == base.port_or_known_default();
-        same_origin.then(|| candidate.to_string())
+        same_origin_url(self.queue_base(), candidate)
     }
 
-    /// The owner and app of an endpoint id, which is all a queue URL names:
-    /// `fal-ai/hyper3d/rodin` → `fal-ai/hyper3d`. Used whenever the URLs fal
-    /// returned at submit cannot be (they were lost, or a configured base
-    /// makes them untrusted).
     fn queue_app(endpoint: &str) -> String {
-        endpoint.splitn(3, '/').take(2).collect::<Vec<_>>().join("/")
+        queue_app(endpoint)
     }
 
     fn job(&self, handle: &Model3dGenerationHandle) -> Result<FalJob, ProviderError> {
@@ -1442,32 +1495,7 @@ impl Model3dProvider for FalModel3dProvider {
         let Ok(api_key) = self.api_key() else {
             return HealthCheckResult { healthy: false, message: "No API key".into(), latency_ms: None };
         };
-        let url = format!("{}/models/pricing?endpoint_id={HEALTH_CHECK_ENDPOINT}", self.platform_base());
-        let start = std::time::Instant::now();
-        let reply = self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Key {api_key}"))
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await;
-        let latency_ms = Some(start.elapsed().as_millis() as u64);
-        match reply {
-            Ok(r) if r.status().is_success() => {
-                HealthCheckResult { healthy: true, message: "fal API key valid".into(), latency_ms }
-            }
-            Ok(r) if matches!(r.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => HealthCheckResult {
-                healthy: false,
-                message: format!("fal rejected the API key (HTTP {})", r.status().as_u16()),
-                latency_ms,
-            },
-            Ok(r) => HealthCheckResult {
-                healthy: false,
-                message: format!("fal returned HTTP {}", r.status().as_u16()),
-                latency_ms,
-            },
-            Err(e) => HealthCheckResult { healthy: false, message: format!("fal health check failed: {e}"), latency_ms },
-        }
+        platform_key_check(&self.client, self.platform_base(), &api_key).await
     }
 
     /// `PUT …/requests/{id}/cancel`. A queued request is removed and never runs

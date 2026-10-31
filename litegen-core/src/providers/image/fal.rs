@@ -9,19 +9,43 @@ use crate::providers::{
     ApiKeyPool, BaseGenerationRequest, GenerationOutput, HealthCheckResult, ImageExtras,
     ImageProvider, ProviderError, ProviderInstanceConfig, SegmentationInput, VendorMask, build_cost_estimate,
 };
+use crate::providers::model3d::download::{fetch_asset, AssetError};
+use crate::providers::model3d::fal::{needs_retry, platform_key_check, transient, QueueReply, DEFAULT_PLATFORM_BASE, DEFAULT_QUEUE_BASE};
 use crate::types::*;
+
+/// fal's synchronous host, where images run.
+const DEFAULT_SYNC_BASE: &str = "https://fal.run";
+
+/// The most a result image may weigh.
+const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// What litegen itself sends in a generation body; `extra` cannot replace it.
+/// `num_images` and `sync_mode` are here although litegen sends neither: fal
+/// would bill every image it made while litegen keeps one, and a `data:` URI
+/// result is not one the adapter fetches.
+const OWNED_FIELDS: &[&str] = &[
+    "prompt", "num_images", "image_size", "seed", "negative_prompt", "guidance_scale",
+    "num_inference_steps", "strength", "style", "image_url", "sync_mode", "output_format",
+];
 
 /// Fal.ai image generation provider.
 ///
 /// Routes to model-specific Fal endpoints for Flux, SDXL, SD3.5, Recraft, etc.
 /// Sync API: `POST https://fal.run/{endpoint}` → `{images: [{url, ...}]}`
 ///
-/// @see <https://docs.fal.ai/model-apis/model-endpoints> — synchronous model endpoints (`fal.run`)
+/// @see <https://fal.ai/docs/documentation/model-apis/inference/synchronous> — Verbatim: "`run`
+///   sends a direct HTTP request to `fal.run`. There is no queue and no status polling."
 /// @see <https://fal.ai/models> — per-model API pages documenting each endpoint's input schema
 pub struct FalProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
     client: Client,
+    /// Result downloads: no redirects, so a URL that passed the public-address
+    /// check cannot bounce into a private one.
+    asset_client: Client,
+    /// Whether a result URL must resolve to a public address. Only the tests,
+    /// whose mock vendor runs on loopback, turn it off.
+    pub(crate) public_assets_only: bool,
 }
 
 impl FalProvider {
@@ -33,6 +57,11 @@ impl FalProvider {
                 .timeout(std::time::Duration::from_secs(300))
                 .build()
                 .expect("failed to build HTTP client"),
+            asset_client: crate::util::ssrf::no_redirect_download_client(
+                std::time::Duration::from_secs(120),
+                std::time::Duration::from_secs(30),
+            ),
+            public_assets_only: true,
         }
     }
 
@@ -46,12 +75,32 @@ impl FalProvider {
             .ok_or_else(|| ProviderError::NotConfigured("fal".into()))
     }
 
-    /// The base URL (defaults to https://fal.run, overridable for tests).
-    fn api_base(&self) -> &str {
+    /// The host images RUN on. `providers.fal.api_base` is shared with the
+    /// video and 3D adapters, for which it is fal's QUEUE host, so fal's own
+    /// queue host means its sync host here, and any other base (a proxy) is
+    /// used for both; `options.sync_api_base` names the sync host outright.
+    ///
+    /// @see <https://fal.ai/docs/documentation/model-apis/inference/queue> — Verbatim: "Submit
+    ///   requests to queue.fal.run"
+    pub(crate) fn sync_base(&self) -> String {
+        let config = self.config.as_ref();
+        if let Some(base) = config.and_then(|c| c.options.as_ref()).and_then(|o| o["sync_api_base"].as_str()) {
+            return base.trim_end_matches('/').to_string();
+        }
+        match config.and_then(|c| c.api_base.as_deref()).map(|b| b.trim_end_matches('/')) {
+            None => DEFAULT_SYNC_BASE.to_string(),
+            Some(b) if b == DEFAULT_QUEUE_BASE => DEFAULT_SYNC_BASE.to_string(),
+            Some(b) => b.to_string(),
+        }
+    }
+
+    /// fal's Platform API, which the health check reads.
+    fn platform_base(&self) -> &str {
         self.config
             .as_ref()
-            .and_then(|c| c.api_base.as_deref())
-            .unwrap_or("https://fal.run")
+            .and_then(|c| c.options.as_ref())
+            .and_then(|o| o["platform_api_base"].as_str())
+            .unwrap_or(DEFAULT_PLATFORM_BASE)
     }
 
     /// Resolve litegen model ID to the Fal endpoint path (e.g. "fal-ai/flux/dev").
@@ -100,34 +149,24 @@ impl FalProvider {
         }
     }
 
-    /// Download the rendered image from the `images[].url` returned by the sync
-    /// `fal.run` call (a plain HTTPS GET of the Fal-hosted asset, not an endpoint).
-    ///
-    /// @see <https://docs.fal.ai/model-apis/model-endpoints> — response `images[].url` field
+    /// Download a result from the URL fal answered with: without the key,
+    /// only from a public address, and never past the size limit. fal has run
+    /// and billed the job by now, so no failure here is worth sending the
+    /// request again — every error is final.
     async fn fetch_image_bytes(&self, url: &str) -> Result<Vec<u8>, ProviderError> {
-        let resp = self.client.get(url).send().await.map_err(|e| {
-            ProviderError::RequestFailed {
-                message: format!("Failed to fetch Fal image: {e}"),
-                status_code: e.status().map(|s| s.as_u16()),
-                provider_error: None,
-                retryable: true,
+        match fetch_asset(&self.asset_client, url, MAX_IMAGE_BYTES, self.public_assets_only, "fal image").await {
+            Ok((bytes, _)) => Ok(bytes),
+            Err(AssetError::Transient(ProviderError::RequestFailed { message, status_code, provider_error, .. })) => {
+                Err(ProviderError::RequestFailed { message, status_code, provider_error, retryable: false })
             }
-        })?;
-        if !resp.status().is_success() {
-            return Err(ProviderError::RequestFailed {
-                message: format!("Fal image URL returned HTTP {}", resp.status()),
-                status_code: Some(resp.status().as_u16()),
+            Err(AssetError::Transient(e)) => Err(e),
+            Err(AssetError::Gone(why)) => Err(ProviderError::RequestFailed {
+                message: format!("fal image result could not be fetched: {why}"),
+                status_code: None,
                 provider_error: None,
                 retryable: false,
-            });
+            }),
         }
-        let bytes = resp.bytes().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to read Fal image bytes: {e}"),
-            status_code: None,
-            provider_error: None,
-            retryable: false,
-        })?;
-        Ok(bytes.to_vec())
     }
 
     /// A result file's bytes: decoded from a `data:` URI (`sync_mode`), or
@@ -145,42 +184,52 @@ impl FalProvider {
         }
     }
 
-    /// POST `body` to `fal.run/{endpoint}` and read the JSON answer; a vendor
-    /// error carries fal's own `detail` (a 422's is a list of `{msg}`).
+    /// POST `body` to `{sync}/{endpoint}` and read the JSON answer. The reply
+    /// is read whole before its status is judged, so a gateway's HTML page is
+    /// a retryable 502, not a parse error; a vendor error names every message
+    /// in any of fal's error shapes; and fal's `X-Fal-Needs-Retry` decides
+    /// whether to ask again when it sent one. A connection that never opened
+    /// is the only send failure worth repeating: fal runs, and bills, a
+    /// request it received.
+    ///
+    /// @see <https://fal.ai/docs/api-reference/inference-api/sync/run.md> — Verbatim: "fal does not
+    ///   retry synchronous requests. If a request fails because of a temporary error, the response
+    ///   has `X-Fal-Needs-Retry: 1`."
+    /// @see <https://fal.ai/docs/documentation/model-apis/errors> — Verbatim: "Contains a `detail`
+    ///   field which is an array of `Error` objects."
     async fn run(&self, endpoint: &str, body: &Value) -> Result<Value, ProviderError> {
         let api_key = self.api_key()?;
-        let url = format!("{}/{}", self.api_base(), endpoint);
+        let url = format!("{}/{}", self.sync_base(), endpoint);
         let resp = crate::providers::inject_trace_headers(self.client.post(&url).header("Authorization", format!("Key {api_key}")).json(body))
             .send()
             .await
             .map_err(|e| ProviderError::RequestFailed {
                 message: format!("Fal request failed: {e}"),
-                status_code: e.status().map(|s| s.as_u16()),
+                status_code: None,
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
+                retryable: e.is_connect(),
             })?;
-        let status = resp.status();
-        let answer: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse Fal response: {e}"),
-            status_code: Some(status.as_u16()),
+        let retry = needs_retry(resp.headers());
+        let reply = QueueReply::read(resp).await.map_err(|e| ProviderError::RequestFailed {
+            message: format!("Fal response could not be read: {e}"),
+            status_code: None,
             provider_error: None,
             retryable: false,
         })?;
-        if !status.is_success() {
-            let detail = answer["detail"]
-                .as_str()
-                .map(str::to_string)
-                .or_else(|| answer["detail"][0]["msg"].as_str().map(str::to_string))
-                .or_else(|| answer["message"].as_str().map(str::to_string))
-                .unwrap_or_else(|| "Unknown error".into());
+        if !reply.status.is_success() {
             return Err(ProviderError::RequestFailed {
-                message: format!("Fal API error: {detail}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(answer),
-                retryable: status.as_u16() >= 500,
+                message: format!("Fal API error: {}", reply.describe()),
+                status_code: Some(reply.status.as_u16()),
+                retryable: retry.unwrap_or_else(|| transient(reply.status)),
+                provider_error: reply.json,
             });
         }
-        Ok(answer)
+        reply.json.ok_or_else(|| ProviderError::RequestFailed {
+            message: format!("Fal answered HTTP {} with a body that is not JSON", reply.status.as_u16()),
+            status_code: Some(reply.status.as_u16()),
+            provider_error: None,
+            retryable: false,
+        })
     }
 
     /// Background removal (PixelGenie L8): only the image, the endpoint's own
@@ -197,7 +246,9 @@ impl FalProvider {
         let mut body = json!({ "image_url": image_url, "sync_mode": true });
         if let (Some(Value::Object(extra)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
             for (k, v) in extra {
-                obj.insert(k.clone(), v.clone());
+                if !OWNED_FIELDS.contains(&k.as_str()) {
+                    obj.insert(k.clone(), v.clone());
+                }
             }
         }
         if let Some(f) = extras.output_format.as_deref() {
@@ -256,9 +307,10 @@ impl ImageProvider for FalProvider {
 
     /// Run a model synchronously via `POST {fal.run}/{endpoint}`.
     ///
-    /// @see <https://docs.fal.ai/model-apis/model-endpoints> — synchronous run; `Authorization: Key <token>`,
-    ///   JSON body, and the `{images: [{url, content_type}]}` response shape this method parses.
-    /// @see <https://fal.ai/models> — per-model pages proving the `image_size`, `num_images`, `seed`,
+    /// @see <https://fal.ai/docs/documentation/model-apis/inference/synchronous> — synchronous run;
+    ///   `Authorization: Key <token>`, JSON body, and the `{images: [{url, content_type}]}` response
+    ///   shape this method parses.
+    /// @see <https://fal.ai/models> — per-model pages proving the `image_size`, `seed`,
     ///   `guidance_scale`, `num_inference_steps`, `strength`, and `image_url` input fields.
     async fn generate(
         &self,
@@ -267,12 +319,10 @@ impl ImageProvider for FalProvider {
         extras: &ImageExtras,
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
-        let api_key = self.api_key()?;
         let endpoint = self.resolve_endpoint(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "fal".into() })?;
         if model.capabilities.background_removal {
             return self.remove_background(endpoint, extras, materialized).await;
         }
-        let url = format!("{}/{}", self.api_base(), endpoint);
 
         // Build request body
         let mut body = json!({
@@ -289,8 +339,8 @@ impl ImageProvider for FalProvider {
             }
         }
 
-        // Number of images
-        body["num_images"] = Value::Number(base.n.max(1).into());
+        // No `num_images`: every carried endpoint defaults to 1, and litegen
+        // returns (and bills) one image — fal would bill every one it made.
 
         if let Some(seed) = base.seed {
             body["seed"] = Value::Number(seed.into());
@@ -330,56 +380,21 @@ impl ImageProvider for FalProvider {
             }
         }
 
-        // Shallow-merge extra
-        if let Some(Value::Object(extra_map)) = &extras.extra {
-            if let Some(body_obj) = body.as_object_mut() {
-                for (k, v) in extra_map {
+        // `extra` adds the endpoint's own knobs; it cannot replace a field
+        // litegen sets (rule 11), which lax mode would otherwise let it.
+        if let (Some(Value::Object(extra_map)), Some(body_obj)) = (&extras.extra, body.as_object_mut()) {
+            for (k, v) in extra_map {
+                if !OWNED_FIELDS.contains(&k.as_str()) {
                     body_obj.insert(k.clone(), v.clone());
                 }
             }
         }
-        // PixelGenie L9: the asked container, after `extra` so it wins.
+        // PixelGenie L9: the asked container.
         if let Some(f) = extras.output_format.as_deref() {
             body["output_format"] = Value::String(f.to_string());
         }
 
-        let resp = crate::providers::inject_trace_headers(
-            self.client
-                .post(&url)
-                .header("Authorization", format!("Key {api_key}"))
-                .header("Content-Type", "application/json")
-                .json(&body),
-        )
-        .send()
-        .await
-        .map_err(|e| ProviderError::RequestFailed {
-            message: format!("Fal request failed: {e}"),
-            status_code: e.status().map(|s| s.as_u16()),
-            provider_error: None,
-            retryable: e.is_timeout() || e.is_connect(),
-        })?;
-
-        let status = resp.status();
-        let resp_json: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse Fal response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
-
-        if !status.is_success() {
-            let err = resp_json["detail"]
-                .as_str()
-                .or_else(|| resp_json["message"].as_str())
-                .unwrap_or("Unknown error")
-                .to_string();
-            return Err(ProviderError::RequestFailed {
-                message: format!("Fal API error: {err}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(resp_json),
-                retryable: status.as_u16() >= 500,
-            });
-        }
+        let resp_json = self.run(endpoint, &body).await?;
 
         // Fal returns: {images: [{url: "...", content_type: "image/jpeg", ...}]}
         let images = resp_json["images"].as_array().ok_or_else(|| {
@@ -414,7 +429,7 @@ impl ImageProvider for FalProvider {
             .unwrap_or("image/jpeg")
             .to_string();
 
-        let image_bytes = self.fetch_image_bytes(image_url).await?;
+        let image_bytes = self.result_bytes(image_url).await?;
 
         let mut metadata = HashMap::new();
         metadata.insert("url".to_string(), Value::String(image_url.to_string()));
@@ -506,10 +521,7 @@ impl ImageProvider for FalProvider {
         Ok(out)
     }
 
-    /// Validate the API key via `GET https://rest.alpha.fal.ai/tokens/current`
-    /// (Fal's token-introspection endpoint), authenticated with `Authorization: Key`.
-    ///
-    /// @see <https://docs.fal.ai/authentication/key-based> — key-based authentication
+    /// Check the key against fal's Platform API (`platform_key_check`).
     async fn health_check(&self) -> HealthCheckResult {
         if !self.is_configured() {
             return HealthCheckResult {
@@ -518,41 +530,10 @@ impl ImageProvider for FalProvider {
                 latency_ms: None,
             };
         }
-        let start = std::time::Instant::now();
-        let api_key = match self.api_key() {
-            Ok(k) => k,
-            Err(_) => {
-                return HealthCheckResult {
-                    healthy: false,
-                    message: "No API key".into(),
-                    latency_ms: None,
-                }
-            }
+        let Ok(api_key) = self.api_key() else {
+            return HealthCheckResult { healthy: false, message: "No API key".into(), latency_ms: None };
         };
-        match self
-            .client
-            .get("https://rest.alpha.fal.ai/tokens/current")
-            .header("Authorization", format!("Key {api_key}"))
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => HealthCheckResult {
-                healthy: true,
-                message: "Fal API key valid".into(),
-                latency_ms: Some(start.elapsed().as_millis() as u64),
-            },
-            Ok(resp) => HealthCheckResult {
-                healthy: false,
-                message: format!("Fal returned HTTP {}", resp.status()),
-                latency_ms: Some(start.elapsed().as_millis() as u64),
-            },
-            Err(e) => HealthCheckResult {
-                healthy: false,
-                message: format!("Fal health check failed: {e}"),
-                latency_ms: Some(start.elapsed().as_millis() as u64),
-            },
-        }
+        platform_key_check(&self.client, self.platform_base(), &api_key).await
     }
 }
 
@@ -792,6 +773,9 @@ mod tests {
         }
     }
 
+    /// A provider against a mock fal. Its result URLs are on loopback, so the
+    /// public-address check is off — `a_result_is_fetched_only_from_a_public_address`
+    /// covers it.
     fn make_provider(api_base: &str) -> FalProvider {
         let mut p = FalProvider::new();
         p.configure(ProviderInstanceConfig {
@@ -803,6 +787,7 @@ mod tests {
             extra_headers: Default::default(),
             options: None,
         });
+        p.public_assets_only = false;
         p
     }
 
@@ -992,5 +977,140 @@ mod tests {
         assert_eq!(body["guidance_scale"], 3.5);
         assert_eq!(body["num_inference_steps"], 28);
         assert_eq!(body["image_size"]["width"], 1024);
+    }
+
+    // ─── fal audit, 2026-10-30: F04-F09, F11 ────────────────────────────────
+
+    fn configured(api_base: Option<&str>, options: Option<Value>) -> FalProvider {
+        let mut p = FalProvider::new();
+        p.configure(ProviderInstanceConfig { api_key: "test-key".into(), api_base: api_base.map(str::to_string), options, ..Default::default() });
+        p
+    }
+
+    /// F09: `providers.fal.api_base` is fal's QUEUE host for video and 3D;
+    /// images run on its sync host, which is not that one.
+    #[test]
+    fn images_run_on_fals_sync_host_beside_its_queue_host() {
+        assert_eq!(configured(None, None).sync_base(), "https://fal.run");
+        assert_eq!(configured(Some("https://queue.fal.run"), None).sync_base(), "https://fal.run");
+        assert_eq!(configured(Some("https://fal-proxy.example/fal"), None).sync_base(), "https://fal-proxy.example/fal");
+        let split = configured(Some("https://queue.fal.run"), Some(json!({ "sync_api_base": "https://sync.example/" })));
+        assert_eq!(split.sync_base(), "https://sync.example");
+    }
+
+    async fn image_answer(server: &MockServer, endpoint: &str, images: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path(format!("/{endpoint}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "images": [{ "url": format!("{}/out.png", images.uri()), "content_type": "image/png" }] })))
+            .mount(server)
+            .await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"PNG".to_vec())).mount(images).await;
+    }
+
+    /// F05, F06: what litegen sets, `extra` cannot replace, and `num_images`
+    /// is never sent — fal would bill every image it made and litegen keeps
+    /// one, and Recraft V3 has no such field.
+    #[tokio::test]
+    async fn extra_cannot_replace_what_litegen_sends_and_num_images_is_never_sent() {
+        let (server, images) = (MockServer::start().await, MockServer::start().await);
+        image_answer(&server, "fal-ai/flux/dev", &images).await;
+        let mut base = make_base("a lighthouse", "fal/flux-dev");
+        base.n = 2;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "prompt": "something else", "num_images": 4, "sync_mode": true, "seed": 7, "image_size": "square", "enable_safety_checker": false }));
+        make_provider(&server.uri()).generate(&ref_schema("fal/flux-dev"), &base, &extras, &empty_materialized()).await.unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!((body["prompt"].as_str(), body["seed"].as_i64()), (Some("a lighthouse"), Some(42)), "{body}");
+        assert_eq!(body["image_size"], json!({ "width": 1024, "height": 1024 }), "{body}");
+        assert!(body.get("num_images").is_none() && body.get("sync_mode").is_none(), "{body}");
+        assert_eq!(body["enable_safety_checker"], false, "a knob litegen does not own still passes: {body}");
+    }
+
+    /// F04: once fal answered 2xx it has run, and billed, the job — a result
+    /// that will not download is never worth a second, billed run.
+    #[tokio::test]
+    async fn a_result_that_will_not_download_after_fal_ran_is_never_run_again() {
+        let (server, images) = (MockServer::start().await, MockServer::start().await);
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(503)).mount(&images).await;
+        // A host that answers 503, and one that refuses the connection.
+        for url in [format!("{}/out.png", images.uri()), "http://127.0.0.1:1/out.png".to_string()] {
+            server.reset().await;
+            Mock::given(method("POST"))
+                .and(path("/fal-ai/flux/dev"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "images": [{ "url": url, "content_type": "image/png" }] })))
+                .mount(&server)
+                .await;
+            let err = make_provider(&server.uri())
+                .generate(&ref_schema("fal/flux-dev"), &make_base("x", "fal/flux-dev"), &make_extras(), &empty_materialized())
+                .await
+                .unwrap_err();
+            assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{url}: {err:?}");
+        }
+    }
+
+    /// F08: fal's model errors are an array of `{loc, msg}`, a gateway's page
+    /// is not JSON at all, and `X-Fal-Needs-Retry` says whether to ask again.
+    #[tokio::test]
+    async fn fals_errors_are_read_whole_whatever_their_shape() {
+        for (answer, says, retryable) in [
+            (ResponseTemplate::new(422).set_body_json(json!({ "detail": [{ "loc": ["body", "image_size"], "msg": "unsupported size", "type": "value_error" }] })), "body.image_size: unsupported size", false),
+            (ResponseTemplate::new(502).set_body_string("<html>Bad Gateway</html>"), "Bad Gateway", true),
+            (ResponseTemplate::new(429).set_body_json(json!({ "detail": "Too many concurrent requests", "error_type": "rate_limited" })), "Too many concurrent requests", true),
+            (ResponseTemplate::new(500).insert_header("x-fal-needs-retry", "0").set_body_json(json!({ "detail": "the model failed" })), "the model failed", false),
+            (ResponseTemplate::new(400).insert_header("x-fal-needs-retry", "1").set_body_json(json!({ "detail": "try again" })), "try again", true),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST")).and(path("/fal-ai/flux/dev")).respond_with(answer).mount(&server).await;
+            let err = make_provider(&server.uri())
+                .generate(&ref_schema("fal/flux-dev"), &make_base("x", "fal/flux-dev"), &make_extras(), &empty_materialized())
+                .await
+                .unwrap_err();
+            match &err {
+                ProviderError::RequestFailed { message, retryable: r, .. } => {
+                    assert!(message.contains(says), "{says}: {message}");
+                    assert_eq!(*r, retryable, "{says}: {err:?}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    /// F11: a result URL is fetched only from a public address, and never
+    /// past the size limit.
+    #[tokio::test]
+    async fn a_result_is_fetched_only_from_a_public_address() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/fal-ai/flux/dev"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "images": [{ "url": "http://169.254.169.254/latest/meta-data", "content_type": "image/png" }] })))
+            .mount(&server)
+            .await;
+        let mut p = make_provider(&server.uri());
+        p.public_assets_only = true;
+        let err = p
+            .generate(&ref_schema("fal/flux-dev"), &make_base("x", "fal/flux-dev"), &make_extras(), &empty_materialized())
+            .await
+            .unwrap_err();
+        assert!(matches!(&err, ProviderError::RequestFailed { message, retryable: false, .. } if message.contains("refused")), "{err:?}");
+    }
+
+    /// F07: the key is checked against fal's Platform API; the old
+    /// `rest.alpha.fal.ai/tokens/current` route is gone (404 for every key).
+    #[tokio::test]
+    async fn health_check_validates_the_key_against_the_platform_api() {
+        use wiremock::matchers::{header, query_param};
+        for (status, healthy) in [(200, true), (401, false)] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/models/pricing"))
+                .and(query_param("endpoint_id", "fal-ai/trellis"))
+                .and(header("authorization", "Key test-key"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(json!({})))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let p = configured(None, Some(json!({ "platform_api_base": server.uri() })));
+            assert_eq!(p.health_check().await.healthy, healthy, "{status}");
+        }
     }
 }

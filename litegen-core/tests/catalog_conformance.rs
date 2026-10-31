@@ -3420,3 +3420,68 @@ fn pixflux_forces_its_palette_at_native_size_and_recraft_takes_one_as_a_hint() {
         assert!(matches!(r.params.get("palette"), Some(ParamSpec::Palette(p)) if !p.forced && p.max_colors == 10), "{}", r.id);
     }
 }
+
+// ─── fal audit, 2026-10-30: F13, F14, F15, F17 ─────────────────────────────
+
+/// F14: `fal-ai/flux/schnell` takes 1-12 steps (default 4) and a guidance
+/// scale of 1-20 (default 3.5); the row allowed 4 steps and no guidance.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux/schnell> (2026-10-30)
+#[test]
+fn fal_flux_schnell_takes_up_to_twelve_steps_and_a_guidance_scale() {
+    let reg = registry();
+    let s = reg.get("fal/flux-schnell").expect("fal/flux-schnell");
+    match (s.params.get("steps"), s.params.get("guidance_scale")) {
+        (Some(ParamSpec::Int(steps)), Some(ParamSpec::Float(g))) => {
+            assert_eq!((steps.min, steps.max, steps.default), (Some(1), Some(12), Some(4)));
+            assert_eq!((g.min, g.max, g.default), (Some(1.0), Some(20.0), Some(3.5)));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// F15: each row promises its endpoint's own bounds.
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/flux/dev> (2026-10-30)
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/fast-sdxl> (2026-10-30)
+/// @see <https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/stable-diffusion-v35-medium> (2026-10-30)
+#[test]
+fn fal_image_rows_take_their_endpoints_whole_ranges() {
+    let reg = registry();
+    for (id, steps, guidance) in [
+        ("fal/flux-dev", (1, 50), (1.0, 20.0)),
+        ("fal/sdxl", (1, 50), (0.0, 20.0)),
+        ("fal/sd35-medium", (1, 50), (0.0, 20.0)),
+    ] {
+        let s = reg.get(id).expect(id);
+        match (s.params.get("steps"), s.params.get("guidance_scale")) {
+            (Some(ParamSpec::Int(st)), Some(ParamSpec::Float(g))) => {
+                assert_eq!((st.min, st.max), (Some(steps.0), Some(steps.1)), "{id} steps");
+                assert_eq!((g.min, g.max), (Some(guidance.0), Some(guidance.1)), "{id} guidance_scale");
+            }
+            other => panic!("{id}: {other:?}"),
+        }
+    }
+}
+
+/// F13: "Your request will cost $0.04 per image (or $0.08 if you are using a
+/// vector style)." The row billed a vector image at $0.04.
+/// @see <https://fal.ai/models/fal-ai/recraft/v3/text-to-image/llms.txt> (2026-10-30)
+#[test]
+fn fal_recraft_v3_bills_a_vector_style_twice() {
+    use litegen::capabilities::pricing::{unit_price_usd, PriceFacts};
+    let reg = registry();
+    let m = reg.get("fal/recraft-v3").expect("fal/recraft-v3");
+    for (style, usd) in [("vector_illustration", 0.08), ("realistic_image", 0.04), ("digital_illustration", 0.04)] {
+        let req = serde_json::json!({ "model": m.id, "prompt": "x", "style": style });
+        let base: litegen::types::BaseGenerationRequest = serde_json::from_value(req.clone()).unwrap();
+        assert!((unit_price_usd(m, &PriceFacts::new(m, &base, &req)) - usd).abs() < 1e-9, "{style}");
+    }
+}
+
+/// F17: every fal row names the endpoint page its fields were read from.
+#[test]
+fn every_fal_row_names_its_endpoint_page() {
+    for m in registry().all().filter(|m| m.provider == "fal") {
+        let url = m.docs_url.as_deref().unwrap_or_else(|| panic!("{} names no docs_url", m.id));
+        assert!(url.starts_with("https://fal.ai/models/") && url.ends_with("/api"), "{}: {url}", m.id);
+    }
+}

@@ -70,12 +70,16 @@ const API = 'https://api.fal.ai/v1/models';
 const FAMILIES = /(?:^|[/-])(?:flux|stable-diffusion|sdxl|sd3|recraft|aura-?flow|ltx|hyper3d|rodin|trellis|hunyuan-?3d|meshy|tripo|sam|bria|birefnet)/;
 
 const isTraining = (m) => m.metadata?.category === 'training' || m.metadata?.kind === 'training';
+// Every 3D endpoint is in scope whatever its family is called: fal adds 3D
+// vendors faster than a name list can follow (fal audit F31, 2026-10-30).
+const THREE_D_CATEGORIES = new Set(['image-to-3d', 'text-to-3d', '3d-to-3d']);
+const inScope = (m) => FAMILIES.test(m.endpoint_id) || THREE_D_CATEGORIES.has(m.metadata?.category);
 
 function catalogIds(page, { last }) {
   if (!Array.isArray(page.models)) throw new Error('response has no `models` array');
   if (page.models.length === 0) throw new Error('empty catalog page — the catalog shrank below this page; drop the source');
   if (last && page.has_more) throw new Error('the catalog outgrew the pages this definition fetches — add a source with the next cursor');
-  return page.models.filter((m) => FAMILIES.test(m.endpoint_id) && !isTraining(m)).map((m) => m.endpoint_id);
+  return page.models.filter((m) => inScope(m) && !isTraining(m)).map((m) => m.endpoint_id);
 }
 
 const CATALOG_NOTE =
@@ -158,6 +162,8 @@ export default {
   ],
   acknowledged: [
     { pattern: /\/stream$/, reason: 'streaming transport of the parent endpoint (same model and input schema), not a separate model' },
+    // fal audit F32 (2026-10-30): matches the FLUX family name only.
+    { pattern: /^fal-ai\/flux-3-action\/so101$/, reason: 'not a media model: a robot-arm action policy (SO-101) whose id happens to match the FLUX family name' },
     // Skips decided 2026-09-11 (docs/superpowers/2026-09-11-model-drift-decisions.md).
     {
       pattern: /^fal-ai\/ltx-video-13b-distilled(?:\/image-to-video)?$/,

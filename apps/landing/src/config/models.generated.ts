@@ -958,7 +958,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://fal.ai/docs/documentation"
+    "referenceUrl": "https://fal.ai/models/fal-ai/aura-flow/api"
   },
   {
     "id": "fal/birefnet-v2",
@@ -1115,7 +1115,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://fal.ai/docs/documentation"
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-2/api"
   },
   {
     "id": "fal/flux-dev",
@@ -1163,7 +1163,7 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 3.5,
         "min": 1,
-        "max": 10
+        "max": 20
       },
       {
         "name": "steps",
@@ -1179,7 +1179,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://fal.ai/docs/documentation"
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux/dev/api"
   },
   {
     "id": "fal/flux-pro",
@@ -1229,7 +1229,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://fal.ai/docs/documentation"
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux-pro/v1.1/api"
   },
   {
     "id": "fal/flux-schnell",
@@ -1277,7 +1277,14 @@ export const MODELS: ModelEntry[] = [
         "kind": "int",
         "default": 4,
         "min": 1,
-        "max": 4
+        "max": 12
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 3.5,
+        "min": 1,
+        "max": 20
       }
     ],
     "pricing": {
@@ -1287,7 +1294,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "fast"
     ],
-    "referenceUrl": "https://fal.ai/docs/documentation"
+    "referenceUrl": "https://fal.ai/models/fal-ai/flux/schnell/api"
   },
   {
     "id": "fal/hunyuan3d-v2",
@@ -1675,7 +1682,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://fal.ai/docs/documentation"
+    "referenceUrl": "https://fal.ai/models/fal-ai/ltx-2.3/text-to-video/api"
   },
   {
     "id": "fal/meshy-rig",
@@ -1789,7 +1796,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "styled"
     ],
-    "referenceUrl": "https://fal.ai/docs/documentation"
+    "referenceUrl": "https://fal.ai/models/fal-ai/recraft/v3/text-to-image/api"
   },
   {
     "id": "fal/sam-3",
@@ -1918,7 +1925,7 @@ export const MODELS: ModelEntry[] = [
         "name": "steps",
         "kind": "int",
         "default": 40,
-        "min": 10,
+        "min": 1,
         "max": 50
       },
       {
@@ -1926,7 +1933,7 @@ export const MODELS: ModelEntry[] = [
         "kind": "float",
         "default": 4.5,
         "min": 0,
-        "max": 10
+        "max": 20
       }
     ],
     "pricing": {
@@ -1935,7 +1942,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://fal.ai/docs/documentation"
+    "referenceUrl": "https://fal.ai/models/fal-ai/stable-diffusion-v35-medium/api"
   },
   {
     "id": "fal/sdxl",
@@ -1977,14 +1984,14 @@ export const MODELS: ModelEntry[] = [
         "name": "steps",
         "kind": "int",
         "default": 25,
-        "min": 10,
+        "min": 1,
         "max": 50
       },
       {
         "name": "guidance_scale",
         "kind": "float",
         "default": 7.5,
-        "min": 1,
+        "min": 0,
         "max": 20
       }
     ],
@@ -1994,7 +2001,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://fal.ai/docs/documentation"
+    "referenceUrl": "https://fal.ai/models/fal-ai/fast-sdxl/api"
   },
   {
     "id": "fal/trellis",
@@ -2198,7 +2205,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://fal.ai/docs/documentation"
+    "referenceUrl": "https://fal.ai/models/fal-ai/ltx-video/api"
   },
   {
     "id": "google/gemini-2.5-flash-image",

@@ -1,7 +1,7 @@
 // Fal.ai video generation provider
-// API Reference: https://docs.fal.ai/model-apis/model-endpoints/queue
+// API Reference: https://fal.ai/docs/documentation/model-apis/inference/queue
 // Queue API: POST https://queue.fal.run/{endpoint} → poll status → fetch result
-// Supported models: Kling, MiniMax/Hailuo, AnimateDiff, SVD, LTX Video, LTX-2.3
+// Carried models: LTX Video and LTX-2.3
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -14,14 +14,21 @@ use crate::providers::{
     ApiKeyPool, BaseGenerationRequest, HealthCheckResult, ProviderError, ProviderInstanceConfig,
     CancelOutcome, VideoExtras, VideoGenerationHandle, VideoGenerationPollResult, VideoProvider, build_cost_estimate,
 };
+use crate::providers::model3d::fal::{
+    fal_error_message, needs_retry, platform_key_check, queue_app, same_origin_url, transient, QueueReply, DEFAULT_PLATFORM_BASE,
+};
 use crate::types::*;
+
+/// What litegen itself sends in a submit body; `extra` cannot replace it.
+const OWNED_FIELDS: &[&str] = &["prompt", "duration", "resolution", "fps", "aspect_ratio", "seed", "image_url"];
 
 /// Fal.ai video generation provider.
 ///
-/// Routes to model-specific Fal endpoints for Kling, MiniMax, AnimateDiff,
-/// Stable Video Diffusion, LTX Video and LTX-2.3.
+/// Routes to model-specific Fal endpoints for LTX Video and LTX-2.3.
 ///
-/// @see <https://docs.fal.ai/model-apis/model-endpoints/queue> — asynchronous queue API (submit → status → result)
+/// @see <https://fal.ai/docs/documentation/model-apis/inference/queue> — Verbatim: "The request
+///   moves through three states before completion" (`IN_QUEUE`, `IN_PROGRESS`, `COMPLETED`); an
+///   `error` is "present only if the request failed (only when `COMPLETED`)"
 /// @see <https://fal.ai/models> — per-model API pages documenting each endpoint's input schema
 pub struct FalVideoProvider {
     config: Option<ProviderInstanceConfig>,
@@ -56,13 +63,6 @@ struct EndpointSpec {
     /// The `fps` values the endpoint accepts; any other value is rejected
     /// before submitting. Empty = the endpoint takes no `fps`.
     fps_values: &'static [u32],
-    /// fal reports a failed request as `COMPLETED` with an `error` message
-    /// ("present only if the request failed (only when `COMPLETED`)"; there
-    /// is no FAILED status). When set, such a job — and a `COMPLETED` result
-    /// without a video URL — is reported as failed, not completed without
-    /// output. Off for the older arms, whose behavior is unchanged.
-    /// @see <https://docs.fal.ai/model-apis/model-endpoints/queue.md> (status response fields)
-    strict_completion: bool,
 }
 
 impl FalVideoProvider {
@@ -93,6 +93,37 @@ impl FalVideoProvider {
             .as_ref()
             .and_then(|c| c.api_base.as_deref())
             .unwrap_or("https://queue.fal.run")
+            .trim_end_matches('/')
+    }
+
+    /// fal's Platform API, which the health check reads.
+    fn platform_base(&self) -> &str {
+        self.config
+            .as_ref()
+            .and_then(|c| c.options.as_ref())
+            .and_then(|o| o["platform_api_base"].as_str())
+            .unwrap_or(DEFAULT_PLATFORM_BASE)
+    }
+
+    /// A submitted job's status, result and cancel URLs: the ones fal answered
+    /// with when they are on the configured base — the key travels with each
+    /// call — else rebuilt from that base with the endpoint's app id, since a
+    /// URL with the endpoint path answers 405.
+    ///
+    /// @see <https://fal.ai/docs/documentation/model-apis/inference/queue> — Verbatim: "A URL that
+    ///   contains the endpoint path, for example `fal-ai/flux/schnell/requests/...`, returns `405`."
+    fn queue_urls(&self, job: &Value) -> (String, String, String) {
+        let base = self.api_base();
+        let rebuilt = format!(
+            "{base}/{}/requests/{}",
+            queue_app(job["endpoint"].as_str().unwrap_or("")),
+            job["request_id"].as_str().unwrap_or("")
+        );
+        let trusted = |k: &str| same_origin_url(base, job[k].as_str());
+        let response = trusted("response_url").unwrap_or_else(|| rebuilt.clone());
+        let status = trusted("status_url").unwrap_or_else(|| format!("{rebuilt}/status"));
+        let cancel = format!("{response}/cancel");
+        (status, response, cancel)
     }
 
     /// Resolve internal model ID to its fal endpoints and field support.
@@ -100,79 +131,6 @@ impl FalVideoProvider {
     fn resolve_spec(model: &str) -> Option<EndpointSpec> {
         Some(match model {
             // Kling Video v1 standard — image-to-video only; takes `duration`.
-            "fal/kling" | "fal-kling" => EndpointSpec {
-                text_to_video: "fal-ai/kling-video/v1/standard/image-to-video",
-                image_to_video: "fal-ai/kling-video/v1/standard/image-to-video",
-                supports_prompt: true,
-                supports_duration: true,
-                supports_aspect_ratio: false,
-                duration_values: &[],
-                supports_resolution: false,
-                fps_values: &[],
-                strict_completion: false,
-            },
-            // Kling Video v1.5 pro — higher quality, longer duration.
-            "fal/kling-pro" | "fal-kling-pro" => EndpointSpec {
-                text_to_video: "fal-ai/kling-video/v1.5/pro/image-to-video",
-                image_to_video: "fal-ai/kling-video/v1.5/pro/image-to-video",
-                supports_prompt: true,
-                supports_duration: true,
-                supports_aspect_ratio: false,
-                duration_values: &[],
-                supports_resolution: false,
-                fps_values: &[],
-                strict_completion: false,
-            },
-            // MiniMax Video — image-to-video.
-            "fal/minimax" | "fal-minimax" => EndpointSpec {
-                text_to_video: "fal-ai/minimax-video/image-to-video",
-                image_to_video: "fal-ai/minimax-video/image-to-video",
-                supports_prompt: true,
-                supports_duration: false,
-                supports_aspect_ratio: false,
-                duration_values: &[],
-                supports_resolution: false,
-                fps_values: &[],
-                strict_completion: false,
-            },
-            // MiniMax Hailuo (Video-01-Live) — image-to-video.
-            "fal/minimax-hailuo" | "fal-minimax-hailuo" => EndpointSpec {
-                text_to_video: "fal-ai/minimax/video-01-live/image-to-video",
-                image_to_video: "fal-ai/minimax/video-01-live/image-to-video",
-                supports_prompt: true,
-                supports_duration: false,
-                supports_aspect_ratio: false,
-                duration_values: &[],
-                supports_resolution: false,
-                fps_values: &[],
-                strict_completion: false,
-            },
-            // AnimateDiff Turbo — text-to-video; takes num_frames/fps/video_size,
-            // none of which map onto our unified extras.
-            "fal/animate-diff" | "fal-animate-diff-turbo" => EndpointSpec {
-                text_to_video: "fal-ai/fast-animatediff/turbo/text-to-video",
-                image_to_video: "fal-ai/fast-animatediff/turbo/text-to-video",
-                supports_prompt: true,
-                supports_duration: false,
-                supports_aspect_ratio: false,
-                duration_values: &[],
-                supports_resolution: false,
-                fps_values: &[],
-                strict_completion: false,
-            },
-            // Stable Video Diffusion — image-only; its schema is
-            // [cond_aug, fps, seed, motion_bucket_id, image_url] with no prompt.
-            "fal/svd" | "fal-svd" => EndpointSpec {
-                text_to_video: "fal-ai/stable-video",
-                image_to_video: "fal-ai/stable-video",
-                supports_prompt: false,
-                supports_duration: false,
-                supports_aspect_ratio: false,
-                duration_values: &[],
-                supports_resolution: false,
-                fps_values: &[],
-                strict_completion: false,
-            },
             // LTX-2.3 (Pro). Text-to-video, or image-to-video (which requires
             // `image_url`) when a start frame is supplied. Both take prompt,
             // duration (integer enum 6 | 8 | 10), resolution (1080p | 1440p |
@@ -189,7 +147,6 @@ impl FalVideoProvider {
                 duration_values: &[6, 8, 10],
                 supports_resolution: true,
                 fps_values: &[24, 25, 48, 50],
-                strict_completion: true,
             },
             // LTX Video — the base endpoint is text-to-video only and has no
             // `image_url`; image-to-video is a separate endpoint.
@@ -202,7 +159,6 @@ impl FalVideoProvider {
                 duration_values: &[],
                 supports_resolution: false,
                 fps_values: &[],
-                strict_completion: false,
             },
             _ => return None,
         })
@@ -252,8 +208,9 @@ impl VideoProvider for FalVideoProvider {
     /// Submit a job to the Fal queue (`POST {queue.fal.run}/{endpoint}`),
     /// returning a `request_id` (plus `status_url`/`response_url`) to poll.
     ///
-    /// @see <https://docs.fal.ai/model-apis/model-endpoints/queue> — submit a request; proves the
-    ///   `Authorization: Key <token>` auth and the `request_id`/`status_url`/`response_url` response fields.
+    /// @see <https://fal.ai/docs/documentation/model-apis/inference/queue> — submit a request: the
+    ///   `Authorization: Key <token>` auth and the `request_id`/`status_url`/`response_url` response
+    ///   fields. Verbatim: "Use the URLs from the submit response."
     async fn generate(
         &self,
         model: &ModelSchema,
@@ -319,10 +276,11 @@ impl VideoProvider for FalVideoProvider {
             body["image_url"] = Value::String(u);
         }
 
-        // Shallow-merge extra
-        if let Some(Value::Object(extra_map)) = &extras.extra {
-            if let Some(body_obj) = body.as_object_mut() {
-                for (k, v) in extra_map {
+        // `extra` adds the endpoint's own knobs; it cannot replace a field
+        // litegen sets (rule 11), which lax mode would otherwise let it.
+        if let (Some(Value::Object(extra_map)), Some(body_obj)) = (&extras.extra, body.as_object_mut()) {
+            for (k, v) in extra_map {
+                if !OWNED_FIELDS.contains(&k.as_str()) {
                     body_obj.insert(k.clone(), v.clone());
                 }
             }
@@ -343,32 +301,28 @@ impl VideoProvider for FalVideoProvider {
         .await
         .map_err(|e| ProviderError::RequestFailed {
             message: format!("Fal video request failed: {e}"),
-            status_code: e.status().map(|s| s.as_u16()),
+            status_code: None,
             provider_error: None,
-            retryable: e.is_timeout() || e.is_connect(),
+            // Only a connection that never opened was surely not received.
+            retryable: e.is_connect(),
         })?;
 
-        let status = resp.status();
-        let resp_json: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse Fal video response: {e}"),
-            status_code: Some(status.as_u16()),
+        let retry = needs_retry(resp.headers());
+        let reply = QueueReply::read(resp).await.map_err(|e| ProviderError::RequestFailed {
+            message: format!("Fal video response could not be read: {e}"),
+            status_code: None,
             provider_error: None,
             retryable: false,
         })?;
-
-        if !status.is_success() {
-            let err = resp_json["detail"]
-                .as_str()
-                .or_else(|| resp_json["message"].as_str())
-                .unwrap_or("Unknown error")
-                .to_string();
+        if !reply.status.is_success() {
             return Err(ProviderError::RequestFailed {
-                message: format!("Fal video API error: {err}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(resp_json),
-                retryable: status.as_u16() >= 500,
+                message: format!("Fal video API error: {}", reply.describe()),
+                status_code: Some(reply.status.as_u16()),
+                retryable: retry.unwrap_or_else(|| transient(reply.status)),
+                provider_error: reply.json,
             });
         }
+        let resp_json = reply.json.unwrap_or(Value::Null);
 
         let request_id = resp_json["request_id"]
             .as_str()
@@ -398,33 +352,30 @@ impl VideoProvider for FalVideoProvider {
     /// Check queue status, then fetch the result when `COMPLETED`
     /// (`GET .../requests/{id}/status`, then `GET .../requests/{id}`).
     ///
-    /// @see <https://docs.fal.ai/model-apis/model-endpoints/queue> — checking request status and getting the result;
-    ///   proves the `status` values (`IN_QUEUE`/`IN_PROGRESS`/`COMPLETED`/`FAILED`) and the result `video.url` shape.
+    /// fal has no FAILED status: a failed run is `COMPLETED` with an `error`,
+    /// or a result endpoint that answers the model's own error. Either is the
+    /// job's verdict (`Ok(Failed)`); only a reply without fal's envelope on a
+    /// transient code — a gateway's page — is worth asking again.
+    ///
+    /// @see <https://fal.ai/docs/api-reference/inference-api/queue/result.md> — Verbatim: "If the
+    ///   model returned an error, this operation returns the same error."
     async fn poll_status(
         &self,
         handle: &VideoGenerationHandle,
     ) -> Result<VideoGenerationPollResult, ProviderError> {
         let api_key = self.api_key()?;
-
-        // Parse stored job data
-        let job_data: Value =
-            serde_json::from_str(&handle.provider_job_id).unwrap_or_default();
-        let request_id = job_data["request_id"].as_str().unwrap_or("");
-        let endpoint = job_data["endpoint"].as_str().unwrap_or("");
-
-        let status_url = if let Some(url) = job_data["status_url"].as_str() {
-            if !url.is_empty() {
-                url.to_string()
-            } else {
-                format!(
-                    "https://queue.fal.run/{endpoint}/requests/{request_id}/status"
-                )
-            }
-        } else {
-            format!("https://queue.fal.run/{endpoint}/requests/{request_id}/status")
+        let job_data: Value = serde_json::from_str(&handle.provider_job_id).unwrap_or_default();
+        let (status_url, response_url, _) = self.queue_urls(&job_data);
+        let failed = |error: String| VideoGenerationPollResult {
+            status: GenerationStatus::Failed,
+            progress: 0,
+            video_url: None,
+            video_data: None,
+            content_type: None,
+            error: Some(error),
+            metadata: HashMap::new(),
         };
 
-        // Poll status — https://docs.fal.ai/model-apis/model-endpoints/queue
         let resp = crate::providers::inject_trace_headers(
             self.client
                 .get(&status_url)
@@ -438,119 +389,85 @@ impl VideoProvider for FalVideoProvider {
             provider_error: None,
             retryable: true,
         })?;
-
         let data = super::read_poll_json(resp, "fal").await?;
 
         let status = match data["status"].as_str() {
             Some("COMPLETED") => GenerationStatus::Completed,
-            Some("FAILED") => GenerationStatus::Failed,
             Some("IN_PROGRESS") => GenerationStatus::Processing,
-            Some("IN_QUEUE") => GenerationStatus::Pending,
             _ => GenerationStatus::Pending,
         };
-
-        // A row whose arm is gone keeps the strict reading of completion.
-        let strict = Self::resolve_spec(&handle.model).map_or(true, |s| s.strict_completion);
-        if strict && status == GenerationStatus::Completed {
-            if let Some(err) = data["error"].as_str() {
-                return Ok(VideoGenerationPollResult {
-                    status: GenerationStatus::Failed,
-                    progress: 0,
-                    video_url: None,
-                    video_data: None,
-                    content_type: None,
-                    error: Some(match data["error_type"].as_str() {
-                        Some(kind) => format!("{err} ({kind})"),
-                        None => err.to_string(),
-                    }),
-                    metadata: HashMap::new(),
-                });
-            }
-        }
-
-        // If completed, fetch the result
-        if status == GenerationStatus::Completed {
-            let response_url = if let Some(url) = job_data["response_url"].as_str() {
-                if !url.is_empty() {
-                    url.to_string()
-                } else {
-                    format!(
-                        "https://queue.fal.run/{endpoint}/requests/{request_id}"
-                    )
-                }
-            } else {
-                format!("https://queue.fal.run/{endpoint}/requests/{request_id}")
-            };
-
-            let result_resp = crate::providers::inject_trace_headers(
-                self.client
-                    .get(&response_url)
-                    .header("Authorization", format!("Key {api_key}")),
-            )
-            .send()
-            .await
-            .map_err(|e| ProviderError::RequestFailed {
-                message: e.to_string(),
-                status_code: None,
-                provider_error: None,
-                retryable: true,
-            })?;
-
-            let result = super::read_poll_json(result_resp, "fal").await?;
-
-            // Video URL is in various locations depending on the model
-            let video_url = result["video"]["url"]
-                .as_str()
-                .or_else(|| result["video_url"].as_str())
-                .or_else(|| {
-                    result["videos"]
-                        .as_array()
-                        .and_then(|a| a.first())
-                        .and_then(|v| v["url"].as_str())
-                })
-                .or_else(|| result["output"]["url"].as_str())
-                .map(String::from);
-
-            if video_url.is_none() && strict {
-                return Ok(VideoGenerationPollResult {
-                    status: GenerationStatus::Failed,
-                    progress: 0,
-                    video_url: None,
-                    video_data: None,
-                    content_type: None,
-                    error: Some(format!("fal reported COMPLETED but the result has no video URL: {result}")),
-                    metadata: HashMap::new(),
-                });
-            }
-
+        if status != GenerationStatus::Completed {
             return Ok(VideoGenerationPollResult {
-                status: GenerationStatus::Completed,
-                progress: 100,
-                video_url,
+                status,
+                progress: if status == GenerationStatus::Processing { 50 } else { 10 },
+                video_url: None,
                 video_data: None,
                 content_type: Some("video/mp4".into()),
                 error: None,
                 metadata: HashMap::new(),
             });
         }
+        if let Some(err) = data["error"].as_str() {
+            return Ok(failed(match data["error_type"].as_str() {
+                Some(kind) => format!("{err} ({kind})"),
+                None => err.to_string(),
+            }));
+        }
 
-        let error = if status == GenerationStatus::Failed {
-            data["error"].as_str().map(String::from)
-        } else {
-            None
+        let result_resp = crate::providers::inject_trace_headers(
+            self.client
+                .get(&response_url)
+                .header("Authorization", format!("Key {api_key}")),
+        )
+        .send()
+        .await
+        .map_err(|e| ProviderError::RequestFailed {
+            message: e.to_string(),
+            status_code: None,
+            provider_error: None,
+            retryable: true,
+        })?;
+        let reply = QueueReply::read(result_resp).await.map_err(|e| ProviderError::RequestFailed {
+            message: format!("fal video result could not be read: {e}"),
+            status_code: None,
+            provider_error: None,
+            retryable: true,
+        })?;
+        if !reply.status.is_success() {
+            let message = format!("fal video result answered HTTP {}: {}", reply.status.as_u16(), reply.describe());
+            if reply.is_verdict() {
+                return Ok(failed(message));
+            }
+            return Err(ProviderError::RequestFailed {
+                message,
+                status_code: Some(reply.status.as_u16()),
+                provider_error: reply.json,
+                retryable: true,
+            });
+        }
+        let result = reply.json.unwrap_or(Value::Null);
+
+        // Video URL is in various locations depending on the model
+        let video_url = result["video"]["url"]
+            .as_str()
+            .or_else(|| result["video_url"].as_str())
+            .or_else(|| result["videos"].as_array().and_then(|a| a.first()).and_then(|v| v["url"].as_str()))
+            .or_else(|| result["output"]["url"].as_str())
+            .map(String::from);
+        let Some(video_url) = video_url else {
+            let message = match result.get("detail") {
+                Some(_) => fal_error_message(&result),
+                None => format!("fal reported COMPLETED but the result has no video URL: {result}"),
+            };
+            return Ok(failed(message));
         };
-
         Ok(VideoGenerationPollResult {
-            status,
-            progress: match status {
-                GenerationStatus::Processing => 50,
-                GenerationStatus::Pending => 10,
-                _ => 0,
-            },
-            video_url: None,
+            status: GenerationStatus::Completed,
+            progress: 100,
+            video_url: Some(video_url),
             video_data: None,
             content_type: Some("video/mp4".into()),
-            error,
+            error: None,
             metadata: HashMap::new(),
         })
     }
@@ -568,10 +485,6 @@ impl VideoProvider for FalVideoProvider {
         ))
     }
 
-    /// Validate the API key via `GET https://rest.alpha.fal.ai/tokens/current`
-    /// (Fal's token-introspection endpoint).
-    ///
-    /// @see <https://docs.fal.ai/authentication/key-based> — key-based authentication
     /// Cancel a request (`PUT .../requests/{id}/cancel`, under the
     /// `response_url` the submit returned): a queued request is removed and
     /// never runs; a running one is signalled and may still finish.
@@ -581,15 +494,7 @@ impl VideoProvider for FalVideoProvider {
     async fn cancel(&self, handle: &VideoGenerationHandle) -> Result<CancelOutcome, ProviderError> {
         let api_key = self.api_key()?;
         let job: Value = serde_json::from_str(&handle.provider_job_id).unwrap_or_default();
-        let url = match job["response_url"].as_str().filter(|u| !u.is_empty()) {
-            Some(response_url) => format!("{response_url}/cancel"),
-            None => format!(
-                "{}/{}/requests/{}/cancel",
-                self.api_base(),
-                job["endpoint"].as_str().unwrap_or(""),
-                job["request_id"].as_str().unwrap_or(""),
-            ),
-        };
+        let (_, _, url) = self.queue_urls(&job);
         let resp = crate::providers::inject_trace_headers(
             self.client.put(&url).header("Authorization", format!("Key {api_key}")),
         )
@@ -616,6 +521,7 @@ impl VideoProvider for FalVideoProvider {
         }
     }
 
+    /// Check the key against fal's Platform API (`platform_key_check`).
     async fn health_check(&self) -> HealthCheckResult {
         if !self.is_configured() {
             return HealthCheckResult {
@@ -624,41 +530,10 @@ impl VideoProvider for FalVideoProvider {
                 latency_ms: None,
             };
         }
-        let start = std::time::Instant::now();
-        let api_key = match self.api_key() {
-            Ok(k) => k,
-            Err(_) => {
-                return HealthCheckResult {
-                    healthy: false,
-                    message: "No API key".into(),
-                    latency_ms: None,
-                }
-            }
+        let Ok(api_key) = self.api_key() else {
+            return HealthCheckResult { healthy: false, message: "No API key".into(), latency_ms: None };
         };
-        match self
-            .client
-            .get("https://rest.alpha.fal.ai/tokens/current")
-            .header("Authorization", format!("Key {api_key}"))
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => HealthCheckResult {
-                healthy: true,
-                message: "Fal API key valid".into(),
-                latency_ms: Some(start.elapsed().as_millis() as u64),
-            },
-            Ok(resp) => HealthCheckResult {
-                healthy: false,
-                message: format!("Fal returned HTTP {}", resp.status()),
-                latency_ms: Some(start.elapsed().as_millis() as u64),
-            },
-            Err(e) => HealthCheckResult {
-                healthy: false,
-                message: format!("Fal health check failed: {e}"),
-                latency_ms: Some(start.elapsed().as_millis() as u64),
-            },
-        }
+        platform_key_check(&self.client, self.platform_base(), &api_key).await
     }
 }
 
@@ -851,46 +726,6 @@ mod tests {
         assert!(body.get("aspect_ratio").is_none(), "ltx-video has no aspect_ratio: {body}");
         assert!(body.get("duration").is_none(), "ltx-video has no duration: {body}");
         assert_eq!(body["prompt"], "pan across the valley");
-    }
-
-    /// `fal-ai/stable-video`'s schema is
-    /// `[cond_aug, fps, seed, motion_bucket_id, image_url]` — it has no
-    /// `prompt` field at all, yet `prompt` used to be sent unconditionally.
-    #[tokio::test]
-    async fn stable_video_endpoint_receives_no_prompt() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/fal-ai/stable-video"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "request_id": "req-1"
-            })))
-            .mount(&server)
-            .await;
-
-        let provider = make_provider(&server.uri());
-        let mut schema = ref_schema("fal/video");
-        schema.id = "fal/svd".to_string();
-        let base = make_base("ignored by this endpoint", "fal/svd");
-        let materialized = crate::proxy::materializer::MaterializedRequest {
-            refs: vec![crate::proxy::materializer::MaterializedRef {
-                role: "init".to_string(),
-                form: crate::proxy::materializer::MaterializedRefForm::Url(
-                    "https://example.com/frame.png".to_string(),
-                ),
-                time_s: None,
-            }],
-            cleanup: crate::proxy::materializer::Cleanup::empty(),
-        };
-
-        provider
-            .generate(&schema, &base, &make_extras(), &materialized)
-            .await
-            .expect("generate");
-
-        let received = server.received_requests().await.unwrap();
-        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
-        assert!(body.get("prompt").is_none(), "stable-video has no prompt field: {body}");
-        assert_eq!(body["image_url"], "https://example.com/frame.png");
     }
 
     // ─── LTX-2.3: fal-ai/ltx-2.3/{text,image}-to-video ─────────────────────
@@ -1117,6 +952,127 @@ mod tests {
             });
             let handle = VideoGenerationHandle { provider_job_id: job.to_string(), provider: "fal".into(), model: "fal/kling-video-v2-master".into() };
             assert_eq!(make_provider(&server.uri()).cancel(&handle).await.unwrap(), expected);
+        }
+    }
+
+    // ─── fal audit, 2026-10-30: F02, F03, F05, F07, F10 ─────────────────────
+
+    fn job_handle(model: &str, job: Value) -> VideoGenerationHandle {
+        VideoGenerationHandle { provider_job_id: job.to_string(), provider: "fal".into(), model: model.into() }
+    }
+
+    /// F02: the key is never sent to a host fal names elsewhere, and a URL
+    /// litegen builds names only the app — one with the endpoint path is a 405.
+    #[tokio::test]
+    async fn a_job_is_polled_and_cancelled_at_the_configured_base_by_its_app_id() {
+        use wiremock::matchers::header;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/fal-ai/ltx-2.3/requests/r1/status"))
+            .and(header("authorization", "Key test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "IN_PROGRESS" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/fal-ai/ltx-2.3/requests/r1/cancel"))
+            .respond_with(ResponseTemplate::new(202).set_body_json(json!({ "status": "CANCELLATION_REQUESTED" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let elsewhere = json!({
+            "request_id": "r1", "endpoint": "fal-ai/ltx-2.3/text-to-video",
+            "status_url": "https://elsewhere.example/fal-ai/ltx-2.3/requests/r1/status",
+            "response_url": "https://elsewhere.example/fal-ai/ltx-2.3/requests/r1",
+        });
+        let p = make_provider(&server.uri());
+        assert_eq!(p.poll_status(&job_handle("fal/ltx-2.3", elsewhere.clone())).await.unwrap().status, GenerationStatus::Processing);
+        assert_eq!(p.cancel(&job_handle("fal/ltx-2.3", elsewhere)).await.unwrap(), CancelOutcome::Requested);
+    }
+
+    /// F03: fal has no FAILED status — a failure is COMPLETED with `error`, or
+    /// a result that answers the model's own error, on every arm. Each is the
+    /// job's verdict; only a gateway's page is worth asking again.
+    #[tokio::test]
+    async fn fals_verdicts_fail_the_job_and_a_gateway_page_is_asked_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/fal-ai/ltx-video/requests/r1/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "COMPLETED", "error": "prompt flagged", "error_type": "content_policy_violation" })))
+            .mount(&server)
+            .await;
+        let job = json!({ "request_id": "r1", "endpoint": "fal-ai/ltx-video", "status_url": "", "response_url": "" });
+        let poll = make_provider(&server.uri()).poll_status(&job_handle("fal/video", job)).await.unwrap();
+        assert_eq!((poll.status, poll.error.as_deref()), (GenerationStatus::Failed, Some("prompt flagged (content_policy_violation)")));
+
+        for (answer, verdict) in [
+            (ResponseTemplate::new(422).set_body_json(json!({ "detail": [{ "loc": ["body", "prompt"], "msg": "field required", "type": "missing" }] })), Some("body.prompt: field required")),
+            (ResponseTemplate::new(500).set_body_json(json!({ "detail": "the model crashed", "error_type": "internal_error" })), Some("the model crashed (internal_error)")),
+            (ResponseTemplate::new(502).set_body_string("<html>Bad Gateway</html>"), None),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/fal-ai/ltx-2.3/requests/r2/status"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "COMPLETED" })))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET")).and(path("/fal-ai/ltx-2.3/requests/r2")).respond_with(answer).mount(&server).await;
+            let job = json!({ "request_id": "r2", "endpoint": "fal-ai/ltx-2.3/text-to-video", "status_url": "", "response_url": "" });
+            let got = make_provider(&server.uri()).poll_status(&job_handle("fal/ltx-2.3", job)).await;
+            match verdict {
+                Some(says) => {
+                    let poll = got.unwrap();
+                    assert_eq!(poll.status, GenerationStatus::Failed, "{says}");
+                    assert!(poll.error.as_deref().unwrap_or("").contains(says), "{says}: {:?}", poll.error);
+                }
+                None => assert!(matches!(got, Err(ProviderError::RequestFailed { retryable: true, .. })), "{got:?}"),
+            }
+        }
+    }
+
+    /// F05: `extra` cannot replace what litegen sends.
+    #[tokio::test]
+    async fn extra_cannot_replace_what_litegen_sends() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/fal-ai/ltx-2.3/text-to-video"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "request_id": "r3", "status_url": "", "response_url": "" })))
+            .mount(&server)
+            .await;
+        let mut extras = make_extras();
+        extras.duration_seconds = 6.0;
+        extras.extra = Some(json!({ "prompt": "something else", "duration": 10, "image_url": "https://elsewhere.example/a.png", "enable_prompt_expansion": false }));
+        make_provider(&server.uri()).generate(&ref_schema("fal/ltx-2.3"), &make_base("a fox", "fal/ltx-2.3"), &extras, &empty_materialized()).await.unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!((body["prompt"].as_str(), body["duration"].as_u64()), (Some("a fox"), Some(6)), "{body}");
+        assert!(body.get("image_url").is_none(), "{body}");
+        assert_eq!(body["enable_prompt_expansion"], false, "a knob litegen does not own still passes: {body}");
+    }
+
+    /// F07: the key is checked against fal's Platform API.
+    #[tokio::test]
+    async fn health_check_validates_the_key_against_the_platform_api() {
+        use wiremock::matchers::query_param;
+        for (status, healthy) in [(200, true), (401, false)] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/models/pricing"))
+                .and(query_param("endpoint_id", "fal-ai/trellis"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(json!({})))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let mut p = FalVideoProvider::new();
+            p.configure(ProviderInstanceConfig { api_key: "test-key".into(), options: Some(json!({ "platform_api_base": server.uri() })), ..Default::default() });
+            assert_eq!(p.health_check().await.healthy, healthy, "{status}");
+        }
+    }
+
+    /// F10: no arm serves an endpoint the catalog does not carry.
+    #[test]
+    fn only_the_carried_endpoints_have_arms() {
+        for gone in ["fal/kling", "fal-kling", "fal/kling-pro", "fal/minimax", "fal/minimax-hailuo", "fal/animate-diff", "fal/svd"] {
+            assert!(FalVideoProvider::resolve_spec(gone).is_none(), "{gone}");
         }
     }
 }
