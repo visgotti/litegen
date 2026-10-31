@@ -24,10 +24,10 @@ use crate::types::*;
 /// fresh `Ai-trace-id` (UUID) per request. All responses use an
 /// `{ErrCode, ErrMsg, Resp}` envelope. Video-only.
 ///
-/// @see <https://docs.platform.pixverse.ai/how-does-the-api-work-882967m0>
-///   Verbatim: "A different Ai-trace-id for each unique request ... If you use the same ai-trace-id multiple times, You won't get a new video generated"
-/// @see <https://docs.platform.pixverse.ai/transitionfirst-last-frame-feature-882973m0>
-///   Verbatim: "\"first_frame_img\": 0, \"last_frame_img\": 0"
+/// @see <https://docs.platform.pixverse.ai/start-here-2394989m0.md> (2026-10-30)
+///   Verbatim: "Use a new UUID v4 value for `Ai-trace-id` with every request."
+/// @see <https://docs.platform.pixverse.ai/first-and-last-frame-video-43051213e0.md> (2026-10-30)
+///   Verbatim: "required: - model - prompt - duration - quality - first_frame_img - last_frame_img"
 pub struct PixverseProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
@@ -124,6 +124,25 @@ impl PixverseProvider {
         extras: &VideoExtras,
         materialized: &MaterializedRequest,
     ) -> Result<(&'static str, Value), ProviderError> {
+        // What PixVerse cannot make is refused before anything is uploaded
+        // (an upload counts against the account's quota).
+        // @see <https://docs.platform.pixverse.ai/first-and-last-frame-video-43051213e0.md> — the
+        //   transition `model` enum is "- c1 - v6 - v5.6 - v5"; it needs "first_frame_img" and
+        //   "last_frame_img"
+        // @see <https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md> —
+        //   "Duration in seconds. C1/V6: 1-15; V5.5/V5.6: 5, 8, or 10; older models: 5 or 8."
+        let has_role = |role: &str| materialized.refs.iter().any(|r| r.role == role);
+        let refuse = |why: String| Err(ProviderError::InvalidRequest(format!("pixverse/{native}: {why}")));
+        if has_role("last_frame") && !has_role("first_frame") {
+            return refuse("a last_frame needs a first_frame".into());
+        }
+        if has_role("last_frame") && !matches!(native, "c1" | "v6" | "v5.6" | "v5") {
+            return refuse("first and last frames are not a mode it has".into());
+        }
+        if matches!(native, "v3.5" | "v4.5" | "v5") && ![5.0, 8.0].contains(&extras.duration_seconds) {
+            return refuse(format!("{} s is not a length it makes (5 or 8 s)", extras.duration_seconds));
+        }
+
         // Upload any reference images first (-> img_id), tracking first/last.
         let mut first_img: Option<i64> = None;
         let mut last_img: Option<i64> = None;
@@ -156,20 +175,21 @@ impl PixverseProvider {
         if extras.duration_seconds > 0.0 {
             body["duration"] = Value::Number((extras.duration_seconds as i64).into());
         }
-        if let Some(ar) = extras.aspect_ratio.as_deref() {
-            body["aspect_ratio"] = Value::String(ar.to_string());
-        } else if path == TEXT_TO_VIDEO_PATH {
-            body["aspect_ratio"] = Value::String(DEFAULT_ASPECT_RATIO.to_string());
+        // Only text/ takes an aspect ratio (it requires one); img/ and
+        // transition/ take the image's shape.
+        if path == TEXT_TO_VIDEO_PATH {
+            body["aspect_ratio"] = Value::String(extras.aspect_ratio.as_deref().unwrap_or(DEFAULT_ASPECT_RATIO).to_string());
         }
         if let Some(seed) = base.seed {
             body["seed"] = Value::Number(seed.into());
         }
-        if let Some(np) = base.negative_prompt.as_deref() {
-            body["negative_prompt"] = Value::String(np.to_string());
-        }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map {
+        // `extra` adds the endpoint's own fields; it cannot replace one litegen
+        // sets (rule 11). transition/ has no multi-clip switch.
+        let transition = path == "/openapi/v2/video/transition/generate";
+        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
+            for (k, v) in map {
+                let owned = matches!(k.as_str(), "model" | "prompt" | "quality" | "duration" | "aspect_ratio" | "seed" | "img_id" | "first_frame_img" | "last_frame_img");
+                if !owned && !(transition && k == "generate_multi_clip_switch") {
                     obj.insert(k.clone(), v.clone());
                 }
             }
@@ -198,7 +218,8 @@ impl PixverseProvider {
                 message: format!("Pixverse request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
+                // A call that timed out may still run, and bill.
+                retryable: e.is_connect(),
             })?;
 
         let status = resp.status();
@@ -208,12 +229,17 @@ impl PixverseProvider {
             provider_error: None,
             retryable: false,
         })?;
-        if data["ErrCode"].as_i64().unwrap_or(-1) != 0 {
+        let code = data["ErrCode"].as_i64().unwrap_or(-1);
+        if code != 0 {
             return Err(ProviderError::RequestFailed {
-                message: format!("Pixverse API error: {}", data["ErrMsg"].as_str().unwrap_or("unknown")),
+                message: format!("Pixverse API error {code}: {}", data["ErrMsg"].as_str().unwrap_or("unknown")),
                 status_code: Some(status.as_u16()),
                 provider_error: Some(data),
-                retryable: false,
+                // Turned away at a limit, so never accepted: "500044 | Reached
+                // the limit for concurrent generations", "500069 | The system is
+                // experiencing high load".
+                // @see <https://docs.platform.pixverse.ai/error-codes-2394992m0.md>
+                retryable: matches!(code, 500010 | 500044 | 500069),
             });
         }
 
@@ -287,9 +313,9 @@ impl Default for PixverseProvider {
 /// generate endpoints require it and PixVerse has no server-side default;
 /// 540p is the spec's example value and, with 360p, the cheapest v3.5–v5 tier
 /// (45 credits per 5s clip) — the price `base_cost_usd` assumes for v4.5/v5.
-/// @see <https://docs.platform.pixverse.ai/text-to-video-generation-13016634e0.md>
-///   (`required: [aspect_ratio, duration, model, prompt, quality]`)
-/// @see <https://docs.platform.pixverse.ai/pricing-796039m0.md>
+/// @see <https://docs.platform.pixverse.ai/text-to-video-13016634e0.md> (2026-10-30)
+///   (`required: - model - prompt - duration - quality - aspect_ratio`)
+/// @see <https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md> (2026-10-30)
 const DEFAULT_QUALITY: &str = "540p";
 
 /// `aspect_ratio` sent to text/generate, which requires it, when the request
@@ -353,25 +379,39 @@ impl VideoProvider for PixverseProvider {
                 retryable: true,
             })?;
         let data = super::read_poll_json(resp, "pixverse").await?;
+        // "ErrCode is the numeric business error code in the response body …
+        // Do not rely on the HTTP status alone": an error is an error, never
+        // a job still processing until the reaper.
+        // @see <https://docs.platform.pixverse.ai/error-codes-2394992m0.md>
+        let code = data["ErrCode"].as_i64().unwrap_or(-1);
+        if code != 0 {
+            return Err(ProviderError::RequestFailed {
+                message: format!("Pixverse poll error {code}: {}", data["ErrMsg"].as_str().unwrap_or("unknown")),
+                status_code: None,
+                provider_error: Some(data.clone()),
+                retryable: matches!(code, 500 | 500069 | 99999),
+            });
+        }
 
-        // Resp.status: 1=success, 5=processing, 7=moderation fail, 8=failed.
-        let (status, video_url) = match data["Resp"]["status"].as_i64() {
-            Some(1) => (GenerationStatus::Completed, data["Resp"]["url"].as_str().map(String::from)),
-            Some(7) | Some(8) => (GenerationStatus::Failed, None),
-            _ => (GenerationStatus::Processing, None),
+        // Resp.status: 1=success, 5=processing, 7=moderation fail, 8=failed;
+        // `Resp` has no failure reason, so the status says which.
+        // @see <https://docs.platform.pixverse.ai/query-task-status-43051212e0.md>
+        let url = data["Resp"]["url"].as_str().map(String::from);
+        let (status, video_url, error) = match data["Resp"]["status"].as_i64() {
+            Some(1) if url.is_some() => (GenerationStatus::Completed, url, None),
+            Some(1) => (GenerationStatus::Failed, None, Some("PixVerse reported success without a video URL".to_string())),
+            Some(7) => (GenerationStatus::Failed, None, Some("content moderation failed (status 7)".to_string())),
+            Some(8) => (GenerationStatus::Failed, None, Some("generation failed (status 8)".to_string())),
+            _ => (GenerationStatus::Processing, None, None),
         };
 
         Ok(VideoGenerationPollResult {
             status,
-            progress: if status == GenerationStatus::Completed { 100 } else { 50 },
+            progress: if status.is_terminal() { 100 } else { 50 },
             video_url,
             video_data: None,
             content_type: Some("video/mp4".into()),
-            error: if status == GenerationStatus::Failed {
-                Some(data["ErrMsg"].as_str().unwrap_or("failed").to_string())
-            } else {
-                None
-            },
+            error,
             metadata: HashMap::new(),
         })
     }
@@ -622,5 +662,102 @@ mod tests {
         assert_eq!(body["img_id"], 99);
         assert_eq!(body["quality"], "540p");
         assert!(body.get("aspect_ratio").is_none(), "img/generate has no aspect_ratio field");
+    }
+
+    // ─── PixVerse audit, 2026-10-30: P1, P5–P11 ─────────────────────────────
+
+    fn uploaded(roles: &[&str]) -> MaterializedRequest {
+        MaterializedRequest {
+            refs: roles
+                .iter()
+                .map(|role| MaterializedRef {
+                    role: role.to_string(),
+                    form: MaterializedRefForm::MultipartField { field_name: "image".into(), bytes: bytes::Bytes::from_static(b"PNG"), content_type: "image/png".into() },
+                    time_s: None,
+                })
+                .collect(),
+            cleanup: Cleanup::empty(),
+        }
+    }
+
+    /// P1, P6, P10: what PixVerse cannot make is refused before anything is
+    /// uploaded — a last frame alone, first and last frames on a model the
+    /// transition endpoint does not take ("- c1 - v6 - v5.6 - v5"), and a
+    /// length v3.5 / v4.5 / v5 does not make (5 or 8 s).
+    #[tokio::test]
+    async fn what_a_model_cannot_make_is_refused_before_any_upload() {
+        let server = MockServer::start().await;
+        let p = make_provider(&server.uri());
+        let mut six = make_extras();
+        six.duration_seconds = 6.0;
+        for (id, extras, refs) in [
+            ("pixverse/v6", make_extras(), uploaded(&["last_frame"])),
+            ("pixverse/v4.5", make_extras(), uploaded(&["first_frame", "last_frame"])),
+            ("pixverse/v5", six, uploaded(&[])),
+        ] {
+            let err = p.generate(&ref_schema(id), &make_base("x", id), &extras, &refs).await.unwrap_err();
+            assert!(matches!(err, ProviderError::InvalidRequest(_)), "{id}: {err:?}");
+        }
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing uploaded or sent");
+    }
+
+    /// P5, P11: img/ and transition/ take the image's shape, and transition/
+    /// has no multi-clip switch; `extra` cannot replace the model.
+    #[tokio::test]
+    async fn the_transition_body_has_only_what_transition_takes() {
+        let server = MockServer::start().await;
+        mount_ok(&server, "/openapi/v2/image/upload", json!({ "img_id": 7 })).await;
+        mount_ok(&server, "/openapi/v2/video/transition/generate", json!({ "video_id": 9 })).await;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "generate_multi_clip_switch": true, "model": "c1" }));
+        make_provider(&server.uri())
+            .generate(&ref_schema("pixverse/v6"), &make_base("x", "pixverse/v6"), &extras, &uploaded(&["first_frame", "last_frame"]))
+            .await
+            .unwrap();
+        let sent = server.received_requests().await.unwrap();
+        let submit = sent.iter().find(|r| r.url.path() == "/openapi/v2/video/transition/generate").unwrap();
+        let body: Value = serde_json::from_slice(&submit.body).unwrap();
+        assert!(body.get("aspect_ratio").is_none() && body.get("generate_multi_clip_switch").is_none(), "{body}");
+        assert_eq!(body["model"], "v6", "{body}");
+    }
+
+    /// P7, P8: a poll whose ErrCode is not 0 is an error, never a job still
+    /// processing; a failed job says which failure it was.
+    #[tokio::test]
+    async fn a_poll_error_is_an_error_and_a_failure_says_which() {
+        let handle = VideoGenerationHandle { provider_job_id: "9".into(), provider: "pixverse".into(), model: "pixverse/v6".into() };
+        for (body, retryable) in [(json!({ "ErrCode": 500008, "ErrMsg": "Requested data not found" }), false), (json!({ "ErrCode": 500069, "ErrMsg": "high load" }), true)] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(body.clone())).mount(&server).await;
+            match make_provider(&server.uri()).poll_status(&handle).await {
+                Err(ProviderError::RequestFailed { retryable: r, .. }) => assert_eq!(r, retryable, "{body}"),
+                other => panic!("{body}: {other:?}"),
+            }
+        }
+        for (code, says) in [(7, "content moderation"), (8, "generation failed")] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "ErrCode": 0, "ErrMsg": "success", "Resp": { "id": 9, "status": code } })))
+                .mount(&server)
+                .await;
+            let poll = make_provider(&server.uri()).poll_status(&handle).await.unwrap();
+            assert_eq!((poll.status, poll.progress), (GenerationStatus::Failed, 100));
+            assert!(poll.error.as_deref().unwrap_or("").contains(says), "{code}: {:?}", poll.error);
+        }
+    }
+
+    /// P9: a submit PixVerse turned away at its limits was never accepted,
+    /// so it may be sent again.
+    #[tokio::test]
+    async fn a_submit_turned_away_at_the_limit_may_be_sent_again() {
+        for (code, retryable) in [(500044, true), (500069, true), (400017, false)] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "ErrCode": code, "ErrMsg": "no" })))
+                .mount(&server)
+                .await;
+            let err = make_provider(&server.uri()).generate(&ref_schema("pixverse/v6"), &make_base("x", "pixverse/v6"), &make_extras(), &uploaded(&[])).await.unwrap_err();
+            assert!(matches!(err, ProviderError::RequestFailed { retryable: r, .. } if r == retryable), "{code}: {err:?}");
+        }
     }
 }

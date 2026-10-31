@@ -5,7 +5,8 @@ models:
     provider: pixverse
     media_type: video
     display_name: PixVerse v4.5
-    description: PixVerse v4.5 text/image-to-video + first/last-frame transition.
+    description: PixVerse v4.5 text/image-to-video.
+    docs_url: https://docs.platform.pixverse.ai/text-to-video-13016634e0
     # @see https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md (2026-10-30)
     # "225 Credits = USD 1; 1 Credit ≈ USD 0.004444" (the earlier page, $10 per
     # 1,000 credits, is gone).
@@ -14,28 +15,37 @@ models:
     pricing:
       base_cost_usd: 0.2
     capabilities: { text_to_video: true, image_to_video: true }
-    prompt: { required: true, max_length: 5000 }
+    # img/generate: "prompt: type: string … maxLength: 2048" (text/ and
+    # transition/ take 5000), and one limit serves every mode.
+    # @see https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-10-30)
+    prompt: { required: true, max_length: 2048 }
     params:
       seed: { kind: seed, min: 0, max: 2147483647 }
-      duration_seconds: { kind: float, min: 5.0, max: 8.0, default: 5.0 }
+      # "Duration in seconds. C1/V6: 1-15; V5.5/V5.6: 5, 8, or 10; older
+      # models: 5 or 8." (img/generate)
+      duration_seconds: { kind: float, min: 5.0, max: 8.0, default: 5.0, values: [5.0, 8.0] }
       resolution:
         kind: string
         enum_values: [360p, 540p, 720p, 1080p]
+      # text/generate only: img/ and transition/ take the shape of the image.
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9","4:3","1:1","3:4","9:16"]
+    # No last frame: transition/generate's model enum is "c1 - v6 - v5.6 - v5".
+    # @see https://docs.platform.pixverse.ai/first-and-last-frame-video-43051213e0.md (2026-10-30)
     ref_inputs:
-      max_total: 2
+      max_total: 1
       default_role: first_frame
       provider_format:
         form: multipart
         field_map:
           first_frame: image
-          last_frame: image
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [motion_mode, style, template_id, negative_prompt]
+    # text/ and img/ define no negative_prompt, motion_mode or style, and
+    # template_id bills per template ("Use the selected template's
+    # `credit_consume` value"), which a flat price cannot.
+    extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
   - id: pixverse/v5
@@ -43,6 +53,7 @@ models:
     media_type: video
     display_name: PixVerse v5
     description: PixVerse v5 text/image-to-video.
+    docs_url: https://docs.platform.pixverse.ai/text-to-video-13016634e0
     # @see https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md (2026-10-30)
     # "225 Credits = USD 1; 1 Credit ≈ USD 0.004444" (the earlier page, $10 per
     # 1,000 credits, is gone).
@@ -57,13 +68,19 @@ models:
         - { when: { resolution: 1080p }, usd: 0.5333333 }
         - { when: { resolution: 1080p, duration_seconds: 8 }, usd: 1.0666667 }
     capabilities: { text_to_video: true, image_to_video: true }
-    prompt: { required: true, max_length: 5000 }
+    # img/generate: "prompt: type: string … maxLength: 2048" (text/ and
+    # transition/ take 5000), and one limit serves every mode.
+    # @see https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-10-30)
+    prompt: { required: true, max_length: 2048 }
     params:
       seed: { kind: seed, min: 0, max: 2147483647 }
+      # "Duration in seconds. C1/V6: 1-15; V5.5/V5.6: 5, 8, or 10; older
+      # models: 5 or 8." (img/generate)
       duration_seconds: { kind: float, min: 5.0, max: 8.0, default: 5.0, values: [5.0, 8.0] }
       resolution:
         kind: string
         enum_values: [360p, 540p, 720p, 1080p]
+      # text/generate only: img/ and transition/ take the shape of the image.
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9","4:3","1:1","3:4","9:16"]
@@ -78,9 +95,10 @@ models:
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-    # No generate_audio_switch: "Supported in v5.5/v5.6/v6/c1 models".
-    # https://docs.platform.pixverse.ai/text-to-video-generation-13016634e0.md
-    extra_allowlist: [motion_mode, negative_prompt]
+    # No generate_audio_switch: "Supported in v5.5/v5.6/v6/c1 models". No
+    # negative_prompt or motion_mode: text/, img/ and transition/ define neither.
+    # https://docs.platform.pixverse.ai/text-to-video-13016634e0.md (2026-10-30)
+    extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
   # Timed keyframes (PixelGenie 3D doc §5) on PixVerse's Multi-Transition.
@@ -179,7 +197,8 @@ models:
     provider: pixverse
     media_type: video
     display_name: PixVerse v3.5
-    description: PixVerse v3.5 text/image-to-video + transition.
+    description: PixVerse v3.5 text/image-to-video.
+    docs_url: https://docs.platform.pixverse.ai/text-to-video-13016634e0
     # @see https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md (2026-10-30)
     # "225 Credits = USD 1; 1 Credit ≈ USD 0.004444" (the earlier page, $10 per
     # 1,000 credits, is gone).
@@ -188,40 +207,50 @@ models:
     pricing:
       base_cost_usd: 0.2
     capabilities: { text_to_video: true, image_to_video: true }
-    prompt: { required: true, max_length: 5000 }
+    # img/generate: "prompt: type: string … maxLength: 2048" (text/ and
+    # transition/ take 5000), and one limit serves every mode.
+    # @see https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-10-30)
+    prompt: { required: true, max_length: 2048 }
     params:
       seed: { kind: seed, min: 0, max: 2147483647 }
-      duration_seconds: { kind: float, min: 5.0, max: 8.0, default: 5.0 }
+      # "Duration in seconds. C1/V6: 1-15; V5.5/V5.6: 5, 8, or 10; older
+      # models: 5 or 8." (img/generate)
+      duration_seconds: { kind: float, min: 5.0, max: 8.0, default: 5.0, values: [5.0, 8.0] }
       resolution:
         kind: string
         enum_values: [360p, 540p, 720p, 1080p]
+      # text/generate only: img/ and transition/ take the shape of the image.
       aspect_ratio:
         kind: aspect_ratio
         allowed: ["16:9","4:3","1:1","3:4","9:16"]
+    # No last frame: transition/generate's model enum is "c1 - v6 - v5.6 - v5".
+    # @see https://docs.platform.pixverse.ai/first-and-last-frame-video-43051213e0.md (2026-10-30)
     ref_inputs:
-      max_total: 2
+      max_total: 1
       default_role: first_frame
       provider_format:
         form: multipart
         field_map:
           first_frame: image
-          last_frame: image
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
-    extra_allowlist: [motion_mode, style, template_id, negative_prompt]
+    # text/ and img/ define no negative_prompt, motion_mode or style, and
+    # template_id bills per template ("Use the selected template's
+    # `credit_consume` value"), which a flat price cannot.
+    extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
   # ─── V6 / C1 (added 2026-09-11, model-drift) ───────────────────────────────
-  # PixVerse's two recommended models; the capability matrix files every other
-  # model under "Legacy models". Both serve text/, img/ and transition/generate
+  # The capability map: "Compare models and core capabilities to choose V6
+  # Max, C1, V6, V5.6, or V5." Both serve text/, img/ and transition/generate
   # (the three endpoints the adapter calls); fusion/ and extend/ are not wired.
-  # https://docs.platform.pixverse.ai/capability-matrix-2144288m0.md
+  # https://docs.platform.pixverse.ai/model-capability-map-2394982m0.md (2026-10-30)
   - id: pixverse/v6
     provider: pixverse
     media_type: video
     display_name: PixVerse V6
     description: PixVerse V6 text/image-to-video + first/last-frame transition, 1-15s, optional native audio.
+    docs_url: https://docs.platform.pixverse.ai/text-to-video-13016634e0
     # @see https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md (2026-10-30)
     # "225 Credits = USD 1; 1 Credit ≈ USD 0.004444" (the earlier page, $10 per
     # 1,000 credits, is gone).
@@ -239,13 +268,17 @@ models:
         - { when: { resolution: 720p, audio: true }, per_second_usd: 0.0533333 }
         - { when: { resolution: 1080p, audio: true }, per_second_usd: 0.1022222 }
     capabilities: { text_to_video: true, image_to_video: true }
-    prompt: { required: true, max_length: 5000 }
+    # img/generate: "prompt: type: string … maxLength: 2048" (text/ and
+    # transition/ take 5000), and one limit serves every mode.
+    # @see https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-10-30)
+    prompt: { required: true, max_length: 2048 }
     params:
       # PixelGenie L10: audio is sent as generate_audio_switch (default false).
       audio: { kind: bool, default: false }
       seed: { kind: seed, min: 0, max: 2147483647 }
-      # "v6/c1 : 1~15" on text/, img/ and transition/generate ("1080p supports up to 15s").
-      # https://docs.platform.pixverse.ai/text-to-video-generation-13016634e0.md
+      # text/generate: "duration: type: integer minimum: 1 maximum: 15"; img/:
+      # "C1/V6: 1-15".
+      # https://docs.platform.pixverse.ai/text-to-video-13016634e0.md (2026-10-30)
       duration_seconds: { kind: float, min: 1.0, max: 15.0, default: 5.0 }
       resolution:
         kind: string
@@ -271,7 +304,7 @@ models:
     # generate_multi_clip_switch ("Supported in v5.5/v6"; text/ and img/ only).
     # Audio is priced by the rules above (9 credits/s at 540p). No
     # negative_prompt, motion_mode or sound_effect_* / lip_sync_* (v5 and below).
-    # https://docs.platform.pixverse.ai/v6-2056814m0.md
+    # https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-10-30)
     extra_allowlist: [generate_multi_clip_switch]
     tags: [text-to-video, image-to-video]
 
@@ -280,6 +313,7 @@ models:
     media_type: video
     display_name: PixVerse C1
     description: PixVerse C1 cinematic text/image-to-video + first/last-frame transition, 1-15s, optional native audio.
+    docs_url: https://docs.platform.pixverse.ai/text-to-video-13016634e0
     # @see https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md (2026-10-30)
     # "225 Credits = USD 1; 1 Credit ≈ USD 0.004444" (the earlier page, $10 per
     # 1,000 credits, is gone).
@@ -297,13 +331,16 @@ models:
         - { when: { resolution: 720p, audio: true }, per_second_usd: 0.0577778 }
         - { when: { resolution: 1080p, audio: true }, per_second_usd: 0.1066667 }
     capabilities: { text_to_video: true, image_to_video: true }
-    prompt: { required: true, max_length: 5000 }
+    # img/generate: "prompt: type: string … maxLength: 2048" (text/ and
+    # transition/ take 5000), and one limit serves every mode.
+    # @see https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-10-30)
+    prompt: { required: true, max_length: 2048 }
     params:
       # PixelGenie L10: audio is sent as generate_audio_switch (default false).
       audio: { kind: bool, default: false }
       seed: { kind: seed, min: 0, max: 2147483647 }
-      # "Any integer from 1–15s (1080p supports up to 15s)" on every C1 endpoint.
-      # https://docs.platform.pixverse.ai/c1-2067883m0.md
+      # img/: "Duration in seconds. C1/V6: 1-15"; text/: "minimum: 1 maximum: 15".
+      # https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-10-30)
       duration_seconds: { kind: float, min: 1.0, max: 15.0, default: 5.0 }
       resolution:
         kind: string
@@ -312,7 +349,7 @@ models:
       aspect_ratio:
         kind: aspect_ratio
         # "v6/c1 models : 16:9, 4:3, 1:1, 3:4, 9:16, 2:3, 3:2, 21:9" (text/generate).
-        # https://docs.platform.pixverse.ai/text-to-video-generation-13016634e0.md
+        # https://docs.platform.pixverse.ai/text-to-video-13016634e0.md (2026-10-30)
         allowed: ["16:9","4:3","1:1","3:4","9:16","2:3","3:2","21:9"]
     ref_inputs:
       max_total: 2
@@ -325,9 +362,9 @@ models:
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
-    # generate_audio_switch only: C1 does multi-clip "with prompt", and
-    # generate_multi_clip_switch is "Supported in v5.5/v6". Audio is priced by
-    # the rules above (10 credits/s at 540p).
-    # https://docs.platform.pixverse.ai/c1-2067883m0.md
+    # generate_audio_switch only: img/ "Enable multi-clip generation with V5.5
+    # or V6. Not supported with other models or template_id." Audio is priced
+    # by the rules above (10 credits/s at 540p).
+    # https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md (2026-10-30)
     extra_allowlist: []
     tags: [text-to-video, image-to-video, premium]

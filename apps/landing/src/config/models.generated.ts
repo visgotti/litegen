@@ -2535,7 +2535,7 @@ export const MODELS: ModelEntry[] = [
       {
         "name": "seed",
         "kind": "seed",
-        "min": 0,
+        "min": 1,
         "max": 2147483647
       }
     ],
@@ -2546,94 +2546,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://www.tencentcloud.com/document/product/1284/74915"
-  },
-  {
-    "id": "hunyuan/hunyuan-image-3",
-    "provider": "hunyuan",
-    "displayName": "Hunyuan Image 3.0",
-    "description": "Tencent Hunyuan Image 3.0 text-to-image with up to three reference images (async SubmitTextToImageJob on aiart).",
-    "mediaType": "image",
-    "output": "image",
-    "capabilities": {
-      "textToImage": true,
-      "imageToImage": true,
-      "inpainting": false,
-      "textToVideo": false,
-      "imageToVideo": false,
-      "textTo3d": false,
-      "imageTo3d": false,
-      "multiviewTo3d": false
-    },
-    "sizes": [
-      "2048x512",
-      "1984x512",
-      "1920x512",
-      "1856x512",
-      "1792x512",
-      "1728x512",
-      "1664x512",
-      "1600x512",
-      "1536x512",
-      "1472x576",
-      "1408x640",
-      "1344x704",
-      "1280x768",
-      "1216x832",
-      "1152x896",
-      "1088x960",
-      "1024x1024",
-      "960x1088",
-      "896x1152",
-      "832x1216",
-      "768x1280",
-      "704x1344",
-      "640x1408",
-      "576x1472",
-      "512x1536",
-      "512x1600",
-      "512x1664",
-      "512x1728",
-      "512x1792",
-      "512x1856",
-      "512x1920",
-      "512x1984",
-      "512x2048",
-      "768x1024",
-      "720x1280",
-      "1024x768",
-      "1280x720"
-    ],
-    "aspectRatios": [],
-    "maxRefImages": 3,
-    "refRoles": [
-      {
-        "name": "init",
-        "required": false,
-        "min": 0,
-        "max": 3
-      }
-    ],
-    "promptLimits": {
-      "required": true,
-      "maxLength": 8192
-    },
-    "params": [
-      {
-        "name": "seed",
-        "kind": "seed",
-        "min": 1,
-        "max": 4294967295
-      }
-    ],
-    "pricing": {
-      "baseCostUsd": 0.0298
-    },
-    "tags": [
-      "text-to-image",
-      "image-to-image"
-    ],
-    "referenceUrl": "https://www.tencentcloud.com/document/product/1284/74915"
+    "referenceUrl": "https://cloud.tencent.com/document/product/1729/105969"
   },
   {
     "id": "hunyuan/hunyuan-video",
@@ -2669,6 +2582,13 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 5,
+        "max": 5
+      },
+      {
         "name": "resolution",
         "kind": "string",
         "enum": [
@@ -2684,7 +2604,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://www.tencentcloud.com/document/product/1284/74915"
+    "referenceUrl": "https://cloud.tencent.com/document/api/1616/126160"
   },
   {
     "id": "hunyuan/hunyuan-video-i2v",
@@ -2720,6 +2640,13 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "duration_seconds",
+        "kind": "float",
+        "default": 5,
+        "min": 5,
+        "max": 5
+      },
+      {
         "name": "resolution",
         "kind": "string",
         "enum": [
@@ -2743,7 +2670,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "image-to-video"
     ],
-    "referenceUrl": "https://www.tencentcloud.com/document/product/1284/74915"
+    "referenceUrl": "https://cloud.tencent.com/document/api/1616/124465"
   },
   {
     "id": "ideogram/ideogram-4-5-precise-edit",
@@ -3346,7 +3273,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
+    "referenceUrl": "https://kling.ai/document-api/api/image/2-1/image-generation"
   },
   {
     "id": "kling/kling-v3",
@@ -3402,7 +3329,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
+    "referenceUrl": "https://kling.ai/document-api/api/image/3-0-omni/image-generation"
   },
   {
     "id": "kling/video-kling-v2-5-turbo",
@@ -3466,7 +3393,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
+    "referenceUrl": "https://kling.ai/document-api/api/video/2-5-turbo/text-to-video"
   },
   {
     "id": "kling/video-kling-v2-6",
@@ -3535,7 +3462,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
+    "referenceUrl": "https://kling.ai/document-api/api/video/2-6/text-to-video"
   },
   {
     "id": "kling/video-kling-v3",
@@ -3604,7 +3531,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://app.klingai.com/global/dev/document-api/quickStart/productIntroduction/overview"
+    "referenceUrl": "https://kling.ai/document-api/api/video/3-0-omni/text-to-video"
   },
   {
     "id": "leonardo/diffusion-xl",
@@ -3891,7 +3818,7 @@ export const MODELS: ModelEntry[] = [
     "id": "luma/dream-machine",
     "provider": "luma",
     "displayName": "Luma Dream Machine",
-    "description": "",
+    "description": "Luma Dream Machine text/image-to-video (sent as ray-2) with first and last keyframes, 5 or 9 s, optional loop.",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -3931,7 +3858,8 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 1000
+      "minLength": 3,
+      "maxLength": 5000
     },
     "params": [
       {
@@ -3963,7 +3891,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://docs.lumalabs.ai/docs/api"
+    "referenceUrl": "https://docs.lumalabs.ai/reference/creategeneration"
   },
   {
     "id": "luma/photon-1",
@@ -4040,7 +3968,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://docs.lumalabs.ai/docs/api"
+    "referenceUrl": "https://docs.lumalabs.ai/reference/generateimage"
   },
   {
     "id": "luma/photon-flash-1",
@@ -4118,13 +4046,13 @@ export const MODELS: ModelEntry[] = [
       "image-to-image",
       "fast"
     ],
-    "referenceUrl": "https://docs.lumalabs.ai/docs/api"
+    "referenceUrl": "https://docs.lumalabs.ai/reference/generateimage"
   },
   {
     "id": "luma/ray-2",
     "provider": "luma",
     "displayName": "Luma Ray 2",
-    "description": "",
+    "description": "Luma Ray 2 text/image-to-video with first and last keyframes, 5 or 9 s, 540p to 4K, optional loop.",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -4164,9 +4092,15 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 1000
+      "minLength": 3,
+      "maxLength": 5000
     },
     "params": [
+      {
+        "name": "loop",
+        "kind": "bool",
+        "default": false
+      },
       {
         "name": "duration_seconds",
         "kind": "float",
@@ -4191,13 +4125,13 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://docs.lumalabs.ai/docs/api"
+    "referenceUrl": "https://docs.lumalabs.ai/reference/creategeneration"
   },
   {
     "id": "luma/ray-flash-2",
     "provider": "luma",
     "displayName": "Luma Ray Flash 2",
-    "description": "",
+    "description": "Luma Ray Flash 2 text/image-to-video, faster and cheaper than Ray 2, with first and last keyframes, 5 or 9 s, optional loop.",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -4237,9 +4171,15 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 1000
+      "minLength": 3,
+      "maxLength": 5000
     },
     "params": [
+      {
+        "name": "loop",
+        "kind": "bool",
+        "default": false
+      },
       {
         "name": "duration_seconds",
         "kind": "float",
@@ -4265,7 +4205,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "fast"
     ],
-    "referenceUrl": "https://docs.lumalabs.ai/docs/api"
+    "referenceUrl": "https://docs.lumalabs.ai/reference/creategeneration"
   },
   {
     "id": "meshy/animate",
@@ -5236,7 +5176,7 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 5000
+      "maxLength": 2048
     },
     "params": [
       {
@@ -5277,13 +5217,13 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "premium"
     ],
-    "referenceUrl": "https://docs.platform.pixverse.ai/"
+    "referenceUrl": "https://docs.platform.pixverse.ai/text-to-video-13016634e0"
   },
   {
     "id": "pixverse/v3.5",
     "provider": "pixverse",
     "displayName": "PixVerse v3.5",
-    "description": "PixVerse v3.5 text/image-to-video + transition.",
+    "description": "PixVerse v3.5 text/image-to-video.",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -5304,16 +5244,10 @@ export const MODELS: ModelEntry[] = [
       "3:4",
       "9:16"
     ],
-    "maxRefImages": 2,
+    "maxRefImages": 1,
     "refRoles": [
       {
         "name": "first_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      },
-      {
-        "name": "last_frame",
         "required": false,
         "min": 0,
         "max": 1
@@ -5321,7 +5255,7 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 5000
+      "maxLength": 2048
     },
     "params": [
       {
@@ -5355,13 +5289,13 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://docs.platform.pixverse.ai/"
+    "referenceUrl": "https://docs.platform.pixverse.ai/text-to-video-13016634e0"
   },
   {
     "id": "pixverse/v4.5",
     "provider": "pixverse",
     "displayName": "PixVerse v4.5",
-    "description": "PixVerse v4.5 text/image-to-video + first/last-frame transition.",
+    "description": "PixVerse v4.5 text/image-to-video.",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -5382,16 +5316,10 @@ export const MODELS: ModelEntry[] = [
       "3:4",
       "9:16"
     ],
-    "maxRefImages": 2,
+    "maxRefImages": 1,
     "refRoles": [
       {
         "name": "first_frame",
-        "required": false,
-        "min": 0,
-        "max": 1
-      },
-      {
-        "name": "last_frame",
         "required": false,
         "min": 0,
         "max": 1
@@ -5399,7 +5327,7 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 5000
+      "maxLength": 2048
     },
     "params": [
       {
@@ -5433,7 +5361,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://docs.platform.pixverse.ai/"
+    "referenceUrl": "https://docs.platform.pixverse.ai/text-to-video-13016634e0"
   },
   {
     "id": "pixverse/v5",
@@ -5477,7 +5405,7 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 5000
+      "maxLength": 2048
     },
     "params": [
       {
@@ -5511,7 +5439,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://docs.platform.pixverse.ai/"
+    "referenceUrl": "https://docs.platform.pixverse.ai/text-to-video-13016634e0"
   },
   {
     "id": "pixverse/v5-multi-transition",
@@ -5611,7 +5539,7 @@ export const MODELS: ModelEntry[] = [
     ],
     "promptLimits": {
       "required": true,
-      "maxLength": 5000
+      "maxLength": 2048
     },
     "params": [
       {
@@ -5651,7 +5579,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://docs.platform.pixverse.ai/"
+    "referenceUrl": "https://docs.platform.pixverse.ai/text-to-video-13016634e0"
   },
   {
     "id": "recraft/recraftv2",

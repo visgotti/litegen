@@ -7,6 +7,7 @@ models:
     media_type: image
     display_name: Luma Photon
     description: Luma Photon text-to-image with image/style/character references.
+    docs_url: https://docs.lumalabs.ai/reference/generateimage
     pricing: { base_cost_usd: 0.015 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 1000 }
@@ -39,6 +40,7 @@ models:
     media_type: image
     display_name: Luma Photon Flash
     description: Faster, cheaper Photon variant.
+    docs_url: https://docs.lumalabs.ai/reference/generateimage
     pricing: { base_cost_usd: 0.002 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 1000 }
@@ -70,11 +72,18 @@ models:
     provider: luma
     media_type: video
     display_name: Luma Dream Machine
+    description: Luma Dream Machine text/image-to-video (sent as ray-2) with first and last keyframes, 5 or 9 s, optional loop.
+    docs_url: https://docs.lumalabs.ai/reference/creategeneration
     pricing: { base_cost_usd: 0.35 }
     capabilities: { text_to_video: true, image_to_video: true }
-    prompt: { required: true, max_length: 1000 }
+    # "Prompt is too short, minimum length is 3 characters", "Prompt is too long,
+    # maximum length is 5000 characters".
+    # @see https://docs.lumalabs.ai/docs/errors.md (2026-10-30)
+    prompt: { required: true, min_length: 3, max_length: 5000 }
     params:
-      # PixelGenie L10: loop is sent as Dream Machine's own `loop`.
+      # GenerationRequest.loop, sent as Luma's own `loop`; "Loop is not supported for
+      # keyframes", so the adapter refuses a loop with a last frame.
+      # @see https://docs.lumalabs.ai/docs/errors.md (2026-10-30)
       loop: { kind: bool, default: false }
       # Sent as ray-2. VideoModelOutputDuration enum: "5s" | "9s" (3s is not a
       # value). VideoModelOutputResolution enum: 540p | 720p | 1080p | 4k.
@@ -105,10 +114,19 @@ models:
     provider: luma
     media_type: video
     display_name: Luma Ray 2
+    description: Luma Ray 2 text/image-to-video with first and last keyframes, 5 or 9 s, 540p to 4K, optional loop.
+    docs_url: https://docs.lumalabs.ai/reference/creategeneration
     pricing: { base_cost_usd: 0.40 }
     capabilities: { text_to_video: true, image_to_video: true }
-    prompt: { required: true, max_length: 1000 }
+    # "Prompt is too short, minimum length is 3 characters", "Prompt is too long,
+    # maximum length is 5000 characters".
+    # @see https://docs.lumalabs.ai/docs/errors.md (2026-10-30)
+    prompt: { required: true, min_length: 3, max_length: 5000 }
     params:
+      # GenerationRequest.loop, sent as Luma's own `loop`; "Loop is not supported for
+      # keyframes", so the adapter refuses a loop with a last frame.
+      # @see https://docs.lumalabs.ai/docs/errors.md (2026-10-30)
+      loop: { kind: bool, default: false }
       duration_seconds: { kind: float, min: 5.0, max: 9.0, values: [5.0, 9.0] }
       aspect_ratio:
         kind: aspect_ratio
@@ -138,10 +156,19 @@ models:
     provider: luma
     media_type: video
     display_name: Luma Ray Flash 2
+    description: Luma Ray Flash 2 text/image-to-video, faster and cheaper than Ray 2, with first and last keyframes, 5 or 9 s, optional loop.
+    docs_url: https://docs.lumalabs.ai/reference/creategeneration
     pricing: { base_cost_usd: 0.20 }
     capabilities: { text_to_video: true, image_to_video: true }
-    prompt: { required: true, max_length: 1000 }
+    # "Prompt is too short, minimum length is 3 characters", "Prompt is too long,
+    # maximum length is 5000 characters".
+    # @see https://docs.lumalabs.ai/docs/errors.md (2026-10-30)
+    prompt: { required: true, min_length: 3, max_length: 5000 }
     params:
+      # GenerationRequest.loop, sent as Luma's own `loop`; "Loop is not supported for
+      # keyframes", so the adapter refuses a loop with a last frame.
+      # @see https://docs.lumalabs.ai/docs/errors.md (2026-10-30)
+      loop: { kind: bool, default: false }
       duration_seconds: { kind: float, min: 5.0, max: 9.0, values: [5.0, 9.0] }
       # POST /generations/video takes the same AspectRatio and
       # VideoModelOutputResolution enums for ray-flash-2 as for ray-2.

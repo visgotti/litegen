@@ -1,6 +1,9 @@
 models:
-  # Kling (api.klingai.com; regional hosts via api_base). Auth: per-request JWT
-  # (HS256) from access_key (key_id) + secret_key (key_secret). Async tasks.
+  # Kling (api-singapore.klingai.com: "The API endpoint has been changed from
+  # https://api.klingai.com to https://api-singapore.klingai.com"; other regions
+  # via api_base). Auth: per-request JWT (HS256) from access_key (key_id) +
+  # secret_key (key_secret). Async tasks.
+  # @see https://kling.ai/document-api/api/get-started/authentication.md (2026-10-30)
   # ─── Image (Kolors) ───────────────────────────────────────────────────────
   # Kling Image 2.1: the successor to Image 2.0 / 1.5 (both retired 2026-09-15).
   # Same POST /v1/images/generations endpoint, sent as model_name `kling-v2-1`.
@@ -12,6 +15,7 @@ models:
     media_type: image
     display_name: Kling Image v2.1
     description: Kling Image 2.1 text-to-image, image-to-image and subject/face reference.
+    docs_url: https://kling.ai/document-api/api/image/2-1/image-generation
     # Text-to-image at 1K or 2K: 4 units ($0.014) per image. Image-to-image
     # (a reference image) is 8 units ($0.028).
     # @see https://kling.ai/document-api/pricing/base/image.md (2026-09-11)
@@ -51,6 +55,7 @@ models:
     media_type: image
     display_name: Kling Image v3
     description: Kling Image 3.0 text-to-image and image-to-image.
+    docs_url: https://kling.ai/document-api/api/image/3-0-omni/image-generation
     # Text-to-image and image-to-image at 1K or 2K: 8 units ($0.028) per image.
     # @see https://kling.ai/document-api/pricing/base/image.md (2026-09-11)
     pricing: { base_cost_usd: 0.028 }
@@ -102,6 +107,7 @@ models:
     media_type: video
     display_name: Kling Video v2.5 Turbo
     description: Kling 2.5 Turbo text/image-to-video (first frame + image_tail last frame).
+    docs_url: https://kling.ai/document-api/api/video/2-5-turbo/text-to-video
     # Default request (mode std = 720p, 5 s, no audio): 0.3 units ($0.042)/s
     # x 5 s = $0.21. 1080p (mode pro) is $0.07/s.
     # @see https://kling.ai/document-api/pricing/base/video.md (2026-09-11)
@@ -134,6 +140,7 @@ models:
     media_type: video
     display_name: Kling Video v2.6
     description: Kling 2.6 text/image-to-video with optional native audio.
+    docs_url: https://kling.ai/document-api/api/video/2-6/text-to-video
     # Default request (mode std = 720p, 5 s, sound off): 0.3 units ($0.042)/s
     # x 5 s = $0.21. 1080p silent is $0.07/s; 1080p with native audio
     # (sound: on) is $0.14/s.
@@ -164,7 +171,11 @@ models:
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     # sound: on | off (default off). Native audio is 1080p only (mode pro;
     # "720P supports silent videos only"), and first + last frame is 1080p
-    # silent only.
+    # silent only. Kling contradicts itself on 2.6 audio (2026-10-30): the
+    # capability map says "Kling 2.6: Not Supported" for Native Audio, while
+    # the 2.6 API page has "`settings.audio` … `native`, `off`" and the price
+    # page lists "With Native Audio x No Voice Reference … 1.0 Unit ($0.14) /s".
+    # Kept until a live run settles it.
     extra_allowlist: [mode]
     tags: [text-to-video, image-to-video]
 
@@ -186,6 +197,7 @@ models:
     media_type: video
     display_name: Kling Video v3
     description: Kling 3.0 text/image-to-video with native audio, multi-shot and up to 4K.
+    docs_url: https://kling.ai/document-api/api/video/3-0-omni/text-to-video
     # Default request (mode std = 720p, 5 s, sound off): 0.6 units ($0.084)/s
     # x 5 s = $0.42. 1080p is $0.112/s silent, $0.168/s with native audio;
     # 720p with audio is $0.126/s; 4K is $0.42/s either way.

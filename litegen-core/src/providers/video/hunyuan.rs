@@ -120,7 +120,7 @@ impl HunyuanVideoProvider {
         for (k, v) in &signed {
             req = req.header(k, v);
         }
-        let data: Value = crate::providers::inject_trace_headers(req.body(body_bytes))
+        let resp = crate::providers::inject_trace_headers(req.body(body_bytes))
             .send()
             .await
             .map_err(|e| ProviderError::RequestFailed {
@@ -128,21 +128,31 @@ impl HunyuanVideoProvider {
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
                 retryable: e.is_timeout() || e.is_connect(),
-            })?
-            .json()
-            .await
-            .map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to parse Hunyuan response: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
             })?;
-        if let Some(err) = data["Response"]["Error"].as_object() {
+        // The status first: a gateway's 5xx page is a passing failure.
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        let Ok(data) = serde_json::from_str::<Value>(&text) else {
             return Err(ProviderError::RequestFailed {
-                message: format!("Hunyuan API error: {}", err.get("Message").and_then(|m| m.as_str()).unwrap_or("unknown")),
-                status_code: None,
+                message: format!("Hunyuan {action} answered HTTP {} with a body that is not JSON", status.as_u16()),
+                status_code: Some(status.as_u16()),
+                provider_error: None,
+                retryable: status.is_server_error() || status.as_u16() == 429,
+            });
+        };
+        if let Some(err) = data["Response"]["Error"].as_object() {
+            // A passing failure — internal, rate-limited, unavailable — is asked
+            // again (on a poll, reaping would fail the row with no webhook); any
+            // other code (no such job, bad signature, bad parameter) is final.
+            // @see <https://cloud.tencent.com/document/api/1616/107794> — "InternalError | 内部错误",
+            //   "RequestLimitExceeded | 请求的次数超过了频率限制", "ServiceUnavailable | 当前服务暂时不可用"
+            let code = err.get("Code").and_then(|c| c.as_str()).unwrap_or("");
+            let passing = code.starts_with("InternalError") || code.starts_with("RequestLimitExceeded") || code == "ServiceUnavailable";
+            return Err(ProviderError::RequestFailed {
+                message: format!("Hunyuan API error {code}: {}", err.get("Message").and_then(|m| m.as_str()).unwrap_or("unknown")),
+                status_code: Some(status.as_u16()),
                 provider_error: Some(data.clone()),
-                retryable: false,
+                retryable: passing,
             });
         }
         Ok(data)
@@ -716,5 +726,24 @@ mod tests {
         let poll = make_provider(&server.uri()).poll_status(&i2v_handle()).await.unwrap();
         assert_eq!(poll.status, GenerationStatus::Failed);
         assert!(poll.error.is_some() && poll.video_url.is_none());
+    }
+
+    // ─── Hunyuan audit, 2026-10-30: H5 ──────────────────────────────────────
+
+    /// H5: a passing Tencent error during a poll is asked again — reaped, the
+    /// row would fail with no webhook — while a verdict (no such job) is not.
+    #[tokio::test]
+    async fn a_passing_tencent_error_is_asked_again_and_a_verdict_is_not() {
+        for (code, retryable) in [("InternalError", true), ("RequestLimitExceeded", true), ("ServiceUnavailable", true), ("FailedOperation.JobNotExist", false), ("AuthFailure.SignatureFailure", false)] {
+            let server = MockServer::start().await;
+            mount_describe(&server, json!({ "Error": { "Code": code, "Message": "no" }, "RequestId": "r" })).await;
+            match make_provider(&server.uri()).poll_status(&handle()).await {
+                Err(ProviderError::RequestFailed { retryable: r, .. }) => assert_eq!(r, retryable, "{code}"),
+                other => panic!("{code}: {other:?}"),
+            }
+        }
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(503).set_body_string("<html>busy</html>")).mount(&server).await;
+        assert!(matches!(make_provider(&server.uri()).poll_status(&handle()).await, Err(ProviderError::RequestFailed { retryable: true, .. })));
     }
 }

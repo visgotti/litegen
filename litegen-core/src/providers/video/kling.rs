@@ -20,8 +20,12 @@ use crate::types::*;
 /// Auth: per-request HS256 JWT ([`AuthSpec::KlingJwt`]). The job handle encodes
 /// `{kind}/{task_id}` so polling targets the right sub-path.
 ///
-/// @see <https://app.klingai.com/global/dev/document-api/apiReference/model/imageToVideo>
-///   (image first frame `image`, last frame `image_tail`; mode std|pro; duration 5|10)
+/// @see <https://kling.ai/document-api/api/video/2-6/image-to-video.md> (2026-10-30)
+///   ("`settings.duration` | int | No | `5` | `5`, `10`"). That page documents
+///   Kling's newer API; the legacy `/v1/videos/{text2video,image2video}` pages
+///   this adapter was written from (first frame `image`, last frame
+///   `image_tail`, mode std|pro) are no longer published, though the endpoints
+///   still answer.
 pub struct KlingVideoProvider {
     config: Option<ProviderInstanceConfig>,
     cred_pool: Option<CredentialPool>,
@@ -46,7 +50,10 @@ impl KlingVideoProvider {
         self.config
             .as_ref()
             .and_then(|c| c.api_base.as_deref())
-            .unwrap_or("https://api.klingai.com")
+            // "The API endpoint has been changed from https://api.klingai.com to
+            // https://api-singapore.klingai.com."
+            // @see <https://kling.ai/document-api/api/get-started/authentication.md>
+            .unwrap_or("https://api-singapore.klingai.com")
     }
 
     fn creds(&self) -> Result<ProviderCredentials, ProviderError> {
@@ -75,6 +82,39 @@ impl KlingVideoProvider {
             _ => None,
         }
     }
+}
+
+/// Read a Kling reply whole: its HTTP status and body `code` together. A
+/// request Kling turned away before accepting it — a rate limit (1302-1304)
+/// or a server error (5000-5002) — may be sent again; any other `code` is a
+/// verdict on the request (bad key 1000-1004, task not found 1203, …).
+///
+/// @see <https://kling.ai/document-api/api/get-started/error-codes.md> — "429 | 1302 | … Too many
+///   requests; rate limit exceeded", "500 | 5000 | … Server internal error"
+pub(crate) async fn read_kling(resp: reqwest::Response, what: &str) -> Result<Value, ProviderError> {
+    let status = resp.status().as_u16();
+    let text = resp.text().await.map_err(|e| ProviderError::RequestFailed {
+        message: format!("Kling {what} body could not be read: {e}"),
+        status_code: Some(status),
+        provider_error: None,
+        retryable: true,
+    })?;
+    let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    let code = body["code"].as_i64();
+    if status < 300 && code == Some(0) {
+        return Ok(body);
+    }
+    let retryable = match code {
+        Some(c) => matches!(c, 1302..=1304 | 5000..=5002),
+        None => status >= 500 || status == 429 || status == 408,
+    };
+    let why = body["message"].as_str().map(str::to_string).unwrap_or_else(|| text.chars().take(200).collect());
+    Err(ProviderError::RequestFailed {
+        message: format!("Kling {what} answered HTTP {status}{}: {why}", code.map(|c| format!(", code {c}")).unwrap_or_default()),
+        status_code: Some(status),
+        provider_error: (!body.is_null()).then_some(body),
+        retryable,
+    })
 }
 
 impl Default for KlingVideoProvider {
@@ -124,6 +164,32 @@ impl VideoProvider for KlingVideoProvider {
                 }
             }
         }
+        // What Kling cannot make is refused before any call (it would bill,
+        // or reject, a request litegen could tell was wrong).
+        // @see <https://kling.ai/document-api/guides/capability-map/video.md> — "First/Last Frame … Kling
+        //   2.6: Supported: Only supports 1080P silent videos | Kling 2.5 Turbo: Supported: Only
+        //   supports 1080P"; "| Kling 2.6 | … | 5s, 10s |", "| Kling 2.5 Turbo | … | 5s, 10s |"
+        let refuse = |why: String| Err(ProviderError::InvalidRequest(format!("{}: {why}", model.id)));
+        if tail.is_some() && first.is_none() {
+            return refuse("a last_frame needs a first_frame".into());
+        }
+        let extra = extras.extra.as_ref();
+        let mode_pro = extra.and_then(|e| e["mode"].as_str()) == Some("pro");
+        let audio_on = extras.audio == Some(true) || extra.and_then(|e| e["sound"].as_str()) == Some("on");
+        if matches!(native, "kling-v2-5-turbo" | "kling-v2-6") {
+            if tail.is_some() && !mode_pro {
+                return refuse("first and last frames need mode pro (1080P)".into());
+            }
+            if ![5.0, 10.0].contains(&extras.duration_seconds) {
+                return refuse(format!("{} s is not a length it makes (5 or 10 s)", extras.duration_seconds));
+            }
+        }
+        if native == "kling-v2-6" && audio_on && (!mode_pro || tail.is_some()) {
+            return refuse("native audio needs mode pro, and no last frame".into());
+        }
+        if extras.duration_seconds.fract() != 0.0 {
+            return refuse(format!("{} s is not a whole number of seconds", extras.duration_seconds));
+        }
         let kind = if first.is_some() { "image2video" } else { "text2video" };
         let url = format!("{}/v1/videos/{kind}", self.api_base());
 
@@ -134,8 +200,11 @@ impl VideoProvider for KlingVideoProvider {
         if extras.duration_seconds > 0.0 {
             body["duration"] = Value::String((extras.duration_seconds as i64).to_string());
         }
-        if let Some(ar) = extras.aspect_ratio.as_deref() {
-            body["aspect_ratio"] = Value::String(ar.to_string());
+        // Image-to-video takes the image's shape.
+        if kind == "text2video" {
+            if let Some(ar) = extras.aspect_ratio.as_deref() {
+                body["aspect_ratio"] = Value::String(ar.to_string());
+            }
         }
         if let Some(img) = first {
             body["image"] = Value::String(img);
@@ -143,11 +212,11 @@ impl VideoProvider for KlingVideoProvider {
         if let Some(t) = tail {
             body["image_tail"] = Value::String(t);
         }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map {
-                    obj.insert(k.clone(), v.clone());
-                }
+        // `extra` adds the endpoint's own fields; it cannot replace one litegen
+        // sets (rule 11).
+        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
+            for (k, v) in map.iter().filter(|(k, _)| !matches!(k.as_str(), "model_name" | "prompt" | "negative_prompt" | "duration" | "aspect_ratio" | "image" | "image_tail")) {
+                obj.insert(k.clone(), v.clone());
             }
         }
         // PixelGenie L10: native audio is Kling's `sound`, on or off.
@@ -160,31 +229,17 @@ impl VideoProvider for KlingVideoProvider {
             &creds,
             self.client.post(&url).header("Content-Type", "application/json").json(&body),
         )?;
-        let submit: Value = crate::providers::inject_trace_headers(builder)
+        let resp = crate::providers::inject_trace_headers(builder)
             .send()
             .await
             .map_err(|e| ProviderError::RequestFailed {
                 message: format!("Kling video request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
-            })?
-            .json()
-            .await
-            .map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to parse Kling response: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
+                // A call that timed out may still run, and bill.
+                retryable: e.is_connect(),
             })?;
-        if submit["code"].as_i64().unwrap_or(-1) != 0 {
-            return Err(ProviderError::RequestFailed {
-                message: format!("Kling API error: {}", submit["message"].as_str().unwrap_or("unknown")),
-                status_code: None,
-                provider_error: Some(submit),
-                retryable: false,
-            });
-        }
+        let submit = read_kling(resp, "video submit").await?;
 
         let task_id = submit["data"]["task_id"].as_str().ok_or_else(|| ProviderError::RequestFailed {
             message: "Kling response missing data.task_id".to_string(),
@@ -208,7 +263,7 @@ impl VideoProvider for KlingVideoProvider {
         let creds = self.creds()?;
         let url = format!("{}/v1/videos/{}", self.api_base(), handle.provider_job_id);
         let builder = crate::providers::auth::apply(&self.auth, &creds, self.client.get(&url))?;
-        let data: Value = crate::providers::inject_trace_headers(builder)
+        let resp = crate::providers::inject_trace_headers(builder)
             .send()
             .await
             .map_err(|e| ProviderError::RequestFailed {
@@ -216,10 +271,9 @@ impl VideoProvider for KlingVideoProvider {
                 status_code: None,
                 provider_error: None,
                 retryable: true,
-            })?
-            .json()
-            .await
-            .unwrap_or_default();
+            })?;
+        // An error is an error, never a job still processing until the reaper.
+        let data = read_kling(resp, "video poll").await?;
 
         let status = match data["data"]["task_status"].as_str() {
             Some("succeed") => GenerationStatus::Completed,
@@ -337,5 +391,123 @@ mod tests {
         let poll = provider.poll_status(&handle).await.unwrap();
         assert_eq!(poll.status, GenerationStatus::Completed);
         assert_eq!(poll.video_url.unwrap(), "https://cdn.kling/v.mp4");
+    }
+
+    // ─── Kling audit, 2026-10-30: K1, K3–K7, K12 ────────────────────────────
+
+    fn frame(role: &str) -> crate::proxy::materializer::MaterializedRef {
+        crate::proxy::materializer::MaterializedRef { role: role.into(), form: MaterializedRefForm::Url(format!("https://x/{role}.png")), time_s: None }
+    }
+
+    fn refs(roles: &[&str]) -> MaterializedRequest {
+        MaterializedRequest { refs: roles.iter().map(|r| frame(r)).collect(), cleanup: Cleanup::empty() }
+    }
+
+    async fn accepting() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "code": 0, "data": { "task_id": "t1" } })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// K1: "The API endpoint has been changed from https://api.klingai.com to
+    /// https://api-singapore.klingai.com."
+    #[test]
+    fn the_default_host_is_kling_singapore() {
+        let mut p = KlingVideoProvider::new();
+        p.configure(ProviderInstanceConfig::default());
+        assert_eq!(p.api_base(), "https://api-singapore.klingai.com");
+    }
+
+    /// K4, K5, K7: what Kling cannot make is refused before any call — a
+    /// last frame alone, first and last frames (or native audio) on 2.5 Turbo
+    /// and 2.6 outside mode pro, a length other than 5 or 10 s there, and a
+    /// fractional length anywhere.
+    #[tokio::test]
+    async fn what_a_model_cannot_make_is_refused_before_any_call() {
+        let server = accepting().await;
+        let p = make_provider(&server.uri());
+        let v26 = ref_schema("kling/video-kling-v2-6");
+        let base = make_base("x", "kling/video-kling-v2-6");
+        let mut seven = make_extras();
+        seven.duration_seconds = 7.0;
+        let mut half = make_extras();
+        half.duration_seconds = 5.5;
+        let mut pro_audio_frames = make_extras();
+        pro_audio_frames.extra = Some(json!({ "mode": "pro" }));
+        pro_audio_frames.audio = Some(true);
+        let mut std_audio = make_extras();
+        std_audio.audio = Some(true);
+        for (extras, materialized) in [
+            (make_extras(), refs(&["last_frame"])),
+            (make_extras(), refs(&["first_frame", "last_frame"])),
+            (pro_audio_frames, refs(&["first_frame", "last_frame"])),
+            (std_audio, refs(&[])),
+            (seven, refs(&[])),
+            (half, refs(&[])),
+        ] {
+            let err = p.generate(&v26, &base, &extras, &materialized).await.unwrap_err();
+            assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        }
+        assert!(server.received_requests().await.unwrap().is_empty(), "nothing sent");
+
+        let mut pro = make_extras();
+        pro.extra = Some(json!({ "mode": "pro" }));
+        p.generate(&v26, &base, &pro, &refs(&["first_frame", "last_frame"])).await.unwrap();
+    }
+
+    /// K6: image-to-video takes the image's shape; only text-to-video gets
+    /// an aspect ratio. `extra` cannot replace the model.
+    #[tokio::test]
+    async fn only_text_to_video_gets_an_aspect_ratio() {
+        let server = accepting().await;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "model_name": "kling-v3" }));
+        make_provider(&server.uri())
+            .generate(&ref_schema("kling/video-kling-v2-6"), &make_base("x", "kling/video-kling-v2-6"), &extras, &refs(&["first_frame"]))
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert!(body.get("aspect_ratio").is_none(), "{body}");
+        assert_eq!(body["model_name"], "kling-v2-6", "{body}");
+    }
+
+    /// K3: a poll error is an error — not a job still processing until the
+    /// reaper — and says whether to ask again.
+    #[tokio::test]
+    async fn a_poll_error_is_an_error_that_says_whether_to_ask_again() {
+        let handle = VideoGenerationHandle { provider_job_id: "text2video/t1".into(), provider: "kling".into(), model: "kling/video-kling-v2-6".into() };
+        for (status, body, retryable) in [
+            (401, json!({ "code": 1001, "message": "Authorization is empty" }), false),
+            (200, json!({ "code": 1203, "message": "task not found" }), false),
+            (429, json!({ "code": 1302, "message": "rate limited" }), true),
+            (500, json!({ "code": 5000, "message": "internal error" }), true),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET")).respond_with(ResponseTemplate::new(status).set_body_json(body.clone())).mount(&server).await;
+            let got = make_provider(&server.uri()).poll_status(&handle).await;
+            match got {
+                Err(ProviderError::RequestFailed { retryable: r, .. }) => assert_eq!(r, retryable, "{body}"),
+                other => panic!("{body}: {other:?}"),
+            }
+        }
+    }
+
+    /// K12: a submit Kling turned away (rate limit, server error) was never
+    /// accepted, so it may be sent again.
+    #[tokio::test]
+    async fn a_rate_limited_submit_may_be_sent_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).set_body_json(json!({ "code": 1303, "message": "concurrency exceeded" })))
+            .mount(&server)
+            .await;
+        let err = make_provider(&server.uri())
+            .generate(&ref_schema("kling/video-kling-v2-6"), &make_base("x", "kling/video-kling-v2-6"), &make_extras(), &refs(&[]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: true, .. }), "{err:?}");
     }
 }

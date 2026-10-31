@@ -30,8 +30,8 @@
 //    actions. Tencent's docs center server-renders these pages (Slate HTML),
 //    and each has a 模型列表 table whose `model 参数值` column we compare:
 //      tokenhub-hy-image  Hy 生图调用指南: hy-image-v3 (Hunyuan Image 3.0 —
-//                      the model hunyuan/hunyuan-image-3 serves — now a
-//                      synchronous TokenHub call) and its successors. The
+//                      the model the retired hunyuan/hunyuan-image-3 served —
+//                      now a synchronous TokenHub call) and its successors. The
 //                      snapshot is the model list, the Hy-Image-3.0 endpoint
 //                      and parameter tables, and the appendix (preset sizes,
 //                      reference-image limits). It replaced the
@@ -41,17 +41,16 @@
 //                      snapshot the model list and the submit/query tables.
 //
 // Mapping mirrors litegen-core/src/providers/image/hunyuan.rs (action
-// SubmitHunyuanImageJob on hunyuan, or SubmitTextToImageJob on aiart for
-// hunyuan-image-3; no model field) and video/hunyuan.rs (action
+// SubmitHunyuanImageJob on hunyuan; no model field) and video/hunyuan.rs (action
 // SubmitHunyuanToVideoJob, Tencent's native Hunyuan video model, or
 // SubmitImageToVideoGeneralJob for hunyuan-video-i2v; no model field). Until
 // 2026-09-11 hunyuan-video called SubmitImageToVideoJob with
 // `Model: "Kling-V1-6"`, i.e. Kling 1.6 resold through Tencent Cloud.
 //
 // aiart release 31 (2026-09-22, https://cloud.tencent.com/document/product/1668/88078)
-// deleted SubmitTextToImageJob and QueryTextToImageJob, the two actions the
-// adapter calls for hunyuan-image-3, so that model reports `missing` until
-// the adapter moves (TokenHub hy-image-v3) or the model is dropped.
+// deleted SubmitTextToImageJob and QueryTextToImageJob, the two actions
+// hunyuan-image-3 ran on; the row was retired 2026-10-30 (its successor is
+// TokenHub's hy-image-v3, which needs a TokenHub key litegen does not have).
 
 const SDK = 'https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud';
 const TOKENHUB_DOCS = 'https://cloud.tencent.com/document/product/1823';
@@ -173,7 +172,6 @@ export default {
   provider: 'hunyuan',
   models: {
     'hunyuan/hunyuan-image': 'SubmitHunyuanImageJob',
-    'hunyuan/hunyuan-image-3': 'SubmitTextToImageJob',
     'hunyuan/hunyuan-video': 'SubmitHunyuanToVideoJob',
     'hunyuan/hunyuan-video-i2v': 'SubmitImageToVideoGeneralJob',
   },

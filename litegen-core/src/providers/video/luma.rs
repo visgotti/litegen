@@ -13,8 +13,9 @@ use crate::types::*;
 
 /// Luma Dream Machine video generation provider.
 ///
-/// Supports Ray model family (ray-2, ray-flash-2, ray-3, ray-hdr-3, etc.)
-/// with text-to-video, image-to-video (keyframes), and camera motion control.
+/// Serves the Dream Machine models (`"VideoModel": {"enum": ["ray-2",
+/// "ray-flash-2"]}`) with text-to-video and image-to-video (keyframes).
+/// Camera motion is prompt text on Luma, not a field.
 ///
 /// @see <https://docs.lumalabs.ai/reference/creategeneration> — create a generation
 /// @see <https://docs.lumalabs.ai/reference/getgeneration> — get a generation (poll)
@@ -59,34 +60,11 @@ impl LumaProvider {
     /// @see <https://docs.lumalabs.ai/reference/creategeneration> — `model` field accepted values
     fn resolve_model(model: &str) -> Option<&'static str> {
         Some(match model {
-            "luma/dream-machine" | "luma-dream-machine" => "ray-2",
-            "luma/dream-machine-1.5" | "luma-dream-machine-1.5" => "ray-1-6",
-            "luma/ray-2" | "ray-2" => "ray-2",
-            "luma/ray-flash-2" | "ray-flash-2" => "ray-flash-2",
-            "luma/ray-3" | "ray-3" => "ray-3",
-            "luma/ray-hdr-3" | "ray-hdr-3" => "ray-hdr-3",
-            "luma/ray-3-14" | "ray-3-14" => "ray-3-14",
-            "luma/ray-hdr-3-14" | "ray-hdr-3-14" => "ray-hdr-3-14",
-            "luma/ray-1-6" | "ray-1-6" => "ray-1-6",
+            "luma/dream-machine" | "luma/ray-2" => "ray-2",
+            "luma/ray-flash-2" => "ray-flash-2",
             // An id with no arm is refused, not billed as ray-2 (L13).
             _ => return None,
         })
-    }
-
-    /// Map camera motion values to Luma API format.
-    fn map_camera_motion(motion: &str) -> String {
-        match motion {
-            "static" => "static".to_string(),
-            "pan-left" | "pan_left" => "pan left".to_string(),
-            "pan-right" | "pan_right" => "pan right".to_string(),
-            "pan-up" | "pan_up" => "pan up".to_string(),
-            "pan-down" | "pan_down" => "pan down".to_string(),
-            "zoom-in" | "zoom_in" => "zoom in".to_string(),
-            "zoom-out" | "zoom_out" => "zoom out".to_string(),
-            "orbit" | "orbit-left" | "orbit_left" => "orbit left".to_string(),
-            "orbit-right" | "orbit_right" => "orbit right".to_string(),
-            other => other.to_string(),
-        }
     }
 }
 
@@ -131,6 +109,19 @@ impl VideoProvider for LumaProvider {
         let model_name = Self::resolve_model(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "luma".into() })?;
         let url = format!("{}/generations", self.api_base());
 
+        // What Luma cannot make is refused before any call:
+        // `"VideoModelOutputDuration": {"anyOf":[{"enum":["5s","9s"]}…]}`, and
+        // "Loop is not supported for keyframes" (both frame0 and frame1).
+        // @see <https://docs.lumalabs.ai/reference/creategeneration>
+        // @see <https://docs.lumalabs.ai/docs/errors>
+        let refuse = |why: String| Err(ProviderError::InvalidRequest(format!("{}: {why}", model.id)));
+        if extras.duration_seconds > 0.0 && ![5.0, 9.0].contains(&extras.duration_seconds) {
+            return refuse(format!("{} s is not a length it makes (5 or 9 s)", extras.duration_seconds));
+        }
+        if extras.r#loop == Some(true) && materialized.refs.iter().any(|r| r.role == "last_frame") {
+            return refuse("a loop cannot have a last frame".into());
+        }
+
         let mut body = json!({
             "model": model_name,
             "prompt": base.prompt,
@@ -149,13 +140,6 @@ impl VideoProvider for LumaProvider {
         // Resolution — Luma expects a string like "720p"/"1080p"/"4k"
         if let Some(res) = extras.resolution.as_deref() {
             body["resolution"] = Value::String(res.to_string());
-        }
-
-        // Camera motion from extra
-        if let Some(Value::Object(extra_map)) = &extras.extra {
-            if let Some(motion) = extra_map.get("camera_motion").and_then(|v| v.as_str()) {
-                body["camera_motion"] = Value::String(Self::map_camera_motion(motion));
-            }
         }
 
         // Keyframes from materialized refs
@@ -177,7 +161,7 @@ impl VideoProvider for LumaProvider {
                 MaterializedRefForm::Base64(b64) => {
                     keyframes.insert(
                         frame_key.to_string(),
-                        json!({ "type": "image", "url": format!("data:image/png;base64,{b64}") }),
+                        json!({ "type": "image", "url": crate::proxy::materializer::base64_data_uri(b64, Some("image/png")) }),
                     );
                 }
                 _ => {}
@@ -187,13 +171,12 @@ impl VideoProvider for LumaProvider {
             body["keyframes"] = Value::Object(keyframes);
         }
 
-        // Shallow-merge extra (except camera_motion already handled)
-        if let Some(Value::Object(extra_map)) = &extras.extra {
-            if let Some(body_obj) = body.as_object_mut() {
-                for (k, v) in extra_map {
-                    if k != "camera_motion" {
-                        body_obj.insert(k.clone(), v.clone());
-                    }
+        // `extra` adds the endpoint's own fields; it cannot replace one litegen
+        // sets (rule 11), and `camera_motion` is not a field at all.
+        if let (Some(Value::Object(extra_map)), Some(body_obj)) = (&extras.extra, body.as_object_mut()) {
+            for (k, v) in extra_map {
+                if !matches!(k.as_str(), "model" | "prompt" | "aspect_ratio" | "duration" | "resolution" | "keyframes" | "camera_motion") {
+                    body_obj.insert(k.clone(), v.clone());
                 }
             }
         }
@@ -215,28 +198,28 @@ impl VideoProvider for LumaProvider {
             message: format!("Luma request failed: {e}"),
             status_code: e.status().map(|s| s.as_u16()),
             provider_error: None,
-            retryable: e.is_timeout() || e.is_connect(),
+            // A call that timed out may still run, and bill.
+            retryable: e.is_connect(),
         })?;
 
         let status = resp.status();
-        let resp_json: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse Luma response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
+        let text = resp.text().await.unwrap_or_default();
+        let resp_json: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
 
         if !status.is_success() {
-            let err = resp_json["message"]
+            // Luma's error is `{"detail": "Invalid API key is provided"}`; a rate
+            // limit (429) was never accepted, so it may be sent again.
+            let err = resp_json["detail"]
                 .as_str()
+                .or_else(|| resp_json["message"].as_str())
                 .or_else(|| resp_json["error"].as_str())
-                .unwrap_or("Unknown error")
-                .to_string();
+                .map(str::to_string)
+                .unwrap_or_else(|| text.chars().take(200).collect());
             return Err(ProviderError::RequestFailed {
                 message: format!("Luma API error: {err}"),
                 status_code: Some(status.as_u16()),
-                provider_error: Some(resp_json),
-                retryable: status.as_u16() >= 500,
+                provider_error: (!resp_json.is_null()).then_some(resp_json),
+                retryable: status.as_u16() >= 500 || status.as_u16() == 429,
             });
         }
 
@@ -495,5 +478,77 @@ mod tests {
         assert_eq!(body["prompt"], "a sunset over the ocean");
         assert_eq!(body["keyframes"]["frame0"]["url"], "https://x");
         assert_eq!(body["keyframes"]["frame0"]["type"], "image");
+    }
+
+    // ─── Luma audit, 2026-10-30: L2, L4–L7 ──────────────────────────────────
+
+    fn frames(roles: &[&str]) -> MaterializedRequest {
+        MaterializedRequest {
+            refs: roles.iter().map(|r| MaterializedRef { role: r.to_string(), form: MaterializedRefForm::Url(format!("https://x/{r}.png")), time_s: None }).collect(),
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        }
+    }
+
+    /// L2: only the catalog's ids have arms ("VideoModel": ray-2 |
+    /// ray-flash-2); the Ray 1.6 / Ray 3 arms are gone.
+    #[test]
+    fn only_the_dream_machine_models_resolve() {
+        for gone in ["luma/ray-3", "luma/ray-hdr-3", "luma/ray-1-6", "luma/dream-machine-1.5", "luma/ray-3-14"] {
+            assert!(LumaProvider::resolve_model(gone).is_none(), "{gone}");
+        }
+        assert_eq!(LumaProvider::resolve_model("luma/ray-flash-2"), Some("ray-flash-2"));
+    }
+
+    /// L5, L7: what Luma cannot make is refused before any call — a length
+    /// other than 5 or 9 s ("VideoModelOutputDuration": "5s" | "9s"), and a
+    /// loop with a last frame ("Loop is not supported for keyframes").
+    #[tokio::test]
+    async fn what_luma_cannot_make_is_refused_before_any_call() {
+        let server = MockServer::start().await;
+        let p = make_provider(&server.uri());
+        let schema = ref_schema("luma/ray-2");
+        let mut seven = make_extras();
+        seven.duration_seconds = 7.0;
+        let mut looped = make_extras();
+        looped.r#loop = Some(true);
+        for (extras, refs) in [(seven, frames(&[])), (looped, frames(&["first_frame", "last_frame"]))] {
+            let err = p.generate(&schema, &make_base("a lighthouse", "luma/ray-2"), &extras, &refs).await.unwrap_err();
+            assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// L4: `camera_motion` is not a request field ("Just add the camera motion
+    /// value as part of prompt itself"); it is never sent.
+    #[tokio::test]
+    async fn camera_motion_is_never_sent_as_a_field() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": "g1" }))).mount(&server).await;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "camera_motion": "orbit-left", "model": "ray-flash-2" }));
+        make_provider(&server.uri()).generate(&ref_schema("luma/ray-2"), &make_base("a lighthouse", "luma/ray-2"), &extras, &frames(&[])).await.unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert!(body.get("camera_motion").is_none(), "{body}");
+        assert_eq!(body["model"], "ray-2", "{body}");
+    }
+
+    /// L6: Luma's error is its `detail`, and a rate limit was never accepted.
+    #[tokio::test]
+    async fn an_error_says_luma_s_detail_and_a_rate_limit_may_be_sent_again() {
+        for (status, retryable) in [(400, false), (429, true)] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(json!({ "detail": "Invalid API key is provided" })))
+                .mount(&server)
+                .await;
+            let err = make_provider(&server.uri()).generate(&ref_schema("luma/ray-2"), &make_base("a lighthouse", "luma/ray-2"), &make_extras(), &frames(&[])).await.unwrap_err();
+            match err {
+                ProviderError::RequestFailed { message, retryable: r, .. } => {
+                    assert!(message.contains("Invalid API key"), "{message}");
+                    assert_eq!(r, retryable, "{status}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
     }
 }

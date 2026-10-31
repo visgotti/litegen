@@ -91,6 +91,7 @@ fn no_retired_model_ids_are_advertised() {
         // "Kling 2.1 Pro is being retired on Tuesday, September 15, 2026 at
         // 9:30 AM AEST (UTC+10)." https://docs.leonardo.ai/docs/kling-2-1-pro.md
         ("leonardo/kling2.1", "Leonardo retired Kling 2.1 Pro (KLING2_1) 2026-09-15; successor Kling 3.0 Pro is v2-API only"),
+        ("hunyuan/hunyuan-image-3", "Tencent deleted aiart SubmitTextToImageJob and QueryTextToImageJob 2026-09-22; successor TokenHub hy-image-v3"),
         ("luma/ray-3", "not in the Dream Machine model enum (ray-2 | ray-flash-2); ray-3.2 is Luma Agents API only"),
         ("luma/ray-hdr-3", "not in the Dream Machine model enum (ray-2 | ray-flash-2); ray-3.2 is Luma Agents API only"),
         ("bytedance/seedream-3-0-t2i-250415", "BytePlus deactivated it 2026-05-13; replacement bytedance/seedream-5-0-lite-260128"),
@@ -1971,9 +1972,11 @@ fn kling_image_2_1_matches_the_image_2_1_contract() {
 /// aspect ratios 16:9 | 9:16 | 1:1. cfg_scale ("kling-v2.x models do not
 /// support this parameter") and camera_control ("Not Supported") must not be
 /// allowlisted; `sound` (native audio) is a 2.6 capability only.
-/// @see https://kling.ai/document-api/api/video/1-6/text-to-video.md (2026-09-11)
-/// @see https://kling.ai/document-api/api/video/2-1/image-to-video.md (2026-09-11)
-/// @see https://kling.ai/document-api/guides/capability-map/video.md (2026-09-11)
+/// @see https://kling.ai/document-api/api/video/2-6/text-to-video.md (2026-10-30):
+///   "`settings.aspect_ratio` … `16:9`, `9:16`, `1:1`", "`settings.duration` …
+///   `5`, `10`" (the cfg_scale and camera_control quotes are from the legacy
+///   video/1-6 and video/2-1 pages, read 2026-09-11 and since unpublished)
+/// @see https://kling.ai/document-api/guides/capability-map/video.md (2026-10-30)
 #[test]
 fn kling_v2_5_turbo_and_v2_6_video_match_the_capability_map() {
     let reg = registry();
@@ -2722,9 +2725,11 @@ fn kling_image_3_0_matches_the_image_3_0_contract() {
 /// 16:9 | 9:16 | 1:1, mode std | pro | 4k, native audio (`sound`),
 /// first + last frame. Camera control is "Not Supported" and cfg_scale is not
 /// documented for 3.0, so neither is allowlisted.
-/// @see https://kling.ai/document-api/api/video/1-6/text-to-video.md (2026-09-11)
-/// @see https://kling.ai/document-api/api/video/2-1/image-to-video.md (2026-09-11)
-/// @see https://kling.ai/document-api/guides/capability-map/video.md (2026-09-11)
+/// @see https://kling.ai/document-api/api/video/3-0-omni/text-to-video.md (2026-10-30):
+///   "`settings.duration` … `3`, `4`, … `15`", "`settings.aspect_ratio` …
+///   `16:9`, `9:16`, `1:1`" (the camera quote is from the legacy video/1-6 page,
+///   read 2026-09-11 and since unpublished)
+/// @see https://kling.ai/document-api/guides/capability-map/video.md (2026-10-30)
 #[test]
 fn kling_v3_video_matches_the_capability_map() {
     let reg = registry();
@@ -2929,70 +2934,6 @@ fn minimax_h3_max_has_no_2k_no_4s_and_takes_references() {
 }
 
 // ─── hunyuan: 2026-09-11 drift decisions applied ────────────────────────────
-
-/// Hunyuan Image 3.0 is aiart `SubmitTextToImageJob` ("提交混元生图（3.0）任务"):
-/// Prompt is required and "最多可传8192个 utf-8 字符"; Images is "参考图，最多三张图".
-/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/aiart/v20221229/models.go> (2026-09-11)
-/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-cli/master/tccli/services/aiart/v20221229/api.json> (2026-09-11)
-#[test]
-fn hunyuan_image_3_is_text_and_image_to_image_with_up_to_three_references() {
-    let reg = registry();
-    let schema = reg.get("hunyuan/hunyuan-image-3").expect("hunyuan-image-3 missing");
-    assert!(schema.capabilities.text_to_image, "SubmitTextToImageJob takes a prompt alone");
-    assert!(schema.capabilities.image_to_image, "SubmitTextToImageJob takes reference Images");
-    assert!(schema.prompt.required, "Prompt is required");
-    assert_eq!(schema.prompt.max_length, Some(8192), "Prompt is at most 8192 characters");
-    let ri = schema.ref_inputs.as_ref().expect("hunyuan-image-3 declares no ref_inputs");
-    assert_eq!(ri.max_total, 3, "Images: at most three reference images");
-    let init = ri.roles.get("init").expect("hunyuan-image-3 declares no init role");
-    assert!(!init.required && init.min_count == 0, "Images is optional");
-    assert_eq!(init.max_count, 3);
-}
-
-/// `SubmitTextToImageJob.Seed`: "取值范围：1 - 4294967295". `Resolution`: width and
-/// height in [512, 2048], W*H at most 1024*1024, output snapped to the
-/// documented size list (37 entries, default 1024:1024).
-/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/aiart/v20221229/models.go> (2026-09-11)
-#[test]
-fn hunyuan_image_3_seed_and_sizes_match_submit_text_to_image_job() {
-    let reg = registry();
-    let schema = reg.get("hunyuan/hunyuan-image-3").expect("hunyuan-image-3 missing");
-    match schema.params.get("seed") {
-        Some(ParamSpec::Seed(s)) => {
-            assert_eq!((s.min, s.max), (1, 4_294_967_295), "Seed range is 1 - 4294967295");
-        }
-        other => panic!("hunyuan-image-3 seed is {other:?}, expected Seed"),
-    }
-    let sizes = match schema.params.get("size") {
-        Some(ParamSpec::Size(litegen::capabilities::schema::SizeSpec::Enum(e))) => e.values.clone(),
-        other => panic!("hunyuan-image-3 size is {other:?}, expected the documented size list"),
-    };
-    assert_eq!(sizes.len(), 37, "the documented size list has 37 entries");
-    for &(w, h) in &sizes {
-        assert!((512..=2048).contains(&w) && (512..=2048).contains(&h), "{w}x{h} outside [512, 2048]");
-        assert!(w * h <= 1024 * 1024, "{w}x{h} exceeds 1024*1024 pixels");
-    }
-    for s in [(1024, 1024), (2048, 512), (512, 2048), (1280, 720), (720, 1280), (768, 1024)] {
-        assert!(sizes.contains(&s), "{s:?} is in the documented size list");
-    }
-    assert!(!schema.params.contains_key("negative_prompt"), "SubmitTextToImageJob has no NegativePrompt");
-}
-
-/// The adapter merges every allowlisted extra key into the request verbatim,
-/// and Tencent fails an undefined parameter (UnknownParameter).
-/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/aiart/v20221229/models.go> (2026-09-11)
-#[test]
-fn hunyuan_image_3_extra_allowlist_names_only_submit_text_to_image_job_parameters() {
-    const PARAMS: [&str; 7] = ["Prompt", "Images", "Resolution", "Seed", "LogoAdd", "LogoParam", "Revise"];
-    let reg = registry();
-    let schema = reg.get("hunyuan/hunyuan-image-3").expect("hunyuan-image-3 missing");
-    for key in &schema.extra_allowlist {
-        assert!(
-            PARAMS.contains(&key.as_str()),
-            "hunyuan-image-3 allowlists {key:?}, which is not a SubmitTextToImageJob parameter"
-        );
-    }
-}
 
 /// `SubmitImageToVideoGeneralJob` (图生视频通用能力): Image is its only required
 /// member, Prompt is optional and "最多支持200个 utf-8 字符".
@@ -3543,5 +3484,154 @@ fn every_bytedance_minimax_and_vidu_row_names_its_docs_url() {
             "{}: {url}",
             m.id
         );
+    }
+}
+
+// ─── Kling / PixVerse / Hunyuan / Luma audit, 2026-10-30 ───────────────────
+
+/// P1: transition/generate's model enum is "c1 - v6 - v5.6 - v5", and the
+/// capability map's "First and Last Frame" row has no v4.5 or v3.5.
+/// @see <https://docs.platform.pixverse.ai/first-and-last-frame-video-43051213e0.md> (2026-10-30)
+/// @see <https://docs.platform.pixverse.ai/model-capability-map-2394982m0.md> (2026-10-30)
+#[test]
+fn pixverse_v4_5_and_v3_5_take_no_last_frame() {
+    let reg = registry();
+    for id in ["pixverse/v4.5", "pixverse/v3.5"] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        let refs = m.ref_inputs.as_ref().unwrap_or_else(|| panic!("{id} takes no refs"));
+        assert!(!refs.roles.contains_key("last_frame"), "{id}: {:?}", refs.roles.keys());
+        assert_eq!(refs.max_total, 1, "{id}");
+        assert!(!m.description.contains("transition"), "{id}: {}", m.description);
+    }
+}
+
+/// P2: img/generate's prompt is "maxLength: 2048" (text/ and transition/
+/// allow 5000), and one prompt limit serves every mode.
+/// @see <https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md> (2026-10-30)
+#[test]
+fn pixverse_prompts_stop_at_the_image_endpoint_s_2048() {
+    for m in registry().all().filter(|m| m.provider == "pixverse") {
+        assert_eq!(m.prompt.max_length, Some(2048), "{}", m.id);
+    }
+}
+
+/// P3: text/, img/ and transition/ define no `negative_prompt`, `motion_mode`
+/// or `style`, and `template_id` moves img/ onto per-template pricing
+/// ("Use the selected template's `credit_consume` value") that a flat
+/// `base_cost_usd` cannot bill.
+/// @see <https://docs.platform.pixverse.ai/text-to-video-13016634e0.md> (2026-10-30)
+/// @see <https://docs.platform.pixverse.ai/pixverse-api-pricing-2394995m0.md> (2026-10-30)
+#[test]
+fn pixverse_allowlists_name_only_fields_their_endpoints_bill_flat() {
+    let reg = registry();
+    for id in ["pixverse/v4.5", "pixverse/v5", "pixverse/v3.5", "pixverse/v6", "pixverse/c1"] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        for k in ["negative_prompt", "motion_mode", "style", "template_id"] {
+            assert!(!m.extra_allowlist.iter().any(|x| x == k), "{id} allowlists {k}: {:?}", m.extra_allowlist);
+        }
+    }
+}
+
+/// H3: `Seed`: "不传：随机种子生成。 正数：固定种子生成。" (unset is random, a
+/// positive seed is fixed), so 0 is not a seed.
+/// @see <https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/hunyuan/v20230901/models.go> (2026-10-30)
+#[test]
+fn hunyuan_image_seeds_are_positive() {
+    let reg = registry();
+    let m = reg.get("hunyuan/hunyuan-image").expect("hunyuan-image");
+    match m.params.get("seed") {
+        Some(ParamSpec::Seed(s)) => assert_eq!((s.min, s.max), (1, 2147483647)),
+        other => panic!("seed is {other:?}"),
+    }
+}
+
+/// H7: "生成一段5s，720p 的视频" and "生成一段5s，480p 的视频": both actions make
+/// 5 s and take no duration, so another duration is refused instead of
+/// billed and returned at 5 s.
+/// @see <https://cloud.tencent.com/document/product/1616/118994> (2026-10-30)
+#[test]
+fn hunyuan_video_rows_are_five_seconds_only() {
+    let reg = registry();
+    for id in ["hunyuan/hunyuan-video", "hunyuan/hunyuan-video-i2v"] {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        match m.params.get("duration_seconds") {
+            Some(ParamSpec::Float(f)) => assert_eq!((f.min, f.max, f.default), (Some(5.0), Some(5.0), Some(5.0)), "{id}"),
+            other => panic!("{id} duration_seconds is {other:?}"),
+        }
+    }
+}
+
+/// L7: `GenerationRequest.loop` is one boolean for every model; only a loop
+/// with both keyframes is refused ("Loop is not supported for keyframes").
+/// @see <https://docs.lumalabs.ai/reference/creategeneration> (2026-10-30)
+/// @see <https://docs.lumalabs.ai/docs/errors.md> (2026-10-30)
+#[test]
+fn every_luma_video_row_takes_loop() {
+    let reg = registry();
+    for id in LUMA_DREAM_MACHINE_VIDEO {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert!(
+            matches!(m.params.get("loop"), Some(ParamSpec::Bool(b)) if b.default == Some(false)),
+            "{id} loop is {:?}",
+            m.params.get("loop")
+        );
+    }
+}
+
+/// L8: "Prompt is too short, minimum length is 3 characters" and "Prompt is
+/// too long, maximum length is 5000 characters".
+/// @see <https://docs.lumalabs.ai/docs/errors.md> (2026-10-30)
+#[test]
+fn luma_video_prompts_are_three_to_five_thousand_characters() {
+    let reg = registry();
+    for id in LUMA_DREAM_MACHINE_VIDEO {
+        let m = reg.get(id).unwrap_or_else(|| panic!("{id} missing"));
+        assert_eq!((m.prompt.min_length, m.prompt.max_length), (Some(3), Some(5000)), "{id}");
+    }
+}
+
+/// K17, P15, L13: every Kling, PixVerse, Hunyuan and Luma row names the
+/// vendor page its fields were read from.
+#[test]
+fn every_kling_pixverse_hunyuan_and_luma_row_names_its_docs_url() {
+    for m in registry().all().filter(|m| ["kling", "pixverse", "hunyuan", "luma"].contains(&m.provider.as_str())) {
+        let url = m.docs_url.as_deref().unwrap_or_else(|| panic!("{} names no docs_url", m.id));
+        assert!(
+            ["https://kling.ai/document-api/", "https://docs.platform.pixverse.ai/", "https://cloud.tencent.com/document/", "https://docs.lumalabs.ai/"]
+                .iter()
+                .any(|p| url.starts_with(p)),
+            "{}: {url}",
+            m.id
+        );
+    }
+}
+
+/// P10: img/generate: "Duration in seconds. C1/V6: 1-15; V5.5/V5.6: 5, 8, or
+/// 10; older models: 5 or 8.", and the capability map gives V5 "5 / 8
+/// seconds", so 6 s and 7 s are refused here rather than at PixVerse.
+/// @see <https://docs.platform.pixverse.ai/image-to-video-and-video-templates-13016633e0.md> (2026-10-30)
+#[test]
+fn pixverse_v5_and_older_take_five_or_eight_seconds() {
+    let reg = registry();
+    for id in ["pixverse/v3.5", "pixverse/v4.5", "pixverse/v5"] {
+        match reg.get(id).unwrap_or_else(|| panic!("{id} missing")).params.get("duration_seconds") {
+            Some(ParamSpec::Float(f)) => assert_eq!(f.values, vec![5.0, 8.0], "{id}"),
+            other => panic!("{id} duration_seconds is {other:?}"),
+        }
+    }
+}
+
+/// "图生视频 | 通过上传图片和输入提示词，生成一段5s，480p 的视频 | 一次消耗2积分": a
+/// 480p job is 2 credits (2.4 CNY, $0.358), not the 5 the default 720p costs.
+/// @see <https://cloud.tencent.com/document/product/1616/118994> (2026-10-30)
+#[test]
+fn a_480p_hunyuan_image_to_video_job_is_billed_at_two_credits() {
+    use litegen::capabilities::pricing::{unit_price_usd, PriceFacts};
+    let reg = registry();
+    let m = reg.get("hunyuan/hunyuan-video-i2v").expect("hunyuan-video-i2v");
+    for (resolution, usd) in [("480p", 0.358), ("720p", 0.894), ("1080p", 0.894)] {
+        let req = serde_json::json!({ "model": m.id, "prompt": "x", "resolution": resolution });
+        let base: litegen::types::BaseGenerationRequest = serde_json::from_value(req.clone()).unwrap();
+        assert!((unit_price_usd(m, &PriceFacts::new(m, &base, &req)) - usd).abs() < 1e-9, "{resolution}");
     }
 }

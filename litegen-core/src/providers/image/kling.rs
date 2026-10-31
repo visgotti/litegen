@@ -20,9 +20,12 @@ use crate::types::*;
 /// JWT minted from the account access key (key_id) + secret key (key_secret),
 /// sent as `Authorization: Bearer <jwt>` (the [`AuthSpec::KlingJwt`] scheme).
 ///
-/// @see <https://app.klingai.com/global/dev/document-api/apiReference/model/imageToVideo>
-///   (auth: HS256 JWT iss=access_key, exp=+1800, nbf=-5; response envelope
-///   {code, message, data:{task_id, task_status, task_result}})
+/// @see <https://kling.ai/document-api/api/get-started/authentication.md> (2026-10-30)
+///   (auth: HS256 JWT `"iss": ak`, `"exp": int(time.time()) + 1800`,
+///   `"nbf": int(time.time()) - 5`)
+/// @see <https://kling.ai/document-api/api/image/2-1/image-generation.md> (2026-10-30)
+///   (`/v1/images/generations`; response envelope {code, message, data:{task_id,
+///   task_status, task_result}})
 pub struct KlingImageProvider {
     config: Option<ProviderInstanceConfig>,
     cred_pool: Option<CredentialPool>,
@@ -47,7 +50,9 @@ impl KlingImageProvider {
         self.config
             .as_ref()
             .and_then(|c| c.api_base.as_deref())
-            .unwrap_or("https://api.klingai.com")
+            // "The API endpoint has been changed from https://api.klingai.com to
+            // https://api-singapore.klingai.com."
+            .unwrap_or("https://api-singapore.klingai.com")
     }
 
     fn creds(&self) -> Result<ProviderCredentials, ProviderError> {
@@ -168,10 +173,17 @@ impl ImageProvider for KlingImageProvider {
         let native = Self::resolve_model(&model.id);
         let url = format!("{}/v1/images/generations", self.api_base());
 
+        // "In the Image-to-Image scenario (when the "image" field is not empty),
+        // negative prompts are not supported."
+        // @see <https://kling.ai/document-api/api/image/2-1/image-generation.md>
+        if base.negative_prompt.is_some() && !materialized.refs.is_empty() {
+            return Err(ProviderError::InvalidRequest(format!("{}: a negative_prompt cannot go with a reference image", model.id)));
+        }
+        // One image: litegen returns and bills one, whatever `n` was.
         let mut body = json!({
             "model_name": native,
             "prompt": base.prompt,
-            "n": base.n.max(1),
+            "n": 1,
         });
         if let Some(np) = base.negative_prompt.as_deref() {
             body["negative_prompt"] = Value::String(np.to_string());
@@ -179,19 +191,24 @@ impl ImageProvider for KlingImageProvider {
         if let Some(ar) = extras.aspect_ratio.as_deref() {
             body["aspect_ratio"] = Value::String(ar.to_string());
         }
-        // Reference image (subject) as base64 (no data: prefix) or URL.
+        // Reference image as base64 (no data: prefix) or URL. A `subject` is
+        // Kling's subject reference ("`image_reference` … `subject`, `face`");
+        // without it the image is plain image-to-image.
         for r in &materialized.refs {
             match &r.form {
                 MaterializedRefForm::Base64(b64) => body["image"] = Value::String(b64.clone()),
                 MaterializedRefForm::Url(u) => body["image"] = Value::String(u.clone()),
-                _ => {}
+                _ => continue,
+            }
+            if r.role == "subject" {
+                body["image_reference"] = Value::String("subject".into());
             }
         }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map {
-                    obj.insert(k.clone(), v.clone());
-                }
+        // `extra` adds the endpoint's own fields; it cannot replace one litegen
+        // sets (rule 11).
+        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
+            for (k, v) in map.iter().filter(|(k, _)| !matches!(k.as_str(), "model_name" | "prompt" | "n" | "negative_prompt" | "aspect_ratio" | "image" | "image_reference")) {
+                obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -200,31 +217,17 @@ impl ImageProvider for KlingImageProvider {
             &creds,
             self.client.post(&url).header("Content-Type", "application/json").json(&body),
         )?;
-        let submit: Value = crate::providers::inject_trace_headers(builder)
+        let resp = crate::providers::inject_trace_headers(builder)
             .send()
             .await
             .map_err(|e| ProviderError::RequestFailed {
                 message: format!("Kling request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
-            })?
-            .json()
-            .await
-            .map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to parse Kling response: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
+                // A call that timed out may still run, and bill.
+                retryable: e.is_connect(),
             })?;
-        if submit["code"].as_i64().unwrap_or(-1) != 0 {
-            return Err(ProviderError::RequestFailed {
-                message: format!("Kling API error: {}", submit["message"].as_str().unwrap_or("unknown")),
-                status_code: None,
-                provider_error: Some(submit),
-                retryable: false,
-            });
-        }
+        let submit = crate::providers::video::kling::read_kling(resp, "image submit").await?;
 
         let task_id = submit["data"]["task_id"].as_str().ok_or_else(|| ProviderError::RequestFailed {
             message: "Kling response missing data.task_id".to_string(),
@@ -392,5 +395,60 @@ mod tests {
         let body: Value = serde_json::from_slice(&post.body).unwrap();
         assert_eq!(body["model_name"], "kling-v2-1");
         assert_eq!(body["prompt"], "a jade dragon");
+    }
+
+    // ─── Kling audit, 2026-10-30: K8–K10, K12 ───────────────────────────────
+
+    fn subject_ref() -> crate::proxy::materializer::MaterializedRequest {
+        crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef { role: "subject".into(), form: MaterializedRefForm::Url("https://x/face.png".into()), time_s: None }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        }
+    }
+
+    /// K8, K10: one image is asked for, and a `subject` reference is sent as
+    /// Kling's subject reference ("`image_reference` … `subject`, `face`").
+    #[tokio::test]
+    async fn one_image_is_asked_for_and_a_subject_is_sent_as_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "code": 1, "message": "stop here" })))
+            .mount(&server)
+            .await;
+        let mut base = make_base("a knight", "kling/kling-v2-1");
+        base.n = 4;
+        let _ = make_provider(&server.uri()).generate(&ref_schema("kling/kling-v2-1"), &base, &make_extras(), &subject_ref()).await;
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!((body["n"].as_u64(), body["image_reference"].as_str()), (Some(1), Some("subject")), "{body}");
+    }
+
+    /// K9: "In the Image-to-Image scenario … negative prompts are not
+    /// supported" — refused before any call.
+    #[tokio::test]
+    async fn a_negative_prompt_with_a_reference_is_refused() {
+        let server = MockServer::start().await;
+        let mut base = make_base("a knight", "kling/kling-v2-1");
+        base.negative_prompt = Some("blur".into());
+        let err = make_provider(&server.uri()).generate(&ref_schema("kling/kling-v2-1"), &base, &make_extras(), &subject_ref()).await.unwrap_err();
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// K12: a submit Kling turned away (rate limit, server error) may be
+    /// sent again; one it refused may not.
+    #[tokio::test]
+    async fn a_turned_away_submit_may_be_sent_again() {
+        for (status, code, retryable) in [(429, 1302, true), (500, 5000, true), (400, 1201, false)] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(json!({ "code": code, "message": "no" })))
+                .mount(&server)
+                .await;
+            let err = make_provider(&server.uri())
+                .generate(&ref_schema("kling/kling-v2-1"), &make_base("x", "kling/kling-v2-1"), &make_extras(), &crate::proxy::materializer::MaterializedRequest::default())
+                .await
+                .unwrap_err();
+            assert!(matches!(err, ProviderError::RequestFailed { retryable: r, .. } if r == retryable), "{code}: {err:?}");
+        }
     }
 }

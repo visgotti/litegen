@@ -7,6 +7,7 @@ models:
     media_type: image
     display_name: Hunyuan Image
     description: Tencent Hunyuan text-to-image (async SubmitHunyuanImageJob).
+    docs_url: https://cloud.tencent.com/document/product/1729/105969
     # Pay-as-you-go (后付费) 0.5 CNY per image at every monthly volume, converted
     # at the ECB reference rate for 2026-09-11 (1 CNY = 0.14907 USD, via
     # https://api.frankfurter.dev/v1/latest?base=CNY&symbols=USD): $0.0745.
@@ -16,7 +17,13 @@ models:
     prompt: { required: true, max_length: 1024 }
     params:
       negative_prompt: { kind: string, max_length: 1024 }
-      seed: { kind: seed, min: 0, max: 2147483647 }
+      # Seed: "不传：随机种子生成。 正数：固定种子生成。 扩写开启时固定种子不生效，将保持随机。"
+      # (unset is random, a positive seed is fixed, and a fixed seed has no effect
+      # while Revise is on, which is the default). Revise: "如果上传了参考图，扩写关闭
+      # 不生效，将保持开启。" (with a reference image Revise stays on), so a seed never
+      # takes effect on image-to-image.
+      # @see https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/hunyuan/v20230901/models.go (2026-10-30)
+      seed: { kind: seed, min: 1, max: 2147483647 }
       # Resolution is an enum of eight W:H values (default 1024:1024); the
       # adapter sends WxH as W:H. With a ContentImage only the first four apply.
       # @see https://cloud.tencent.com/document/product/1729/105969 (2026-09-11)
@@ -37,91 +44,11 @@ models:
     extra_allowlist: [Style, LogoAdd, Revise]
     tags: [text-to-image, image-to-image]
 
-  # Hunyuan Image 3.0 (混元生图 3.0) is a different product: aiart
-  # (aiart.tencentcloudapi.com, v2022-12-29, TC3 service "aiart").
-  # SubmitTextToImageJob returns a JobId; QueryTextToImageJob reports
-  # JobStatusCode 1 (queued) | 2 (running) | 4 (failed: JobErrorMsg) | 5 (done:
-  # ResultImage URLs, valid 1 h). The request takes exactly Prompt (required,
-  # at most 8192 utf-8 characters), Images (up to three reference images,
-  # base64 or URL), Resolution, Seed, LogoAdd, LogoParam and Revise (prompt
-  # rewriting, on by default, adds about 20 s). There is no negative prompt or
-  # style, and Tencent fails an undefined parameter with UnknownParameter.
-  # @see https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/aiart/v20221229/models.go
-  #   (SubmitTextToImageJobRequestParams, QueryTextToImageJobResponseParams; 2026-09-11)
-  # @see https://raw.githubusercontent.com/TencentCloud/tencentcloud-cli/master/tccli/services/aiart/v20221229/api.json
-  #   ("提交混元生图（3.0）任务"; Prompt is the only required member; 2026-09-11)
-  - id: hunyuan/hunyuan-image-3
-    provider: hunyuan
-    media_type: image
-    display_name: Hunyuan Image 3.0
-    description: Tencent Hunyuan Image 3.0 text-to-image with up to three reference images (async SubmitTextToImageJob on aiart).
-    # 混元生图（3.0）pay-as-you-go 0.2 CNY per image at every monthly volume
-    # (prepaid packs are the same 0.2 CNY), converted at the ECB reference rate
-    # for 2026-09-11 (1 CNY = 0.14907 USD, via
-    # https://api.frankfurter.dev/v1/latest?base=CNY&symbols=USD): $0.0298.
-    # @see https://cloud.tencent.com/document/product/1668/90896 (2026-09-11)
-    pricing: { base_cost_usd: 0.0298 }
-    capabilities: { text_to_image: true, image_to_image: true }
-    prompt: { required: true, max_length: 8192 }
-    params:
-      # "取值范围：1 - 4294967295"; not sent = random. A fixed seed has no
-      # effect while Revise (prompt rewriting) is on, which is the default.
-      seed: { kind: seed, min: 1, max: 4294967295 }
-      # Resolution is "W:H" (default 1024:1024), width and height in
-      # [512, 2048] with W*H at most 1024*1024. Output snaps to the nearest
-      # entry of the documented size list, so exactly that list is offered.
-      # The adapter sends WxH as W:H.
-      size:
-        kind: size
-        mode: enum
-        values:
-          - [2048,512]
-          - [1984,512]
-          - [1920,512]
-          - [1856,512]
-          - [1792,512]
-          - [1728,512]
-          - [1664,512]
-          - [1600,512]
-          - [1536,512]
-          - [1472,576]
-          - [1408,640]
-          - [1344,704]
-          - [1280,768]
-          - [1216,832]
-          - [1152,896]
-          - [1088,960]
-          - [1024,1024]
-          - [960,1088]
-          - [896,1152]
-          - [832,1216]
-          - [768,1280]
-          - [704,1344]
-          - [640,1408]
-          - [576,1472]
-          - [512,1536]
-          - [512,1600]
-          - [512,1664]
-          - [512,1728]
-          - [512,1792]
-          - [512,1856]
-          - [512,1920]
-          - [512,1984]
-          - [512,2048]
-          - [768,1024]
-          - [720,1280]
-          - [1024,768]
-          - [1280,720]
-    # Images: "参考图，最多三张图" (at most three), each base64 or URL; each side
-    # 50-5000 px, base64 under 6 MB, jpg/jpeg/png/bmp/tiff/webp.
-    ref_inputs:
-      max_total: 3
-      default_role: init
-      provider_format: { form: base64 }
-      roles:
-        init: { required: false, min_count: 0, max_count: 3 }
-    extra_allowlist: [LogoAdd, Revise]
-    tags: [text-to-image, image-to-image]
+  # Hunyuan Image 3.0 (混元生图 3.0) ran on aiart's SubmitTextToImageJob and
+  # QueryTextToImageJob until aiart release 31 deleted both (2026-09-22); its
+  # row was retired 2026-10-30. Its successor, TokenHub's hy-image-v3, needs a
+  # TokenHub key, which litegen has no credential for.
+  # @see https://cloud.tencent.com/document/product/1668/88078 (aiart release notes; 2026-10-30)
 
   # Video product (混元生视频 / vclm): vclm.tencentcloudapi.com (v2024-05-23).
   # Tencent's native Hunyuan video model: SubmitHunyuanToVideoJob, polled with
@@ -130,9 +57,9 @@ models:
   # Kling-V1-6, which Kling retires 2026-09-15.) The request takes exactly
   # Prompt (required, at most 200 utf-8 characters), Image (optional: without
   # it the job is text-to-video), Resolution ("目前仅支持720p", default 720p),
-  # LogoAdd and LogoParam. There is no duration (the output is 5 s), aspect
-  # ratio or negative prompt, and Tencent fails an undefined parameter with
-  # UnknownParameter, so none is advertised or allowlisted.
+  # LogoAdd and LogoParam. There is no duration field (the output is 5 s, so
+  # duration_seconds is 5 only), aspect ratio or negative prompt, and Tencent
+  # fails an undefined parameter with UnknownParameter, so none is sent.
   # @see https://raw.githubusercontent.com/TencentCloud/tencentcloud-sdk-go/master/tencentcloud/vclm/v20240523/models.go
   #   (SubmitHunyuanToVideoJobRequestParams, DescribeHunyuanToVideoJobResponseParams; 2026-09-11)
   # @see https://raw.githubusercontent.com/TencentCloud/tencentcloud-cli/master/tccli/services/vclm/v20240523/api.json
@@ -142,6 +69,7 @@ models:
     media_type: video
     display_name: Hunyuan Video
     description: Tencent Hunyuan text/image-to-video (async SubmitHunyuanToVideoJob on vclm).
+    docs_url: https://cloud.tencent.com/document/api/1616/126160
     # 混元生视频, 5 s 720p from text or an image: 1.5 credits (积分) per job;
     # pay-as-you-go credits are 1.2 CNY each, so 1.8 CNY, converted at the ECB
     # reference rate for 2026-09-11 (1 CNY = 0.14907 USD, via
@@ -153,7 +81,13 @@ models:
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 200 }
     params:
-      # Forwarded as Resolution; 720p is the only value the action accepts.
+      # "生成一段5s" (a 5 s clip) and no duration field, so any other duration is
+      # refused rather than billed and returned at 5 s.
+      # @see https://cloud.tencent.com/document/product/1616/118994 (2026-10-30)
+      duration_seconds: { kind: float, min: 5.0, max: 5.0, default: 5.0 }
+      # Forwarded as Resolution; 720p is the only value the action accepts:
+      # "目前仅支持720p视频分辨率，默认720p。" (the SDK). The price page also lists a
+      # 1080p job at 3 credits (2026-10-30); the SDK's narrower reading stands.
       resolution: { kind: string, enum_values: ["720p"], default: "720p" }
     # Image: jpg/jpeg/png/webp/bmp/tiff, base64 at most 8 MB (URL 10 MB),
     # each side 50-5000 px, aspect ratio 1:4 to 4:1.
@@ -184,16 +118,24 @@ models:
     media_type: video
     display_name: Hunyuan Video I2V
     description: Tencent Hunyuan image-to-video at 480p/720p/1080p (async SubmitImageToVideoGeneralJob on vclm).
+    docs_url: https://cloud.tencent.com/document/api/1616/124465
     # 图生视频, 5 s: 2 credits (积分) at 480p, 5 credits at 720p/1080p;
     # pay-as-you-go credits are 1.2 CNY each, so the default 720p job is 6 CNY
     # (480p: 2.4 CNY, $0.358), converted at the ECB reference rate for
     # 2026-09-11 (1 CNY = 0.14907 USD, via
     # https://api.frankfurter.dev/v1/latest?base=CNY&symbols=USD): $0.894.
     # @see https://cloud.tencent.com/document/product/1616/118994 (2026-09-11)
-    pricing: { base_cost_usd: 0.894 }
+    pricing:
+      base_cost_usd: 0.894
+      variable_pricing:
+        - { when: { resolution: 480p }, usd: 0.358 }
     capabilities: { image_to_video: true }
     prompt: { required: false, max_length: 200 }
     params:
+      # "生成一段5s" (a 5 s clip) and no duration field, so any other duration is
+      # refused rather than billed and returned at 5 s.
+      # @see https://cloud.tencent.com/document/product/1616/118994 (2026-10-30)
+      duration_seconds: { kind: float, min: 5.0, max: 5.0, default: 5.0 }
       resolution: { kind: string, enum_values: ["480p", "720p", "1080p"], default: "720p" }
       # Fps is one of 16, 24, 30 (default 30). An int range is the closest the
       # schema can say; the adapter refuses 17-23 and 25-29 before submitting.
