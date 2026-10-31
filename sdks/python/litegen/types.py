@@ -427,6 +427,27 @@ class Model3dGenerateParams(TypedDict, total=False):
 # ─── Responses ───────────────────────────────────────────────────────────────
 
 
+class RateLimit(TypedDict):
+    """``X-RateLimit-*``, sent for a key with a requests-per-minute limit."""
+
+    limit: int
+    remaining: int
+    reset_at: int | None
+    """Unix seconds when the window resets."""
+
+
+class ResponseMeta(TypedDict):
+    """What :func:`litegen.response_meta` reads off a response's headers."""
+
+    dropped_params: list[str]
+    """``X-Litegen-Dropped-Params``: what ``strict: false`` dropped instead of refusing."""
+    rate_limit: RateLimit | None
+    idempotent_replayed: bool
+    """``Idempotent-Replayed: true``: the stored first answer to this ``Idempotency-Key``, billed nothing."""
+    retry_after: float | None
+    """``Retry-After``, in seconds (a 429 or 503)."""
+
+
 class UsageInfo(TypedDict):
     """What a finished generation cost."""
 

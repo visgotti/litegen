@@ -36,14 +36,16 @@ _JobT = TypeVar("_JobT", bound=Mapping[str, Any])
 # and the blocking wait) reports the same word.
 _MODEL3D_KIND = "3D generation"
 
-# Default client-side timeout for 3D jobs, in seconds: 30 minutes, against 5 for
-# video. A vendor 3D job can sit in a queue and then refine for well past five
-# minutes, and giving up early buys nothing: a client-side timeout does not stop
-# the server-side job, which goes on to complete (and be billed) with nobody
-# waiting for it. Thirty minutes stays well inside the backend's 2-hour reap age
-# (MAX_ACTIVE_AGE_SECS in litegen-core/src/proxy/poller.rs), past which a job
-# that never finished is marked failed anyway.
-MODEL3D_DEFAULT_TIMEOUT = 1800.0
+# Default client-side timeout for any job, in seconds: 2 hours 5 minutes. The
+# server fails a job still running after 2 hours itself (MAX_ACTIVE_AGE_SECS in
+# litegen-core/src/proxy/poller.rs), so a wait this long always ends on a
+# terminal status. Giving up sooner buys nothing: a client-side timeout does not
+# stop the server-side job, which goes on to complete (and be billed) with
+# nobody waiting for it.
+JOB_DEFAULT_TIMEOUT = 2 * 60 * 60 + 5 * 60.0
+
+# A 3D job's: the same as every job's.
+MODEL3D_DEFAULT_TIMEOUT = JOB_DEFAULT_TIMEOUT
 
 # Consecutive failed status reads a poll rides out before raising the last one.
 # A status read is a GET, safe to repeat, and over a 30-minute 3D wait a
@@ -72,7 +74,7 @@ def poll_job(
     get_status: Callable[[str], _JobT],
     *,
     interval: float = 2.0,
-    timeout: float = 300.0,
+    timeout: float = JOB_DEFAULT_TIMEOUT,
     kind: str = "job",
 ) -> Iterator[_JobT]:
     """Yield each status update for any async job, including the terminal one.
@@ -124,7 +126,7 @@ async def apoll_job(
     get_status: Callable[[str], Awaitable[_JobT]],
     *,
     interval: float = 2.0,
-    timeout: float = 300.0,
+    timeout: float = JOB_DEFAULT_TIMEOUT,
     kind: str = "job",
 ) -> AsyncIterator[_JobT]:
     """Async version of :func:`poll_job`: drive it with ``async for``."""
@@ -159,7 +161,7 @@ def wait_for_job(
     get_status: Callable[[str], _JobT],
     *,
     interval: float = 2.0,
-    timeout: float = 300.0,
+    timeout: float = JOB_DEFAULT_TIMEOUT,
     kind: str = "job",
 ) -> _JobT:
     """Poll until the job reaches a terminal status, then return that final update."""
@@ -177,7 +179,7 @@ async def async_wait_for_job(
     get_status: Callable[[str], Awaitable[_JobT]],
     *,
     interval: float = 2.0,
-    timeout: float = 300.0,
+    timeout: float = JOB_DEFAULT_TIMEOUT,
     kind: str = "job",
 ) -> _JobT:
     """Async version of :func:`wait_for_job`."""
@@ -198,7 +200,7 @@ def poll_video(
     get_status: Callable[[str], dict[str, Any]],
     *,
     interval: float = 2.0,
-    timeout: float = 300.0,
+    timeout: float = JOB_DEFAULT_TIMEOUT,
 ) -> Iterator[dict[str, Any]]:
     """Yield each status update for a video job, including the terminal one.
 
@@ -220,7 +222,7 @@ def apoll_video(
     get_status: Callable[[str], Awaitable[dict[str, Any]]],
     *,
     interval: float = 2.0,
-    timeout: float = 300.0,
+    timeout: float = JOB_DEFAULT_TIMEOUT,
 ) -> AsyncIterator[dict[str, Any]]:
     """Async version of :func:`poll_video` — drive with ``async for``."""
     return apoll_job(video_id, get_status, interval=interval, timeout=timeout, kind="video")
@@ -231,7 +233,7 @@ def wait_for_video_completion(
     get_status: Callable[[str], dict[str, Any]],
     *,
     interval: float = 2.0,
-    timeout: float = 300.0,
+    timeout: float = JOB_DEFAULT_TIMEOUT,
 ) -> dict[str, Any]:
     """Synchronously poll until the video reaches a terminal status."""
     return wait_for_job(video_id, get_status, interval=interval, timeout=timeout, kind="video")
@@ -242,7 +244,7 @@ async def async_wait_for_video_completion(
     get_status: Callable[[str], Awaitable[dict[str, Any]]],
     *,
     interval: float = 2.0,
-    timeout: float = 300.0,
+    timeout: float = JOB_DEFAULT_TIMEOUT,
 ) -> dict[str, Any]:
     """Async version of `wait_for_video_completion`."""
     return await async_wait_for_job(

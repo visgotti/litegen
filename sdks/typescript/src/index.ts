@@ -5,6 +5,10 @@ export {
   Model3dJob,
   DROPPED_PARAMS_HEADER,
   parseDroppedParams,
+  readResponseMeta,
+  DEFAULT_TIMEOUT_MS,
+  type LiteGenResponseMeta,
+  type LiteGenResponseInfo,
   type JobSubmission,
   type IdempotencyOptions,
   type ImageGenerateOptions,
@@ -52,9 +56,11 @@ export {
   waitForModel3d,
   waitForJob,
   pollJob,
+  JOB_DEFAULT_TIMEOUT_MS,
   MODEL3D_DEFAULT_TIMEOUT_MS,
   type WaitForCompletionOptions,
 } from "./polling";
+export { VERSION } from "./version";
 
 // Re-export raw schema types for advanced use.
 export type { components, operations, paths } from "./generated/schema";

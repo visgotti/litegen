@@ -1,6 +1,6 @@
 {
   "name": "@litegen/sdk",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "First-party TypeScript SDK for LiteGen — universal AI image, video & 3D generation proxy.",
   "license": "MIT",
   "homepage": "https://litegen.ai",
@@ -31,10 +31,12 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsup",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "litegen-sdk"
-version = "0.0.1"
+version = "0.1.0"
 description = "First-party Python SDK for LiteGen — universal AI image, video & 3D model generation proxy."
 readme = "README.md"
 requires-python = ">=3.10"

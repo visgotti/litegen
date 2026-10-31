@@ -1,3 +1,4 @@
+pub mod cors;
 pub mod handlers;
 pub mod metrics;
 pub mod middleware;

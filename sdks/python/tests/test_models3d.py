@@ -463,8 +463,9 @@ def test_cancelling_a_finished_job_is_an_api_error() -> None:
     assert not isinstance(exc.value, LiteGenValidationError)
 
 
-def test_every_3d_path_defaults_to_the_30_minute_timeout() -> None:
-    assert MODEL3D_DEFAULT_TIMEOUT == 1800.0
+def test_every_3d_path_defaults_to_the_job_timeout() -> None:
+    # Past the server's 2-hour reap age (L19), like every job.
+    assert MODEL3D_DEFAULT_TIMEOUT == 2 * 60 * 60 + 5 * 60
     for fn in (
         poll_model3d,
         apoll_model3d,

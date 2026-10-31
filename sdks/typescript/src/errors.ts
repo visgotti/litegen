@@ -34,8 +34,13 @@ export class LiteGenAPIError extends LiteGenError {
    * milliseconds; undefined when it sent none.
    */
   readonly retryAfterMs?: number;
+  /**
+   * The error response's headers — the rate limit a 429 reports, for one.
+   * {@link readResponseMeta} reads litegen's out of them.
+   */
+  readonly headers?: Headers;
 
-  constructor(status: number, detail: ErrorDetail, retryAfterMs?: number) {
+  constructor(status: number, detail: ErrorDetail, retryAfterMs?: number, headers?: Headers) {
     super(detail.message);
     this.name = "LiteGenAPIError";
     this.status = status;
@@ -50,6 +55,7 @@ export class LiteGenAPIError extends LiteGenError {
     this.providerError = detail.provider_error ?? undefined;
     this.retryable = typeof detail.retryable === "boolean" ? detail.retryable : undefined;
     this.retryAfterMs = retryAfterMs;
+    this.headers = headers;
   }
 }
 

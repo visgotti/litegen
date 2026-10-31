@@ -18,6 +18,7 @@ from .errors import (
     LiteGenValidationError,
 )
 from .polling import (
+    JOB_DEFAULT_TIMEOUT,
     MODEL3D_DEFAULT_TIMEOUT,
     poll_model3d,
     poll_video,
@@ -37,7 +38,15 @@ from .types import (
     Model3dFormat,
     Model3dGenerateParams,
     Model3dGenerationResponse,
+    RateLimit,
+    ResponseMeta,
 )
+
+# How long a request may take by default, in seconds: 6.5 minutes. A synchronous
+# call can keep the server busy for three vendor attempts of up to 120 s each
+# (``server.vendor_timeout_secs``), and a client that gives up first loses an
+# answer the server is still producing, and billing.
+DEFAULT_TIMEOUT = 3 * 120 + 30.0
 
 
 class LiteGenClient:
@@ -53,8 +62,9 @@ class LiteGenClient:
         *,
         api_key: str | None = None,
         base_url: str | None = None,
-        timeout: float = 60.0,
+        timeout: float = DEFAULT_TIMEOUT,
         default_headers: Mapping[str, str] | None = None,
+        on_response: Callable[[httpx.Response], None] | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("LITEGEN_API_KEY")
         self._base_url = (
@@ -66,7 +76,10 @@ class LiteGenClient:
             headers["Authorization"] = f"Bearer {self._api_key}"
         if default_headers:
             headers.update(default_headers)
-        self._http = httpx.Client(base_url=self._base_url, headers=headers, timeout=timeout)
+        # ``on_response`` sees every response, errors included, before it is
+        # read: for the headers no method returns (``response_meta``).
+        hooks = {"response": [on_response]} if on_response else None
+        self._http = httpx.Client(base_url=self._base_url, headers=headers, timeout=timeout, event_hooks=hooks)
 
         self.images = _ImagesNamespace(self)
         self.videos = _VideosNamespace(self)
@@ -151,6 +164,7 @@ def _raise_for_status(resp: httpx.Response) -> None:
         model=model if isinstance(model, str) else None,
         retry_after=_retry_after_seconds(resp.headers.get("retry-after")),
         retryable=detail.get("retryable") if isinstance(detail.get("retryable"), bool) else None,
+        headers=resp.headers,
     )
 
 
@@ -215,6 +229,27 @@ def _conversion(body: Any, headers: Mapping[str, str], to_format: Model3dFormat)
 _DROPPED_PARAMS_HEADER = "x-litegen-dropped-params"
 
 
+def response_meta(headers: Mapping[str, str]) -> ResponseMeta:
+    """What litegen's headers say about one response: what lax mode dropped,
+    the key's rate limit, whether an ``Idempotency-Key`` replayed the first
+    answer, and ``Retry-After`` in seconds."""
+
+    def number(name: str) -> int | None:
+        value = (headers.get(name) or "").strip()
+        return int(value) if value.isdigit() else None
+
+    limit, remaining = number("x-ratelimit-limit"), number("x-ratelimit-remaining")
+    rate_limit: RateLimit | None = None
+    if limit is not None and remaining is not None:
+        rate_limit = {"limit": limit, "remaining": remaining, "reset_at": number("x-ratelimit-reset")}
+    return {
+        "dropped_params": _parse_dropped_params(headers.get(_DROPPED_PARAMS_HEADER)),
+        "rate_limit": rate_limit,
+        "idempotent_replayed": (headers.get("idempotent-replayed") or "").strip().lower() == "true",
+        "retry_after": _retry_after_seconds(headers.get("retry-after")),
+    }
+
+
 def _metadata_params(metadata: Mapping[str, str] | None) -> dict[str, str]:
     """``metadata.<key>=<value>`` for each pair a request's metadata must hold."""
     return {f"metadata.{k}": v for k, v in (metadata or {}).items()}
@@ -277,7 +312,7 @@ class VideoJob:
         get_status: Callable[[str], dict[str, Any]],
         *,
         interval: float = 2.0,
-        timeout: float = 300.0,
+        timeout: float = JOB_DEFAULT_TIMEOUT,
     ) -> None:
         # `submit` returns the response headers alongside the body because the
         # dropped-params report travels in a header.
@@ -350,7 +385,7 @@ class _VideosNamespace:
         polling cadence and are not sent as part of the request body.
         """
         interval = req.pop("interval", 2.0)
-        timeout = req.pop("timeout", 300.0)
+        timeout = req.pop("timeout", JOB_DEFAULT_TIMEOUT)
         headers = _idempotency(req.pop("idempotency_key", None))
         body = _clean(req)
         return VideoJob(
@@ -371,7 +406,7 @@ class _VideosNamespace:
         video_id: str,
         *,
         interval: float = 2.0,
-        timeout: float = 300.0,
+        timeout: float = JOB_DEFAULT_TIMEOUT,
     ) -> Any:
         return wait_for_video_completion(
             video_id, self.get_status, interval=interval, timeout=timeout
@@ -382,7 +417,7 @@ class _VideosNamespace:
         video_id: str,
         *,
         interval: float = 2.0,
-        timeout: float = 300.0,
+        timeout: float = JOB_DEFAULT_TIMEOUT,
     ) -> Iterator[Any]:
         """Stream status updates as a generator::
 

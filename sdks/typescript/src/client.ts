@@ -406,6 +406,58 @@ export function parseDroppedParams(value: string | null | undefined): string[] {
   return value.split(",").map((p) => p.trim()).filter((p) => p !== "");
 }
 
+// ─── Response headers ────────────────────────────────────────────────────────
+
+/** What litegen's response headers say about one response. */
+export interface LiteGenResponseMeta {
+  /** `X-Litegen-Dropped-Params`: what `strict: false` dropped instead of refusing. */
+  droppedParams: string[];
+  /** `X-RateLimit-*`, sent for a key with a requests-per-minute limit. */
+  rateLimit?: { limit: number; remaining: number; resetAt?: Date };
+  /** `Idempotent-Replayed: true`: the stored first answer to this `Idempotency-Key`, billed nothing. */
+  idempotentReplayed: boolean;
+  /** `Retry-After`, in milliseconds (a 429 or 503). */
+  retryAfterMs?: number;
+}
+
+/** Read litegen's headers off a response's {@link Headers}. */
+export function readResponseMeta(headers: Headers): LiteGenResponseMeta {
+  const int = (name: string) => {
+    const v = headers.get(name);
+    return v !== null && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : undefined;
+  };
+  const limit = int("x-ratelimit-limit");
+  const remaining = int("x-ratelimit-remaining");
+  const reset = int("x-ratelimit-reset");
+  return {
+    droppedParams: parseDroppedParams(headers.get(DROPPED_PARAMS_HEADER)),
+    rateLimit:
+      limit !== undefined && remaining !== undefined
+        ? { limit, remaining, ...(reset !== undefined ? { resetAt: new Date(reset * 1000) } : {}) }
+        : undefined,
+    idempotentReplayed: headers.get("idempotent-replayed")?.trim().toLowerCase() === "true",
+    retryAfterMs: parseRetryAfter(headers.get("retry-after")),
+  };
+}
+
+/** One response, as {@link LiteGenClientOptions.onResponse} sees it. */
+export interface LiteGenResponseInfo {
+  method: string;
+  /** The path asked for, with its query string. */
+  path: string;
+  status: number;
+  headers: Headers;
+  meta: LiteGenResponseMeta;
+}
+
+/**
+ * How long a request may take when no `timeoutMs` is given: 6.5 minutes. A
+ * synchronous call can keep the server busy for three vendor attempts of up
+ * to 120 s each (`server.vendor_timeout_secs`), and a client that gives up
+ * first loses an answer the server is still producing — and billing.
+ */
+export const DEFAULT_TIMEOUT_MS = 3 * 120_000 + 30_000;
+
 // ─── Client options ──────────────────────────────────────────────────────────
 
 export type FetchLike = typeof fetch;
@@ -429,8 +481,15 @@ export interface LiteGenClientOptions {
    */
   onError?: (status: number, body: unknown) => void;
   fetch?: FetchLike;
+  /** Milliseconds a request may take. Default {@link DEFAULT_TIMEOUT_MS}. */
   timeoutMs?: number;
   defaultHeaders?: Record<string, string>;
+  /**
+   * Called with every response as it arrives — errors included, before they
+   * throw — for the headers no method returns: the rate limit, an idempotent
+   * replay, what lax mode dropped.
+   */
+  onResponse?: (response: LiteGenResponseInfo) => void;
   /** Initial active organization id — sent as `X-Litegen-Org-Id`. */
   activeOrgId?: string;
   /** Initial active application id — sent as `X-Litegen-App-Id`. */
@@ -446,6 +505,7 @@ export class LiteGenClient {
   private readonly credentials: RequestCredentials;
   private readonly getCsrfToken?: () => Promise<string | undefined>;
   private readonly onError?: (status: number, body: unknown) => void;
+  private readonly onResponse?: (response: LiteGenResponseInfo) => void;
   private readonly fetchImpl: FetchLike;
   private readonly timeoutMs: number;
   private readonly defaultHeaders: Record<string, string>;
@@ -486,8 +546,9 @@ export class LiteGenClient {
     this.credentials = opts.credentials ?? "same-origin";
     this.getCsrfToken = opts.getCsrfToken;
     this.onError = opts.onError;
+    this.onResponse = opts.onResponse;
     this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
-    this.timeoutMs = opts.timeoutMs ?? 60_000;
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.defaultHeaders = opts.defaultHeaders ?? {};
 
     this.images = new ImagesNamespace(this);
@@ -621,6 +682,7 @@ export class LiteGenClient {
     } finally {
       clearTimeout(timeout);
     }
+    this.onResponse?.({ method, path, status: res.status, headers: res.headers, meta: readResponseMeta(res.headers) });
 
     if (!res.ok) {
       let detail: Schemas["ErrorDetail"] = {
@@ -637,7 +699,7 @@ export class LiteGenClient {
         // Non-JSON error body; keep the default detail.
       }
       this.onError?.(res.status, parsedBody);
-      throw new LiteGenAPIError(res.status, detail, parseRetryAfter(res.headers.get("retry-after")));
+      throw new LiteGenAPIError(res.status, detail, parseRetryAfter(res.headers.get("retry-after")), res.headers);
     }
     return res;
   }

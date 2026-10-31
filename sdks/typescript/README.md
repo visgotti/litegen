@@ -68,9 +68,20 @@ for await (const update of litegen.models3d.generate({
 - **Formats:** `output_formats` is typed with `Model3dFormat`, the full container vocabulary. What one model can deliver is its `params.output_formats.enum_values`; the containers litegen converts locally are its `derivable_values`, and any subset of those costs one provider job — so `max_items` counts provider jobs, not files. Read both from `models.get(id)` rather than hard-coding them: they grow as litegen learns new containers.
 - **Lax mode:** with `strict: false` the server drops params the model does not support instead of rejecting the request; `await job.droppedParams` lists them.
 - **Converting a mesh you already have:** `litegen.models3d.convert(bytes, { from: 'glb', to: 'stl' })` returns `{ blob, format, filename, losses }` — a standalone utility, nothing generated or billed. `losses` names what the target container could not keep (e.g. `uvs`). `litegen.models3d.convertFormats()` lists the containers it handles and its size cap.
-- **Polling and cancelling:** 3D polls wait up to 30 minutes by default (`MODEL3D_DEFAULT_TIMEOUT_MS`; pass `{ timeoutMs }` to change it). Cancel a pending job with `litegen.generations.cancel(id)`.
+- **Polling and cancelling:** a poll waits up to `JOB_DEFAULT_TIMEOUT_MS` (2 hours 5 minutes) by default, past the 2 hours after which the server fails a job itself; pass `{ timeoutMs }` to change it. Cancel a pending job with `litegen.generations.cancel(id)`: it resolves to the row as settled (a cancelled job is refunded) and `vendor_cancelled`, whether the vendor took the cancel.
 
 See [`examples/generate-3d.ts`](./examples/generate-3d.ts).
+
+## Timeouts, headers and metadata
+
+- **Timeouts:** a request waits up to `DEFAULT_TIMEOUT_MS` (6.5 minutes) unless `timeoutMs` says otherwise: a synchronous call can take three vendor attempts of up to 120 s each.
+- **Response headers:** `onResponse` in the client options sees every response, errors included; `readResponseMeta(headers)` reads litegen's (`droppedParams`, `rateLimit`, `idempotentReplayed`, `retryAfterMs`). A `LiteGenAPIError` carries its response's `headers`.
+- **Idempotency:** `idempotencyKey` on `images.generate`, `videos.generate` and `models3d.generate` replays the first answer to a repeated request, billed once.
+- **Metadata:** send `metadata` (a string map, at most 1 KB) with any generation; it is echoed on every answer, and `logs.list({ metadata })` / `stats.get({ metadata })` split logs and spend by it.
+
+## Versions
+
+The package follows semantic versioning, and [CHANGELOG.md](./CHANGELOG.md) lists every release. `VERSION` is the version you have.
 
 ## Authentication
 

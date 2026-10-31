@@ -168,6 +168,30 @@ recorded the vendor's job id is not retried either. Proof:
 the vendor accepts it — bfl, kling, hunyuan, leonardo, luma, replicate, runway —
 each asserted in its own polling test.
 
+## Response headers (L19)
+
+Every one is exposed to cross-origin scripts (`api::cors`), so a browser SDK
+reads what a server-side one does. The SDKs hand every response to
+`onResponse` / `on_response`, read these with `readResponseMeta` /
+`response_meta`, and put an error's headers on `LiteGenAPIError.headers`.
+
+| header | when | SDK field | proof | status |
+|---|---|---|---|---|
+| `X-Litegen-Dropped-Params` | `strict: false` dropped params | `droppedParams` / `dropped_params` | cors `a_browser_can_read_every_header_the_sdks_report`; TS and Python L19 contract tests | ✅ |
+| `X-RateLimit-Limit`, `-Remaining`, `-Reset` (Unix seconds) | a key with an rpm limit | `rateLimit` / `rate_limit` | same | ✅ |
+| `Idempotent-Replayed: true` | a stored answer replayed for an `Idempotency-Key` | `idempotentReplayed` / `idempotent_replayed` | same | ✅ |
+| `Retry-After` | a 429 or 503 | `retryAfterMs` / `retry_after` | same | ✅ |
+| `X-Litegen-Conversion-Losses`, `Content-Disposition` | a mesh conversion | `models3d.convert` | cors test; existing convert tests | ✅ |
+
+A browser may send every header the SDKs set — `Idempotency-Key`,
+`X-Litegen-Org-Id`, `X-Litegen-App-Id`, `X-Litegen-End-User`,
+`X-Litegen-Tags`, `X-CSRF-Token`, `X-Litegen-Strict` — with every method they
+use, PUT included (`a_browser_may_send_every_header_the_sdks_set_with_every_method_they_use`).
+
+The SDKs' default timeouts cover the server's worst case: a request waits 6.5
+minutes (three vendor attempts of up to 120 s), a poll 2 h 5 min (past the
+poller's 2 h reap age).
+
 ## Request metadata (L17)
 
 `metadata` is the caller's own labels for a call, on every generation

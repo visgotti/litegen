@@ -10,10 +10,7 @@ type WithStatus = { status: string };
 export interface WaitForCompletionOptions {
   /** Milliseconds between polls. Default 2000. */
   intervalMs?: number;
-  /**
-   * Total timeout in milliseconds. Default 5 minutes, except 3D jobs, which
-   * default to {@link MODEL3D_DEFAULT_TIMEOUT_MS}.
-   */
+  /** Total timeout in milliseconds. Default {@link JOB_DEFAULT_TIMEOUT_MS}. */
   timeoutMs?: number;
   /** Optional AbortSignal to cancel polling. */
   signal?: AbortSignal;
@@ -28,14 +25,15 @@ const TERMINAL_STATUSES = new Set<string>(["completed", "failed", "cancelled"]);
 export const MODEL3D_KIND = "3D generation";
 
 /**
- * Default polling budget for a 3D job: 30 minutes, not the 5 every other family
- * gets. A vendor 3D job can sit in the vendor's queue and then refine for well
- * over 5 minutes, and giving up client-side does not stop it — the server job
- * runs on to completion and is billed, so a short default throws away results
- * the caller paid for. 30 minutes stays inside the backend's 2-hour reap age,
- * past which the server fails the row itself.
+ * Default polling budget for any job: 2 hours 5 minutes. The server fails a
+ * job still running after 2 hours itself, so a poll this long always ends on
+ * a terminal status. Giving up sooner does not stop the job: it runs on at the
+ * vendor and is billed, and the caller throws away a result it paid for.
  */
-export const MODEL3D_DEFAULT_TIMEOUT_MS = 30 * 60_000;
+export const JOB_DEFAULT_TIMEOUT_MS = 2 * 60 * 60_000 + 5 * 60_000;
+
+/** A 3D job's polling budget: {@link JOB_DEFAULT_TIMEOUT_MS}, as for every job. */
+export const MODEL3D_DEFAULT_TIMEOUT_MS = JOB_DEFAULT_TIMEOUT_MS;
 
 /**
  * Consecutive failed status reads a poll rides out before throwing the last
@@ -99,7 +97,7 @@ export async function* pollJob<T extends WithStatus>(
   kind = "job",
 ): AsyncGenerator<T, T, void> {
   const intervalMs = opts.intervalMs ?? 2000;
-  const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
+  const timeoutMs = opts.timeoutMs ?? JOB_DEFAULT_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
 
   let last: T | undefined;

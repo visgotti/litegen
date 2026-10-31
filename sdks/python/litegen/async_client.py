@@ -10,6 +10,7 @@ import httpx
 from typing_extensions import Unpack
 
 from .client import (
+    DEFAULT_TIMEOUT,
     _DROPPED_PARAMS_HEADER,
     _OCTET_STREAM,
     _clean,
@@ -23,6 +24,7 @@ from .client import (
 )
 from .errors import LiteGenTimeoutError
 from .polling import (
+    JOB_DEFAULT_TIMEOUT,
     MODEL3D_DEFAULT_TIMEOUT,
     apoll_model3d,
     apoll_video,
@@ -58,8 +60,9 @@ class AsyncLiteGenClient:
         *,
         api_key: str | None = None,
         base_url: str | None = None,
-        timeout: float = 60.0,
+        timeout: float = DEFAULT_TIMEOUT,
         default_headers: Mapping[str, str] | None = None,
+        on_response: Callable[[httpx.Response], None] | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get("LITEGEN_API_KEY")
         self._base_url = (
@@ -71,7 +74,16 @@ class AsyncLiteGenClient:
             headers["Authorization"] = f"Bearer {self._api_key}"
         if default_headers:
             headers.update(default_headers)
-        self._http = httpx.AsyncClient(base_url=self._base_url, headers=headers, timeout=timeout)
+        # ``on_response`` sees every response, errors included, before it is
+        # read: for the headers no method returns (``response_meta``).
+        hooks = None
+        if on_response:
+
+            async def _seen(resp: httpx.Response) -> None:
+                on_response(resp)
+
+            hooks = {"response": [_seen]}
+        self._http = httpx.AsyncClient(base_url=self._base_url, headers=headers, timeout=timeout, event_hooks=hooks)
 
         self.images = _AsyncImages(self)
         self.videos = _AsyncVideos(self)
@@ -179,7 +191,7 @@ class AsyncVideoJob:
         get_status: Callable[[str], Awaitable[dict[str, Any]]],
         *,
         interval: float = 2.0,
-        timeout: float = 300.0,
+        timeout: float = JOB_DEFAULT_TIMEOUT,
     ) -> None:
         # `submit` returns the response headers alongside the body because the
         # dropped-params report travels in a header.
@@ -256,7 +268,7 @@ class _AsyncVideos:
         and are not sent as part of the request body.
         """
         interval = req.pop("interval", 2.0)
-        timeout = req.pop("timeout", 300.0)
+        timeout = req.pop("timeout", JOB_DEFAULT_TIMEOUT)
         headers = _idempotency(req.pop("idempotency_key", None))
         body = _clean(req)
 
@@ -276,14 +288,14 @@ class _AsyncVideos:
         return await self._c._request("GET", f"/v1/videos/{video_id}")
 
     async def wait_for_completion(
-        self, video_id: str, *, interval: float = 2.0, timeout: float = 300.0
+        self, video_id: str, *, interval: float = 2.0, timeout: float = JOB_DEFAULT_TIMEOUT
     ) -> Any:
         return await async_wait_for_video_completion(
             video_id, self.get_status, interval=interval, timeout=timeout
         )
 
     def poll(
-        self, video_id: str, *, interval: float = 2.0, timeout: float = 300.0
+        self, video_id: str, *, interval: float = 2.0, timeout: float = JOB_DEFAULT_TIMEOUT
     ) -> AsyncIterator[Any]:
         """Stream status updates as an async generator::
 

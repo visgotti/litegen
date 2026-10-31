@@ -1,7 +1,5 @@
 use std::sync::Arc;
-use axum::http::HeaderValue;
 use base64::Engine as _;
-use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
@@ -228,77 +226,10 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown_tx.send(true);
     });
 
-    // Build CORS layer from config
-    let cors_layer = {
-        use axum::http::Method;
-
-        let allowed_methods = [
-            Method::GET,
-            Method::POST,
-            Method::PATCH,
-            Method::DELETE,
-            Method::OPTIONS,
-        ];
-        let allowed_headers = [
-            axum::http::header::AUTHORIZATION,
-            axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderName::from_static("x-litegen-strict"),
-            axum::http::HeaderName::from_static("x-csrf-token"),
-        ];
-
-        // Also check env var for CSV override (env takes precedence over config file).
-        // Use LITEGEN_CORS_ORIGINS (single underscore) to avoid the config library's
-        // LITEGEN__CORS__ALLOWED_ORIGINS double-underscore nesting parser, which
-        // cannot deserialize a CSV string directly into Vec<String>.
-        let origins_from_env: Option<String> = std::env::var("LITEGEN_CORS_ORIGINS").ok()
-            .filter(|s| !s.is_empty());
-        let effective_origins: Vec<String> = if let Some(csv) = origins_from_env {
-            csv.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
-        } else {
-            config.cors.allowed_origins.clone()
-        };
-
-        // Response headers a cross-origin browser may READ. Without this, a
-        // browser SDK sees them as absent even though the server sent them —
-        // CORS hides every non-safelisted response header. These are the
-        // dropped-params and conversion-loss reports, and a converted file's
-        // download name.
-        let exposed_headers = [
-            axum::http::HeaderName::from_static("x-litegen-dropped-params"),
-            axum::http::HeaderName::from_static("x-litegen-conversion-losses"),
-            axum::http::header::CONTENT_DISPOSITION,
-        ];
-
-        let layer = if effective_origins.iter().any(|o| o == "*") {
-            // Wildcard — allow any origin (dev convenience)
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(allowed_methods.to_vec())
-                .allow_headers(allowed_headers.to_vec())
-        } else if effective_origins.is_empty() {
-            // Default-deny: no origins allowed
-            CorsLayer::new()
-                .allow_methods(allowed_methods.to_vec())
-                .allow_headers(allowed_headers.to_vec())
-        } else {
-            // Explicit allowlist
-            let parsed: Vec<HeaderValue> = effective_origins
-                .iter()
-                .filter_map(|o| HeaderValue::from_str(o).ok())
-                .collect();
-            CorsLayer::new()
-                .allow_origin(parsed)
-                .allow_methods(allowed_methods.to_vec())
-                .allow_headers(allowed_headers.to_vec())
-        };
-        let layer = layer.expose_headers(exposed_headers.to_vec());
-
-        if config.cors.allow_credentials {
-            layer.allow_credentials(true)
-        } else {
-            layer
-        }
-    };
+    // Build CORS layer from config. LITEGEN_CORS_ORIGINS (single underscore,
+    // a CSV) overrides the configured origins: the config library's
+    // double-underscore nesting cannot deserialize a CSV into Vec<String>.
+    let cors_layer = api::cors::layer(&config.cors, std::env::var("LITEGEN_CORS_ORIGINS").ok().as_deref());
 
     // Build axum router
     let app = api::create_router(state)

@@ -56,10 +56,22 @@ for update in client.models3d.generate(model="fal/hyper3d-rodin", prompt="a teap
 - **Lax mode:** with `strict=False`, params the model doesn't support are dropped instead of rejected, and `job.dropped_params` lists them.
 - **Cancel** an in-flight job with `client.generations.cancel(job.id)`.
 - **Convert** a mesh you already have: `client.models3d.convert(data, from_format="glb", to_format="stl")` returns a dict with `content` (bytes), `content_type`, `filename`, `format` and `losses` (what the target container could not keep, e.g. `["uvs"]`). It is a standalone utility: nothing is generated or billed. `client.models3d.convert_formats()` lists the containers it handles and its size cap.
-- **Timeout:** polling gives up after 30 minutes by default (`MODEL3D_DEFAULT_TIMEOUT`; override with `timeout=` in seconds) and raises `LiteGenPollingTimeoutError`. That stops the waiting, not the job, which can still complete and be billed: resume with `client.models3d.wait_for_completion(job_id)`.
+- **Timeout:** polling gives up after `JOB_DEFAULT_TIMEOUT` (2 hours 5 minutes) by default, past the 2 hours after which the server fails a job itself (override with `timeout=` in seconds), and raises `LiteGenPollingTimeoutError`. That stops the waiting, not the job, which can still complete and be billed: resume with `client.models3d.wait_for_completion(job_id)`.
 - **Types:** responses are plain dicts. For static checking, import the TypedDicts from `litegen.types` (`Model3dGenerationResponse`, `Model3dAsset`, `Model3dGenerateParams`, ...). `client.models.list(media_type="model3d")` lists the 3D models.
 
 The async client mirrors this: `await client.models3d.generate(...)`, `async for update in client.models3d.generate(...)`, `await job.id()` and `await job.dropped_params()`. See [`examples/generate_3d.py`](./examples/generate_3d.py).
+
+## Timeouts, headers and metadata
+
+- **Timeouts:** a request waits up to `DEFAULT_TIMEOUT` (390 s) unless `timeout=` says otherwise: a synchronous call can take three vendor attempts of up to 120 s each.
+- **Response headers:** `on_response=` is called with every `httpx.Response`, errors included; `response_meta(response.headers)` reads litegen's (`dropped_params`, `rate_limit`, `idempotent_replayed`, `retry_after`). A `LiteGenAPIError` carries its response's `headers`.
+- **Idempotency:** `idempotency_key=` on every billed submit replays the first answer to a repeated request, billed once.
+- **Cancel** returns the row as settled (a cancelled job is refunded) with `vendor_cancelled`, whether the vendor took the cancel.
+- **Metadata:** send `metadata=` (a string map, at most 1 KB) with any generation; it is echoed on every answer, and `logs.list(metadata=...)` / `stats.get(metadata=...)` split logs and spend by it.
+
+## Versions
+
+The package follows semantic versioning, and [CHANGELOG.md](./CHANGELOG.md) lists every release; `litegen.__version__` is the version you have.
 
 ## Links
 

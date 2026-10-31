@@ -1,7 +1,7 @@
 """Public error types raised by the LiteGen SDK."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 
 class LiteGenError(Exception):
@@ -20,7 +20,8 @@ class LiteGenAPIError(LiteGenError):
     When a vendor refused or failed the request (``type`` ``vendor_rejected``
     or ``vendor_error``), ``provider_error`` is the vendor's own answer —
     ``{"status", "code", "message"}`` — and ``retryable`` says whether the
-    same request may work later.
+    same request may work later. ``headers`` are the error response's — the
+    rate limit a 429 reports, for one (see :func:`litegen.response_meta`).
     """
 
     def __init__(
@@ -35,6 +36,7 @@ class LiteGenAPIError(LiteGenError):
         model: str | None = None,
         retry_after: float | None = None,
         retryable: bool | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.status = status
@@ -45,6 +47,7 @@ class LiteGenAPIError(LiteGenError):
         self.model = model
         self.retry_after = retry_after
         self.retryable = retryable
+        self.headers = headers
 
 
 class LiteGenValidationError(LiteGenAPIError):

@@ -86,7 +86,7 @@ describe("LiteGenPollingTimeoutError names the family that timed out", () => {
 });
 
 describe("3D polling budget", () => {
-  it("defaults to MODEL3D_DEFAULT_TIMEOUT_MS, not the 5-minute video default", async () => {
+  it("defaults to MODEL3D_DEFAULT_TIMEOUT_MS", async () => {
     vi.useFakeTimers();
     try {
       const getStatus = fakeStatus([{ status: "processing", progress: 10 }]);
@@ -99,7 +99,7 @@ describe("3D polling budget", () => {
       await vi.advanceTimersByTimeAsync(10 * 60_000);
       expect(await Promise.race([settled, Promise.resolve("still polling")])).toBe("still polling");
 
-      // Past 30 minutes: now it gives up, naming the family.
+      // Past the budget: now it gives up, naming the family.
       await vi.advanceTimersByTimeAsync(MODEL3D_DEFAULT_TIMEOUT_MS);
       const err = await settled;
       expect(err).toBeInstanceOf(LiteGenPollingTimeoutError);
@@ -115,8 +115,8 @@ describe("3D polling budget", () => {
     expect(err).toBeInstanceOf(LiteGenPollingTimeoutError);
   });
 
-  it("is 30 minutes", () => {
-    expect(MODEL3D_DEFAULT_TIMEOUT_MS).toBe(30 * 60_000);
+  it("is every job's budget: past the server's 2-hour reap age (L19)", () => {
+    expect(MODEL3D_DEFAULT_TIMEOUT_MS).toBe(2 * 60 * 60_000 + 5 * 60_000);
   });
 });
 

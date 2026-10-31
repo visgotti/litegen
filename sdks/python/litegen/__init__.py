@@ -8,7 +8,7 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
-from .client import LiteGenClient, Model3dJob, VideoJob
+from .client import DEFAULT_TIMEOUT, LiteGenClient, Model3dJob, VideoJob, response_meta
 from .async_client import AsyncLiteGenClient, AsyncModel3dJob, AsyncVideoJob
 from .errors import (
     LiteGenError,
@@ -18,6 +18,7 @@ from .errors import (
     LiteGenPollingTimeoutError,
 )
 from .polling import (
+    JOB_DEFAULT_TIMEOUT,
     MODEL3D_DEFAULT_TIMEOUT,
     apoll_job,
     apoll_model3d,
@@ -115,6 +116,9 @@ __all__ = [
     "wait_for_model3d_completion",
     "async_wait_for_model3d_completion",
     "MODEL3D_DEFAULT_TIMEOUT",
+    "JOB_DEFAULT_TIMEOUT",
+    "DEFAULT_TIMEOUT",
+    "response_meta",
     "Model3dGenerateParams",
     "Model3dGenerationResponse",
     "Model3dAsset",
