@@ -134,6 +134,7 @@ from .param_spec_expand import ParamSpecExpand
 from .param_spec_float import ParamSpecFloat
 from .param_spec_int import ParamSpecInt
 from .param_spec_layout import ParamSpecLayout
+from .param_spec_palette import ParamSpecPalette
 from .param_spec_region import ParamSpecRegion
 from .param_spec_seed import ParamSpecSeed
 from .param_spec_segmentation_prompts import ParamSpecSegmentationPrompts
@@ -148,6 +149,7 @@ from .password_reset_request_body import PasswordResetRequestBody
 from .patch_account_request import PatchAccountRequest
 from .patch_model_state_request import PatchModelStateRequest
 from .patch_user_request import PatchUserRequest
+from .pixel_size import PixelSize
 from .preserves_unmasked import PreservesUnmasked
 from .price_rule import PriceRule
 from .price_rule_when import PriceRuleWhen
@@ -365,6 +367,7 @@ __all__ = (
     "ParamSpecFloat",
     "ParamSpecInt",
     "ParamSpecLayout",
+    "ParamSpecPalette",
     "ParamSpecRegion",
     "ParamSpecSeed",
     "ParamSpecSegmentationPrompts",
@@ -379,6 +382,7 @@ __all__ = (
     "PatchAccountRequest",
     "PatchModelStateRequest",
     "PatchUserRequest",
+    "PixelSize",
     "PreservesUnmasked",
     "PriceRule",
     "PriceRuleWhen",

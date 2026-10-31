@@ -285,6 +285,20 @@ impl ImageProvider for RecraftProvider {
                 }
             }
         }
+        // PixelGenie L16: a palette as preferred colours, inside whatever
+        // `controls` `extra` sent; a hint, never forced.
+        // @see <https://www.recraft.ai/docs/api-reference/endpoints.md> — Controls, `colors`
+        if let Some(palette) = extras.palette.as_ref() {
+            let colours: Vec<Value> = palette
+                .iter()
+                .filter_map(|c| u32::from_str_radix(c.trim_start_matches('#'), 16).ok())
+                .map(|v| json!({ "rgb": [(v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff] }))
+                .collect();
+            if !body["controls"].is_object() {
+                body["controls"] = json!({});
+            }
+            body["controls"]["colors"] = Value::Array(colours);
+        }
         // 3D doc §4: the layout's text boxes as Recraft's `text_layout`, one
         // word and four relative points each, clockwise from the top-left.
         // Written after `extra`, which cannot replace it.
@@ -495,6 +509,7 @@ mod tests {
             expand: None,
             layout: None, mask_prompt: None,
             preserve_unmasked: None, feather_px: None,
+            palette: None, directions: None,
         }
     }
 
@@ -684,5 +699,30 @@ mod tests {
         for (field, want) in [("prompt", "a beach at dusk"), ("model", "recraftv3"), ("response_format", "b64_json"), ("image_format", "png")] {
             assert_eq!(multipart_field(body, field).as_deref(), Some(want), "{field}");
         }
+    }
+
+    /// A palette is a hint here (PixelGenie L16): Recraft's `controls.colors`,
+    /// "An array of preferable colors", `{rgb: [r, g, b]}` each, at most 10;
+    /// other `controls` sent in `extra` are kept.
+    /// @see <https://www.recraft.ai/docs/api-reference/endpoints.md> — Controls
+    #[tokio::test]
+    async fn a_palette_is_sent_as_recrafts_preferred_colours() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/images/generations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [{ "b64_json": B64.encode(b"png") }] })))
+            .mount(&server)
+            .await;
+        let extras = ImageExtras {
+            palette: Some(vec!["#ff6432".into(), "#081820".into()]),
+            extra: Some(json!({ "controls": { "no_text": true } })),
+            ..make_extras()
+        };
+        make_provider(&server.uri())
+            .generate(&ref_schema("recraft/recraftv3"), &make_base("a fox", "recraft/recraftv3"), &extras, &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() })
+            .await
+            .expect("generate");
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body["controls"], json!({ "no_text": true, "colors": [{ "rgb": [255, 100, 50] }, { "rgb": [8, 24, 32] }] }), "{body}");
     }
 }

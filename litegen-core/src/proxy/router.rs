@@ -297,8 +297,10 @@ impl ProxyRouter {
             app_store.as_ref().unwrap_or(&self.image_store),
         )
         .await;
-        // A multiview model's views come from one billed vendor call.
-        let produced = if schema.task == crate::capabilities::ModelTask::Multiview { 1.0 } else { data.len().max(1) as f64 };
+        // A multiview model's views, and a directions request's facings
+        // (PixelGenie L16), come from one billed vendor call.
+        let one_call = schema.task == crate::capabilities::ModelTask::Multiview || extras.directions.is_some();
+        let produced = if one_call { 1.0 } else { data.len().max(1) as f64 };
         let base_cost = unit_price(schema, base, extras) * produced;
         let (markup, total) = apply_markup(base_cost, self.cost_markup_percent());
         let _ = markup;
@@ -597,6 +599,7 @@ impl ProxyRouter {
             expand: extras.expand,
             layout: None, mask_prompt: None,
             preserve_unmasked: None, feather_px: None,
+            palette: None, directions: None,
         };
         for d in deployments {
             let cost = if let Some(p) = self.registry.image_provider_for_request(&d.provider, app_creds.clone()).await {
@@ -1528,6 +1531,7 @@ async fn build_image_results(
         };
         let view = image.metadata.get("view").and_then(|v| v.as_str()).map(String::from);
         let yaw_deg = image.metadata.get("yaw_deg").and_then(|v| v.as_f64());
+        let direction = image.metadata.get("direction").and_then(|v| v.as_str()).map(String::from);
         // The size it came back at, from its header (3D doc §4: an expanded
         // canvas is reported as delivered).
         let size = image::ImageReader::new(std::io::Cursor::new(&image.data))
@@ -1540,6 +1544,7 @@ async fn build_image_results(
             revised_prompt: revised_prompt.clone(),
             view,
             yaw_deg,
+            direction,
             content_type,
             width: size.map(|s| s.0),
             height: size.map(|s| s.1),

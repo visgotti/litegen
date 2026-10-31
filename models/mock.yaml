@@ -710,6 +710,26 @@ models:
       background: { kind: string, enum_values: [transparent, opaque] }
     tags: [mock, test, formats]
 
+  # ─── Native pixel art (PixelGenie L16) ────────────────────────────────────
+  - id: mock/pixel-art-image
+    provider: mock
+    media_type: image
+    display_name: Mock Pixel Art Image
+    description: >-
+      Draws native pixel art at the asked size (16–128 px, 32 by default),
+      never upscaled: a checker of 4 px cells in the palette's colours only (a
+      default four without one). With `directions` (4 or 8), one image per
+      facing, labelled south, south-east, east, … — billed once.
+    pricing: { base_cost_usd: 0.01 }  # nonzero, so billing once per call is observable
+    capabilities: { text_to_image: true, native_pixel_art: true }
+    prompt: { required: true, max_length: 1000 }
+    params:
+      size: { kind: size, mode: freeform, min_width: 16, max_width: 128, min_height: 16, max_height: 128 }
+      palette: { kind: palette, forced: true, max_colors: 64, label: Palette, description: "The colours to draw in, as #rrggbb." }
+      directions: { kind: int, values: [4, 8], label: Directions, description: One image per facing. }
+    extra_allowlist: []
+    tags: [mock, test, pixel-art]
+
   # ─── Video operations (PixelGenie 3D doc §5, P2) ──────────────────────────
   - id: mock/extend-video
     provider: mock

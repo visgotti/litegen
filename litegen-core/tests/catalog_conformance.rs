@@ -3397,3 +3397,26 @@ fn recraft_replace_background_is_a_background_swap_at_the_raster_price() {
     }
     assert!((m.pricing.base_cost_usd - 0.04).abs() < 1e-9);
 }
+
+// ─── Native pixel art (PixelGenie L16) ──────────────────────────────────────
+
+/// PixelLab's pixflux: `image_size` "minimum": 16, "maximum": 400 a side;
+/// `color_image` the "Forced color palette"
+/// (<https://api.pixellab.ai/v2/openapi.json>, 2026-10-30). Recraft's
+/// `controls.colors` is "An array of preferable colors", "at most 10"
+/// (endpoints.md): a hint on every generation row.
+#[test]
+fn pixflux_forces_its_palette_at_native_size_and_recraft_takes_one_as_a_hint() {
+    use litegen::capabilities::{ParamSpec, SizeSpec};
+    let reg = registry();
+    let m = reg.get("pixellab/pixflux").expect("the row");
+    assert!(m.capabilities.native_pixel_art);
+    match m.params.get("size") {
+        Some(ParamSpec::Size(SizeSpec::Freeform(f))) => assert_eq!((f.min_width, f.max_width, f.min_height, f.max_height), (16, 400, 16, 400)),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(m.params.get("palette"), Some(ParamSpec::Palette(p)) if p.forced));
+    for r in reg.for_provider("recraft").filter(|r| r.task == litegen::capabilities::ModelTask::Generate && !r.capabilities.background_removal) {
+        assert!(matches!(r.params.get("palette"), Some(ParamSpec::Palette(p)) if !p.forced && p.max_colors == 10), "{}", r.id);
+    }
+}

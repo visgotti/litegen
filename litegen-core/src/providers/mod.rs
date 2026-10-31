@@ -283,6 +283,12 @@ pub struct ImageExtras {
     pub preserve_unmasked: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub feather_px: Option<u32>,
+    /// Colours as `#rrggbb` (PixelGenie L16), checked against the model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub palette: Option<Vec<String>>,
+    /// 4 or 8 facings, one image each (PixelGenie L16).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directions: Option<u32>,
     pub size: Option<String>,
     pub aspect_ratio: Option<String>,
     pub quality: Option<String>,

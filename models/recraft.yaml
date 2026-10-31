@@ -12,6 +12,8 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 1000 }
     params:
+      # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
       negative_prompt: { kind: string, max_length: 1000 }
       style:
@@ -46,6 +48,8 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 1000 }
     params:
+      # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
       negative_prompt: { kind: string, max_length: 1000 }
       style:
@@ -79,6 +83,8 @@ models:
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 1000 }
     params:
+      # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
       # negative_prompt: "V2 / V3 models": https://www.recraft.ai/docs/api-reference/endpoints.md
       negative_prompt: { kind: string, max_length: 1000 }
@@ -109,6 +115,8 @@ models:
     # https://www.recraft.ai/docs/api-reference/endpoints.md,
     # https://www.recraft.ai/docs/api-reference/models/recraft-v4-1.md
     params:
+      # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
       size:
         kind: size
@@ -133,6 +141,8 @@ models:
     # https://www.recraft.ai/docs/api-reference/endpoints.md,
     # https://www.recraft.ai/docs/api-reference/models/recraft-v4-1.md
     params:
+      # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
       size:
         kind: size
@@ -164,6 +174,8 @@ models:
     # https://www.recraft.ai/docs/api-reference/endpoints.md,
     # https://www.recraft.ai/docs/api-reference/models/recraft-v4-1.md
     params:
+      # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
     extra_allowlist: [style_id, controls]
     tags: [text-to-image, vector]
@@ -180,6 +192,8 @@ models:
     prompt: { required: true, max_length: 10000 }
     # Same V4.1 parameter rules as recraftv4_1_vector.
     params:
+      # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
     extra_allowlist: [style_id, controls]
     tags: [text-to-image, vector]
@@ -195,6 +209,8 @@ models:
     # V2 prompts go to 1000 chars: https://www.recraft.ai/docs/api-reference/appendix.md
     prompt: { required: true, max_length: 1000 }
     params:
+      # PixelGenie L16, a hint: controls.colors, "An array of preferable colors", at most 10.
+      palette: { kind: palette, forced: false, max_colors: 10, label: Palette, description: "Colours to prefer, as #rrggbb (Recraft's controls.colors)." }
       seed: { kind: seed, min: 0, max: 4294967294 }
       # negative_prompt: "V2 / V3 models": https://www.recraft.ai/docs/api-reference/endpoints.md
       negative_prompt: { kind: string, max_length: 1000 }

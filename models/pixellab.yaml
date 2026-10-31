@@ -1,0 +1,33 @@
+# PixelLab v2 — native pixel art (PixelGenie L16).
+# Base URL https://api.pixellab.ai/v2, `Authorization: Bearer <token>`.
+# @see https://api.pixellab.ai/v2/llms.txt (read 2026-10-30)
+# @see https://api.pixellab.ai/v2/openapi.json (read 2026-10-30)
+models:
+  # POST /create-image-pixflux: description (required), image_size {width,
+  # height} 16–400 (required), text_guidance_scale 1–20 (default 8), outline,
+  # shading, detail, view, direction, isometric (weakly guiding),
+  # no_background, init_image, color_image ("Forced color palette, image
+  # containing colors used for palette"), seed. Answers {usage {type, usd},
+  # image {type: base64, base64, format}} at once, at the asked size.
+  - id: pixellab/pixflux
+    provider: pixellab
+    media_type: image
+    display_name: PixelLab Pixflux
+    description: >-
+      PixelLab's pixflux: native pixel art from text at 16–400 px a side,
+      never upscaled, in a forced palette when one is sent.
+    docs_url: https://api.pixellab.ai/v2/redoc#operation/generate_image_pixflux_create_image_pixflux_post
+    # "$0.008–0.013" a call by size (PixelLab's own estimates, PixelGenie
+    # research 2026-10-30); the dearest is billed until the size curve is
+    # read from a billed run (unverified).
+    pricing: { base_cost_usd: 0.013 }
+    capabilities: { text_to_image: true, native_pixel_art: true }
+    prompt: { required: true, max_length: 2000 }
+    params:
+      size: { kind: size, mode: freeform, min_width: 16, max_width: 400, min_height: 16, max_height: 400 }
+      palette: { kind: palette, forced: true, max_colors: 256, label: Palette, description: "The colours to draw in, as #rrggbb (PixelLab's color_image)." }
+      background: { kind: string, enum_values: [transparent, opaque] }
+      seed: { kind: seed, min: 0, max: 2147483647 }
+      guidance_scale: { kind: float, min: 1.0, max: 20.0, default: 8.0 }
+    extra_allowlist: [outline, shading, detail, view, direction, isometric]
+    tags: [text-to-image, pixel-art]

@@ -16,6 +16,7 @@ use crate::providers::image::leonardo::LeonardoImageProvider;
 use crate::providers::image::luma::LumaImageProvider;
 use crate::providers::image::minimax::MiniMaxImageProvider;
 use crate::providers::image::mock::MockProvider;
+use crate::providers::image::pixellab::PixelLabProvider;
 use crate::providers::image::recraft::RecraftProvider;
 use crate::providers::image::runway::RunwayImageProvider;
 use crate::providers::image::openai::OpenAiProvider;
@@ -437,6 +438,7 @@ fn build_image_provider(
         "bfl" => configured!(BflProvider),
         "ideogram" => configured!(IdeogramProvider),
         "recraft" => configured!(RecraftProvider),
+        "pixellab" => configured!(PixelLabProvider),
         "minimax" => configured!(MiniMaxImageProvider),
         "hunyuan" => configured!(HunyuanImageProvider),
         "bedrock" => configured!(BedrockImageProvider),
@@ -512,7 +514,7 @@ fn build_model3d_provider(
 pub const IMAGE_PROVIDERS: &[&str] = &[
     "openai", "stability", "replicate", "google", "fal", "runway", "luma", "bfl",
     "ideogram", "recraft", "minimax", "hunyuan", "bedrock", "kling", "leonardo",
-    "bytedance", "tripo", "mock",
+    "bytedance", "tripo", "pixellab", "mock",
 ];
 
 /// Canonical list of providers with a video implementation. Mirrors

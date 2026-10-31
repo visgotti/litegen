@@ -450,6 +450,7 @@ mod tests {
             expand: None,
             layout: None, mask_prompt: None,
             preserve_unmasked: None, feather_px: None,
+            palette: None, directions: None,
         }
     }
 
@@ -518,6 +519,7 @@ mod tests {
             expand: None,
             layout: None, mask_prompt: None,
             preserve_unmasked: None, feather_px: None,
+            palette: None, directions: None,
         };
 
         // Every aspect ratio any Runway model advertises.

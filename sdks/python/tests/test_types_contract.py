@@ -87,6 +87,7 @@ MIRRORED = {
     "LayoutBox": t.LayoutBox,
     "LayoutItem": t.LayoutItem,
     "TimeRange": t.TimeRange,
+    "PixelSize": t.PixelSize,
     "VideoSegment": t.VideoSegment,
     "ImageSegmentationResponse": t.ImageSegmentationResponse,
 }

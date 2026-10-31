@@ -74,6 +74,8 @@ providers:
     api_key: ""  # or IDEOGRAM_API_KEY (Api-Key header)
   recraft:
     api_key: ""  # or RECRAFT_API_TOKEN
+  pixellab:
+    api_key: ""  # or PIXELLAB_API_KEY (native pixel art; Authorization: Bearer; base https://api.pixellab.ai/v2)
   # ── Image + video vendors ──
   minimax:
     api_key: ""  # or MINIMAX_API_KEY (Hailuo); api_base for China: https://api.minimaxi.com/v1

@@ -140,6 +140,7 @@ pub fn validate_image(
     check_layout(schema, &mut req, strict, &mut dropped)?;
     check_mask_prompt(schema, &mut req, strict, &mut dropped)?;
     check_preserve(&req)?;
+    check_pixel_art(schema, &mut req, strict, &mut dropped)?;
 
     macro_rules! check_param {
         ($field:expr, $key:literal, $variant:pat => $body:block) => {
@@ -1194,6 +1195,52 @@ fn check_preserve(req: &ImageGenerationRequest) -> Result<(), ValidationError> {
     }
     if req.output_format.as_deref() == Some("jpeg") {
         return conflict("preserve_unmasked returns pixels byte-identical, which JPEG cannot; ask for png or webp", "output_format");
+    }
+    Ok(())
+}
+
+/// `palette` and `directions` (PixelGenie L16): `#rrggbb` colours, at most the
+/// model's count; a directions count the model lists.
+fn check_pixel_art(
+    schema: &ModelSchema,
+    req: &mut ImageGenerationRequest,
+    strict: bool,
+    dropped: &mut Vec<String>,
+) -> Result<(), ValidationError> {
+    let undeclared = |name: &str| ValidationError::new("param_unsupported", format!("{name} not supported by '{}'", schema.id), Some(name));
+    if let Some(colours) = req.palette.as_ref() {
+        match schema.params.get("palette") {
+            Some(ParamSpec::Palette(spec)) => {
+                let hex = |c: &str| c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
+                if colours.is_empty() {
+                    return Err(ValidationError::new("param_out_of_range", "palette names no colours", Some("palette")));
+                }
+                if let Some(bad) = colours.iter().find(|c| !hex(c)) {
+                    return Err(ValidationError::new("param_out_of_range", format!("palette colour '{bad}' is not #rrggbb"), Some("palette")));
+                }
+                if colours.len() > spec.max_colors {
+                    return Err(ValidationError::new("param_too_many", format!("{} colours; '{}' keeps to at most {}", colours.len(), schema.id, spec.max_colors), Some("palette")));
+                }
+            }
+            _ if strict => return Err(undeclared("palette")),
+            _ => {
+                dropped.push("palette".into());
+                req.palette = None;
+            }
+        }
+    }
+    if let Some(n) = req.directions {
+        match schema.params.get("directions") {
+            Some(ParamSpec::Int(spec)) if spec.values.is_empty() || spec.values.contains(&i64::from(n)) => {}
+            Some(ParamSpec::Int(spec)) => {
+                return Err(ValidationError::new("param_enum_mismatch", format!("directions {n}: '{}' draws {:?}", schema.id, spec.values), Some("directions")));
+            }
+            _ if strict => return Err(undeclared("directions")),
+            _ => {
+                dropped.push("directions".into());
+                req.directions = None;
+            }
+        }
     }
     Ok(())
 }

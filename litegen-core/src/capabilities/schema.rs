@@ -125,6 +125,9 @@ pub struct ModelCapabilityFlags {
     /// Takes one `init` image and returns it as an RGBA PNG with the
     /// background made transparent (PixelGenie L8).
     #[serde(default)] pub background_removal: bool,
+    /// Draws native pixel art: its output is at native size, one image pixel
+    /// per art pixel, and needs no reducing (PixelGenie L16).
+    #[serde(default)] pub native_pixel_art: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -340,6 +343,21 @@ pub enum ParamSpec {
     Layout(ParamSpecLayout),
     SourceVideo(ParamSpecSourceVideo),
     TimeRange(ParamSpecTimeRange),
+    Palette(ParamSpecPalette),
+}
+
+/// `palette` on an image model (PixelGenie L16): the colours it keeps to.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ParamSpecPalette {
+    /// Every pixel is one of the palette's colours (PixelLab's forced
+    /// palette, Retro Diffusion's `input_palette`); otherwise the palette is
+    /// a hint (Ideogram's `color_palette`, Recraft's `controls`).
+    #[serde(default)]
+    pub forced: bool,
+    /// The most colours one palette may hold.
+    pub max_colors: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub description: Option<String>,
 }
 
 /// `source_video` on a video operation (3D doc §5): the clips it works on.
@@ -907,6 +925,9 @@ pub const KNOWN_PARAMS: &[&str] = &[
     // Per-box prompts and masks named in text (3D doc §4).
     "layout",
     "mask_prompt",
+    // Native pixel art (PixelGenie L16).
+    "palette",
+    "directions",
     // Video operations (3D doc §5).
     "source_video",
     "direction",
@@ -947,6 +968,8 @@ pub fn canonical_param_kinds(name: &str) -> &'static [&'static str] {
         "mask_prompt" | "direction" | "replace" => &["string"],
         "source_video" => &["source_video"],
         "time_range" => &["time_range"],
+        "palette" => &["palette"],
+        "directions" => &["int"],
         _ => &[],
     }
 }
@@ -971,6 +994,7 @@ impl ParamSpec {
             ParamSpec::Layout(_) => "layout",
             ParamSpec::SourceVideo(_) => "source_video",
             ParamSpec::TimeRange(_) => "time_range",
+            ParamSpec::Palette(_) => "palette",
         }
     }
 }

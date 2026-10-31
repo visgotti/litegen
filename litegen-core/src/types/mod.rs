@@ -74,6 +74,13 @@ pub struct ImageGenerationRequest {
     /// default; at most 256).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feather_px: Option<u32>,
+    /// Colours as `#rrggbb` (PixelGenie L16): every pixel one of them on a
+    /// model whose palette is forced, a hint elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub palette: Option<Vec<String>>,
+    /// A character in 4 or 8 facings, one labelled image each (PixelGenie L16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directions: Option<u32>,
     /// Grow the edit area outward by this many pixels: the vendor's own
     /// setting where it has one (sent explicitly, even as 0), else litegen
     /// dilates the mask itself. Default 0.
@@ -244,6 +251,10 @@ pub struct ImageResult {
     /// The camera's yaw for `view`, in degrees (see `ImageView`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yaw_deg: Option<f64>,
+    /// The facing this image shows, from a `directions` request: `south`
+    /// (towards the viewer), `south-east`, `east`, … (PixelGenie L16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<String>,
     /// Content type of the image (e.g. "image/png").
     #[serde(default = "default_content_type")]
     pub content_type: String,
@@ -638,6 +649,13 @@ impl ImageView {
     pub fn parse(s: &str) -> Option<ImageView> {
         Self::ALL.into_iter().find(|v| v.as_str() == s)
     }
+}
+
+/// The smallest and largest output edge, in pixels (PixelGenie L16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PixelSize {
+    pub min: u32,
+    pub max: u32,
 }
 
 /// A window of a clip, in seconds from its start (3D doc §5).
@@ -1468,6 +1486,21 @@ pub struct ModelCapabilities {
     /// Works on a `source_video` (3D doc §5).
     #[serde(default)]
     pub supports_source_video: bool,
+    /// Draws native pixel art (PixelGenie L16).
+    #[serde(default)]
+    pub native_pixel_art: bool,
+    /// A native pixel-art model's output edge, in pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_size: Option<PixelSize>,
+    /// Takes `palette`, as a hint or forced.
+    #[serde(default)]
+    pub supports_palette: bool,
+    /// Every pixel of its output is one of the palette's colours.
+    #[serde(default)]
+    pub supports_forced_palette: bool,
+    /// The `directions` counts it takes; empty when none.
+    #[serde(default)]
+    pub directions: Vec<u32>,
     /// An `extend` model's answer: the whole clip or only the added part.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extend_output: Option<crate::capabilities::ExtendOutput>,

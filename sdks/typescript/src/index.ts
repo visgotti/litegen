@@ -129,6 +129,8 @@ export type LayoutItem = components["schemas"]["LayoutItem"];
 export type LayoutKind = components["schemas"]["LayoutKind"];
 /** A window of a clip, in seconds (`retake`, `video_edit`). */
 export type TimeRange = components["schemas"]["TimeRange"];
+/** A native pixel-art model's output edge, in pixels. */
+export type PixelSize = components["schemas"]["PixelSize"];
 /** One stretch of a video operation's clip: from the source or generated. */
 export type VideoSegment = components["schemas"]["VideoSegment"];
 export type ExtendOutput = components["schemas"]["ExtendOutput"];

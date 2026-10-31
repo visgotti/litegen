@@ -113,6 +113,59 @@ fn swap_background(materialized: &MaterializedRequest) -> Result<Vec<u8>, Provid
     Ok(out)
 }
 
+/// The native pixel-art mock (PixelGenie L16).
+const PIXEL_ART_MODEL: &str = "mock/pixel-art-image";
+
+/// The facings of a `directions` request, clockwise from towards the
+/// viewer, as PixelLab names them.
+pub(crate) fn facings(n: u32) -> &'static [&'static str] {
+    match n {
+        4 => &["south", "east", "north", "west"],
+        _ => &["south", "south-east", "east", "north-east", "north", "north-west", "west", "south-west"],
+    }
+}
+
+/// `mock/pixel-art-image`'s answer: a native-size checker of 4 px cells in
+/// the palette's colours (a default four without one), shifted per facing;
+/// one image per facing with `directions`, labelled.
+fn pixel_art(extras: &ImageExtras) -> Result<GenerationOutput, ProviderError> {
+    let (w, h) = extras
+        .size
+        .as_deref()
+        .and_then(|s| s.split_once('x'))
+        .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
+        .unwrap_or((32, 32));
+    let parse = |c: &str| u32::from_str_radix(c.trim_start_matches('#'), 16).ok().map(|v| [(v >> 16) as u8, (v >> 8) as u8, v as u8, 0xff]);
+    let palette: Vec<[u8; 4]> = match extras.palette.as_ref() {
+        Some(p) => p.iter().filter_map(|c| parse(c)).collect(),
+        None => vec![[0x1a, 0x1c, 0x2c, 0xff], [0x5d, 0x27, 0x5d, 0xff], [0xb1, 0x3e, 0x53, 0xff], [0xef, 0x7d, 0x57, 0xff]],
+    };
+    let draw = |shift: u32| -> Result<Vec<u8>, ProviderError> {
+        let img = image::RgbaImage::from_fn(w, h, |x, y| image::Rgba(palette[((x / 4 + y / 4 + shift) as usize) % palette.len()]));
+        let mut out = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .map_err(|e| ProviderError::InvalidRequest(format!("{PIXEL_ART_MODEL}: {e}")))?;
+        Ok(out)
+    };
+    let labels: &[&str] = match extras.directions {
+        Some(n) => facings(n),
+        None => &[],
+    };
+    let mut images = Vec::new();
+    for (i, label) in labels.iter().enumerate() {
+        let mut metadata = HashMap::new();
+        metadata.insert("direction".to_string(), serde_json::json!(label));
+        images.push(GenerationOutput { data: draw(i as u32)?, content_type: "image/png".into(), metadata, more: Vec::new() });
+    }
+    let mut first = if images.is_empty() {
+        GenerationOutput { data: draw(0)?, content_type: "image/png".into(), metadata: HashMap::new(), more: Vec::new() }
+    } else {
+        images.remove(0)
+    };
+    first.more = images;
+    Ok(first)
+}
+
 /// The layout mock (3D doc §4).
 const LAYOUT_MODEL: &str = "mock/layout-image";
 
@@ -418,6 +471,9 @@ impl ImageProvider for MockProvider {
                 more: Vec::new(),
             });
         }
+        if model.id == PIXEL_ART_MODEL {
+            return pixel_art(_extras);
+        }
         if model.id == BACKGROUND_SWAP_MODEL {
             return Ok(GenerationOutput { data: swap_background(_materialized)?, content_type: "image/png".to_string(), metadata, more: Vec::new() });
         }
@@ -574,6 +630,7 @@ mod tests {
             expand: None,
             layout: None, mask_prompt: None,
             preserve_unmasked: None, feather_px: None,
+            palette: None, directions: None,
         }
     }
 
@@ -666,6 +723,7 @@ mod tests {
             expand: None,
             layout: None, mask_prompt: None,
             preserve_unmasked: None, feather_px: None,
+            palette: None, directions: None,
         };
         let cost = provider.estimate_cost(&schema, &req).await.unwrap();
         // mock/test-model has base_cost_usd: 0.0

@@ -217,6 +217,17 @@ class SegmentationMask(TypedDict):
     """The smallest box around the white pixels, measured by LiteGen."""
 
 
+Direction = Literal["south", "south-east", "east", "north-east", "north", "north-west", "west", "south-west"]
+"""A facing of a ``directions`` request, clockwise from towards the viewer."""
+
+
+class PixelSize(TypedDict):
+    """A native pixel-art model's output edge, in pixels."""
+
+    min: int
+    max: int
+
+
 SegmentOrigin = Literal["source", "generated"]
 """Where a stretch of a video operation's clip came from."""
 

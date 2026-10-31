@@ -109,4 +109,6 @@ export const FALLBACK_CAPABILITIES = {
   tripo:     { provider: 'tripo',     inputs: { text: false, image: true,  multi: false }, outputs: { image: true,  video: false, model3d: true  } },
   // 3D only: its rig takes a mesh, none of the text/image inputs above.
   meshy:     { provider: 'meshy',     inputs: { text: false, image: false, multi: false }, outputs: { image: false, video: false, model3d: true  } },
+  // Native pixel art from text (PixelGenie L16).
+  pixellab:  { provider: 'pixellab',  inputs: { text: true,  image: false, multi: false }, outputs: { image: true,  video: false, model3d: false } },
 };

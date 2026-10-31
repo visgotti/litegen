@@ -698,6 +698,7 @@ impl Default for ModelCapabilities {
             supports_layout: false, layout_kinds: Vec::new(), supports_mask_prompt: false,
             supports_preserve_unmasked: false,
             supports_source_video: false, extend_output: None, supports_time_range: false,
+            native_pixel_art: false, pixel_size: None, supports_palette: false, supports_forced_palette: false, directions: Vec::new(),
         }
     }
 }
@@ -770,6 +771,7 @@ mod tests {
             expand: None,
             layout: None, mask_prompt: None,
             preserve_unmasked: None, feather_px: None,
+            palette: None, directions: None,
         }
     }
 

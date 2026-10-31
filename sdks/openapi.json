@@ -8429,6 +8429,15 @@
                                     }
                                 ]
                             },
+                            "directions": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ],
+                                "format": "int32",
+                                "description": "A character in 4 or 8 facings, one labelled image each (PixelGenie L16).",
+                                "minimum": 0
+                            },
                             "expand": {
                                 "oneOf": [
                                     {
@@ -8492,6 +8501,16 @@
                                         "description": "The image container to return (PixelGenie L9): one of the model's\n`capabilities.output_formats`. Omitted means the vendor's default."
                                     }
                                 ]
+                            },
+                            "palette": {
+                                "type": [
+                                    "array",
+                                    "null"
+                                ],
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Colours as `#rrggbb` (PixelGenie L16): every pixel one of them on a\nmodel whose palette is forced, a hint elsewhere."
                             },
                             "preserve_unmasked": {
                                 "type": [
@@ -8635,6 +8654,13 @@
                     "content_type": {
                         "type": "string",
                         "description": "Content type of the image (e.g. \"image/png\")."
+                    },
+                    "direction": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The facing this image shows, from a `directions` request: `south`\n(towards the viewer), `south-east`, `east`, \u2026 (PixelGenie L16)."
                     },
                     "height": {
                         "type": [
@@ -9599,6 +9625,15 @@
                     "supports_image_to_image"
                 ],
                 "properties": {
+                    "directions": {
+                        "type": "array",
+                        "items": {
+                            "type": "integer",
+                            "format": "int32",
+                            "minimum": 0
+                        },
+                        "description": "The `directions` counts it takes; empty when none."
+                    },
                     "duration_values": {
                         "type": "array",
                         "items": {
@@ -9688,12 +9723,27 @@
                         "description": "The most reference images one request may carry. Kept under its old\nname too: `max_images` is this same number (L14).",
                         "minimum": 0
                     },
+                    "native_pixel_art": {
+                        "type": "boolean",
+                        "description": "Draws native pixel art (PixelGenie L16)."
+                    },
                     "output_formats": {
                         "type": "array",
                         "items": {
                             "type": "string"
                         },
                         "description": "Every mesh container a caller may request, including those litegen\nderives locally \u2014 the same list, in the same order, as\n`GET /v1/models/{id}` serves under `params.output_formats.enum_values`.\nEmpty for image and video models."
+                    },
+                    "pixel_size": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/PixelSize",
+                                "description": "A native pixel-art model's output edge, in pixels."
+                            }
+                        ]
                     },
                     "preserves_unmasked": {
                         "oneOf": [
@@ -9749,6 +9799,10 @@
                         "type": "boolean",
                         "description": "Takes `camera: fixed` (PixelGenie L10)."
                     },
+                    "supports_forced_palette": {
+                        "type": "boolean",
+                        "description": "Every pixel of its output is one of the palette's colours."
+                    },
                     "supports_image_to_3d": {
                         "type": "boolean",
                         "description": "Accepts one `init` reference image (image-to-3D)."
@@ -9788,6 +9842,10 @@
                     "supports_multiview_to_3d": {
                         "type": "boolean",
                         "description": "Accepts several `view-*` reference images (multiview-to-3D)."
+                    },
+                    "supports_palette": {
+                        "type": "boolean",
+                        "description": "Takes `palette`, as a hint or forced."
                     },
                     "supports_pbr": {
                         "type": "boolean",
@@ -9879,6 +9937,10 @@
                     },
                     "multiview_to_3d": {
                         "type": "boolean"
+                    },
+                    "native_pixel_art": {
+                        "type": "boolean",
+                        "description": "Draws native pixel art: its output is at native size, one image pixel\nper art pixel, and needs no reducing (PixelGenie L16)."
                     },
                     "text_to_3d": {
                         "type": "boolean"
@@ -11153,6 +11215,27 @@
                                 }
                             }
                         ]
+                    },
+                    {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/ParamSpecPalette"
+                            },
+                            {
+                                "type": "object",
+                                "required": [
+                                    "kind"
+                                ],
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                            "palette"
+                                        ]
+                                    }
+                                }
+                            }
+                        ]
                     }
                 ]
             },
@@ -11417,6 +11500,36 @@
                     "single_word_text": {
                         "type": "boolean",
                         "description": "Each text box holds one word (Recraft's `text_layout`)."
+                    }
+                }
+            },
+            "ParamSpecPalette": {
+                "type": "object",
+                "description": "`palette` on an image model (PixelGenie L16): the colours it keeps to.",
+                "required": [
+                    "max_colors"
+                ],
+                "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "forced": {
+                        "type": "boolean",
+                        "description": "Every pixel is one of the palette's colours (PixelLab's forced\npalette, Retro Diffusion's `input_palette`); otherwise the palette is\na hint (Ideogram's `color_palette`, Recraft's `controls`)."
+                    },
+                    "label": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "max_colors": {
+                        "type": "integer",
+                        "description": "The most colours one palette may hold.",
+                        "minimum": 0
                     }
                 }
             },
@@ -11853,6 +11966,26 @@
                                 "$ref": "#/components/schemas/Role"
                             }
                         ]
+                    }
+                }
+            },
+            "PixelSize": {
+                "type": "object",
+                "description": "The smallest and largest output edge, in pixels (PixelGenie L16).",
+                "required": [
+                    "min",
+                    "max"
+                ],
+                "properties": {
+                    "max": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "min": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
                     }
                 }
             },

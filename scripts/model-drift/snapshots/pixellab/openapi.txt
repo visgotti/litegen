@@ -1,0 +1,216 @@
+{
+  "POST /create-image-pixflux (application/json)": {
+    "additionalProperties": false,
+    "properties": {
+      "background_removal_task": {
+        "default": "remove_simple_background",
+        "enum": [
+          "remove_simple_background",
+          "remove_complex_background"
+        ],
+        "type": "string"
+      },
+      "color_image": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "base64": {
+                "type": "string"
+              },
+              "format": {
+                "default": "png",
+                "type": "string"
+              },
+              "type": {
+                "const": "base64",
+                "default": "base64",
+                "type": "string"
+              }
+            },
+            "required": [
+              "base64"
+            ],
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "description": {
+        "type": "string"
+      },
+      "detail": {
+        "anyOf": [
+          {
+            "enum": [
+              "low detail",
+              "medium detail",
+              "highly detailed"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "direction": {
+        "anyOf": [
+          {
+            "enum": [
+              "north",
+              "north-east",
+              "east",
+              "south-east",
+              "south",
+              "south-west",
+              "west",
+              "north-west"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "image_size": {
+        "additionalProperties": false,
+        "properties": {
+          "height": {
+            "maximum": 400,
+            "minimum": 16,
+            "type": "integer"
+          },
+          "width": {
+            "maximum": 400,
+            "minimum": 16,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "width",
+          "height"
+        ],
+        "type": "object"
+      },
+      "init_image": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "base64": {
+                "type": "string"
+              },
+              "format": {
+                "default": "png",
+                "type": "string"
+              },
+              "type": {
+                "const": "base64",
+                "default": "base64",
+                "type": "string"
+              }
+            },
+            "required": [
+              "base64"
+            ],
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "init_image_strength": {
+        "default": 300,
+        "maximum": 999,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "isometric": {
+        "default": false,
+        "type": "boolean"
+      },
+      "negative_description": {
+        "default": "",
+        "type": "string"
+      },
+      "no_background": {
+        "default": false,
+        "type": "boolean"
+      },
+      "outline": {
+        "anyOf": [
+          {
+            "enum": [
+              "single color black outline",
+              "single color outline",
+              "selective outline",
+              "lineless"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "seed": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "shading": {
+        "anyOf": [
+          {
+            "enum": [
+              "flat shading",
+              "basic shading",
+              "medium shading",
+              "detailed shading",
+              "highly detailed shading"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "text_guidance_scale": {
+        "default": 8,
+        "maximum": 20,
+        "minimum": 1,
+        "type": "number"
+      },
+      "view": {
+        "anyOf": [
+          {
+            "enum": [
+              "side",
+              "low top-down",
+              "high top-down"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "description",
+      "image_size"
+    ],
+    "type": "object"
+  }
+}

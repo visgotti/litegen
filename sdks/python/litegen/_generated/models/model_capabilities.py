@@ -1,4 +1,13 @@
-from typing import Any, Dict, List, Type, TypeVar, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -13,6 +22,10 @@ from ..models.region_input import RegionInput
 from ..models.segmentation_prompt_type import SegmentationPromptType
 from ..types import UNSET, Unset
 
+if TYPE_CHECKING:
+    from ..models.pixel_size import PixelSize
+
+
 T = TypeVar("T", bound="ModelCapabilities")
 
 
@@ -22,6 +35,7 @@ class ModelCapabilities:
     Attributes:
         supports_image_to_image (bool):
         supports_text_to_image (bool):
+        directions (Union[Unset, List[int]]): The `directions` counts it takes; empty when none.
         duration_values (Union[Unset, List[float]]): The only `duration_seconds` values the model takes; empty when it
             takes its range.
         extend_output (Union[ExtendOutput, None, Unset]):
@@ -36,10 +50,12 @@ class ModelCapabilities:
         max_polycount (Union[None, Unset, int]): Upper bound of the model's `target_polycount` param, when it takes one.
         max_reference_images (Union[Unset, int]): The most reference images one request may carry. Kept under its old
             name too: `max_images` is this same number (L14).
+        native_pixel_art (Union[Unset, bool]): Draws native pixel art (PixelGenie L16).
         output_formats (Union[Unset, List[str]]): Every mesh container a caller may request, including those litegen
             derives locally — the same list, in the same order, as
             `GET /v1/models/{id}` serves under `params.output_formats.enum_values`.
             Empty for image and video models.
+        pixel_size (Union['PixelSize', None, Unset]):
         preserves_unmasked (Union[None, PreservesUnmasked, Unset]):
         region_input (Union[None, RegionInput, Unset]):
         segmentation_prompts (Union[Unset, List[SegmentationPromptType]]): The prompt types it segments by: `point`,
@@ -52,6 +68,7 @@ class ModelCapabilities:
         supports_expand (Union[Unset, bool]): Takes `expand` (3D doc §4).
         supports_first_frame (Union[Unset, bool]):
         supports_fixed_camera (Union[Unset, bool]): Takes `camera: fixed` (PixelGenie L10).
+        supports_forced_palette (Union[Unset, bool]): Every pixel of its output is one of the palette's colours.
         supports_image_to_3d (Union[Unset, bool]): Accepts one `init` reference image (image-to-3D).
         supports_image_to_video (Union[Unset, bool]):
         supports_inpainting (Union[Unset, bool]):
@@ -62,6 +79,7 @@ class ModelCapabilities:
         supports_loop (Union[Unset, bool]): Takes `loop: true`.
         supports_mask_prompt (Union[Unset, bool]): Takes `mask_prompt` (3D doc §4).
         supports_multiview_to_3d (Union[Unset, bool]): Accepts several `view-*` reference images (multiview-to-3D).
+        supports_palette (Union[Unset, bool]): Takes `palette`, as a hint or forced.
         supports_pbr (Union[Unset, bool]): Takes the `pbr` param.
         supports_placement (Union[Unset, bool]): Takes `ground`, `center` and `height_m`, which litegen applies to every
             mesh it delivers: true on every 3D model.
@@ -95,6 +113,7 @@ class ModelCapabilities:
 
     supports_image_to_image: bool
     supports_text_to_image: bool
+    directions: Union[Unset, List[int]] = UNSET
     duration_values: Union[Unset, List[float]] = UNSET
     extend_output: Union[ExtendOutput, None, Unset] = UNSET
     keyframe_timing: Union[KeyframeTiming, None, Unset] = UNSET
@@ -106,7 +125,9 @@ class ModelCapabilities:
     max_keyframes: Union[None, Unset, int] = UNSET
     max_polycount: Union[None, Unset, int] = UNSET
     max_reference_images: Union[Unset, int] = UNSET
+    native_pixel_art: Union[Unset, bool] = UNSET
     output_formats: Union[Unset, List[str]] = UNSET
+    pixel_size: Union["PixelSize", None, Unset] = UNSET
     preserves_unmasked: Union[None, PreservesUnmasked, Unset] = UNSET
     region_input: Union[None, RegionInput, Unset] = UNSET
     segmentation_prompts: Union[Unset, List[SegmentationPromptType]] = UNSET
@@ -116,6 +137,7 @@ class ModelCapabilities:
     supports_expand: Union[Unset, bool] = UNSET
     supports_first_frame: Union[Unset, bool] = UNSET
     supports_fixed_camera: Union[Unset, bool] = UNSET
+    supports_forced_palette: Union[Unset, bool] = UNSET
     supports_image_to_3d: Union[Unset, bool] = UNSET
     supports_image_to_video: Union[Unset, bool] = UNSET
     supports_inpainting: Union[Unset, bool] = UNSET
@@ -126,6 +148,7 @@ class ModelCapabilities:
     supports_loop: Union[Unset, bool] = UNSET
     supports_mask_prompt: Union[Unset, bool] = UNSET
     supports_multiview_to_3d: Union[Unset, bool] = UNSET
+    supports_palette: Union[Unset, bool] = UNSET
     supports_pbr: Union[Unset, bool] = UNSET
     supports_placement: Union[Unset, bool] = UNSET
     supports_preserve_unmasked: Union[Unset, bool] = UNSET
@@ -144,9 +167,15 @@ class ModelCapabilities:
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        from ..models.pixel_size import PixelSize
+
         supports_image_to_image = self.supports_image_to_image
 
         supports_text_to_image = self.supports_text_to_image
+
+        directions: Union[Unset, List[int]] = UNSET
+        if not isinstance(self.directions, Unset):
+            directions = self.directions
 
         duration_values: Union[Unset, List[float]] = UNSET
         if not isinstance(self.duration_values, Unset):
@@ -207,9 +236,19 @@ class ModelCapabilities:
 
         max_reference_images = self.max_reference_images
 
+        native_pixel_art = self.native_pixel_art
+
         output_formats: Union[Unset, List[str]] = UNSET
         if not isinstance(self.output_formats, Unset):
             output_formats = self.output_formats
+
+        pixel_size: Union[Dict[str, Any], None, Unset]
+        if isinstance(self.pixel_size, Unset):
+            pixel_size = UNSET
+        elif isinstance(self.pixel_size, PixelSize):
+            pixel_size = self.pixel_size.to_dict()
+        else:
+            pixel_size = self.pixel_size
 
         preserves_unmasked: Union[None, Unset, str]
         if isinstance(self.preserves_unmasked, Unset):
@@ -248,6 +287,8 @@ class ModelCapabilities:
 
         supports_fixed_camera = self.supports_fixed_camera
 
+        supports_forced_palette = self.supports_forced_palette
+
         supports_image_to_3d = self.supports_image_to_3d
 
         supports_image_to_video = self.supports_image_to_video
@@ -267,6 +308,8 @@ class ModelCapabilities:
         supports_mask_prompt = self.supports_mask_prompt
 
         supports_multiview_to_3d = self.supports_multiview_to_3d
+
+        supports_palette = self.supports_palette
 
         supports_pbr = self.supports_pbr
 
@@ -310,6 +353,8 @@ class ModelCapabilities:
                 "supports_text_to_image": supports_text_to_image,
             }
         )
+        if directions is not UNSET:
+            field_dict["directions"] = directions
         if duration_values is not UNSET:
             field_dict["duration_values"] = duration_values
         if extend_output is not UNSET:
@@ -332,8 +377,12 @@ class ModelCapabilities:
             field_dict["max_polycount"] = max_polycount
         if max_reference_images is not UNSET:
             field_dict["max_reference_images"] = max_reference_images
+        if native_pixel_art is not UNSET:
+            field_dict["native_pixel_art"] = native_pixel_art
         if output_formats is not UNSET:
             field_dict["output_formats"] = output_formats
+        if pixel_size is not UNSET:
+            field_dict["pixel_size"] = pixel_size
         if preserves_unmasked is not UNSET:
             field_dict["preserves_unmasked"] = preserves_unmasked
         if region_input is not UNSET:
@@ -352,6 +401,8 @@ class ModelCapabilities:
             field_dict["supports_first_frame"] = supports_first_frame
         if supports_fixed_camera is not UNSET:
             field_dict["supports_fixed_camera"] = supports_fixed_camera
+        if supports_forced_palette is not UNSET:
+            field_dict["supports_forced_palette"] = supports_forced_palette
         if supports_image_to_3d is not UNSET:
             field_dict["supports_image_to_3d"] = supports_image_to_3d
         if supports_image_to_video is not UNSET:
@@ -372,6 +423,8 @@ class ModelCapabilities:
             field_dict["supports_mask_prompt"] = supports_mask_prompt
         if supports_multiview_to_3d is not UNSET:
             field_dict["supports_multiview_to_3d"] = supports_multiview_to_3d
+        if supports_palette is not UNSET:
+            field_dict["supports_palette"] = supports_palette
         if supports_pbr is not UNSET:
             field_dict["supports_pbr"] = supports_pbr
         if supports_placement is not UNSET:
@@ -409,10 +462,14 @@ class ModelCapabilities:
 
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
+        from ..models.pixel_size import PixelSize
+
         d = src_dict.copy()
         supports_image_to_image = d.pop("supports_image_to_image")
 
         supports_text_to_image = d.pop("supports_text_to_image")
+
+        directions = cast(List[int], d.pop("directions", UNSET))
 
         duration_values = cast(List[float], d.pop("duration_values", UNSET))
 
@@ -509,7 +566,26 @@ class ModelCapabilities:
 
         max_reference_images = d.pop("max_reference_images", UNSET)
 
+        native_pixel_art = d.pop("native_pixel_art", UNSET)
+
         output_formats = cast(List[str], d.pop("output_formats", UNSET))
+
+        def _parse_pixel_size(data: object) -> Union["PixelSize", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                pixel_size_type_1 = PixelSize.from_dict(data)
+
+                return pixel_size_type_1
+            except:  # noqa: E722
+                pass
+            return cast(Union["PixelSize", None, Unset], data)
+
+        pixel_size = _parse_pixel_size(d.pop("pixel_size", UNSET))
 
         def _parse_preserves_unmasked(
             data: object,
@@ -570,6 +646,8 @@ class ModelCapabilities:
 
         supports_fixed_camera = d.pop("supports_fixed_camera", UNSET)
 
+        supports_forced_palette = d.pop("supports_forced_palette", UNSET)
+
         supports_image_to_3d = d.pop("supports_image_to_3d", UNSET)
 
         supports_image_to_video = d.pop("supports_image_to_video", UNSET)
@@ -589,6 +667,8 @@ class ModelCapabilities:
         supports_mask_prompt = d.pop("supports_mask_prompt", UNSET)
 
         supports_multiview_to_3d = d.pop("supports_multiview_to_3d", UNSET)
+
+        supports_palette = d.pop("supports_palette", UNSET)
 
         supports_pbr = d.pop("supports_pbr", UNSET)
 
@@ -630,6 +710,7 @@ class ModelCapabilities:
         model_capabilities = cls(
             supports_image_to_image=supports_image_to_image,
             supports_text_to_image=supports_text_to_image,
+            directions=directions,
             duration_values=duration_values,
             extend_output=extend_output,
             keyframe_timing=keyframe_timing,
@@ -641,7 +722,9 @@ class ModelCapabilities:
             max_keyframes=max_keyframes,
             max_polycount=max_polycount,
             max_reference_images=max_reference_images,
+            native_pixel_art=native_pixel_art,
             output_formats=output_formats,
+            pixel_size=pixel_size,
             preserves_unmasked=preserves_unmasked,
             region_input=region_input,
             segmentation_prompts=segmentation_prompts,
@@ -651,6 +734,7 @@ class ModelCapabilities:
             supports_expand=supports_expand,
             supports_first_frame=supports_first_frame,
             supports_fixed_camera=supports_fixed_camera,
+            supports_forced_palette=supports_forced_palette,
             supports_image_to_3d=supports_image_to_3d,
             supports_image_to_video=supports_image_to_video,
             supports_inpainting=supports_inpainting,
@@ -661,6 +745,7 @@ class ModelCapabilities:
             supports_loop=supports_loop,
             supports_mask_prompt=supports_mask_prompt,
             supports_multiview_to_3d=supports_multiview_to_3d,
+            supports_palette=supports_palette,
             supports_pbr=supports_pbr,
             supports_placement=supports_placement,
             supports_preserve_unmasked=supports_preserve_unmasked,

@@ -183,6 +183,8 @@ pub async fn generate_image(
         mask_prompt: validated.request.mask_prompt.clone(),
         preserve_unmasked: validated.request.preserve_unmasked,
         feather_px: validated.request.feather_px,
+        palette: validated.request.palette.clone(),
+        directions: validated.request.directions,
         extra: validated.request.base.extra.clone(),
         output_format: validated.request.output_format.clone(),
         background: validated.request.background.clone(),
@@ -2160,6 +2162,19 @@ fn project_model_info(s: &crate::capabilities::ModelSchema) -> ModelInfo {
             supports_mask_prompt: matches!(s.params.get("mask_prompt"), Some(crate::capabilities::ParamSpec::String(_))),
             supports_preserve_unmasked: takes_mask || region.is_some(),
             supports_source_video: matches!(s.params.get("source_video"), Some(crate::capabilities::ParamSpec::SourceVideo(_))),
+            native_pixel_art: s.capabilities.native_pixel_art,
+            pixel_size: match s.params.get("size") {
+                Some(crate::capabilities::ParamSpec::Size(crate::capabilities::SizeSpec::Freeform(f))) if s.capabilities.native_pixel_art => {
+                    Some(crate::types::PixelSize { min: f.min_width.min(f.min_height), max: f.max_width.max(f.max_height) })
+                }
+                _ => None,
+            },
+            supports_palette: matches!(s.params.get("palette"), Some(crate::capabilities::ParamSpec::Palette(_))),
+            supports_forced_palette: matches!(s.params.get("palette"), Some(crate::capabilities::ParamSpec::Palette(p)) if p.forced),
+            directions: match s.params.get("directions") {
+                Some(crate::capabilities::ParamSpec::Int(i)) => i.values.iter().map(|v| *v as u32).collect(),
+                _ => Vec::new(),
+            },
             extend_output: match s.params.get("source_video") {
                 Some(crate::capabilities::ParamSpec::SourceVideo(v)) if s.task == crate::capabilities::ModelTask::Extend => v.extend_output,
                 _ => None,

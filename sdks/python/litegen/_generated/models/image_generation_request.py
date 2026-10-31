@@ -1,13 +1,4 @@
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Type,
-    TypeVar,
-    Union,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -46,6 +37,7 @@ class ImageGenerationRequest:
         strict (Union[Unset, bool]):
         aspect_ratio (Union[None, Unset, str]):
         background (Union[ImageBackground, None, Unset]):
+        directions (Union[None, Unset, int]): A character in 4 or 8 facings, one labelled image each (PixelGenie L16).
         expand (Union['Expand', None, Unset]):
         feather_px (Union[None, Unset, int]): With `preserve_unmasked`: blend from the init at the edit area's edge
             to the vendor's pixels this many pixels inside it (0, a hard edge, by
@@ -59,6 +51,8 @@ class ImageGenerationRequest:
         mask_prompt (Union[None, Unset, str]): The area an edit replaces, named in text rather than drawn as a mask
             (3D doc §4).
         output_format (Union[ImageOutputFormat, None, Unset]):
+        palette (Union[List[str], None, Unset]): Colours as `#rrggbb` (PixelGenie L16): every pixel one of them on a
+            model whose palette is forced, a hint elsewhere.
         preserve_unmasked (Union[None, Unset, bool]): Paste the init image's pixels back outside the edit area (3D doc
             §4),
             so they come back byte-identical from any vendor. Needs a mask or a
@@ -85,6 +79,7 @@ class ImageGenerationRequest:
     strict: Union[Unset, bool] = UNSET
     aspect_ratio: Union[None, Unset, str] = UNSET
     background: Union[ImageBackground, None, Unset] = UNSET
+    directions: Union[None, Unset, int] = UNSET
     expand: Union["Expand", None, Unset] = UNSET
     feather_px: Union[None, Unset, int] = UNSET
     guidance_scale: Union[None, Unset, float] = UNSET
@@ -92,6 +87,7 @@ class ImageGenerationRequest:
     mask_grow_px: Union[None, Unset, int] = UNSET
     mask_prompt: Union[None, Unset, str] = UNSET
     output_format: Union[ImageOutputFormat, None, Unset] = UNSET
+    palette: Union[List[str], None, Unset] = UNSET
     preserve_unmasked: Union[None, Unset, bool] = UNSET
     quality: Union[None, Unset, str] = UNSET
     region: Union["Region", None, Unset] = UNSET
@@ -152,6 +148,12 @@ class ImageGenerationRequest:
         else:
             background = self.background
 
+        directions: Union[None, Unset, int]
+        if isinstance(self.directions, Unset):
+            directions = UNSET
+        else:
+            directions = self.directions
+
         expand: Union[Dict[str, Any], None, Unset]
         if isinstance(self.expand, Unset):
             expand = UNSET
@@ -203,6 +205,15 @@ class ImageGenerationRequest:
             output_format = self.output_format.value
         else:
             output_format = self.output_format
+
+        palette: Union[List[str], None, Unset]
+        if isinstance(self.palette, Unset):
+            palette = UNSET
+        elif isinstance(self.palette, list):
+            palette = self.palette
+
+        else:
+            palette = self.palette
 
         preserve_unmasked: Union[None, Unset, bool]
         if isinstance(self.preserve_unmasked, Unset):
@@ -289,6 +300,8 @@ class ImageGenerationRequest:
             field_dict["aspect_ratio"] = aspect_ratio
         if background is not UNSET:
             field_dict["background"] = background
+        if directions is not UNSET:
+            field_dict["directions"] = directions
         if expand is not UNSET:
             field_dict["expand"] = expand
         if feather_px is not UNSET:
@@ -303,6 +316,8 @@ class ImageGenerationRequest:
             field_dict["mask_prompt"] = mask_prompt
         if output_format is not UNSET:
             field_dict["output_format"] = output_format
+        if palette is not UNSET:
+            field_dict["palette"] = palette
         if preserve_unmasked is not UNSET:
             field_dict["preserve_unmasked"] = preserve_unmasked
         if quality is not UNSET:
@@ -395,6 +410,15 @@ class ImageGenerationRequest:
 
         background = _parse_background(d.pop("background", UNSET))
 
+        def _parse_directions(data: object) -> Union[None, Unset, int]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, int], data)
+
+        directions = _parse_directions(d.pop("directions", UNSET))
+
         def _parse_expand(data: object) -> Union["Expand", None, Unset]:
             if data is None:
                 return data
@@ -486,6 +510,23 @@ class ImageGenerationRequest:
             return cast(Union[ImageOutputFormat, None, Unset], data)
 
         output_format = _parse_output_format(d.pop("output_format", UNSET))
+
+        def _parse_palette(data: object) -> Union[List[str], None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                palette_type_0 = cast(List[str], data)
+
+                return palette_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union[List[str], None, Unset], data)
+
+        palette = _parse_palette(d.pop("palette", UNSET))
 
         def _parse_preserve_unmasked(data: object) -> Union[None, Unset, bool]:
             if data is None:
@@ -594,6 +635,7 @@ class ImageGenerationRequest:
             strict=strict,
             aspect_ratio=aspect_ratio,
             background=background,
+            directions=directions,
             expand=expand,
             feather_px=feather_px,
             guidance_scale=guidance_scale,
@@ -601,6 +643,7 @@ class ImageGenerationRequest:
             mask_grow_px=mask_grow_px,
             mask_prompt=mask_prompt,
             output_format=output_format,
+            palette=palette,
             preserve_unmasked=preserve_unmasked,
             quality=quality,
             region=region,

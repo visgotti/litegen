@@ -285,6 +285,35 @@ listing serves `mask_convention: white_edits` for every model that takes one.
 
 Not verified live: no OpenAI, Stability or Ideogram key is available here.
 
+### Native pixel art (L16)
+
+A row that draws native pixel art says `capabilities.native_pixel_art`
+(listed as `native_pixel_art`, with `pixel_size: {min, max}` from its size
+range): one image pixel per art pixel, never upscaled. **`palette:
+["#rrggbb", …]`** (the row's `palette` spec: `forced` and `max_colors`,
+listed as `supports_palette` and `supports_forced_palette`) is every pixel's
+colour on a forced row and a hint elsewhere. **`directions`** (4 or 8, the
+row's `values`, listed as `directions`) returns one image per facing, each
+labelled `direction` — `south` (towards the viewer), then clockwise:
+`south-east`, `east`, `north-east`, `north`, `north-west`, `west`,
+`south-west` (4: `south`, `east`, `north`, `west`) — from one call, billed
+once. Refused before billing: a colour not `#rrggbb` or an empty palette
+(`param_out_of_range`), more colours than the row keeps (`param_too_many`), a
+directions count the row lacks (`param_enum_mismatch`), either field on a row
+without it (`param_unsupported`).
+
+| row | vendor call | price | proof | status |
+|---|---|---|---|---|
+| `mock/pixel-art-image` | native size (16–128), a checker in the palette's colours only; one labelled image per facing | $0.01 per call | HTTP `a_forced_palette_comes_back_at_native_size_in_only_its_colours` (16 colours), `eight_directions_come_back_as_eight_labelled_images` (billed once), `a_palette_or_direction_count_the_model_cannot_take_is_refused_before_billing`, `the_listing_says_which_models_draw_native_pixel_art` | ✅ mock |
+| `pixellab/pixflux` | `POST https://api.pixellab.ai/v2/create-image-pixflux` (Bearer) `{description, image_size {width, height} 16–400, color_image: {type: base64, base64, format: png}` — the palette as a strip one pixel per colour — `, no_background` for `background: transparent`, `seed`, `text_guidance_scale}`; `extra` (outline, shading, detail, view, direction, isometric) merged first; answers `{usage, image}` at once | $0.013 (the dearest of PixelLab's $0.008–0.013 estimates; **(unverified)** curve) | adapter `pixflux_takes_the_palette_as_a_colour_image_and_answers_native_pixels`, `a_refusal_is_pixellabs_own_answer`; conformance `pixflux_forces_its_palette_at_native_size_and_recraft_takes_one_as_a_hint` | 🟡 wiremock |
+| `recraft/*` generation rows | a hint: `controls.colors: [{rgb: [r, g, b]}]` (at most 10), inside any `controls` sent in `extra` | — | adapter `a_palette_is_sent_as_recrafts_preferred_colours` | 🟡 wiremock |
+
+Not wired: Retro Diffusion (every job queued; `input_palette`, `check_cost`
+behind `/v1/images/cost`), PixelLab's directions, rotations, animation and
+tiles (8-direction characters are stored on PixelLab and fetched by id),
+`max_frames` (no carried model animates a still), Ideogram's
+`color_palette`. Not verified live: no PixelLab key.
+
 ### Preservation and background swap (3D doc §4, P2)
 
 **`preserve_unmasked: true`** has litegen paste the init image's pixels back

@@ -19,6 +19,8 @@ class ModelCapabilityFlags:
         image_to_video (Union[Unset, bool]):
         inpainting (Union[Unset, bool]):
         multiview_to_3d (Union[Unset, bool]):
+        native_pixel_art (Union[Unset, bool]): Draws native pixel art: its output is at native size, one image pixel
+            per art pixel, and needs no reducing (PixelGenie L16).
         text_to_3d (Union[Unset, bool]):
         text_to_image (Union[Unset, bool]):
         text_to_video (Union[Unset, bool]):
@@ -30,6 +32,7 @@ class ModelCapabilityFlags:
     image_to_video: Union[Unset, bool] = UNSET
     inpainting: Union[Unset, bool] = UNSET
     multiview_to_3d: Union[Unset, bool] = UNSET
+    native_pixel_art: Union[Unset, bool] = UNSET
     text_to_3d: Union[Unset, bool] = UNSET
     text_to_image: Union[Unset, bool] = UNSET
     text_to_video: Union[Unset, bool] = UNSET
@@ -47,6 +50,8 @@ class ModelCapabilityFlags:
         inpainting = self.inpainting
 
         multiview_to_3d = self.multiview_to_3d
+
+        native_pixel_art = self.native_pixel_art
 
         text_to_3d = self.text_to_3d
 
@@ -69,6 +74,8 @@ class ModelCapabilityFlags:
             field_dict["inpainting"] = inpainting
         if multiview_to_3d is not UNSET:
             field_dict["multiview_to_3d"] = multiview_to_3d
+        if native_pixel_art is not UNSET:
+            field_dict["native_pixel_art"] = native_pixel_art
         if text_to_3d is not UNSET:
             field_dict["text_to_3d"] = text_to_3d
         if text_to_image is not UNSET:
@@ -93,6 +100,8 @@ class ModelCapabilityFlags:
 
         multiview_to_3d = d.pop("multiview_to_3d", UNSET)
 
+        native_pixel_art = d.pop("native_pixel_art", UNSET)
+
         text_to_3d = d.pop("text_to_3d", UNSET)
 
         text_to_image = d.pop("text_to_image", UNSET)
@@ -106,6 +115,7 @@ class ModelCapabilityFlags:
             image_to_video=image_to_video,
             inpainting=inpainting,
             multiview_to_3d=multiview_to_3d,
+            native_pixel_art=native_pixel_art,
             text_to_3d=text_to_3d,
             text_to_image=text_to_image,
             text_to_video=text_to_video,

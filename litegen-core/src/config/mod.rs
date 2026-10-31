@@ -623,6 +623,7 @@ fn load_provider_env_overrides(builder: &mut config::ConfigBuilder<config::build
         ("BFL_API_KEY", "providers.bfl.api_key"),
         ("IDEOGRAM_API_KEY", "providers.ideogram.api_key"),
         ("RECRAFT_API_TOKEN", "providers.recraft.api_key"),
+        ("PIXELLAB_API_KEY", "providers.pixellab.api_key"),
         ("MINIMAX_API_KEY", "providers.minimax.api_key"),
         ("MINIMAX_API_BASE", "providers.minimax.api_base"),
         ("BYTEDANCE_API_KEY", "providers.bytedance.api_key"),

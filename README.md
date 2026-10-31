@@ -140,6 +140,10 @@ A model whose listing says `supports_expand` (`stability/outpaint`) grows the in
 with `expand: { "left": 64, "top": 0, "right": 64, "bottom": 128 }` (pixels a side); every image
 reports the `width` and `height` it came back at.
 
+A model whose listing says `native_pixel_art` (`pixellab/pixflux`) draws at native size; `palette:
+["#rrggbb", …]` is every pixel's colour where `supports_forced_palette` and a hint elsewhere
+(Recraft), and `directions: 8` returns one image per facing, each labelled `direction`.
+
 On any model taking a mask or a region, `preserve_unmasked: true` pastes the init image's pixels
 back outside the edit area so they come back byte-identical (`feather_px` softens the edge inside
 it). A model whose `task` is `background_swap` (`recraft/replace-background`) redraws the init
@@ -374,6 +378,7 @@ modality automatically.
 |----------|-------|-------|----|--------|
 | OpenAI | ✅ | — | — | GPT Image 2.5 / 2 / 1 · _(Sora 2 and the Videos API shut down 2026-09-24)_ |
 | Fal.ai | ✅ | ✅ | ✅ | Flux, SDXL, Recraft, SAM 3 and 3.1 segmentation, Bria RMBG 2.0 and BiRefNet v2 background removal · Kling, MiniMax, SVD, LTX · Hyper3D Rodin, TRELLIS, Hunyuan3D v2 and 3.1 Pro, Tripo H3.1 multiview, Meshy rigging |
+| PixelLab | ✅ | — | — | Pixflux native pixel art (forced palette, never upscaled) |
 | Tripo | ✅ | — | ✅ | Image to multiview (front, left, back, right) · auto rig (after Tripo's free rig-check) · animation retarget |
 | Meshy | — | — | ✅ | Auto rig · animation library (680 clips) |
 | Replicate | ✅ | ✅ | — | Flux, SDXL, SD3 · AnimateDiff, SVD, Zeroscope |

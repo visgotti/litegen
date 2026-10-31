@@ -2420,6 +2420,11 @@ export interface components {
         ImageGenerationRequest: components["schemas"]["BaseGenerationRequest"] & {
             aspect_ratio?: string | null;
             background?: null | components["schemas"]["ImageBackground"];
+            /**
+             * Format: int32
+             * @description A character in 4 or 8 facings, one labelled image each (PixelGenie L16).
+             */
+            directions?: number | null;
             expand?: null | components["schemas"]["Expand"];
             /**
              * Format: int32
@@ -2448,6 +2453,11 @@ export interface components {
              */
             mask_prompt?: string | null;
             output_format?: null | components["schemas"]["ImageOutputFormat"];
+            /**
+             * @description Colours as `#rrggbb` (PixelGenie L16): every pixel one of them on a
+             *     model whose palette is forced, a hint elsewhere.
+             */
+            palette?: string[] | null;
             /**
              * @description Paste the init image's pixels back outside the edit area (3D doc §4),
              *     so they come back byte-identical from any vendor. Needs a mask or a
@@ -2500,6 +2510,11 @@ export interface components {
             b64_json?: string | null;
             /** @description Content type of the image (e.g. "image/png"). */
             content_type?: string;
+            /**
+             * @description The facing this image shows, from a `directions` request: `south`
+             *     (towards the viewer), `south-east`, `east`, … (PixelGenie L16).
+             */
+            direction?: string | null;
             /** Format: int32 */
             height?: number | null;
             /**
@@ -2939,6 +2954,8 @@ export interface components {
          */
         Model3dTopology: "triangle" | "quad";
         ModelCapabilities: {
+            /** @description The `directions` counts it takes; empty when none. */
+            directions?: number[];
             /**
              * @description The only `duration_seconds` values the model takes; empty when it
              *     takes its range.
@@ -2974,6 +2991,8 @@ export interface components {
              *     name too: `max_images` is this same number (L14).
              */
             max_reference_images?: number;
+            /** @description Draws native pixel art (PixelGenie L16). */
+            native_pixel_art?: boolean;
             /**
              * @description Every mesh container a caller may request, including those litegen
              *     derives locally — the same list, in the same order, as
@@ -2981,6 +3000,7 @@ export interface components {
              *     Empty for image and video models.
              */
             output_formats?: string[];
+            pixel_size?: null | components["schemas"]["PixelSize"];
             preserves_unmasked?: null | components["schemas"]["PreservesUnmasked"];
             region_input?: null | components["schemas"]["RegionInput"];
             /**
@@ -3001,6 +3021,8 @@ export interface components {
             supports_first_frame?: boolean;
             /** @description Takes `camera: fixed` (PixelGenie L10). */
             supports_fixed_camera?: boolean;
+            /** @description Every pixel of its output is one of the palette's colours. */
+            supports_forced_palette?: boolean;
             /** @description Accepts one `init` reference image (image-to-3D). */
             supports_image_to_3d?: boolean;
             supports_image_to_image: boolean;
@@ -3019,6 +3041,8 @@ export interface components {
             supports_mask_prompt?: boolean;
             /** @description Accepts several `view-*` reference images (multiview-to-3D). */
             supports_multiview_to_3d?: boolean;
+            /** @description Takes `palette`, as a hint or forced. */
+            supports_palette?: boolean;
             /** @description Takes the `pbr` param. */
             supports_pbr?: boolean;
             /**
@@ -3074,6 +3098,11 @@ export interface components {
             image_to_video?: boolean;
             inpainting?: boolean;
             multiview_to_3d?: boolean;
+            /**
+             * @description Draws native pixel art: its output is at native size, one image pixel
+             *     per art pixel, and needs no reducing (PixelGenie L16).
+             */
+            native_pixel_art?: boolean;
             text_to_3d?: boolean;
             text_to_image?: boolean;
             text_to_video?: boolean;
@@ -3453,6 +3482,9 @@ export interface components {
         }) | (components["schemas"]["ParamSpecTimeRange"] & {
             /** @enum {string} */
             kind: "time_range";
+        }) | (components["schemas"]["ParamSpecPalette"] & {
+            /** @enum {string} */
+            kind: "palette";
         });
         /** @description The clips an `animate` model makes (`animations`, 3D doc §3C). */
         ParamSpecAnimationList: {
@@ -3539,6 +3571,19 @@ export interface components {
             max_items: number;
             /** @description Each text box holds one word (Recraft's `text_layout`). */
             single_word_text?: boolean;
+        };
+        /** @description `palette` on an image model (PixelGenie L16): the colours it keeps to. */
+        ParamSpecPalette: {
+            description?: string | null;
+            /**
+             * @description Every pixel is one of the palette's colours (PixelLab's forced
+             *     palette, Retro Diffusion's `input_palette`); otherwise the palette is
+             *     a hint (Ideogram's `color_palette`, Recraft's `controls`).
+             */
+            forced?: boolean;
+            label?: string | null;
+            /** @description The most colours one palette may hold. */
+            max_colors: number;
         };
         /** @description `region` on a model (3D doc §4). */
         ParamSpecRegion: {
@@ -3730,6 +3775,13 @@ export interface components {
         PatchUserRequest: {
             is_active?: boolean | null;
             role?: null | components["schemas"]["Role"];
+        };
+        /** @description The smallest and largest output edge, in pixels (PixelGenie L16). */
+        PixelSize: {
+            /** Format: int32 */
+            max: number;
+            /** Format: int32 */
+            min: number;
         };
         /**
          * @description What a vendor promises about the pixels outside an edit.

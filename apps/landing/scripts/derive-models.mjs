@@ -24,6 +24,7 @@ export const PROVIDER_DOCS = {
   bfl: 'https://docs.bfl.ml/',
   ideogram: 'https://developer.ideogram.ai/',
   recraft: 'https://www.recraft.ai/docs/api-reference/getting-started',
+  pixellab: 'https://api.pixellab.ai/v2/llms.txt',
   leonardo: 'https://docs.leonardo.ai/',
   runway: 'https://docs.dev.runwayml.com/',
   luma: 'https://docs.lumalabs.ai/docs/api',

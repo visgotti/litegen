@@ -12,6 +12,7 @@ pub mod kling;
 pub mod leonardo;
 pub mod luma;
 pub mod minimax;
+pub mod pixellab;
 pub mod recraft;
 pub mod runway;
 pub mod tripo;

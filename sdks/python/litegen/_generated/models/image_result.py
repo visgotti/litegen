@@ -25,6 +25,8 @@ class ImageResult:
         index (int): Index in the batch.
         b64_json (Union[None, Unset, str]): Base64-encoded image data (if response_format=b64_json).
         content_type (Union[Unset, str]): Content type of the image (e.g. "image/png").
+        direction (Union[None, Unset, str]): The facing this image shows, from a `directions` request: `south`
+            (towards the viewer), `south-east`, `east`, … (PixelGenie L16).
         height (Union[None, Unset, int]):
         revised_prompt (Union[None, Unset, str]): Revised prompt (if provider modified the prompt, e.g. DALL-E 3).
         url (Union[None, Unset, str]): URL of the generated image (if response_format=url).
@@ -36,6 +38,7 @@ class ImageResult:
     index: int
     b64_json: Union[None, Unset, str] = UNSET
     content_type: Union[Unset, str] = UNSET
+    direction: Union[None, Unset, str] = UNSET
     height: Union[None, Unset, int] = UNSET
     revised_prompt: Union[None, Unset, str] = UNSET
     url: Union[None, Unset, str] = UNSET
@@ -54,6 +57,12 @@ class ImageResult:
             b64_json = self.b64_json
 
         content_type = self.content_type
+
+        direction: Union[None, Unset, str]
+        if isinstance(self.direction, Unset):
+            direction = UNSET
+        else:
+            direction = self.direction
 
         height: Union[None, Unset, int]
         if isinstance(self.height, Unset):
@@ -104,6 +113,8 @@ class ImageResult:
             field_dict["b64_json"] = b64_json
         if content_type is not UNSET:
             field_dict["content_type"] = content_type
+        if direction is not UNSET:
+            field_dict["direction"] = direction
         if height is not UNSET:
             field_dict["height"] = height
         if revised_prompt is not UNSET:
@@ -134,6 +145,15 @@ class ImageResult:
         b64_json = _parse_b64_json(d.pop("b64_json", UNSET))
 
         content_type = d.pop("content_type", UNSET)
+
+        def _parse_direction(data: object) -> Union[None, Unset, str]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(Union[None, Unset, str], data)
+
+        direction = _parse_direction(d.pop("direction", UNSET))
 
         def _parse_height(data: object) -> Union[None, Unset, int]:
             if data is None:
@@ -201,6 +221,7 @@ class ImageResult:
             index=index,
             b64_json=b64_json,
             content_type=content_type,
+            direction=direction,
             height=height,
             revised_prompt=revised_prompt,
             url=url,

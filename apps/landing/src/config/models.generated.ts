@@ -5117,6 +5117,67 @@ export const MODELS: ModelEntry[] = [
     "referenceUrl": "https://platform.openai.com/docs/guides/image-generation"
   },
   {
+    "id": "pixellab/pixflux",
+    "provider": "pixellab",
+    "displayName": "PixelLab Pixflux",
+    "description": "PixelLab's pixflux: native pixel art from text at 16–400 px a side, never upscaled, in a forced palette when one is sent.",
+    "mediaType": "image",
+    "output": "image",
+    "capabilities": {
+      "textToImage": true,
+      "imageToImage": false,
+      "inpainting": false,
+      "textToVideo": false,
+      "imageToVideo": false,
+      "textTo3d": false,
+      "imageTo3d": false,
+      "multiviewTo3d": false
+    },
+    "sizes": [],
+    "aspectRatios": [],
+    "maxRefImages": 0,
+    "refRoles": [],
+    "promptLimits": {
+      "required": true,
+      "maxLength": 2000
+    },
+    "params": [
+      {
+        "name": "palette",
+        "kind": "palette"
+      },
+      {
+        "name": "background",
+        "kind": "string",
+        "enum": [
+          "transparent",
+          "opaque"
+        ]
+      },
+      {
+        "name": "seed",
+        "kind": "seed",
+        "min": 0,
+        "max": 2147483647
+      },
+      {
+        "name": "guidance_scale",
+        "kind": "float",
+        "default": 8,
+        "min": 1,
+        "max": 20
+      }
+    ],
+    "pricing": {
+      "baseCostUsd": 0.013
+    },
+    "tags": [
+      "text-to-image",
+      "pixel-art"
+    ],
+    "referenceUrl": "https://api.pixellab.ai/v2/redoc#operation/generate_image_pixflux_create_image_pixflux_post"
+  },
+  {
     "id": "pixverse/c1",
     "provider": "pixverse",
     "displayName": "PixVerse C1",
@@ -5621,6 +5682,10 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "palette",
+        "kind": "palette"
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -5677,6 +5742,10 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 1000
     },
     "params": [
+      {
+        "name": "palette",
+        "kind": "palette"
+      },
       {
         "name": "seed",
         "kind": "seed",
@@ -5768,6 +5837,10 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "palette",
+        "kind": "palette"
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -5843,6 +5916,10 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "palette",
+        "kind": "palette"
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -5917,6 +5994,10 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "palette",
+        "kind": "palette"
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -5973,6 +6054,10 @@ export const MODELS: ModelEntry[] = [
     },
     "params": [
       {
+        "name": "palette",
+        "kind": "palette"
+      },
+      {
         "name": "seed",
         "kind": "seed",
         "min": 0,
@@ -6013,6 +6098,10 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 10000
     },
     "params": [
+      {
+        "name": "palette",
+        "kind": "palette"
+      },
       {
         "name": "seed",
         "kind": "seed",
@@ -6055,6 +6144,10 @@ export const MODELS: ModelEntry[] = [
       "maxLength": 10000
     },
     "params": [
+      {
+        "name": "palette",
+        "kind": "palette"
+      },
       {
         "name": "seed",
         "kind": "seed",

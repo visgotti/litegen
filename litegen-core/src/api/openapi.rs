@@ -168,6 +168,8 @@ use utoipa::OpenApi;
         crate::capabilities::ParamSpecExpand,
         crate::capabilities::ParamSpecLayout,
         crate::capabilities::ParamSpecSourceVideo,
+        crate::capabilities::ParamSpecPalette,
+        crate::types::PixelSize,
         crate::capabilities::ParamSpecTimeRange,
         crate::capabilities::ExtendOutput,
         crate::types::TimeRange,
@@ -465,6 +467,26 @@ mod tests {
             property(&s["ModelCapabilities"], f);
         }
         assert!(mentions(&s["ParamSpec"], "\"region\""), "the union names the region kind");
+    }
+
+    #[test]
+    fn pixel_art_documents_the_palette_directions_and_catalog_fields() {
+        let d = doc();
+        let s = &d["components"]["schemas"];
+        let req = &s["ImageGenerationRequest"];
+        assert!(mentions(property(req, "palette"), "string"));
+        assert!(mentions(property(req, "directions"), "integer"));
+        assert!(mentions(property(&s["ImageResult"], "direction"), "string"));
+        for f in ["native_pixel_art", "pixel_size", "supports_palette", "supports_forced_palette", "directions"] {
+            property(&s["ModelCapabilities"], f);
+        }
+        for f in ["min", "max"] {
+            property(&s["PixelSize"], f);
+        }
+        for f in ["forced", "max_colors"] {
+            property(&s["ParamSpecPalette"], f);
+        }
+        assert!(mentions(property(&s["ModelCapabilityFlags"], "native_pixel_art"), "boolean"));
     }
 
     #[test]
