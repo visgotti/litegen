@@ -1,13 +1,73 @@
-auto
-gpt-image-2
-gpt-image-2-5-flare
-gpt-image-2-5-sunburst
-ideogram-2
-ideogram-2a
-ideogram-3
-ideogram-4
-ideogram-4-5
-nano-banana-2
-nano-banana-pro
-p-image-ideogram
-z-image
+{
+  "POST /v2/image/precise-edit/ideogram-4-5 (multipart/form-data)": {
+    "properties": {
+      "async": {
+        "default": false,
+        "type": "boolean"
+      },
+      "context_window": {
+        "default": "none",
+        "pattern": "^(none|auto|[0-9]+,[0-9]+,[0-9]+,[0-9]+)$",
+        "type": "string"
+      },
+      "enable_copyright_detection": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "image": {
+        "format": "binary",
+        "type": "string"
+      },
+      "mask": {
+        "format": "binary",
+        "type": "string"
+      },
+      "num_images": {
+        "default": 1,
+        "maximum": 8,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "prompt": {
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "quality": {
+        "default": "medium",
+        "enum": [
+          "very_low",
+          "low",
+          "medium",
+          "high"
+        ],
+        "type": "string"
+      },
+      "reference_images": {
+        "items": {
+          "format": "binary",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "seed": {
+        "maximum": 2147483647,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "webhook_url": {
+        "format": "uri",
+        "maxLength": 2048,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt",
+      "image"
+    ],
+    "type": "object"
+  }
+}
+/v2/image/precise-edit/ideogram-4-5

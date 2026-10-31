@@ -51,7 +51,7 @@ export const MODELS: ModelEntry[] = [
     "id": "bfl/flux-2-klein-9b",
     "provider": "bfl",
     "displayName": "FLUX.2 [klein] 9B",
-    "description": "Black Forest Labs FLUX.2 klein 9B — sub-second, step-distilled FLUX.2 generation and editing, balancing quality and speed.",
+    "description": "Black Forest Labs FLUX.2 klein 9B — sub-second, step-distilled",
     "mediaType": "image",
     "output": "image",
     "capabilities": {
@@ -105,13 +105,13 @@ export const MODELS: ModelEntry[] = [
       "image-to-image",
       "fast"
     ],
-    "referenceUrl": "https://docs.bfl.ml/"
+    "referenceUrl": "https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bklein%5D-9b FLUX.2 generation and editing, balancing quality and speed."
   },
   {
     "id": "bfl/flux-2-max",
     "provider": "bfl",
     "displayName": "FLUX.2 [max]",
-    "description": "Black Forest Labs FLUX.2 max — the highest-quality FLUX.2 model for image generation and editing, with the strongest editing consistency and prompt following, and grounding search.",
+    "description": "Black Forest Labs FLUX.2 max — the highest-quality FLUX.2",
     "mediaType": "image",
     "output": "image",
     "capabilities": {
@@ -165,13 +165,13 @@ export const MODELS: ModelEntry[] = [
       "image-to-image",
       "premium"
     ],
-    "referenceUrl": "https://docs.bfl.ml/"
+    "referenceUrl": "https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bmax%5D model for image generation and editing, with the strongest editing consistency and prompt following, and grounding search."
   },
   {
     "id": "bfl/flux-2-pro",
     "provider": "bfl",
     "displayName": "FLUX.2 [pro]",
-    "description": "Black Forest Labs FLUX.2 pro — recommended default for image generation and multi-reference editing.",
+    "description": "Black Forest Labs FLUX.2 pro — recommended default for image",
     "mediaType": "image",
     "output": "image",
     "capabilities": {
@@ -224,7 +224,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://docs.bfl.ml/"
+    "referenceUrl": "https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bpro%5D generation and multi-reference editing."
   },
   {
     "id": "bfl/flux-dev",
@@ -275,7 +275,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://docs.bfl.ml/"
+    "referenceUrl": "https://docs.bfl.ml/api-reference/models/generate-an-image-with-flux1-%5Bdev%5D"
   },
   {
     "id": "bfl/flux-kontext-max",
@@ -343,7 +343,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-image",
       "editing"
     ],
-    "referenceUrl": "https://docs.bfl.ml/"
+    "referenceUrl": "https://docs.bfl.ml/api-reference/models/edit-or-create-an-image-with-flux1-kontext-%5Bmax%5D"
   },
   {
     "id": "bfl/flux-kontext-pro",
@@ -411,7 +411,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-image",
       "editing"
     ],
-    "referenceUrl": "https://docs.bfl.ml/"
+    "referenceUrl": "https://docs.bfl.ml/api-reference/models/edit-or-create-an-image-with-flux1-kontext-%5Bpro%5D"
   },
   {
     "id": "bfl/flux-pro-1.1",
@@ -469,7 +469,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://docs.bfl.ml/"
+    "referenceUrl": "https://docs.bfl.ml/api-reference/models/generate-an-image-with-flux11-%5Bpro%5D"
   },
   {
     "id": "bfl/flux-pro-1.1-ultra",
@@ -528,7 +528,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://docs.bfl.ml/"
+    "referenceUrl": "https://docs.bfl.ml/api-reference/models/generate-an-image-with-flux11-%5Bpro%5D-ultra-mode"
   },
   {
     "id": "bytedance/doubao-seedance-1-0-pro-250528",
@@ -2827,7 +2827,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://developer.ideogram.ai/"
+    "referenceUrl": "https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v3"
   },
   {
     "id": "ideogram/ideogram-v3-quality",
@@ -2913,7 +2913,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "quality"
     ],
-    "referenceUrl": "https://developer.ideogram.ai/"
+    "referenceUrl": "https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v3"
   },
   {
     "id": "ideogram/ideogram-v3-turbo",
@@ -2999,7 +2999,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "fast"
     ],
-    "referenceUrl": "https://developer.ideogram.ai/"
+    "referenceUrl": "https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v3"
   },
   {
     "id": "ideogram/ideogram-v4",
@@ -3071,7 +3071,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://developer.ideogram.ai/"
+    "referenceUrl": "https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v4"
   },
   {
     "id": "ideogram/ideogram-v4-quality",
@@ -3144,7 +3144,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "quality"
     ],
-    "referenceUrl": "https://developer.ideogram.ai/"
+    "referenceUrl": "https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v4"
   },
   {
     "id": "ideogram/ideogram-v4-turbo",
@@ -3217,7 +3217,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "fast"
     ],
-    "referenceUrl": "https://developer.ideogram.ai/"
+    "referenceUrl": "https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v4"
   },
   {
     "id": "kling/kling-v2-1",
@@ -5657,7 +5657,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://www.recraft.ai/docs/api-reference/getting-started"
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/endpoints#generate-image"
   },
   {
     "id": "recraft/recraftv2_vector",
@@ -5735,7 +5735,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "vector"
     ],
-    "referenceUrl": "https://www.recraft.ai/docs/api-reference/getting-started"
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/endpoints#generate-image"
   },
   {
     "id": "recraft/recraftv3",
@@ -5800,7 +5800,6 @@ export const MODELS: ModelEntry[] = [
           "realistic_image",
           "digital_illustration",
           "vector_illustration",
-          "icon",
           "any"
         ],
         "default": "realistic_image"
@@ -5816,7 +5815,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://www.recraft.ai/docs/api-reference/getting-started"
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/endpoints#generate-image"
   },
   {
     "id": "recraft/recraftv3_vector",
@@ -5835,21 +5834,7 @@ export const MODELS: ModelEntry[] = [
       "imageTo3d": false,
       "multiviewTo3d": false
     },
-    "sizes": [
-      "1024x1024",
-      "1365x1024",
-      "1024x1365",
-      "1536x1024",
-      "1024x1536",
-      "1024x1280",
-      "1280x1024",
-      "1024x1707",
-      "1707x1024",
-      "1434x1024",
-      "1024x1434",
-      "1024x2048",
-      "2048x1024"
-    ],
+    "sizes": [],
     "aspectRatios": [],
     "maxRefImages": 0,
     "refRoles": [],
@@ -5876,8 +5861,7 @@ export const MODELS: ModelEntry[] = [
         "name": "style",
         "kind": "string",
         "enum": [
-          "vector_illustration",
-          "icon"
+          "vector_illustration"
         ],
         "default": "vector_illustration"
       },
@@ -5893,7 +5877,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "vector"
     ],
-    "referenceUrl": "https://www.recraft.ai/docs/api-reference/getting-started"
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/endpoints#generate-image"
   },
   {
     "id": "recraft/recraftv4_1",
@@ -5953,7 +5937,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://www.recraft.ai/docs/api-reference/getting-started"
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/endpoints#generate-image"
   },
   {
     "id": "recraft/recraftv4_1_pro",
@@ -6013,7 +5997,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-image"
     ],
-    "referenceUrl": "https://www.recraft.ai/docs/api-reference/getting-started"
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/endpoints#generate-image"
   },
   {
     "id": "recraft/recraftv4_1_pro_vector",
@@ -6059,7 +6043,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "vector"
     ],
-    "referenceUrl": "https://www.recraft.ai/docs/api-reference/getting-started"
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/endpoints#generate-image"
   },
   {
     "id": "recraft/recraftv4_1_vector",
@@ -6105,7 +6089,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "vector"
     ],
-    "referenceUrl": "https://www.recraft.ai/docs/api-reference/getting-started"
+    "referenceUrl": "https://www.recraft.ai/docs/api-reference/endpoints#generate-image"
   },
   {
     "id": "recraft/remove-background",
@@ -7015,7 +6999,7 @@ export const MODELS: ModelEntry[] = [
       "fast",
       "affordable"
     ],
-    "referenceUrl": "https://platform.stability.ai/docs/api-reference"
+    "referenceUrl": "https://docs.stability.ai/api-reference/generate/stable-image-core"
   },
   {
     "id": "stability/inpaint",
@@ -7077,7 +7061,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-image",
       "inpainting"
     ],
-    "referenceUrl": "https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1inpaint/post"
+    "referenceUrl": "https://docs.stability.ai/api-reference/edit/inpaint"
   },
   {
     "id": "stability/outpaint",
@@ -7140,7 +7124,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-image",
       "outpainting"
     ],
-    "referenceUrl": "https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1outpaint/post"
+    "referenceUrl": "https://docs.stability.ai/api-reference/edit/outpaint"
   },
   {
     "id": "stability/remove-background",
@@ -7191,7 +7175,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "background-removal"
     ],
-    "referenceUrl": "https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1remove-background/post"
+    "referenceUrl": "https://docs.stability.ai/api-reference/edit/remove-background"
   },
   {
     "id": "stability/sd3-large",
@@ -7270,7 +7254,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://platform.stability.ai/docs/api-reference"
+    "referenceUrl": "https://docs.stability.ai/api-reference/generate/stable-diffusion-35"
   },
   {
     "id": "stability/sd3-turbo",
@@ -7336,13 +7320,13 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "fast"
     ],
-    "referenceUrl": "https://platform.stability.ai/docs/api-reference"
+    "referenceUrl": "https://docs.stability.ai/api-reference/generate/stable-diffusion-35"
   },
   {
     "id": "stability/sd3.5-medium",
     "provider": "stability",
     "displayName": "Stable Diffusion 3.5 Medium",
-    "description": "Stable Diffusion 3.5 Medium (2.5B parameters) — a balance of prompt accuracy and image quality for fast generation.",
+    "description": "Stable Diffusion 3.5 Medium (2.5B parameters) — a balance of",
     "mediaType": "image",
     "output": "image",
     "capabilities": {
@@ -7415,7 +7399,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://platform.stability.ai/docs/api-reference"
+    "referenceUrl": "https://docs.stability.ai/api-reference/generate/stable-diffusion-35 prompt accuracy and image quality for fast generation."
   },
   {
     "id": "stability/sdxl",
@@ -7488,6 +7472,12 @@ export const MODELS: ModelEntry[] = [
         "default": 7,
         "min": 0,
         "max": 35
+      },
+      {
+        "name": "strength",
+        "kind": "float",
+        "min": 0,
+        "max": 1
       }
     ],
     "pricing": {
@@ -7498,7 +7488,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-image",
       "inpainting"
     ],
-    "referenceUrl": "https://platform.stability.ai/docs/api-reference"
+    "referenceUrl": "https://docs.stability.ai/api-reference/sdxl-10/text-to-image"
   },
   {
     "id": "stability/search-and-replace",
@@ -7565,7 +7555,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-image",
       "inpainting"
     ],
-    "referenceUrl": "https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1search-and-replace/post"
+    "referenceUrl": "https://docs.stability.ai/api-reference/edit/search-and-replace"
   },
   {
     "id": "stability/ultra",
@@ -7632,7 +7622,7 @@ export const MODELS: ModelEntry[] = [
       "premium",
       "photorealistic"
     ],
-    "referenceUrl": "https://platform.stability.ai/docs/api-reference"
+    "referenceUrl": "https://docs.stability.ai/api-reference/generate/stable-image-ultra"
   },
   {
     "id": "tripo/animate",

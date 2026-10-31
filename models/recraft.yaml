@@ -8,6 +8,7 @@ models:
     media_type: image
     display_name: Recraft V3
     description: Recraft V3 raster image generation.
+    docs_url: https://www.recraft.ai/docs/api-reference/endpoints#generate-image
     pricing: { base_cost_usd: 0.04 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 1000 }
@@ -18,7 +19,8 @@ models:
       negative_prompt: { kind: string, max_length: 1000 }
       style:
         kind: string
-        enum_values: [realistic_image, digital_illustration, vector_illustration, icon, any]
+        # No icon: "`icon` — V2 models only" (endpoints.md, 2026-10-30).
+        enum_values: [realistic_image, digital_illustration, vector_illustration, any]
         default: realistic_image
       size:
         kind: size
@@ -36,7 +38,8 @@ models:
         single_word_text: true
         label: Text layout
         description: Words to render, one per box, as fractions of the canvas.
-    extra_allowlist: [style_id, controls, substyle]
+    # No substyle: Generate has no such field (endpoints.md, 2026-10-30).
+    extra_allowlist: [style_id, controls]
     tags: [text-to-image]
 
   - id: recraft/recraftv3_vector
@@ -44,6 +47,7 @@ models:
     media_type: image
     display_name: Recraft V3 Vector
     description: Recraft V3 vector (SVG) image generation.
+    docs_url: https://www.recraft.ai/docs/api-reference/endpoints#generate-image
     pricing: { base_cost_usd: 0.08 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 1000 }
@@ -54,12 +58,12 @@ models:
       negative_prompt: { kind: string, max_length: 1000 }
       style:
         kind: string
-        enum_values: [vector_illustration, icon]
+        # No icon: "`icon` — V2 models only" (endpoints.md, 2026-10-30).
+        enum_values: [vector_illustration]
         default: vector_illustration
-      size:
-        kind: size
-        mode: enum
-        values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024]]
+      # No size: "Vector models (every `_vector` model) accept the same 14
+      # ratios as `w:h` only; SVG output has no fixed pixel size."
+      # @see https://www.recraft.ai/docs/api-reference/appendix.md (2026-10-30)
       # Text layout (PixelGenie 3D doc §4): "supported by Recraft V3 and
       # Recraft V3 Vector models only"; "Each text element consists of an
       # individual word and its bounding box", 4 relative points.
@@ -71,7 +75,8 @@ models:
         single_word_text: true
         label: Text layout
         description: Words to render, one per box, as fractions of the canvas.
-    extra_allowlist: [style_id, controls, substyle]
+    # No substyle: Generate has no such field (endpoints.md, 2026-10-30).
+    extra_allowlist: [style_id, controls]
     tags: [text-to-image, vector]
 
   - id: recraft/recraftv2
@@ -79,6 +84,7 @@ models:
     media_type: image
     display_name: Recraft V2
     description: Recraft V2 raster image generation.
+    docs_url: https://www.recraft.ai/docs/api-reference/endpoints#generate-image
     pricing: { base_cost_usd: 0.022 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 1000 }
@@ -97,7 +103,8 @@ models:
         mode: enum
         # V2/V3 sizes incl. 16:9 1820x1024 / 9:16 1024x1820: https://www.recraft.ai/docs/api-reference/appendix.md
         values: [[1024,1024],[1365,1024],[1024,1365],[1536,1024],[1024,1536],[1024,1280],[1280,1024],[1024,1707],[1707,1024],[1434,1024],[1024,1434],[1024,2048],[2048,1024],[1820,1024],[1024,1820]]
-    extra_allowlist: [style_id, controls, substyle]
+    # No substyle: Generate has no such field (endpoints.md, 2026-10-30).
+    extra_allowlist: [style_id, controls]
     tags: [text-to-image]
 
   - id: recraft/recraftv4_1
@@ -105,6 +112,7 @@ models:
     media_type: image
     display_name: Recraft V4.1
     description: Recraft V4.1 raster image generation (current default).
+    docs_url: https://www.recraft.ai/docs/api-reference/endpoints#generate-image
     # "$0.035 per image": https://www.recraft.ai/docs/api-reference/pricing.md (2026-09-11)
     pricing: { base_cost_usd: 0.035 }
     capabilities: { text_to_image: true }
@@ -131,6 +139,7 @@ models:
     media_type: image
     display_name: Recraft V4.1 Pro
     description: Recraft V4.1 Pro raster image generation.
+    docs_url: https://www.recraft.ai/docs/api-reference/endpoints#generate-image
     # "$0.21 per image": https://www.recraft.ai/docs/api-reference/pricing.md (2026-09-11)
     pricing: { base_cost_usd: 0.21 }
     capabilities: { text_to_image: true }
@@ -163,6 +172,7 @@ models:
     media_type: image
     display_name: Recraft V4.1 Vector
     description: Recraft V4.1 vector (SVG) image generation.
+    docs_url: https://www.recraft.ai/docs/api-reference/endpoints#generate-image
     # "$0.08 per image": https://www.recraft.ai/docs/api-reference/pricing.md (2026-09-11)
     pricing: { base_cost_usd: 0.08 }
     capabilities: { text_to_image: true }
@@ -185,6 +195,7 @@ models:
     media_type: image
     display_name: Recraft V4.1 Pro Vector
     description: Recraft V4.1 Pro vector (SVG) image generation.
+    docs_url: https://www.recraft.ai/docs/api-reference/endpoints#generate-image
     # "$0.30 per image": https://www.recraft.ai/docs/api-reference/pricing.md (2026-09-11)
     pricing: { base_cost_usd: 0.30 }
     capabilities: { text_to_image: true }
@@ -203,6 +214,7 @@ models:
     media_type: image
     display_name: Recraft V2 Vector
     description: Recraft V2 vector (SVG) image generation (the cheapest vector model).
+    docs_url: https://www.recraft.ai/docs/api-reference/endpoints#generate-image
     # "$0.044 per image": https://www.recraft.ai/docs/api-reference/pricing.md (2026-09-11)
     pricing: { base_cost_usd: 0.044 }
     capabilities: { text_to_image: true }

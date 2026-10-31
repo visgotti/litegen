@@ -29,6 +29,12 @@ pub struct RecraftProvider {
     key_pool: Option<ApiKeyPool>,
     auth: AuthSpec,
     client: Client,
+    /// Result downloads: no redirects, so a URL that passed the public-address
+    /// check cannot bounce into a private one.
+    asset_client: Client,
+    /// Whether a result URL must resolve to a public address. Only the tests,
+    /// whose mock vendor runs on loopback, turn it off.
+    pub(crate) public_assets_only: bool,
 }
 
 impl RecraftProvider {
@@ -41,6 +47,11 @@ impl RecraftProvider {
                 .timeout(std::time::Duration::from_secs(180))
                 .build()
                 .expect("failed to build HTTP client"),
+            asset_client: crate::util::ssrf::no_redirect_download_client(
+                std::time::Duration::from_secs(120),
+                std::time::Duration::from_secs(30),
+            ),
+            public_assets_only: true,
         }
     }
 
@@ -66,7 +77,56 @@ impl RecraftProvider {
     fn resolve_model(model_id: &str) -> &str {
         model_id.strip_prefix("recraft/").unwrap_or(model_id)
     }
+
+    /// Recraft answers in the same call, so only a connection that never
+    /// opened may be sent again: one that timed out may have run and billed.
+    fn send_failed(e: reqwest::Error) -> ProviderError {
+        ProviderError::RequestFailed {
+            message: format!("Recraft request failed: {e}"),
+            status_code: e.status().map(|s| s.as_u16()),
+            provider_error: None,
+            retryable: e.is_connect(),
+        }
+    }
+
+    /// Recraft's answer: its JSON on success, else an error in Recraft's own
+    /// words ("some errors return plain text, others JSON. Read the body as
+    /// text first"), which may be sent again only when Recraft turned the
+    /// call away (429, 5xx).
+    /// @see <https://www.recraft.ai/docs/api-reference/error-handling.md> (2026-10-30)
+    async fn read_reply(resp: reqwest::Response) -> Result<Value, ProviderError> {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let data: Option<Value> = serde_json::from_str(&text).ok();
+            let said = data.as_ref().map(Value::to_string).unwrap_or_else(|| text.chars().take(200).collect());
+            return Err(ProviderError::RequestFailed {
+                message: format!("Recraft API error: {said}"),
+                status_code: Some(status.as_u16()),
+                provider_error: Some(data.unwrap_or(Value::String(text))),
+                retryable: status.as_u16() == 429 || status.is_server_error(),
+            });
+        }
+        serde_json::from_str(&text).map_err(|e| ProviderError::RequestFailed {
+            message: format!("Failed to parse Recraft response: {e}"),
+            status_code: Some(status.as_u16()),
+            provider_error: None,
+            retryable: false,
+        })
+    }
+
+    /// A result named by URL: fetched without the key, from a public address
+    /// only, at most 64 MiB, and never an error page taken for an image.
+    async fn fetch_url(&self, url: &str) -> Result<Vec<u8>, ProviderError> {
+        super::fetch_result(&self.asset_client, url, self.public_assets_only, "recraft image").await
+    }
 }
+
+/// What litegen itself sends to `POST /images/generations`; `extra` cannot
+/// replace it (`extra.model` would run another model at this row's price).
+const OWNED_FIELDS: &[&str] = &[
+    "prompt", "model", "n", "response_format", "image_format", "size", "style", "negative_prompt", "random_seed", "text_layout",
+];
 
 impl RecraftProvider {
     /// Replace background (3D doc §4, task background_swap): the image
@@ -101,40 +161,20 @@ impl RecraftProvider {
             form = form.text("negative_prompt", np.to_string());
         }
         if let Some(Value::Object(extra)) = &extras.extra {
-            for (k, v) in extra {
+            for (k, v) in extra.iter().filter(|(k, _)| !["image", "prompt", "model", "negative_prompt", "response_format", "image_format"].contains(&k.as_str())) {
                 form = form.text(k.clone(), v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
             }
         }
         let url = format!("{}/images/replaceBackground", self.api_base());
         let builder = crate::providers::auth::apply(&self.auth, &creds, self.client.post(&url).multipart(form))?;
-        let resp = crate::providers::inject_trace_headers(builder).send().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Recraft request failed: {e}"),
-            status_code: e.status().map(|s| s.as_u16()),
-            provider_error: None,
-            retryable: e.is_timeout() || e.is_connect(),
-        })?;
-        let status = resp.status();
-        let data: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse Recraft response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
-        if !status.is_success() {
-            return Err(ProviderError::RequestFailed {
-                message: format!("Recraft API error: {data}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(data),
-                retryable: status.as_u16() >= 500,
-            });
-        }
+        let resp = crate::providers::inject_trace_headers(builder).send().await.map_err(Self::send_failed)?;
+        let data = Self::read_reply(resp).await?;
         let failed = |message: String| ProviderError::RequestFailed { message, status_code: None, provider_error: None, retryable: false };
         let first = &data["data"][0];
         let bytes = if let Some(b64) = first["b64_json"].as_str() {
             B64.decode(b64).map_err(|e| failed(format!("Failed to decode Recraft b64_json: {e}")))?
         } else if let Some(at) = first["url"].as_str() {
-            let r = self.client.get(at).send().await.map_err(|e| failed(format!("Failed to fetch Recraft image: {e}")))?;
-            r.bytes().await.map(|b| b.to_vec()).map_err(|e| failed(format!("Failed to read Recraft image: {e}")))?
+            self.fetch_url(at).await?
         } else {
             return Err(ProviderError::RequestFailed { message: "Recraft response has no image".into(), status_code: None, provider_error: Some(data), retryable: false });
         };
@@ -166,33 +206,13 @@ impl RecraftProvider {
             .text("image_format", extras.output_format.clone().unwrap_or_else(|| "png".into()));
         let url = format!("{}/images/removeBackground", self.api_base());
         let builder = crate::providers::auth::apply(&self.auth, &creds, self.client.post(&url).multipart(form))?;
-        let resp = crate::providers::inject_trace_headers(builder).send().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Recraft request failed: {e}"),
-            status_code: e.status().map(|s| s.as_u16()),
-            provider_error: None,
-            retryable: e.is_timeout() || e.is_connect(),
-        })?;
-        let status = resp.status();
-        let data: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse Recraft response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
-        if !status.is_success() {
-            return Err(ProviderError::RequestFailed {
-                message: format!("Recraft API error: {data}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(data),
-                retryable: status.as_u16() >= 500,
-            });
-        }
+        let resp = crate::providers::inject_trace_headers(builder).send().await.map_err(Self::send_failed)?;
+        let data = Self::read_reply(resp).await?;
         let failed = |message: String| ProviderError::RequestFailed { message, status_code: None, provider_error: None, retryable: false };
         let bytes = if let Some(b64) = data["image"]["b64_json"].as_str() {
             B64.decode(b64).map_err(|e| failed(format!("Failed to decode Recraft b64_json: {e}")))?
         } else if let Some(at) = data["image"]["url"].as_str() {
-            let r = self.client.get(at).send().await.map_err(|e| failed(format!("Failed to fetch Recraft image: {e}")))?;
-            r.bytes().await.map(|b| b.to_vec()).map_err(|e| failed(format!("Failed to read Recraft image: {e}")))?
+            self.fetch_url(at).await?
         } else {
             return Err(ProviderError::RequestFailed {
                 message: "Recraft response has no image".into(),
@@ -257,6 +277,12 @@ impl ImageProvider for RecraftProvider {
             "n": base.n.max(1),
             "response_format": "b64_json",
         });
+        // A raster image comes back as webp unless asked ("`image_format` |
+        // … default is `webp`"); vector models answer SVG and take no format.
+        // @see <https://www.recraft.ai/docs/api-reference/endpoints.md> (2026-10-30)
+        if !is_vector {
+            body["image_format"] = Value::String("png".into());
+        }
         if let Some(size) = extras.size.as_deref() {
             body["size"] = Value::String(size.to_string());
         }
@@ -280,7 +306,7 @@ impl ImageProvider for RecraftProvider {
         }
         if let Some(Value::Object(extra_map)) = &extras.extra {
             if let Some(obj) = body.as_object_mut() {
-                for (k, v) in extra_map {
+                for (k, v) in extra_map.iter().filter(|(k, _)| !OWNED_FIELDS.contains(&k.as_str())) {
                     obj.insert(k.clone(), v.clone());
                 }
             }
@@ -323,31 +349,8 @@ impl ImageProvider for RecraftProvider {
             &creds,
             self.client.post(&url).header("Content-Type", "application/json").json(&body),
         )?;
-        let resp = crate::providers::inject_trace_headers(builder)
-            .send()
-            .await
-            .map_err(|e| ProviderError::RequestFailed {
-                message: format!("Recraft request failed: {e}"),
-                status_code: e.status().map(|s| s.as_u16()),
-                provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
-            })?;
-
-        let status = resp.status();
-        let data: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
-            message: format!("Failed to parse Recraft response: {e}"),
-            status_code: Some(status.as_u16()),
-            provider_error: None,
-            retryable: false,
-        })?;
-        if !status.is_success() {
-            return Err(ProviderError::RequestFailed {
-                message: format!("Recraft API error: {data}"),
-                status_code: Some(status.as_u16()),
-                provider_error: Some(data),
-                retryable: status.as_u16() >= 500,
-            });
-        }
+        let resp = crate::providers::inject_trace_headers(builder).send().await.map_err(Self::send_failed)?;
+        let data = Self::read_reply(resp).await?;
 
         let first = data["data"].get(0).ok_or_else(|| ProviderError::RequestFailed {
             message: "Recraft response missing data[0]".to_string(),
@@ -365,18 +368,7 @@ impl ImageProvider for RecraftProvider {
             })?
         } else if let Some(url) = first["url"].as_str() {
             // Fallback if the account forces url responses.
-            let r = self.client.get(url).send().await.map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to fetch Recraft image: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: true,
-            })?;
-            r.bytes().await.map(|b| b.to_vec()).map_err(|e| ProviderError::RequestFailed {
-                message: format!("Failed to read Recraft image: {e}"),
-                status_code: None,
-                provider_error: None,
-                retryable: false,
-            })?
+            self.fetch_url(url).await?
         } else {
             return Err(ProviderError::RequestFailed {
                 message: "Recraft data[0] has neither b64_json nor url".to_string(),
@@ -475,6 +467,7 @@ mod tests {
         };
         cfg.credentials.api_key = Some("rc-token".to_string());
         p.configure(cfg);
+        p.public_assets_only = false;
         p
     }
 
@@ -724,5 +717,109 @@ mod tests {
             .expect("generate");
         let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
         assert_eq!(body["controls"], json!({ "no_text": true, "colors": [{ "rgb": [255, 100, 50] }, { "rgb": [8, 24, 32] }] }), "{body}");
+    }
+
+    // ─── Recraft audit, 2026-10-30 ──────────────────────────────────────────
+
+    fn no_refs() -> MaterializedRequest {
+        MaterializedRequest { refs: vec![], cleanup: crate::proxy::materializer::Cleanup::empty() }
+    }
+
+    async fn refusing_server() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "code": "stop" })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// F1, F5: a raster image is asked for as PNG (Recraft's `image_format`
+    /// defaults to webp), a vector one is not, and `extra` never replaces
+    /// what litegen sends (`extra.model` on recraftv3 would run a $0.30 model).
+    /// @see <https://www.recraft.ai/docs/api-reference/endpoints.md> (2026-10-30)
+    #[tokio::test]
+    async fn a_raster_image_is_asked_for_as_png_and_extra_cannot_replace_what_litegen_sends() {
+        let server = refusing_server().await;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({
+            "model": "recraftv4_1_pro_vector", "response_format": "url", "image_format": "webp", "n": 4, "prompt": "other", "style_id": "abc"
+        }));
+        let _ = make_provider(&server.uri()).generate(&ref_schema("recraft/recraftv3"), &make_base("a lighthouse", "recraft/recraftv3"), &extras, &no_refs()).await;
+        let mut vector = make_extras();
+        vector.style = None;
+        vector.size = None;
+        let _ = make_provider(&server.uri())
+            .generate(&ref_schema("recraft/recraftv4_1_vector"), &make_base("a lighthouse", "recraft/recraftv4_1_vector"), &vector, &no_refs())
+            .await;
+        let bodies: Vec<Value> = server.received_requests().await.unwrap().iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect();
+        let raster = &bodies[0];
+        assert_eq!(raster["model"], "recraftv3");
+        assert_eq!(raster["response_format"], "b64_json");
+        assert_eq!(raster["image_format"], "png");
+        assert_eq!(raster["n"], 1);
+        assert_eq!(raster["prompt"], "a lighthouse");
+        assert_eq!(raster["style_id"], "abc");
+        assert!(bodies[1].get("image_format").is_none(), "{}", bodies[1]);
+    }
+
+    /// F10: "some errors return plain text, others JSON. Read the body as text
+    /// first" — a plain-text 401 keeps Recraft's words, and a 429 or 5xx was
+    /// turned away and may be sent again.
+    /// @see <https://www.recraft.ai/docs/api-reference/error-handling.md> (2026-10-30)
+    #[tokio::test]
+    async fn an_error_says_what_recraft_said_in_whatever_form() {
+        for (status, body, retryable) in [(401, "request unauthorized", false), (503, "upstream unavailable", true), (429, "Too many requests", true)] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status).set_body_string(body).insert_header("content-type", "text/plain"))
+                .mount(&server)
+                .await;
+            let err = make_provider(&server.uri())
+                .generate(&ref_schema("recraft/recraftv3"), &make_base("x", "recraft/recraftv3"), &make_extras(), &no_refs())
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, ProviderError::RequestFailed { status_code: Some(s), retryable: r, message, .. }
+                    if *s == status && *r == retryable && message.contains(body)),
+                "{status}: {err:?}"
+            );
+        }
+    }
+
+    /// Recraft answers in the same call, so one that timed out may have run
+    /// and been billed: it is never sent again.
+    #[tokio::test]
+    async fn a_timed_out_call_is_never_sent_again() {
+        let slow = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })).set_delay(std::time::Duration::from_secs(5)))
+            .mount(&slow)
+            .await;
+        let mut p = make_provider(&slow.uri());
+        p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let err = p.generate(&ref_schema("recraft/recraftv3"), &make_base("x", "recraft/recraftv3"), &make_extras(), &no_refs()).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+    }
+
+    /// F5: a result named by URL is fetched without the key, only from a
+    /// public address, at most 64 MiB, and an error status is not an image.
+    #[tokio::test]
+    async fn a_url_result_is_fetched_only_from_a_public_address() {
+        let server = MockServer::start().await;
+        let cdn = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [{ "url": format!("{}/r.png", cdn.uri()) }] })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"\x89PNG\r\n\x1a\n".to_vec())).mount(&cdn).await;
+        let mut provider = make_provider(&server.uri());
+        provider.public_assets_only = true;
+        let err = provider
+            .generate(&ref_schema("recraft/recraftv3"), &make_base("x", "recraft/recraftv3"), &make_extras(), &no_refs())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
+        assert!(cdn.received_requests().await.unwrap().is_empty(), "a private address was fetched");
     }
 }

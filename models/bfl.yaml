@@ -6,6 +6,7 @@ models:
     media_type: image
     display_name: FLUX 1.1 [pro]
     description: Black Forest Labs FLUX 1.1 pro text-to-image (Redux image_prompt ref).
+    docs_url: https://docs.bfl.ml/api-reference/models/generate-an-image-with-flux11-%5Bpro%5D
     pricing: { base_cost_usd: 0.04 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -36,6 +37,7 @@ models:
     media_type: image
     display_name: FLUX.1 [dev]
     description: Black Forest Labs FLUX.1 dev (hosted) text-to-image.
+    docs_url: https://docs.bfl.ml/api-reference/models/generate-an-image-with-flux1-%5Bdev%5D
     pricing: { base_cost_usd: 0.025 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -60,6 +62,7 @@ models:
     media_type: image
     display_name: FLUX 1.1 [pro] Ultra
     description: FLUX 1.1 pro Ultra — high-resolution, aspect-ratio based.
+    docs_url: https://docs.bfl.ml/api-reference/models/generate-an-image-with-flux11-%5Bpro%5D-ultra-mode
     pricing: { base_cost_usd: 0.06 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -80,6 +83,7 @@ models:
     media_type: image
     display_name: FLUX.1 Kontext [pro]
     description: FLUX.1 Kontext image editing (input_image base64 or URL).
+    docs_url: https://docs.bfl.ml/api-reference/models/edit-or-create-an-image-with-flux1-kontext-%5Bpro%5D
     pricing: { base_cost_usd: 0.04 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -105,6 +109,7 @@ models:
     media_type: image
     display_name: FLUX.1 Kontext [max]
     description: FLUX.1 Kontext max image editing.
+    docs_url: https://docs.bfl.ml/api-reference/models/edit-or-create-an-image-with-flux1-kontext-%5Bmax%5D
     pricing: { base_cost_usd: 0.08 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -132,6 +137,7 @@ models:
     media_type: image
     display_name: FLUX.2 [pro]
     description: Black Forest Labs FLUX.2 pro — recommended default for image
+    docs_url: https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bpro%5D
       generation and multi-reference editing.
     # FLUX.2 is priced per megapixel: [pro] text-to-image is "from $0.03", the
     # price of the default 1 MP request (re-read 2026-09-11).
@@ -162,8 +168,12 @@ models:
     tags: [text-to-image, image-to-image]
 
   # POST /v1/flux-2-max takes the same `Flux2Inputs` body as /v1/flux-2-pro
-  # (prompt, seed, width/height, input_image..input_image_8, safety_tolerance
-  # 0-5, output_format, disable_pup), so the typings mirror flux-2-pro. The
+  # (prompt, seed, width/height, input_image..input_image_8, safety_tolerance,
+  # output_format, disable_pup), so the typings mirror flux-2-pro. BFL
+  # contradicts itself on safety_tolerance: the spec says `maximum: 7` ("The
+  # route and organization determine the approved maximum … Unapproved levels
+  # return 422"), its errors page "| 0–5 | FLUX.2 endpoints …"; 0-5 is safe
+  # (https://docs.bfl.ml/api_integration/errors.md, 2026-10-30). The
   # adapter sends one reference, as `input_image`.
   # @see https://api.bfl.ai/openapi.json (/v1/flux-2-max, re-read 2026-09-11)
   - id: bfl/flux-2-max
@@ -171,6 +181,7 @@ models:
     media_type: image
     display_name: FLUX.2 [max]
     description: Black Forest Labs FLUX.2 max — the highest-quality FLUX.2
+    docs_url: https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bmax%5D
       model for image generation and editing, with the strongest editing
       consistency and prompt following, and grounding search.
     # [max] text-to-image is "from $0.07" per megapixel: the default 1 MP
@@ -213,6 +224,7 @@ models:
     media_type: image
     display_name: FLUX.2 [klein] 9B
     description: Black Forest Labs FLUX.2 klein 9B — sub-second, step-distilled
+    docs_url: https://docs.bfl.ml/api-reference/models/generate-or-edit-an-image-with-flux2-%5Bklein%5D-9b
       FLUX.2 generation and editing, balancing quality and speed.
     # [klein] 9B is "$0.015 + $0.002/MP" (the first megapixel at the flat
     # rate): "from $0.015", the default 1 MP request (re-read 2026-09-11).

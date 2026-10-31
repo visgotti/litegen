@@ -6,6 +6,7 @@ models:
     media_type: image
     display_name: Ideogram 3.0
     description: Ideogram 3.0 text-to-image with style/character reference images.
+    docs_url: https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v3
     pricing: { base_cost_usd: 0.06 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -14,7 +15,7 @@ models:
       seed: { kind: seed, min: 0, max: 2147483647 }
       aspect_ratio:
         kind: aspect_ratio
-        # AspectRatioV3 enum (1x2/2x1 included): https://developer.ideogram.ai/openapi.json
+        # AspectRatioV3 enum (1x2/2x1 included): https://developer.ideogram.ai/openapi/ideogram-api-v1.json
         allowed: ["1:1","16:9","9:16","3:2","2:3","4:3","3:4","4:5","5:4","16:10","10:16","3:1","1:3","2:1","1:2"]
         default: "1:1"
       style:
@@ -39,6 +40,7 @@ models:
     media_type: image
     display_name: Ideogram 3.0 Turbo
     description: Ideogram 3.0 with TURBO rendering speed (faster, cheaper).
+    docs_url: https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v3
     pricing: { base_cost_usd: 0.03 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -47,7 +49,7 @@ models:
       seed: { kind: seed, min: 0, max: 2147483647 }
       aspect_ratio:
         kind: aspect_ratio
-        # AspectRatioV3 enum (1x2/2x1 included): https://developer.ideogram.ai/openapi.json
+        # AspectRatioV3 enum (1x2/2x1 included): https://developer.ideogram.ai/openapi/ideogram-api-v1.json
         allowed: ["1:1","16:9","9:16","3:2","2:3","4:3","3:4","4:5","5:4","16:10","10:16","3:1","1:3","2:1","1:2"]
         default: "1:1"
       style:
@@ -72,6 +74,7 @@ models:
     media_type: image
     display_name: Ideogram 3.0 Quality
     description: Ideogram 3.0 with QUALITY rendering speed.
+    docs_url: https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v3
     pricing: { base_cost_usd: 0.09 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -80,7 +83,7 @@ models:
       seed: { kind: seed, min: 0, max: 2147483647 }
       aspect_ratio:
         kind: aspect_ratio
-        # AspectRatioV3 enum (1x2/2x1 included): https://developer.ideogram.ai/openapi.json
+        # AspectRatioV3 enum (1x2/2x1 included): https://developer.ideogram.ai/openapi/ideogram-api-v1.json
         allowed: ["1:1","16:9","9:16","3:2","2:3","4:3","3:4","4:5","5:4","16:10","10:16","3:1","1:3","2:1","1:2"]
         default: "1:1"
       style:
@@ -110,13 +113,14 @@ models:
   # `rendering_speed` and `enable_copyright_detection` — no aspect_ratio, seed,
   # negative prompt, num_images, style or reference images. No prompt length
   # limit is documented.
-  # @see https://developer.ideogram.ai/openapi.json (POST /v1/ideogram-v4/generate), read 2026-09-11
+  # @see https://developer.ideogram.ai/openapi/ideogram-api-v1.json (POST /v1/ideogram-v4/generate), read 2026-09-11
   # @see https://developer.ideogram.ai/api-reference/generate-images/generate-v4.md
   - id: ideogram/ideogram-v4
     provider: ideogram
     media_type: image
     display_name: Ideogram 4.0
     description: Ideogram 4.0 text-to-image, Ideogram's flagship for prompt fidelity and text rendering.
+    docs_url: https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v4
     # "4.0 Default": US $0.06 (1K and 2K alike), read 2026-09-11.
     # @see https://ideogram.ai/pricing/?pricing_tab=api
     pricing: { base_cost_usd: 0.06 }
@@ -127,7 +131,7 @@ models:
         kind: size
         mode: enum
         # ResolutionV4 enum ("The 1K and 2K resolutions supported for Ideogram 4.0"),
-        # sent as `resolution` = "WxH": https://developer.ideogram.ai/openapi.json
+        # sent as `resolution` = "WxH": https://developer.ideogram.ai/openapi/ideogram-api-v1.json
         values: [[2048,2048],[1440,2880],[2880,1440],[1664,2496],[2496,1664],[1792,2240],[2240,1792],[1440,2560],[2560,1440],[1600,2560],[2560,1600],[1728,2304],[2304,1728],[1296,3168],[3168,1296],[1152,2944],[2944,1152],[1248,3328],[3328,1248],[1280,3072],[3072,1280],[1024,3072],[3072,1024],[1024,1024],[896,1120],[1120,896],[864,1152],[1152,864],[832,1248],[1248,832],[800,1280],[1280,800],[720,1280],[1280,720],[720,1440],[1440,720],[512,1536],[1536,512]]
     extra_allowlist: [enable_copyright_detection]
     tags: [text-to-image]
@@ -137,6 +141,7 @@ models:
     media_type: image
     display_name: Ideogram 4.0 Turbo
     description: Ideogram 4.0 with TURBO rendering speed (faster, cheaper).
+    docs_url: https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v4
     # "4.0 Turbo": US $0.03 (1K and 2K alike), read 2026-09-11.
     # @see https://ideogram.ai/pricing/?pricing_tab=api
     pricing: { base_cost_usd: 0.03 }
@@ -147,7 +152,7 @@ models:
         kind: size
         mode: enum
         # ResolutionV4 enum ("The 1K and 2K resolutions supported for Ideogram 4.0"),
-        # sent as `resolution` = "WxH": https://developer.ideogram.ai/openapi.json
+        # sent as `resolution` = "WxH": https://developer.ideogram.ai/openapi/ideogram-api-v1.json
         values: [[2048,2048],[1440,2880],[2880,1440],[1664,2496],[2496,1664],[1792,2240],[2240,1792],[1440,2560],[2560,1440],[1600,2560],[2560,1600],[1728,2304],[2304,1728],[1296,3168],[3168,1296],[1152,2944],[2944,1152],[1248,3328],[3328,1248],[1280,3072],[3072,1280],[1024,3072],[3072,1024],[1024,1024],[896,1120],[1120,896],[864,1152],[1152,864],[832,1248],[1248,832],[800,1280],[1280,800],[720,1280],[1280,720],[720,1440],[1440,720],[512,1536],[1536,512]]
     extra_allowlist: [enable_copyright_detection]
     tags: [text-to-image, fast]
@@ -157,6 +162,7 @@ models:
     media_type: image
     display_name: Ideogram 4.0 Quality
     description: Ideogram 4.0 with QUALITY rendering speed.
+    docs_url: https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v4
     # "4.0 Quality": US $0.10 (1K and 2K alike), read 2026-09-11.
     # @see https://ideogram.ai/pricing/?pricing_tab=api
     pricing: { base_cost_usd: 0.10 }
@@ -167,7 +173,7 @@ models:
         kind: size
         mode: enum
         # ResolutionV4 enum ("The 1K and 2K resolutions supported for Ideogram 4.0"),
-        # sent as `resolution` = "WxH": https://developer.ideogram.ai/openapi.json
+        # sent as `resolution` = "WxH": https://developer.ideogram.ai/openapi/ideogram-api-v1.json
         values: [[2048,2048],[1440,2880],[2880,1440],[1664,2496],[2496,1664],[1792,2240],[2240,1792],[1440,2560],[2560,1440],[1600,2560],[2560,1600],[1728,2304],[2304,1728],[1296,3168],[3168,1296],[1152,2944],[2944,1152],[1248,3328],[3328,1248],[1280,3072],[3072,1280],[1024,3072],[3072,1024],[1024,1024],[896,1120],[1120,896],[864,1152],[1152,864],[832,1248],[1248,832],[800,1280],[1280,800],[720,1280],[1280,720],[720,1440],[1440,720],[512,1536],[1536,512]]
     extra_allowlist: [enable_copyright_detection]
     tags: [text-to-image, quality]

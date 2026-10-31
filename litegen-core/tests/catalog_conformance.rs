@@ -3687,3 +3687,66 @@ fn every_runway_leonardo_and_replicate_row_names_its_docs_url() {
         );
     }
 }
+
+// ─── BFL / Ideogram / Recraft / Stability audit, 2026-10-30 ────────────────
+
+/// F14: "**Vector models** (every `_vector` model) accept the same 14 ratios
+/// as `w:h` only; SVG output has no fixed pixel size."
+/// @see <https://www.recraft.ai/docs/api-reference/appendix.md> (2026-10-30)
+#[test]
+fn recraft_vector_rows_take_no_pixel_size() {
+    for m in registry().all().filter(|m| m.provider == "recraft" && m.id.contains("vector")) {
+        assert!(!m.params.contains_key("size"), "{} declares a pixel size", m.id);
+    }
+}
+
+/// F15: the Generate-image parameters are `prompt, n, model, size, style,
+/// style_id, style_match, style_references, style_reference_urls,
+/// negative_prompt, random_seed, response_format, image_format, text_layout,
+/// controls`; there is no `substyle`.
+/// @see <https://www.recraft.ai/docs/api-reference/endpoints.md> (2026-10-30)
+#[test]
+fn recraft_rows_allowlist_no_substyle() {
+    for m in registry().all().filter(|m| m.provider == "recraft") {
+        assert!(!m.extra_allowlist.iter().any(|k| k == "substyle"), "{}: {:?}", m.id, m.extra_allowlist);
+    }
+}
+
+/// F16: `icon` is a V2 style ("`icon` — V2 models only").
+/// @see <https://www.recraft.ai/docs/api-reference/endpoints.md> (2026-10-30)
+#[test]
+fn recraft_v3_rows_offer_no_icon_style() {
+    let reg = registry();
+    for id in ["recraft/recraftv3", "recraft/recraftv3_vector"] {
+        assert!(!enum_values(&reg, id, "style").iter().any(|v| v == "icon"), "{id}");
+    }
+}
+
+/// F9: SDXL image-to-image takes the canonical `strength` (0 keeps the
+/// image), sent inverted as `image_strength`.
+/// @see <https://docs.stability.ai/openapi-v1.json> (2026-10-30)
+#[test]
+fn stability_sdxl_takes_an_image_to_image_strength() {
+    let reg = registry();
+    match reg.get("stability/sdxl").expect("stability/sdxl").params.get("strength") {
+        Some(ParamSpec::Float(f)) => assert_eq!((f.min, f.max), (Some(0.0), Some(1.0))),
+        other => panic!("strength is {other:?}"),
+    }
+}
+
+/// F20: every BFL, Ideogram, Recraft and Stability row names the vendor page
+/// its fields were read from (Stability's reference moved to
+/// docs.stability.ai).
+#[test]
+fn every_bfl_ideogram_recraft_and_stability_row_names_its_docs_url() {
+    for m in registry().all().filter(|m| ["bfl", "ideogram", "recraft", "stability"].contains(&m.provider.as_str())) {
+        let url = m.docs_url.as_deref().unwrap_or_else(|| panic!("{} names no docs_url", m.id));
+        assert!(
+            ["https://docs.bfl.ml/", "https://developer.ideogram.ai/", "https://www.recraft.ai/docs/", "https://docs.stability.ai/"]
+                .iter()
+                .any(|p| url.starts_with(p)),
+            "{}: {url}",
+            m.id
+        );
+    }
+}

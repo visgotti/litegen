@@ -14,12 +14,14 @@ use crate::types::*;
 
 /// Stability AI image generation provider.
 ///
-/// Supports SD3, SD3-Turbo, Core, Ultra, SDXL, and SD 1.6 via the Stability Platform API.
-/// V1 engines (SDXL, SD1.6): JSON body → base64 response
-/// V2 endpoints (SD3, Core, Ultra): multipart form → raw image bytes
+/// Supports SD 3.5, Core, Ultra, SDXL and the edit tools via the Stability API.
+/// V1 engine (SDXL): JSON body → base64 response
+/// V2 endpoints (SD 3.5, Core, Ultra, edit): multipart form → raw image bytes
 ///
-/// @see <https://platform.stability.ai/docs/api-reference#tag/Generate> — V2beta Stable Image generate (SD3/Core/Ultra)
-/// @see <https://platform.stability.ai/docs/api-reference> — V1 engine `POST /v1/generation/{engine}/text-to-image`
+/// @see <https://docs.stability.ai/api-reference> (2026-10-30) — "The Stability AI API reference has
+///   moved to https://docs.stability.ai/api-reference."
+/// @see <https://docs.stability.ai/api-reference/generate/stable-diffusion-35> — V2beta generate (SD 3.5/Core/Ultra)
+/// @see <https://docs.stability.ai/api-reference/sdxl-10/text-to-image> — V1 `POST /v1/generation/{engine}/text-to-image`
 pub struct StabilityProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
@@ -87,16 +89,55 @@ impl StabilityProvider {
             "outpaint" => "outpaint".to_string(),
             "search-and-replace" => "search-and-replace".to_string(),
             "sdxl" => "stable-diffusion-xl-1024-v1-0".to_string(),
-            "sd-1.6" | "sd1.6" => "stable-diffusion-v1-6".to_string(),
             _ => native.to_string(),
         }
+    }
+
+    /// Stability's error in its own words: "Errors return a JSON body with a
+    /// machine-readable `name` and a list of human-readable `errors`". It may
+    /// be sent again only when Stability turned the call away (429, 5xx).
+    /// @see <https://docs.stability.ai/api-reference/index.md> (2026-10-30)
+    fn vendor_error(status: reqwest::StatusCode, text: &str) -> ProviderError {
+        let body: Option<Value> = serde_json::from_str(text).ok();
+        let said = body
+            .as_ref()
+            .and_then(|b| {
+                b["errors"]
+                    .as_array()
+                    .map(|e| e.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; "))
+                    .filter(|e| !e.is_empty())
+                    .or_else(|| b["message"].as_str().map(str::to_string))
+            })
+            .unwrap_or_else(|| text.chars().take(200).collect());
+        ProviderError::RequestFailed {
+            message: format!("Stability API error: {said}"),
+            status_code: Some(status.as_u16()),
+            provider_error: Some(body.unwrap_or_else(|| Value::String(text.to_string()))),
+            retryable: status.as_u16() == 429 || status.is_server_error(),
+        }
+    }
+
+    /// A blurred image is not a result: "`CONTENT_FILTERED` = successful
+    /// generation, however the output violated our content moderation policy
+    /// and has been blurred as a result".
+    /// @see <https://api.stability.ai/v2alpha/openapi> (ImageGenerationSuccess, 2026-10-30)
+    fn filtered(finish_reason: &str) -> Result<(), ProviderError> {
+        if finish_reason == "CONTENT_FILTERED" {
+            return Err(ProviderError::RequestFailed {
+                message: "Stability blurred the image: finish reason CONTENT_FILTERED (it violated the content moderation policy)".into(),
+                status_code: None,
+                provider_error: None,
+                retryable: false,
+            });
+        }
+        Ok(())
     }
 
     /// Determine which V2 route to use for a given model, under
     /// `/v2beta/stable-image/`.
     ///
-    /// @see <https://platform.stability.ai/docs/api-reference#tag/Generate> — V2beta Stable Image generate routes
-    /// @see <https://platform.stability.ai/docs/api-reference#tag/Edit> — the edit routes (`edit/inpaint`,
+    /// @see <https://docs.stability.ai/api-reference/generate/stable-image-core> — V2beta Stable Image generate routes
+    /// @see <https://docs.stability.ai/api-reference/edit/inpaint> — the edit routes (`edit/inpaint`,
     ///   `edit/remove-background`, `edit/outpaint`, `edit/search-and-replace`)
     fn v2_endpoint(model: &str) -> Option<&'static str> {
         match model {
@@ -182,10 +223,10 @@ impl ImageProvider for StabilityProvider {
     /// `/v2beta/stable-image/generate/{endpoint}`; V1 engines (SDXL, SD 1.6)
     /// POST JSON to `/v1/generation/{engine}/text-to-image`.
     ///
-    /// @see <https://platform.stability.ai/docs/api-reference#tag/Generate> — V2 generate; proves the multipart
+    /// @see <https://docs.stability.ai/api-reference/generate/stable-diffusion-35> — V2 generate; proves the multipart
     ///   fields (`prompt`, `model`, `output_format`, `aspect_ratio`, `seed`, `negative_prompt`, `strength`)
     ///   and the raw-image-bytes (`Accept: image/*`) response.
-    /// @see <https://platform.stability.ai/docs/api-reference> — V1 `text-to-image`; proves `text_prompts[]`
+    /// @see <https://docs.stability.ai/api-reference/sdxl-10/text-to-image> — V1 `text-to-image`; proves `text_prompts[]`
     ///   (with `weight`), `cfg_scale`, `steps`, `samples`, `width`/`height`, and the `artifacts[].base64` response.
     async fn generate(
         &self,
@@ -302,9 +343,18 @@ impl ImageProvider for StabilityProvider {
                 form = form.text("strength", format!("{:.2}", extras.strength.unwrap_or(0.5)));
             }
 
-            // extra fields shallow-merged (allowlist enforced by validator)
+            // extra fields shallow-merged (allowlist enforced by validator),
+            // never as a second part of a field litegen sends: two `model`
+            // parts could run sd3.5-large at sd3.5-medium's price.
+            const V2_OWNED_FIELDS: &[&str] = &[
+                "prompt", "model", "mode", "strength", "aspect_ratio", "output_format", "seed", "negative_prompt", "image",
+                "mask", "grow_mask", "search_prompt", "left", "up", "right", "down",
+            ];
             if let Some(Value::Object(extra_map)) = &extras.extra {
                 for (k, v) in extra_map {
+                    if V2_OWNED_FIELDS.contains(&k.as_str()) || (k == "style_preset" && extras.style.is_some()) {
+                        continue;
+                    }
                     let val_str = match v {
                         Value::String(s) => s.clone(),
                         _ => v.to_string(),
@@ -337,18 +387,19 @@ impl ImageProvider for StabilityProvider {
                 message: format!("Stability V2 request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
+                // Stability answers in the same call: one that timed out may
+                // have run and been billed.
+                retryable: e.is_connect(),
             })?;
 
             let status = resp.status();
             if !status.is_success() {
                 let error_body = resp.text().await.unwrap_or_default();
-                return Err(ProviderError::RequestFailed {
-                    message: format!("Stability API error: {error_body}"),
-                    status_code: Some(status.as_u16()),
-                    provider_error: None,
-                    retryable: status.as_u16() >= 500,
-                });
+                return Err(Self::vendor_error(status, &error_body));
+            }
+            let finish_reason = resp.headers().get("finish-reason").and_then(|v| v.to_str().ok()).map(str::to_string);
+            if let Some(reason) = finish_reason.as_deref() {
+                Self::filtered(reason)?;
             }
 
             let content_type = resp
@@ -367,6 +418,9 @@ impl ImageProvider for StabilityProvider {
 
             let mut metadata = HashMap::new();
             metadata.insert("model".to_string(), Value::String(model_name));
+            if let Some(reason) = finish_reason {
+                metadata.insert("finish_reason".to_string(), Value::String(reason));
+            }
 
             Ok(GenerationOutput {
                 data: bytes.to_vec(),
@@ -382,7 +436,7 @@ impl ImageProvider for StabilityProvider {
             //   /v1/generation/{engine}/image-to-image/masking  (mask_image present)
             // All three return the same JSON `artifacts[].base64` payload.
             //
-            // @see <https://platform.stability.ai/docs/api-reference> — V1 `image-to-image`
+            // @see <https://docs.stability.ai/api-reference/sdxl-10/image-to-image-with-prompt> — V1 `image-to-image`
             //   (multipart `init_image`, `image_strength`, `text_prompts[*][text|weight]`) and
             //   `image-to-image/masking` (multipart `init_image`, `mask_image`, `mask_source`).
             let mut has_init = false;
@@ -396,7 +450,17 @@ impl ImageProvider for StabilityProvider {
                     }
                 }
             }
+            // Masking is `required: ["text_prompts","init_image","mask_source"]`.
+            // @see <https://docs.stability.ai/openapi-v1.json> (2026-10-30)
+            if has_mask && !has_init {
+                return Err(ProviderError::InvalidRequest(format!("'{}' masks an image: send an init image with the mask", model.id)));
+            }
             let use_multipart = has_init || has_mask;
+            // What litegen itself sends on v1; `extra` cannot replace it.
+            const V1_OWNED_FIELDS: &[&str] = &[
+                "text_prompts", "samples", "steps", "cfg_scale", "seed", "image_strength", "mask_source", "init_image",
+                "mask_image", "width", "height",
+            ];
 
             let resp = if use_multipart {
                 // Multipart image-to-image / masking path.
@@ -435,9 +499,13 @@ impl ImageProvider for StabilityProvider {
                     form = form.text("seed", seed.to_string());
                 }
 
-                // init_strength controls how much the init image is preserved.
-                if let Some(strength) = extras.strength {
-                    form = form.text("image_strength", format!("{:.2}", strength));
+                // `image_strength` near 1 keeps the init image ("Values close to
+                // `1` will yield images very similar to the `init_image`"), the
+                // opposite of litegen's (and sd3's) `strength`, where 0 keeps
+                // it — so it goes inverted, and only to /image-to-image:
+                // masking has no `image_strength`.
+                if let (Some(strength), false) = (extras.strength, has_mask) {
+                    form = form.text("image_strength", format!("{:.2}", 1.0 - strength));
                 }
 
                 // Masking requires telling the API how the mask is encoded.
@@ -447,7 +515,7 @@ impl ImageProvider for StabilityProvider {
 
                 // extra fields shallow-merged (allowlist enforced by validator).
                 if let Some(Value::Object(extra_map)) = &extras.extra {
-                    for (k, v) in extra_map {
+                    for (k, v) in extra_map.iter().filter(|(k, _)| !V1_OWNED_FIELDS.contains(&k.as_str()) && !k.starts_with("text_prompts[")) {
                         let val_str = match v {
                             Value::String(s) => s.clone(),
                             _ => v.to_string(),
@@ -480,7 +548,7 @@ impl ImageProvider for StabilityProvider {
                     message: format!("Stability V1 request failed: {e}"),
                     status_code: e.status().map(|s| s.as_u16()),
                     provider_error: None,
-                    retryable: e.is_timeout() || e.is_connect(),
+                    retryable: e.is_connect(),
                 })?
             } else {
                 // Plain text-to-image — JSON body, returns base64.
@@ -526,10 +594,10 @@ impl ImageProvider for StabilityProvider {
                     body["seed"] = Value::Number(seed.into());
                 }
 
-                // Shallow-merge extra
+                // Shallow-merge extra, never over what litegen sends.
                 if let Some(Value::Object(extra_map)) = &extras.extra {
                     if let Some(body_map) = body.as_object_mut() {
-                        for (k, v) in extra_map {
+                        for (k, v) in extra_map.iter().filter(|(k, _)| !V1_OWNED_FIELDS.contains(&k.as_str())) {
                             body_map.insert(k.clone(), v.clone());
                         }
                     }
@@ -549,27 +617,21 @@ impl ImageProvider for StabilityProvider {
                     message: format!("Stability V1 request failed: {e}"),
                     status_code: e.status().map(|s| s.as_u16()),
                     provider_error: None,
-                    retryable: e.is_timeout() || e.is_connect(),
+                    retryable: e.is_connect(),
                 })?
             };
 
             let status = resp.status();
-            let resp_json: Value = resp.json().await.map_err(|e| ProviderError::RequestFailed {
+            let text = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
+                return Err(Self::vendor_error(status, &text));
+            }
+            let resp_json: Value = serde_json::from_str(&text).map_err(|e| ProviderError::RequestFailed {
                 message: format!("Failed to parse Stability response: {e}"),
                 status_code: Some(status.as_u16()),
                 provider_error: None,
                 retryable: false,
             })?;
-
-            if !status.is_success() {
-                let error_msg = resp_json["message"].as_str().unwrap_or("Unknown").to_string();
-                return Err(ProviderError::RequestFailed {
-                    message: format!("Stability API error: {error_msg}"),
-                    status_code: Some(status.as_u16()),
-                    provider_error: Some(resp_json),
-                    retryable: status.as_u16() >= 500,
-                });
-            }
 
             let artifact = resp_json["artifacts"]
                 .as_array()
@@ -595,6 +657,9 @@ impl ImageProvider for StabilityProvider {
                 retryable: false,
             })?;
 
+            if let Some(reason) = artifact["finishReason"].as_str() {
+                Self::filtered(reason)?;
+            }
             let mut metadata = HashMap::new();
             metadata.insert("model".to_string(), Value::String(model_name));
             if let Some(finish_reason) = artifact["finishReason"].as_str() {
@@ -625,7 +690,7 @@ impl ImageProvider for StabilityProvider {
 
     /// Validate the API key via `GET {api_base}/v1/engines/list`.
     ///
-    /// @see <https://platform.stability.ai/docs/api-reference#tag/Engines> — list engines
+    /// @see <https://docs.stability.ai/openapi-v1.json> — list engines (`GET /v1/engines/list`)
     async fn health_check(&self) -> HealthCheckResult {
         if !self.is_configured() {
             return HealthCheckResult {
@@ -1176,6 +1241,166 @@ mod tests {
         }
         for absent in ["model", "mode", "strength", "aspect_ratio"] {
             assert!(multipart_field(body, absent).is_none(), "{absent} is not a search-and-replace field");
+        }
+    }
+
+    // ─── Stability audit, 2026-10-30 ────────────────────────────────────────
+
+    const SDXL_ENGINE: &str = "/v1/generation/stable-diffusion-xl-1024-v1-0";
+
+    fn uploaded(fields: &[&str]) -> crate::proxy::materializer::MaterializedRequest {
+        crate::proxy::materializer::MaterializedRequest {
+            refs: fields
+                .iter()
+                .map(|f| crate::proxy::materializer::MaterializedRef {
+                    role: if *f == "mask_image" { "mask".into() } else { "init".into() },
+                    form: MaterializedRefForm::MultipartField {
+                        field_name: f.to_string(),
+                        bytes: bytes::Bytes::from_static(b"\x89PNG\r\n\x1a\n"),
+                        content_type: "image/png".into(),
+                    },
+                    time_s: None,
+                })
+                .collect(),
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        }
+    }
+
+    /// F6: every field goes once: `extra` never adds a second `model` (which
+    /// could run sd3.5-large at sd3.5-medium's price), `output_format` or
+    /// `prompt` part.
+    #[tokio::test]
+    async fn a_v2_request_carries_each_field_once() {
+        let server = MockServer::start().await;
+        mock_v2(&server, "sd3").await;
+        let mut extras = make_extras_sd3();
+        extras.extra = Some(json!({ "model": "sd3.5-large", "output_format": "webp", "prompt": "other", "style_preset": "anime" }));
+        let _ = make_provider(&server.uri())
+            .generate(&ref_schema("stability/sd3.5-medium"), &make_base("a dune", "stability/sd3.5-medium"), &extras, &empty_materialized())
+            .await;
+        let received = server.received_requests().await.unwrap();
+        let body = String::from_utf8_lossy(&received[0].body).to_string();
+        for (field, value) in [("model", "sd3.5-medium"), ("output_format", "png"), ("prompt", "a dune")] {
+            assert_eq!(body.matches(&format!("name=\"{field}\"")).count(), 1, "{field}: {body}");
+            assert_eq!(multipart_field(&received[0].body, field).as_deref(), Some(value), "{field}");
+        }
+        assert_eq!(multipart_field(&received[0].body, "style_preset").as_deref(), Some("anime"));
+    }
+
+    /// F7, rule 14: "`CONTENT_FILTERED` = successful generation, however the
+    /// output violated our content moderation policy and has been blurred as
+    /// a result" — a blurred image fails with Stability's reason.
+    /// @see <https://api.stability.ai/v2alpha/openapi> (ImageGenerationSuccess, 2026-10-30)
+    /// @see <https://docs.stability.ai/api-reference/index.md> (2026-10-30)
+    #[tokio::test]
+    async fn a_content_filtered_image_fails_with_stabilitys_reason() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2beta/stable-image/generate/sd3"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(b"\x89PNG\r\n\x1a\n".to_vec())
+                    .insert_header("content-type", "image/png")
+                    .insert_header("finish-reason", "CONTENT_FILTERED"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("{SDXL_ENGINE}/text-to-image")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "artifacts": [{ "base64": "iVBORw0KGgo=", "finishReason": "CONTENT_FILTERED", "seed": 1 }]
+            })))
+            .mount(&server)
+            .await;
+        let provider = make_provider(&server.uri());
+        for (id, extras) in [("stability/sd3.5-medium", make_extras_sd3()), ("stability/sdxl", ImageExtras { aspect_ratio: None, ..make_extras_sd3() })] {
+            let err = provider.generate(&ref_schema(id), &make_base("x", id), &extras, &empty_materialized()).await.unwrap_err();
+            assert!(
+                matches!(&err, ProviderError::RequestFailed { retryable: false, message, .. } if message.contains("CONTENT_FILTERED")),
+                "{id}: {err:?}"
+            );
+        }
+    }
+
+    /// F12: "Errors return a JSON body with a machine-readable `name` and a
+    /// list of human-readable `errors`" — the message is Stability's, the body
+    /// is kept, and a 429 was turned away and may be sent again.
+    /// @see <https://docs.stability.ai/api-reference/index.md> (2026-10-30)
+    #[tokio::test]
+    async fn an_error_says_what_stability_said() {
+        for (status, retryable) in [(400, false), (429, true)] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(json!({
+                    "id": "e1", "name": "bad_request", "errors": ["prompt: is required"]
+                })))
+                .mount(&server)
+                .await;
+            let provider = make_provider(&server.uri());
+            for (id, extras) in [("stability/sd3.5-medium", make_extras_sd3()), ("stability/sdxl", ImageExtras { aspect_ratio: None, ..make_extras_sd3() })] {
+                let err = provider.generate(&ref_schema(id), &make_base("x", id), &extras, &empty_materialized()).await.unwrap_err();
+                assert!(
+                    matches!(&err, ProviderError::RequestFailed { status_code: Some(s), retryable: r, provider_error: Some(_), message }
+                        if *s == status && *r == retryable && message.contains("prompt: is required")),
+                    "{id} {status}: {err:?}"
+                );
+            }
+        }
+    }
+
+    /// F8: masking is `required: ["text_prompts","init_image","mask_source"]`,
+    /// so a mask without an init image is refused before any call.
+    /// @see <https://docs.stability.ai/openapi-v1.json> (image-to-image/masking, 2026-10-30)
+    #[tokio::test]
+    async fn a_mask_without_an_init_image_is_refused_before_any_call() {
+        let server = MockServer::start().await;
+        let err = make_provider(&server.uri())
+            .generate(&ref_schema("stability/sdxl"), &make_base("x", "stability/sdxl"), &make_extras_sd3(), &uploaded(&["mask_image"]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// F9: sd3's `strength` 0 "would yield an image that is identical to the
+    /// input"; v1's `image_strength` close to 1 yields "images very similar to
+    /// the `init_image`". The canonical strength goes inverted, and only to
+    /// `/image-to-image` (masking has no `image_strength`).
+    /// @see <https://docs.stability.ai/openapi-v1.json> (2026-10-30)
+    #[tokio::test]
+    async fn sdxl_strength_is_sent_inverted_and_only_to_image_to_image() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "name": "stop", "errors": ["stop"] })))
+            .mount(&server)
+            .await;
+        let provider = make_provider(&server.uri());
+        let mut extras = make_extras_sd3();
+        extras.strength = Some(0.3);
+        for fields in [&["init_image"][..], &["init_image", "mask_image"][..]] {
+            let _ = provider.generate(&ref_schema("stability/sdxl"), &make_base("x", "stability/sdxl"), &extras, &uploaded(fields)).await;
+        }
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received[0].url.path(), format!("{SDXL_ENGINE}/image-to-image"));
+        assert_eq!(multipart_field(&received[0].body, "image_strength").as_deref(), Some("0.70"));
+        assert_eq!(received[1].url.path(), format!("{SDXL_ENGINE}/image-to-image/masking"));
+        assert!(multipart_field(&received[1].body, "image_strength").is_none());
+    }
+
+    /// Stability answers in the same call, so one that timed out may have run
+    /// and been billed: it is never sent again.
+    #[tokio::test]
+    async fn a_timed_out_call_is_never_sent_again() {
+        let slow = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"x".to_vec()).set_delay(std::time::Duration::from_secs(5)))
+            .mount(&slow)
+            .await;
+        let mut p = make_provider(&slow.uri());
+        p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        for (id, extras) in [("stability/sd3.5-medium", make_extras_sd3()), ("stability/sdxl", ImageExtras { aspect_ratio: None, ..make_extras_sd3() })] {
+            let err = p.generate(&ref_schema(id), &make_base("x", id), &extras, &empty_materialized()).await.unwrap_err();
+            assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{id}: {err:?}");
         }
     }
 }

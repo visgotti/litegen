@@ -4,6 +4,7 @@ models:
     media_type: image
     display_name: Stable Diffusion 3 Large
     description: Latest Stability AI model with excellent prompt adherence.
+    docs_url: https://docs.stability.ai/api-reference/generate/stable-diffusion-35
     pricing: { base_cost_usd: 0.065 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -35,10 +36,11 @@ models:
     media_type: image
     display_name: Stable Diffusion 3.5 Medium
     description: Stable Diffusion 3.5 Medium (2.5B parameters) — a balance of
+    docs_url: https://docs.stability.ai/api-reference/generate/stable-diffusion-35
       prompt accuracy and image quality for fast generation.
     # "`sd3.5-medium` requires 3.5 credits per generation" (the sd3 `model`
     # description); 1 credit = $0.01 (re-read 2026-09-11).
-    # @see https://platform.stability.ai/pricing
+    # @see https://docs.stability.ai/pricing.md
     pricing: { base_cost_usd: 0.035 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -66,6 +68,7 @@ models:
     media_type: image
     display_name: Stable Diffusion 3 Turbo
     description: Faster, cheaper SD3 variant.
+    docs_url: https://docs.stability.ai/api-reference/generate/stable-diffusion-35
     pricing: { base_cost_usd: 0.04 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -88,6 +91,7 @@ models:
     media_type: image
     display_name: Stable Image Core
     description: Fast, affordable image generation.
+    docs_url: https://docs.stability.ai/api-reference/generate/stable-image-core
     pricing: { base_cost_usd: 0.03 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -111,6 +115,7 @@ models:
     media_type: image
     display_name: Stable Image Ultra
     description: Highest-quality Stability generation.
+    docs_url: https://docs.stability.ai/api-reference/generate/stable-image-ultra
     pricing: { base_cost_usd: 0.08 }
     capabilities: { text_to_image: true }
     prompt: { required: true, max_length: 10000 }
@@ -131,11 +136,12 @@ models:
     media_type: image
     display_name: Stable Diffusion XL
     description: High-quality general purpose image generation.
+    docs_url: https://docs.stability.ai/api-reference/sdxl-10/text-to-image
     # "When specifying 30 steps or fewer, generation costs 0.9 credits" ($0.009;
     # the default is 30 steps), re-read 2026-09-11. Above 30 steps the cost is
     # 0.9 * (steps / 30), so our 50-step max is 1.5 credits.
-    # @see https://platform.stability.ai/pricing
-    # @see https://platform.stability.ai/docs/api-reference#tag/SDXL-1.0 (SDXL 1.0 Pricing)
+    # @see https://docs.stability.ai/pricing.md
+    # @see https://docs.stability.ai/api-reference/sdxl-10/text-to-image (SDXL 1.0 Pricing)
     pricing: { base_cost_usd: 0.009 }
     capabilities: { text_to_image: true, image_to_image: true, inpainting: true }
     prompt: { required: true, max_length: 2000 }
@@ -144,8 +150,14 @@ models:
       seed: { kind: seed, min: 0, max: 4294967294 }
       steps: { kind: int, min: 10, max: 50, default: 30 }
       guidance_scale: { kind: float, min: 0.0, max: 35.0, default: 7.0 }
+      # Image-to-image only, sent inverted as `image_strength` ("Values close
+      # to `1` will yield images very similar to the `init_image`"), so 0 keeps
+      # the image as it does on sd3; masking takes none.
+      # @see https://docs.stability.ai/openapi-v1.json (2026-10-30)
+      strength: { kind: float, min: 0.0, max: 1.0 }
       # The SDXL 1.0 engine accepts only these eight dimension pairs; 512x512 is
-      # not one (https://platform.stability.ai/docs/api-reference#tag/SDXL-1.0).
+      # not one (https://docs.stability.ai/api-reference/sdxl-10/text-to-image).
+      # Text-to-image only: image-to-image and masking take the init image's size.
       size:
         kind: size
         mode: enum
@@ -156,6 +168,9 @@ models:
       provider_format: { form: multipart, field_map: { init: init_image, mask: mask_image } }
       roles:
         init: { required: false, min_count: 0, max_count: 1 }
+        # White edits (sent with mask_source=MASK_IMAGE_WHITE), and a mask needs
+        # an init image: masking is `required: ["text_prompts","init_image",
+        # "mask_source"]`, and the adapter refuses a mask alone.
         mask: { required: false, min_count: 0, max_count: 1, convention: white_edits }
     extra_allowlist: []
     tags: [text-to-image, image-to-image, inpainting]
@@ -176,8 +191,8 @@ models:
       white-edits, Stability's own convention, and `mask_grow_px` goes to its
       `grow_mask` (sent as 0 unless asked: Stability's default is 5). A
       region is sent drawn as the mask.
-    docs_url: https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1inpaint/post
-    # @see https://platform.stability.ai/pricing (2026-10-30): "Inpaint — Use a
+    docs_url: https://docs.stability.ai/api-reference/edit/inpaint
+    # @see https://docs.stability.ai/pricing.md (2026-10-30): "Inpaint — Use a
     #   mask (or alpha channel) to replace anything in an image — 5" credits;
     #   "1 credit equals $0.01" → $0.05.
     pricing: { base_cost_usd: 0.05 }
@@ -215,7 +230,7 @@ models:
     description: >-
       Stability's Search and Replace: finds what `mask_prompt` names in the
       init image and replaces it with what the prompt describes.
-    docs_url: https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1search-and-replace/post
+    docs_url: https://docs.stability.ai/api-reference/edit/search-and-replace
     # "Search and Replace | Use simple words to automatically find an object in
     # image and replace it with the desired prompt | 5" credits; "1 credit =
     # $0.01" → $0.05 (docs.stability.ai/pricing.md, read 2026-10-30).
@@ -250,7 +265,7 @@ models:
     description: >-
       Stability's Outpaint: grows the init image's canvas by up to 2,000 px a
       side, filling the new space, optionally guided by a prompt.
-    docs_url: https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1outpaint/post
+    docs_url: https://docs.stability.ai/api-reference/edit/outpaint
     # "Outpaint | Inserts additional content in an image to fill in the space
     # in any direction | 4" credits; "1 credit = $0.01" → $0.04
     # (docs.stability.ai/pricing.md, read 2026-10-30).
@@ -285,7 +300,7 @@ models:
     description: >-
       Stability's Remove Background: one image in, the subject on a
       transparent background out.
-    docs_url: https://platform.stability.ai/docs/api-reference#tag/Edit/paths/~1v2beta~1stable-image~1edit~1remove-background/post
+    docs_url: https://docs.stability.ai/api-reference/edit/remove-background
     # "Remove Background | Removes the background while preserving foreground
     # | 5" credits; "1 credit = $0.01" → $0.05 (docs.stability.ai/pricing.md,
     # read 2026-10-30).

@@ -83,12 +83,12 @@ this file.
 - **There are no discrete numeric sets.** You can't say "5 or 10 s".
   Advertise the range, then snap or reject in the adapter, and report it
   under "Can't express".
-- **`extra` is unfiltered in lax mode.** `check_extra` returns early when
-  `strict` is false, and most adapters merge `extra` *after* writing their
-  own fields. In OpenAI's image adapter, `extra.model` overrides the model
-  that actually runs. Exceptions: `model3d/fal.rs` skips the keys it maps,
-  and `image/ideogram.rs` re-filters against `extra_allowlist`. *In new
-  code:* merge `extra` first, or skip the keys you own.
+- **`extra` was unfiltered in lax mode** (closed 2026-10-30). `check_extra`
+  now keeps only the row's `extra_allowlist` in both modes (lax drops the
+  rest and reports `extra.<key>` in `X-Litegen-Dropped-Params`), and the
+  adapters skip the fields they write when merging (`OWNED_FIELDS`), so
+  `extra.model` can no longer run another model. *In new code:* still skip
+  the keys you own, since an allowlisted key can collide with one.
 - **Some video rows use `init` for the start frame** (`fal/video`,
   `fal/ltx-2.3`, `runway/gen4-turbo`, `runway/gen4.5`). For them,
   `supports_first_frame` is false. New rows use `first_frame`.

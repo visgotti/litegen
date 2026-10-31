@@ -45,13 +45,11 @@ enum Generation {
 /// instead (see [`Generation::V4`]): a different request contract with the
 /// same response shape.
 ///
-/// @see <https://developer.ideogram.ai/api-reference/api-reference/generate-v3>
-///   Verbatim: "The model version to use for describing images. Defaults to V_3."
-/// @see <https://developer.ideogram.ai/llms-full.txt>
-///   Verbatim: "curl -X POST https://api.ideogram.ai/v1/ideogram-v3/generate \
-///     -H \"Api-Key: <apiKey>\" -H \"Content-Type: application/json\" \
-///     -d '{\"prompt\": \"A picture of a cat\"}'"
-/// @see <https://developer.ideogram.ai/api-reference/generate-images/generate-v4.md>
+/// @see <https://developer.ideogram.ai/openapi/ideogram-api-v1.json> (2026-10-30) — the v1 spec
+/// @see <https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v3> (2026-10-30)
+///   Verbatim (the page's Python sample, a JSON body): `json={ "prompt": "A picture of a cat",
+///   "rendering_speed": "TURBO" }`
+/// @see <https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v4.md> (2026-10-30)
 pub struct IdeogramProvider {
     config: Option<ProviderInstanceConfig>,
     key_pool: Option<ApiKeyPool>,
@@ -96,7 +94,7 @@ impl IdeogramProvider {
     /// 4.0 has the same tiers as 3.0 (`RenderingSpeed` enum). Its `FLASH` is
     /// "coming soon": "requests with `rendering_speed=FLASH` currently return
     /// a 400", so no catalog id maps to it.
-    /// @see <https://developer.ideogram.ai/openapi.json> (POST /v1/ideogram-v4/generate)
+    /// @see <https://developer.ideogram.ai/openapi/ideogram-api-v1.json> (POST /v1/ideogram-v4/generate)
     fn rendering_speed(model_id: &str) -> Option<&'static str> {
         match model_id.strip_prefix("ideogram/").unwrap_or(model_id) {
             "ideogram-v3-turbo" | "ideogram-v4-turbo" => Some("TURBO"),
@@ -107,11 +105,33 @@ impl IdeogramProvider {
 
     /// Which generation endpoint serves a catalog id. Only the three 4.0 ids
     /// route to v4; everything else keeps the 3.0 request unchanged.
-    fn generation(model_id: &str) -> Generation {
-        match model_id.strip_prefix("ideogram/").unwrap_or(model_id) {
+    fn generation(model_id: &str) -> Option<Generation> {
+        Some(match model_id.strip_prefix("ideogram/").unwrap_or(model_id) {
+            "ideogram-v3" | "ideogram-v3-turbo" | "ideogram-v3-quality" => Generation::V3,
             "ideogram-v4" | "ideogram-v4-turbo" | "ideogram-v4-quality" => Generation::V4,
             "ideogram-4-5-precise-edit" => Generation::PreciseEdit45,
-            _ => Generation::V3,
+            // An id with no arm is refused, not run as Ideogram 3.0.
+            _ => return None,
+        })
+    }
+
+    /// What litegen itself sends to `POST /v1/ideogram-v3/generate`; `extra`
+    /// cannot replace it.
+    const V3_OWNED_FIELDS: &'static [&'static str] = &[
+        "prompt", "aspect_ratio", "resolution", "rendering_speed", "negative_prompt", "num_images", "seed", "style_type",
+        "style_reference_images", "character_reference_images", "character_reference_images_mask",
+    ];
+
+    /// A 3.0 request's extras: only the row's `extra_allowlist`, and never a
+    /// field litegen sends (`rendering_speed` QUALITY on a TURBO row would
+    /// bill another tier).
+    fn v3_extras<'a>(model: &ModelSchema, extras: &'a ImageExtras) -> Vec<(&'a String, &'a Value)> {
+        match &extras.extra {
+            Some(Value::Object(map)) => map
+                .iter()
+                .filter(|(k, _)| model.extra_allowlist.iter().any(|a| a == *k) && !Self::V3_OWNED_FIELDS.contains(&k.as_str()))
+                .collect(),
+            _ => Vec::new(),
         }
     }
 
@@ -126,7 +146,7 @@ impl IdeogramProvider {
     /// `extra_allowlist` (the validator only filters them in strict mode), and
     /// multipart carries scalars as text (`enable_copyright_detection` is a
     /// boolean).
-    /// @see <https://developer.ideogram.ai/openapi.json> (POST /v1/ideogram-v4/generate)
+    /// @see <https://developer.ideogram.ai/openapi/ideogram-api-v1.json> (POST /v1/ideogram-v4/generate)
     fn v4_fields(
         model: &ModelSchema,
         base: &BaseGenerationRequest,
@@ -161,7 +181,7 @@ impl IdeogramProvider {
     /// `url` is null when `is_image_safe` is false ("If false, the url field
     /// will be empty"), and a 422 carries `{"error": …}` for a prompt that
     /// failed the safety check.
-    /// @see <https://developer.ideogram.ai/openapi.json> (ImageGenerationObjectV4, GenerateImageSafetyError)
+    /// @see <https://developer.ideogram.ai/openapi/ideogram-api-v1.json> (ImageGenerationObjectV4, GenerateImageSafetyError)
     async fn send(
         &self,
         builder: reqwest::RequestBuilder,
@@ -293,7 +313,9 @@ impl ImageProvider for IdeogramProvider {
         materialized: &MaterializedRequest,
     ) -> Result<GenerationOutput, ProviderError> {
         let creds = self.creds()?;
-        if Self::generation(&model.id) == Generation::PreciseEdit45 {
+        let generation = Self::generation(&model.id)
+            .ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "ideogram".into() })?;
+        if generation == Generation::PreciseEdit45 {
             let url = format!("{}/v2/image/precise-edit/ideogram-4-5", self.api_base());
             let mut form = Form::new().text("prompt", base.prompt.clone());
             // The region, as Ideogram's own box: rows first, ends exclusive.
@@ -323,7 +345,7 @@ impl ImageProvider for IdeogramProvider {
             }
             return self.send(self.client.post(&url).multipart(form), &creds).await;
         }
-        if Self::generation(&model.id) == Generation::V4 {
+        if generation == Generation::V4 {
             let url = format!("{}/v1/ideogram-v4/generate", self.api_base());
             let mut form = Form::new();
             for (k, v) in Self::v4_fields(model, base, extras) {
@@ -371,12 +393,19 @@ impl ImageProvider for IdeogramProvider {
             for (k, v) in &fields {
                 form = form.text(k.to_string(), v.clone());
             }
-            // extra string params pass through as text fields.
-            if let Some(Value::Object(map)) = &extras.extra {
-                for (k, v) in map {
-                    if let Some(s) = v.as_str() {
-                        form = form.text(k.clone(), s.to_string());
+            // Extras as text parts. The spec does not say how multipart
+            // carries a list or an object: `style_codes` ("A list of
+            // 8-character hexadecimal codes") goes as repeated parts,
+            // `color_palette` as JSON text.
+            for (k, v) in Self::v3_extras(model, extras) {
+                match v {
+                    Value::String(text) => form = form.text(k.clone(), text.clone()),
+                    Value::Array(items) => {
+                        for item in items {
+                            form = form.text(k.clone(), item.as_str().map(str::to_string).unwrap_or_else(|| item.to_string()));
+                        }
                     }
+                    other => form = form.text(k.clone(), other.to_string()),
                 }
             }
             for r in &materialized.refs {
@@ -400,10 +429,8 @@ impl ImageProvider for IdeogramProvider {
                 };
                 body.insert(k.to_string(), val);
             }
-            if let Some(Value::Object(map)) = &extras.extra {
-                for (k, v) in map {
-                    body.insert(k.clone(), v.clone());
-                }
+            for (k, v) in Self::v3_extras(model, extras) {
+                body.insert(k.clone(), v.clone());
             }
             base_builder.header("Content-Type", "application/json").json(&Value::Object(body))
         };
@@ -540,7 +567,7 @@ mod tests {
     }
 
     // ─── Ideogram 4.0: POST /v1/ideogram-v4/generate ────────────────────────
-    // @see <https://developer.ideogram.ai/openapi.json> (post_generate_image_v4)
+    // @see <https://developer.ideogram.ai/openapi/ideogram-api-v1.json> (post_generate_image_v4)
 
     /// Extract a simple text field's value out of a multipart/form-data body.
     fn multipart_field(body: &[u8], name: &str) -> Option<String> {
@@ -590,10 +617,10 @@ mod tests {
     #[test]
     fn only_the_v4_ids_route_to_the_v4_endpoint() {
         for id in ["ideogram/ideogram-v4", "ideogram/ideogram-v4-turbo", "ideogram/ideogram-v4-quality"] {
-            assert_eq!(IdeogramProvider::generation(id), Generation::V4, "{id}");
+            assert_eq!(IdeogramProvider::generation(id), Some(Generation::V4), "{id}");
         }
         for id in ["ideogram/ideogram-v3", "ideogram/ideogram-v3-turbo", "ideogram/ideogram-v3-quality"] {
-            assert_eq!(IdeogramProvider::generation(id), Generation::V3, "{id}");
+            assert_eq!(IdeogramProvider::generation(id), Some(Generation::V3), "{id}");
         }
     }
 
@@ -698,5 +725,90 @@ mod tests {
                 .expect_err("no image must fail");
             assert!(err.to_string().contains(expect), "{err}");
         }
+    }
+
+    // ─── Ideogram audit, 2026-10-30 ─────────────────────────────────────────
+
+    /// F11: every catalog row has its own endpoint, and an id with none is
+    /// refused rather than run as Ideogram 3.0.
+    #[test]
+    fn every_catalog_row_has_its_own_endpoint_and_an_unknown_id_is_refused() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.pop();
+        dir.push("models");
+        let catalog = crate::capabilities::CapabilityRegistry::from_dir(&dir).unwrap();
+        for m in catalog.for_provider("ideogram") {
+            assert!(IdeogramProvider::generation(&m.id).is_some(), "{} has no arm", m.id);
+        }
+        assert!(IdeogramProvider::generation("ideogram/ideogram-4-5").is_none());
+    }
+
+    /// Ideogram answers every 3.0 generate with a 400, so only the outbound
+    /// body matters.
+    async fn refusing_v3() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/ideogram-v3/generate"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "error": "stop" })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// F4: on 3.0 `extra` carries only the row's allowlist, and never over
+    /// what litegen sends (`rendering_speed` QUALITY on a TURBO row would bill
+    /// another tier, `num_images` more images).
+    #[tokio::test]
+    async fn a_3_0_request_sends_only_allowlisted_extras_and_never_over_what_litegen_sends() {
+        let server = refusing_v3().await;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({
+            "prompt": "other", "rendering_speed": "QUALITY", "num_images": 4, "magic_prompt": "OFF", "not_allowlisted": 1
+        }));
+        let _ = make_provider(&server.uri())
+            .generate(&ref_schema("ideogram/ideogram-v3-turbo"), &make_base("a lantern", "ideogram/ideogram-v3-turbo"), &extras, &empty_materialized())
+            .await;
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body["prompt"], "a lantern");
+        assert_eq!(body["rendering_speed"], "TURBO");
+        assert!(body.get("num_images").is_none() && body.get("not_allowlisted").is_none(), "{body}");
+        assert_eq!(body["magic_prompt"], "OFF");
+    }
+
+    /// F4: with reference images the body is multipart, and an allowlisted
+    /// list (`style_codes`, "A list of 8-character hexadecimal codes") or
+    /// object (`color_palette`) goes too, not only strings. The spec does not
+    /// say how multipart carries them: a list as repeated parts, an object as
+    /// JSON text.
+    /// @see <https://developer.ideogram.ai/v1/api-reference/generate-images/generate-v3> (2026-10-30)
+    #[tokio::test]
+    async fn a_3_0_request_with_references_sends_every_allowlisted_extra() {
+        let server = refusing_v3().await;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({
+            "style_codes": ["AAAAAAAA", "BBBBBBBB"], "color_palette": { "name": "EMBER" }, "rendering_speed": "QUALITY"
+        }));
+        let refs = MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef {
+                role: "style".into(),
+                form: MaterializedRefForm::MultipartField {
+                    field_name: "style_reference_images".into(),
+                    bytes: bytes::Bytes::from_static(b"\x89PNG\r\n\x1a\n"),
+                    content_type: "image/png".into(),
+                },
+                time_s: None,
+            }],
+            cleanup: Cleanup::empty(),
+        };
+        let _ = make_provider(&server.uri())
+            .generate(&ref_schema("ideogram/ideogram-v3-turbo"), &make_base("x", "ideogram/ideogram-v3-turbo"), &extras, &refs)
+            .await;
+        let received = server.received_requests().await.unwrap();
+        let body = String::from_utf8_lossy(&received[0].body).to_string();
+        assert_eq!(body.matches("name=\"style_codes\"").count(), 2, "{body}");
+        assert!(body.contains("AAAAAAAA") && body.contains("BBBBBBBB"), "{body}");
+        assert_eq!(multipart_field(&received[0].body, "color_palette").as_deref(), Some("{\"name\":\"EMBER\"}"));
+        assert_eq!(body.matches("name=\"rendering_speed\"").count(), 1, "{body}");
+        assert_eq!(multipart_field(&received[0].body, "rendering_speed").as_deref(), Some("TURBO"));
     }
 }
