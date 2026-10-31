@@ -377,8 +377,10 @@ class Model3dGenerateParams(TypedDict, total=False):
     extra: dict[str, Any]
     """Vendor-specific fields passed through to the provider. Only keys on the
     model's ``extra_allowlist`` are accepted."""
-    metadata: Any
-    """Arbitrary JSON, accepted on every generation request."""
+    metadata: dict[str, str]
+    """Your own labels for the job (string values, at most 1 KB as JSON). Kept
+    on the generation, echoed on every answer and webhook, and filters
+    ``logs.list`` and ``stats.get``."""
     output_formats: list[Model3dFormat] | None
     """Mesh containers to deliver, e.g. ``["glb", "fbx"]``. This is a promise,
     not a hint: a ``completed`` generation carries a ``mesh`` asset in every
@@ -445,6 +447,8 @@ class ImageSegmentationResponse(TypedDict):
     masks: list[SegmentationMask]
     """One per object selected, best score first; empty when nothing was found."""
     usage: NotRequired[UsageInfo | None]
+    metadata: NotRequired[dict[str, str] | None]
+    """The request's ``metadata``, as sent."""
 
 
 class CostEstimate(TypedDict):
@@ -585,6 +589,9 @@ class Model3dGenerationResponse(TypedDict):
     error: NotRequired[str | None]
     """Why the job failed."""
     usage: NotRequired[UsageInfo | None]
+    """What the job cost: 0 once a failed or cancelled job has been refunded."""
+    metadata: NotRequired[dict[str, str] | None]
+    """The request's ``metadata``, as sent."""
 
 
 class GenerationAsset(TypedDict):
@@ -634,8 +641,20 @@ class Generation(TypedDict):
     """The primary result once completed. For 3D this is the glb mesh when there is one."""
     error_message: NotRequired[str | None]
     metadata: NotRequired[Any]
+    """What litegen keeps on the row; ``metadata["request"]["metadata"]`` is the
+    caller's own ``metadata``, as sent."""
     org_id: NotRequired[str | None]
     app_id: NotRequired[str | None]
+
+
+class CancelledGeneration(Generation):
+    """What ``generations.cancel`` returns: the row as settled, and whether the
+    vendor took the cancel."""
+
+    vendor_cancelled: bool
+    """``True`` when the vendor accepted it, so a queued job will not run;
+    ``False`` when it has no cancel, had already finished, or did not answer
+    within 5 seconds. The job is ``cancelled`` and refunded either way."""
 
 
 class GenerationPage(TypedDict):

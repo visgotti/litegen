@@ -25,6 +25,7 @@ from .polling import (
     wait_for_video_completion,
 )
 from .types import (
+    CancelledGeneration,
     CostEstimate,
     Generation,
     GenerationAssetList,
@@ -212,6 +213,11 @@ def _conversion(body: Any, headers: Mapping[str, str], to_format: Model3dFormat)
 # generation POST, comma-joined: "rig,symmetry,reference_images[view-top]". It
 # is absent when nothing was dropped (litegen-core's validator `dropped_header`).
 _DROPPED_PARAMS_HEADER = "x-litegen-dropped-params"
+
+
+def _metadata_params(metadata: Mapping[str, str] | None) -> dict[str, str]:
+    """``metadata.<key>=<value>`` for each pair a request's metadata must hold."""
+    return {f"metadata.{k}": v for k, v in (metadata or {}).items()}
 
 
 def _parse_dropped_params(value: str | None) -> list[str]:
@@ -612,10 +618,12 @@ class _GenerationsNamespace:
         with only a litegen key. ``index`` is the asset's ``index`` in :meth:`assets`."""
         return self._c._request("GET", f"/v1/generations/{quote(generation_id, safe='')}/assets/{int(index)}")
 
-    def cancel(self, generation_id: str) -> Generation:
+    def cancel(self, generation_id: str) -> CancelledGeneration:
         """Cancel a pending or processing job (``PATCH /v1/generations/{id}``).
 
-        Works for any async job, video or 3D, and returns the updated row. A 3D
+        Works for any async job, video or 3D, and returns the row as settled —
+        a cancelled job is refunded, so ``cost_usd`` is 0 — with
+        ``vendor_cancelled``, whether the vendor took the cancel. A 3D
         job's polls report ``cancelled`` from then on, so a :class:`Model3dJob`
         being waited on returns it. A job that already finished cannot be
         cancelled: the server answers 409, raised as
@@ -657,16 +665,20 @@ class _StatsNamespace:
     def __init__(self, client: LiteGenClient) -> None:
         self._c = client
 
-    def get(self) -> Any:
-        return self._c._request("GET", "/v1/stats")
+    def get(self, *, metadata: Mapping[str, str] | None = None) -> Any:
+        """Usage stats for the caller's org (and app). ``metadata`` narrows them
+        to the requests whose metadata holds every pair: spend per project or asset."""
+        return self._c._request("GET", "/v1/stats", params=_metadata_params(metadata) or None)
 
 
 class _LogsNamespace:
     def __init__(self, client: LiteGenClient) -> None:
         self._c = client
 
-    def list(self, *, page: int = 1, per_page: int = 50) -> Any:
-        return self._c._request("GET", "/v1/logs", params={"page": page, "per_page": per_page})
+    def list(self, *, page: int = 1, per_page: int = 50, metadata: Mapping[str, str] | None = None) -> Any:
+        """Request logs, newest first; ``metadata`` keeps the requests whose
+        metadata holds every pair."""
+        return self._c._request("GET", "/v1/logs", params={"page": page, "per_page": per_page, **_metadata_params(metadata)})
 
 
 class _KeysNamespace:

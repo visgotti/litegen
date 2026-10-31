@@ -1,13 +1,4 @@
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Type,
-    TypeVar,
-    Union,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -17,6 +8,9 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.model_3d_asset import Model3DAsset
+    from ..models.model_3d_generation_response_metadata_type_0 import (
+        Model3DGenerationResponseMetadataType0,
+    )
     from ..models.usage_info import UsageInfo
 
 
@@ -43,6 +37,7 @@ class Model3DGenerationResponse:
             error (Union[None, Unset, str]): Why the generation failed, when it did. Vendor failures carry the
                 vendor's message, with its machine-readable type in parentheses when it
                 sent one.
+            metadata (Union['Model3DGenerationResponseMetadataType0', None, Unset]): The request's `metadata`, as sent.
             usage (Union['UsageInfo', None, Unset]):
     """
 
@@ -54,10 +49,14 @@ class Model3DGenerationResponse:
     status: GenerationStatus
     assets: Union[Unset, List["Model3DAsset"]] = UNSET
     error: Union[None, Unset, str] = UNSET
+    metadata: Union["Model3DGenerationResponseMetadataType0", None, Unset] = UNSET
     usage: Union["UsageInfo", None, Unset] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        from ..models.model_3d_generation_response_metadata_type_0 import (
+            Model3DGenerationResponseMetadataType0,
+        )
         from ..models.usage_info import UsageInfo
 
         created = self.created
@@ -85,6 +84,14 @@ class Model3DGenerationResponse:
         else:
             error = self.error
 
+        metadata: Union[Dict[str, Any], None, Unset]
+        if isinstance(self.metadata, Unset):
+            metadata = UNSET
+        elif isinstance(self.metadata, Model3DGenerationResponseMetadataType0):
+            metadata = self.metadata.to_dict()
+        else:
+            metadata = self.metadata
+
         usage: Union[Dict[str, Any], None, Unset]
         if isinstance(self.usage, Unset):
             usage = UNSET
@@ -109,6 +116,8 @@ class Model3DGenerationResponse:
             field_dict["assets"] = assets
         if error is not UNSET:
             field_dict["error"] = error
+        if metadata is not UNSET:
+            field_dict["metadata"] = metadata
         if usage is not UNSET:
             field_dict["usage"] = usage
 
@@ -117,6 +126,9 @@ class Model3DGenerationResponse:
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         from ..models.model_3d_asset import Model3DAsset
+        from ..models.model_3d_generation_response_metadata_type_0 import (
+            Model3DGenerationResponseMetadataType0,
+        )
         from ..models.usage_info import UsageInfo
 
         d = src_dict.copy()
@@ -148,6 +160,27 @@ class Model3DGenerationResponse:
 
         error = _parse_error(d.pop("error", UNSET))
 
+        def _parse_metadata(
+            data: object,
+        ) -> Union["Model3DGenerationResponseMetadataType0", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                metadata_type_0 = Model3DGenerationResponseMetadataType0.from_dict(data)
+
+                return metadata_type_0
+            except:  # noqa: E722
+                pass
+            return cast(
+                Union["Model3DGenerationResponseMetadataType0", None, Unset], data
+            )
+
+        metadata = _parse_metadata(d.pop("metadata", UNSET))
+
         def _parse_usage(data: object) -> Union["UsageInfo", None, Unset]:
             if data is None:
                 return data
@@ -174,6 +207,7 @@ class Model3DGenerationResponse:
             status=status,
             assets=assets,
             error=error,
+            metadata=metadata,
             usage=usage,
         )
 

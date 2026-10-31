@@ -1944,3 +1944,141 @@ async fn a_db_error_on_a_3d_poll_never_answers_with_another_orgs_job() {
     let raw = p.body.to_string();
     assert!(!raw.contains("assets") && !raw.contains(&id), "nothing of A's job may leak to B: {raw}");
 }
+
+// ─── L17: stored request metadata, and spend per key of it ──────────────────────
+//
+// A job's `metadata` (a string map of at most 1 KB) is kept on its row and its
+// request log, echoed on every answer, and filters `/v1/logs` and `/v1/stats`
+// by `metadata.<key>=<value>`, so spend splits by project and asset.
+
+#[tokio::test]
+async fn a_jobs_metadata_is_kept_echoed_and_splits_logs_and_spend() {
+    let app = spawn_app().await;
+    let mut c = Client::new(&app.base);
+    let (_, secret) = signup_app_and_key(&mut c, "meta").await;
+    let auth = format!("Bearer {secret}");
+    let mut b = Client::new(&app.base);
+    let submit = |metadata: Value| json!({ "model": "mock/priced-video", "prompt": "x", "metadata": metadata });
+    let castle = b.post_with("/v1/videos/generations", submit(json!({ "project": "castle", "asset": "knight" })), &[("authorization", &auth)]).await;
+    assert_eq!(castle.status, 200, "{:?}", castle.body);
+    assert_eq!(castle.body["metadata"], json!({ "project": "castle", "asset": "knight" }), "echoed at submit");
+    let forest = b.post_with("/v1/videos/generations", submit(json!({ "project": "forest" })), &[("authorization", &auth)]).await;
+    assert_eq!(forest.status, 200, "{:?}", forest.body);
+    let id = castle.body["id"].as_str().unwrap();
+    let read = b.get_with(&format!("/v1/videos/{id}"), &[("authorization", &auth)]).await;
+    assert_eq!(read.body["metadata"], json!({ "project": "castle", "asset": "knight" }), "echoed on a read: {:?}", read.body);
+
+    let logs = b.get_with("/v1/logs?metadata.project=castle", &[("authorization", &auth)]).await;
+    assert_eq!(logs.status, 200, "{:?}", logs.body);
+    let ids: Vec<&str> = logs.body["data"].as_array().unwrap().iter().map(|l| l["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, [id], "{:?}", logs.body);
+    let both = b.get_with("/v1/logs?metadata.project=castle&metadata.asset=knight", &[("authorization", &auth)]).await;
+    assert_eq!(both.body["total"], 1, "keys combine: {:?}", both.body);
+    let stats = b.get_with("/v1/stats?metadata.project=castle", &[("authorization", &auth)]).await;
+    assert_eq!(stats.status, 200, "{:?}", stats.body);
+    assert_eq!(stats.body["total_requests"], 1, "{:?}", stats.body);
+    assert!((stats.body["total_cost_usd"].as_f64().unwrap() - 0.5).abs() < 1e-9, "the castle's spend alone: {:?}", stats.body);
+
+    for (bad, code) in [
+        (json!({ "project": 5 }), "param_out_of_range"),
+        (json!(["a"]), "param_out_of_range"),
+        (json!({ "bad key": "x" }), "param_out_of_range"),
+        (json!({ "big": "x".repeat(1100) }), "param_too_long"),
+    ] {
+        let r = b.post_with("/v1/videos/generations", submit(bad.clone()), &[("authorization", &auth)]).await;
+        assert_eq!((r.status, r.body["error"]["code"].as_str(), r.body["error"]["param"].as_str()), (400, Some(code), Some("metadata")), "{bad}: {:?}", r.body);
+    }
+    let bad = b.get_with("/v1/logs?metadata.bad%20key=x", &[("authorization", &auth)]).await;
+    assert_eq!(bad.status, 400, "a filter key metadata cannot hold: {:?}", bad.body);
+}
+
+// ─── L18: cancelling at the vendor, and refunding quota ──────────────────────
+//
+// A job that is cancelled or fails gives back what it was billed at submit:
+// the key's quota, the row's cost (so `usage` reads 0) and its log's (so
+// `/v1/stats` counts what was kept). A cancel reports whether the vendor took
+// it: the mock video vendor does; the mock 3D vendor has no cancel.
+
+/// A fresh org's key with a $5 budget: its id, and its bearer header.
+async fn budgeted_key(c: &mut Client, tag: &str) -> (String, String) {
+    signup(c, &unique_email(tag), &format!("{tag}-org")).await;
+    let csrf = c.csrf().await;
+    let created = c
+        .post_with(
+            "/v1/keys",
+            json!({ "name": format!("{tag}-key"), "token_quota": 5.0, "scopes": "generate,read" }),
+            &[("x-csrf-token", &csrf)],
+        )
+        .await;
+    assert_eq!(created.status, 201, "create key failed: {:?}", created.body);
+    (created.body["id"].as_str().unwrap().to_string(), format!("Bearer {}", created.body["key"].as_str().unwrap()))
+}
+
+async fn tokens_used(owner: &mut Client, key_id: &str) -> f64 {
+    let key = owner.get(&format!("/v1/keys/{key_id}")).await;
+    assert_eq!(key.status, 200, "{:?}", key.body);
+    key.body["tokens_used"].as_f64().expect("tokens_used")
+}
+
+async fn cancel_job(b: &mut Client, id: &str, auth: &str) -> Resp {
+    b.send(reqwest::Method::PATCH, &format!("/v1/generations/{id}"), Some(json!({ "status": "cancelled" })), &[("authorization", auth)]).await
+}
+
+#[tokio::test]
+async fn a_cancelled_job_is_stopped_at_the_vendor_and_refunded() {
+    let app = spawn_app().await;
+    let mut owner = Client::new(&app.base);
+    let (key_id, auth) = budgeted_key(&mut owner, "refund-cancel").await;
+    let mut b = Client::new(&app.base);
+    let sub = b.post_with("/v1/videos/generations", json!({ "model": "mock/priced-video", "prompt": "x" }), &[("authorization", &auth)]).await;
+    assert_eq!(sub.status, 200, "{:?}", sub.body);
+    assert!((tokens_used(&mut owner, &key_id).await - 0.5).abs() < 1e-9, "billed at submit");
+
+    let id = sub.body["id"].as_str().unwrap();
+    let cancelled = cancel_job(&mut b, id, &auth).await;
+    assert_eq!(cancelled.status, 200, "{:?}", cancelled.body);
+    assert_eq!(
+        (cancelled.body["status"].as_str(), cancelled.body["vendor_cancelled"].as_bool(), cancelled.body["cost_usd"].as_f64()),
+        (Some("cancelled"), Some(true), Some(0.0)),
+        "{:?}", cancelled.body
+    );
+    assert_eq!(tokens_used(&mut owner, &key_id).await, 0.0, "the quota is back");
+    let read = b.get_with(&format!("/v1/videos/{id}"), &[("authorization", &auth)]).await;
+    assert_eq!((read.body["status"].as_str(), read.body["usage"]["cost_usd"].as_f64()), (Some("cancelled"), Some(0.0)), "{:?}", read.body);
+    let stats = b.get_with("/v1/stats", &[("authorization", &auth)]).await;
+    assert_eq!(stats.body["total_cost_usd"].as_f64(), Some(0.0), "spend counts what was kept: {:?}", stats.body);
+}
+
+#[tokio::test]
+async fn a_failed_job_is_refunded_and_a_vendor_without_a_cancel_says_so() {
+    let app = spawn_app().await;
+    let mut owner = Client::new(&app.base);
+    let (key_id, auth) = budgeted_key(&mut owner, "refund-fail").await;
+    let mut b = Client::new(&app.base);
+
+    let sub = b.post_with("/v1/models3d/generations", json!({ "model": "mock/priced-fail-3d", "prompt": "x" }), &[("authorization", &auth)]).await;
+    assert_eq!(sub.status, 200, "{:?}", sub.body);
+    assert!((tokens_used(&mut owner, &key_id).await - 0.25).abs() < 1e-9, "billed at submit");
+    let id = sub.body["id"].as_str().unwrap().to_string();
+    let mut last = Value::Null;
+    for _ in 0..50 {
+        last = b.get_with(&format!("/v1/models3d/{id}"), &[("authorization", &auth)]).await.body;
+        if last["status"] == "failed" {
+            break;
+        }
+    }
+    assert_eq!((last["status"].as_str(), last["usage"]["cost_usd"].as_f64()), (Some("failed"), Some(0.0)), "{last}");
+    assert_eq!(tokens_used(&mut owner, &key_id).await, 0.0, "a failure gives the quota back");
+    let again = b.get_with(&format!("/v1/models3d/{id}"), &[("authorization", &auth)]).await;
+    assert_eq!(again.body["usage"]["cost_usd"].as_f64(), Some(0.0), "and reads so from the row: {:?}", again.body);
+
+    let sub = b.post_with("/v1/models3d/generations", json!({ "model": "mock/priced-3d", "prompt": "x" }), &[("authorization", &auth)]).await;
+    assert_eq!(sub.status, 200, "{:?}", sub.body);
+    let cancelled = cancel_job(&mut b, sub.body["id"].as_str().unwrap(), &auth).await;
+    assert_eq!(
+        (cancelled.body["status"].as_str(), cancelled.body["vendor_cancelled"].as_bool(), cancelled.body["cost_usd"].as_f64()),
+        (Some("cancelled"), Some(false), Some(0.0)),
+        "the mock 3D vendor has no cancel; the job is refunded all the same: {:?}", cancelled.body
+    );
+    assert_eq!(tokens_used(&mut owner, &key_id).await, 0.0);
+}

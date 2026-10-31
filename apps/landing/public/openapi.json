@@ -2893,11 +2893,11 @@
                 },
                 "responses": {
                     "200": {
-                        "description": "Cancelled generation",
+                        "description": "Cancelled generation, and whether its vendor took the cancel",
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/Generation"
+                                    "$ref": "#/components/schemas/CancelledGeneration"
                                 }
                             }
                         }
@@ -3997,6 +3997,7 @@
                     "Dashboard"
                 ],
                 "summary": "GET /v1/logs \u2014 Paginated + filtered request logs. Supports `?format=csv`.",
+                "description": "`metadata.<key>=<value>` (repeatable) keeps the requests whose `metadata`\nholds every pair (L17).",
                 "operationId": "get_logs_filtered",
                 "parameters": [
                     {
@@ -4029,6 +4030,16 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/PaginatedResponse_RequestLog"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "A `metadata.<key>` filter names a key metadata cannot hold",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
                                 }
                             }
                         }
@@ -6044,6 +6055,7 @@
                     "Dashboard"
                 ],
                 "summary": "GET /v1/stats \u2014 Get aggregate usage statistics.",
+                "description": "`metadata.<key>=<value>` (repeatable) narrows them to the requests whose\n`metadata` holds every pair: spend per project, per asset (L17).",
                 "operationId": "get_stats",
                 "responses": {
                     "200": {
@@ -6052,6 +6064,16 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/ProxyStats"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "A `metadata.<key>` filter names a key metadata cannot hold",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
                                 }
                             }
                         }
@@ -7378,7 +7400,19 @@
                 ],
                 "properties": {
                     "extra": {},
-                    "metadata": {},
+                    "metadata": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "description": "Your own labels for the job (PixelGenie L17): a map of string values,\nkeys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. Kept on\nthe generation, echoed on every answer and webhook, and filters\n`GET /v1/logs` and `GET /v1/stats` as `metadata.<key>=<value>`.",
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
                     "model": {
                         "type": "string"
                     },
@@ -7477,6 +7511,26 @@
                         "description": "Target status; only `\"cancelled\"` is honored."
                     }
                 }
+            },
+            "CancelledGeneration": {
+                "allOf": [
+                    {
+                        "$ref": "#/components/schemas/Generation"
+                    },
+                    {
+                        "type": "object",
+                        "required": [
+                            "vendor_cancelled"
+                        ],
+                        "properties": {
+                            "vendor_cancelled": {
+                                "type": "boolean",
+                                "description": "True when the vendor accepted the cancel, so a queued job will not run;\nfalse when it has no cancel, had already finished, or did not answer\nwithin 5 seconds. The job is `cancelled` and refunded either way."
+                            }
+                        }
+                    }
+                ],
+                "description": "`PATCH /v1/generations/{id}`'s answer: the cancelled generation as\nsettled, and whether its vendor took the cancel (L18)."
             },
             "CapabilityMediaType": {
                 "type": "string",
@@ -8607,6 +8661,19 @@
                         "type": "string",
                         "description": "Unique request ID for tracking."
                     },
+                    "metadata": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "description": "The request's `metadata`, as sent.",
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
                     "model": {
                         "type": "string",
                         "description": "The model that was used."
@@ -8733,6 +8800,19 @@
                         "type": "string",
                         "description": "The image: base64, or a `data:` URI. PNG, JPEG, WebP or GIF."
                     },
+                    "metadata": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "description": "Your own labels for the call, as on a generation (L17).",
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
                     "model": {
                         "type": "string",
                         "description": "A model whose `task` is `segment`."
@@ -8772,6 +8852,19 @@
                             "$ref": "#/components/schemas/SegmentationMask"
                         },
                         "description": "One per object selected, best score first. Empty when nothing was\nfound."
+                    },
+                    "metadata": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "description": "The request's `metadata`, as sent.",
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
                     },
                     "model": {
                         "type": "string"
@@ -9548,6 +9641,19 @@
                         "type": "string",
                         "description": "`litegen-3d-\u2026`. Poll it at `GET /v1/models3d/{id}`; it is also the\ngeneration's id under `/v1/generations`."
                     },
+                    "metadata": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "description": "The request's `metadata`, as sent.",
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
                     "model": {
                         "type": "string"
                     },
@@ -9570,7 +9676,7 @@
                             },
                             {
                                 "$ref": "#/components/schemas/UsageInfo",
-                                "description": "The cost quoted and charged at submit; identical on every poll."
+                                "description": "The cost charged: quoted at submit, and 0 once a failed or cancelled\ngeneration has been refunded (L18)."
                             }
                         ]
                     }
@@ -14544,6 +14650,19 @@
                                 "description": "What came back, read from the finished video (PixelGenie L10)."
                             }
                         ]
+                    },
+                    "metadata": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "description": "The request's `metadata`, as sent.",
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "propertyNames": {
+                            "type": "string"
+                        }
                     },
                     "model": {
                         "type": "string",

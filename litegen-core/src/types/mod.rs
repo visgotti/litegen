@@ -34,8 +34,30 @@ pub struct BaseGenerationRequest {
     pub strict: bool,
     #[serde(default)]
     pub extra: Option<serde_json::Value>,
+    /// Your own labels for the job (PixelGenie L17): a map of string values,
+    /// keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. Kept on
+    /// the generation, echoed on every answer and webhook, and filters
+    /// `GET /v1/logs` and `GET /v1/stats` as `metadata.<key>=<value>`.
     #[serde(default)]
+    #[schema(value_type = Option<std::collections::HashMap<String, String>>)]
     pub metadata: Option<serde_json::Value>,
+}
+
+/// The caller's `metadata`, once validated: what every answer echoes.
+pub type RequestMetadata = std::collections::BTreeMap<String, String>;
+
+impl BaseGenerationRequest {
+    /// This request's `metadata` as the echo carries it.
+    pub fn metadata_map(&self) -> Option<RequestMetadata> {
+        serde_json::from_value(self.metadata.clone()?).ok()
+    }
+}
+
+impl Generation {
+    /// The `metadata` the caller sent with this job, kept on its row.
+    pub fn request_metadata(&self) -> Option<RequestMetadata> {
+        serde_json::from_value(self.metadata.as_ref()?.get("request")?.get("metadata")?.clone()).ok()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -288,6 +310,10 @@ pub struct ImageGenerationResponse {
     pub usage: Option<UsageInfo>,
     /// Unique request ID for tracking.
     pub id: String,
+    /// The request's `metadata`, as sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<std::collections::HashMap<String, String>>)]
+    pub metadata: Option<RequestMetadata>,
 }
 
 // ─── Video Generation ─────────────────────────────────────────────────────
@@ -323,6 +349,10 @@ pub struct VideoGenerationResponse {
     /// (3D doc §5). Absent on a plain generation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub segments: Option<Vec<VideoSegment>>,
+    /// The request's `metadata`, as sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<std::collections::HashMap<String, String>>)]
+    pub metadata: Option<RequestMetadata>,
 }
 
 // ─── 3D Model Generation ──────────────────────────────────────────────────
@@ -778,6 +808,10 @@ pub struct ImageSegmentationRequest {
     /// What to select. Point and box prompts together select one object;
     /// a text prompt selects every instance of what it names.
     pub prompts: Vec<SegmentationPrompt>,
+    /// Your own labels for the call, as on a generation (L17).
+    #[serde(default)]
+    #[schema(value_type = Option<std::collections::HashMap<String, String>>)]
+    pub metadata: Option<serde_json::Value>,
 }
 
 /// What the prompts selected.
@@ -794,6 +828,10 @@ pub struct ImageSegmentationResponse {
     pub masks: Vec<SegmentationMask>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<UsageInfo>,
+    /// The request's `metadata`, as sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<std::collections::HashMap<String, String>>)]
+    pub metadata: Option<RequestMetadata>,
 }
 
 /// One selected object.
@@ -1191,11 +1229,16 @@ pub struct Model3dGenerationResponse {
     /// sent one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// The cost quoted and charged at submit; identical on every poll.
+    /// The cost charged: quoted at submit, and 0 once a failed or cancelled
+    /// generation has been refunded (L18).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<UsageInfo>,
     /// Unix seconds when the generation was submitted.
     pub created: i64,
+    /// The request's `metadata`, as sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<std::collections::HashMap<String, String>>)]
+    pub metadata: Option<RequestMetadata>,
 }
 
 impl Model3dGenerationResponse {
@@ -1872,6 +1915,18 @@ pub struct VendorError {
 }
 
 // ─── Generations (DB-backed polling) ───────────────────────────────────────
+
+/// `PATCH /v1/generations/{id}`'s answer: the cancelled generation as
+/// settled, and whether its vendor took the cancel (L18).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CancelledGeneration {
+    #[serde(flatten)]
+    pub generation: Generation,
+    /// True when the vendor accepted the cancel, so a queued job will not run;
+    /// false when it has no cancel, had already finished, or did not answer
+    /// within 5 seconds. The job is `cancelled` and refunded either way.
+    pub vendor_cancelled: bool,
+}
 
 /// A DB-backed generation row (video or image, currently used for video).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

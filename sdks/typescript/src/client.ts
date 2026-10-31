@@ -170,12 +170,25 @@ export interface Generation {
   cost_usd: number;
   created_at: string;
   completed_at?: string | null;
-  /** Arbitrary JSON metadata. */
+  /**
+   * What litegen keeps on the row. `metadata.request.metadata` is the caller's
+   * own `metadata`, as sent.
+   */
   metadata?: Record<string, unknown> | null;
   /** Owning tenant (organization). Absent for pre-tenancy / untenanted rows. */
   org_id?: string;
   /** Owning application. Absent for pre-tenancy / untenanted rows. */
   app_id?: string;
+}
+
+/** What `generations.cancel` resolves to: the row as settled, and whether the vendor took the cancel. */
+export interface CancelledGeneration extends Generation {
+  /**
+   * True when the vendor accepted the cancel, so a queued job will not run;
+   * false when it has no cancel, had already finished, or did not answer
+   * within 5 seconds. The job is `cancelled` and refunded either way.
+   */
+  vendor_cancelled: boolean;
 }
 
 export interface RequestArtifact {
@@ -252,6 +265,14 @@ export interface GetLogsOptions {
   status?: string;
   from?: string;
   to?: string;
+  /** Only requests whose `metadata` holds every pair (sent as `metadata.<key>`). */
+  metadata?: Record<string, string>;
+}
+
+/** Filter options for `stats.get`. */
+export interface GetStatsOptions {
+  /** Only requests whose `metadata` holds every pair: spend per project or asset. */
+  metadata?: Record<string, string>;
 }
 
 /** Filter options for `logs.exportCsv` (same filters as `logs.list`, sans pagination). */
@@ -1044,20 +1065,33 @@ class HealthNamespace {
   }
 }
 
+/** Append `metadata.<key>=<value>` for each pair a request's metadata must hold. */
+function applyMetadataFilter(params: URLSearchParams, metadata?: Record<string, string>): void {
+  for (const [k, v] of Object.entries(metadata ?? {})) params.set(`metadata.${k}`, v);
+}
+
 class StatsNamespace {
   constructor(private readonly client: LiteGenClient) {}
-  get(signal?: AbortSignal): Promise<ProxyStats> {
-    return this.client.request("GET", "/v1/stats", undefined, signal);
+  /** Usage stats for the caller's org (and app), optionally narrowed by `metadata`. */
+  get(opts?: GetStatsOptions, signal?: AbortSignal): Promise<ProxyStats>;
+  /** The pre-filter form, kept so existing `get(signal)` calls compile. */
+  get(signal?: AbortSignal): Promise<ProxyStats>;
+  get(a?: GetStatsOptions | AbortSignal, b?: AbortSignal): Promise<ProxyStats> {
+    const [opts, signal] = a instanceof AbortSignal ? [{}, a] : [a ?? {}, b];
+    const params = new URLSearchParams();
+    applyMetadataFilter(params, opts.metadata);
+    return this.client.request("GET", `/v1/stats?${params.toString()}`, undefined, signal);
   }
 }
 
-/** Append the shared request-log filters (model/provider/status/from/to) to a query string. */
+/** Append the shared request-log filters (model/provider/status/from/to/metadata) to a query string. */
 function applyLogFilters(params: URLSearchParams, opts: ExportLogsOptions): void {
   if (opts.model) params.set("model", opts.model);
   if (opts.provider) params.set("provider", opts.provider);
   if (opts.status) params.set("status", opts.status);
   if (opts.from) params.set("from", opts.from);
   if (opts.to) params.set("to", opts.to);
+  applyMetadataFilter(params, opts.metadata);
 }
 
 /** Append the shared audit-log filters (actor_key_id/action/from/to) to a query string. */
@@ -1389,11 +1423,13 @@ class GenerationsNamespace {
 
   /**
    * Cancel an in-flight async job — video or 3D — by id
-   * (`PATCH /v1/generations/{id}` with `{ status: "cancelled" }`). Rejects
-   * with `LiteGenAPIError` status 409 once the job is no longer pending or
+   * (`PATCH /v1/generations/{id}` with `{ status: "cancelled" }`). Resolves to
+   * the row as settled (a cancelled job is refunded: `cost_usd` 0) and
+   * `vendor_cancelled`, whether the vendor took the cancel. Rejects with
+   * `LiteGenAPIError` status 409 once the job is no longer pending or
    * processing, and 404 for an unknown id.
    */
-  cancel(id: string, signal?: AbortSignal): Promise<Generation> {
+  cancel(id: string, signal?: AbortSignal): Promise<CancelledGeneration> {
     return this.client.request(
       "PATCH",
       `/v1/generations/${encodeURIComponent(id)}`,

@@ -168,6 +168,45 @@ recorded the vendor's job id is not retried either. Proof:
 the vendor accepts it — bfl, kling, hunyuan, leonardo, luma, replicate, runway —
 each asserted in its own polling test.
 
+## Request metadata (L17)
+
+`metadata` is the caller's own labels for a call, on every generation
+(image, video, 3D) and on segmentation. It never reaches a vendor.
+
+| what | rule | proof | status |
+|---|---|---|---|
+| shape | a JSON object of string values; keys of 1–64 letters, digits, `_`, `.` and `-` (`param_out_of_range` otherwise); at most 1 KB as JSON (`param_too_long`); refused before billing | HTTP `a_jobs_metadata_is_kept_echoed_and_splits_logs_and_spend` | ✅ mock |
+| kept | on the generation row as `metadata.request.metadata`, and on the request log as its `metadata` | same; Postgres `metadata_filters_and_refund_claims_against_postgres` | ✅ |
+| echoed | `metadata` on the image, video, 3D and segmentation answers, at submit and on every read; webhooks carry the row, so `metadata.request.metadata` | same; poller `the_terminal_webhook_carries_the_callers_metadata`; handler `a_cancel_refunds_the_job_and_sends_its_webhook` | ✅ |
+| filters | `metadata.<key>=<value>` on `GET /v1/logs` and `GET /v1/stats`, repeatable, every pair held; a key metadata cannot hold is a 400 | HTTP (sqlite, with an app) and Postgres (with and without one); SDKs `logs.list({ metadata })` / `stats.get({ metadata })`, Python `metadata=` (sync and async) | ✅ |
+
+## Cancelling and refunds (L18)
+
+`PATCH /v1/generations/{id}` with `{"status": "cancelled"}` cancels the row,
+asks the vendor to stop (waiting up to 5 s for its answer), and reports
+`vendor_cancelled`: true only when the vendor took it. A job that is
+cancelled or fails — at any observer: the poller, a reap, a client's poll, a
+cancel — gives back what it was billed at submit, once: the key's quota, the
+limits of every principal it was charged against (recorded on the row at
+submit as `billing.limits`), and the row's and log's `cost_usd`, so `usage`
+and `/v1/stats` read 0. A cancel also sends the terminal webhook.
+
+| vendor | cancel | `vendor_cancelled: true` when | proof | status |
+|---|---|---|---|---|
+| fal (video and 3D) | `PUT {response_url}/cancel` | 200 `OK` or 202 `CANCELLATION_REQUESTED`; 400 `ALREADY_COMPLETED` and 404 are false | `cancel_puts_to_the_jobs_queue_url_and_maps_fals_four_answers` (video), `cancel_maps_fals_three_answers` (3D) | ✅ wiremock |
+| Replicate (video) | `POST /v1/predictions/{id}/cancel` | 2xx, unless the prediction it returns had already `succeeded` or `failed`; the reference documents no response **(unverified)** | `cancel_posts_to_the_predictions_cancel_endpoint` | 🟡 wiremock |
+| Runway (video) | `GET /v1/tasks/{id}`, then `DELETE` only a task still `PENDING`, `THROTTLED` or `RUNNING` (the DELETE would delete a finished one, refunding nothing) | 204 | `cancel_deletes_a_task_that_has_not_finished`, `cancel_leaves_a_finished_task_alone_and_reports_one_that_is_gone` | ✅ wiremock |
+| mock video | always taken | always | HTTP `a_cancelled_job_is_stopped_at_the_vendor_and_refunded` | ✅ |
+| mock 3D and every other vendor | none wired | never | HTTP `a_failed_job_is_refunded_and_a_vendor_without_a_cancel_says_so` | — |
+
+| refund | proof | status |
+|---|---|---|
+| on cancel: quota, row and log cost, stats | HTTP `a_cancelled_job_is_stopped_at_the_vendor_and_refunded`; handler `a_cancel_refunds_the_job_and_sends_its_webhook` | ✅ |
+| on failure seen by a client's poll | HTTP `a_failed_job_is_refunded_and_a_vendor_without_a_cancel_says_so` (`mock/priced-fail-3d`, $0.25) | ✅ |
+| on a reap, once however many observers settle it | poller `a_reaped_job_is_refunded_once` | ✅ |
+| limits of every principal charged | management `a_cancelled_job_refunds_every_principal_it_was_charged_against` | ✅ |
+| the claim, in Postgres | `metadata_filters_and_refund_claims_against_postgres` | ✅ |
+
 ## Image / Video
 
 Row inventory generated 2026-08-27 via:

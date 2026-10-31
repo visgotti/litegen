@@ -241,8 +241,10 @@ pub async fn generate_image(
     };
     let attributed = limits.attribution();
 
+    let log_metadata = validated.request.base.metadata.clone();
     match state.router.generate_image(&validated.schema, &validated.request.base, &extras, &materialized, app_creds, app_store, cache_scope.as_deref()).await {
-        Ok(response) => {
+        Ok(mut response) => {
+            response.metadata = validated.request.base.metadata_map();
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
 
@@ -307,7 +309,7 @@ pub async fn generate_image(
             let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
             tokio::spawn(async move {
                 let _ = db
-                    .log_request(&id, &model, &provider, "completed", "image", cost, latency, None, None, org_id.as_deref(), app_id.as_deref())
+                    .log_request(&id, &model, &provider, "completed", "image", cost, latency, None, log_metadata.as_ref(), org_id.as_deref(), app_id.as_deref())
                     .await;
                 crate::management::enforce::attribute(&db, &id, &attributed).await;
                 if let Err(e) = db.insert_request_artifact(&artifact).await {
@@ -338,7 +340,7 @@ pub async fn generate_image(
             tokio::spawn(async move {
                 let id = format!("litegen-img-{}", Uuid::new_v4());
                 let _ = db
-                    .log_request(&id, &model, "unknown", "failed", "image", 0.0, latency, Some(&err_msg), None, org_id.as_deref(), app_id.as_deref())
+                    .log_request(&id, &model, "unknown", "failed", "image", 0.0, latency, Some(&err_msg), log_metadata.as_ref(), org_id.as_deref(), app_id.as_deref())
                     .await;
                 crate::management::enforce::attribute(&db, &id, &attributed).await;
                 let artifact = RequestArtifact {
@@ -425,15 +427,17 @@ pub async fn segment_image(
     let latency = start.elapsed().as_millis() as i64;
     let (org_id, app_id) = (key_ctx.as_ref().and_then(|c| c.org_id.clone()), key_ctx.as_ref().and_then(|c| c.app_id.clone()));
     let db = state.db.clone();
+    let log_metadata = validated.metadata.clone();
     match result {
-        Ok(response) => {
+        Ok(mut response) => {
+            response.metadata = log_metadata.clone().and_then(|m| serde_json::from_value(m).ok());
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
             settle_quota(&state, charge_key, reserved, cost).await;
             limits.settle(&state, cost).await;
             let (id, model, provider) = (response.id.clone(), response.model.clone(), response.provider.clone());
             tokio::spawn(async move {
                 let _ = db
-                    .log_request(&id, &model, &provider, "completed", "image", cost, latency, None, None, org_id.as_deref(), app_id.as_deref())
+                    .log_request(&id, &model, &provider, "completed", "image", cost, latency, None, log_metadata.as_ref(), org_id.as_deref(), app_id.as_deref())
                     .await;
                 crate::management::enforce::attribute(&db, &id, &attributed).await;
             });
@@ -449,7 +453,7 @@ pub async fn segment_image(
             tokio::spawn(async move {
                 let id = format!("litegen-seg-{}", Uuid::new_v4());
                 let _ = db
-                    .log_request(&id, &model, "unknown", "failed", "image", 0.0, latency, Some(&err_msg), None, org_id.as_deref(), app_id.as_deref())
+                    .log_request(&id, &model, "unknown", "failed", "image", 0.0, latency, Some(&err_msg), log_metadata.as_ref(), org_id.as_deref(), app_id.as_deref())
                     .await;
                 crate::management::enforce::attribute(&db, &id, &attributed).await;
             });
@@ -606,10 +610,13 @@ pub async fn generate_video(
     match state.router.generate_video(&validated.schema, &validated.request.base, &extras, &materialized, app_creds).await {
         Ok(mut response) => {
             response.segments = segments.clone();
+            response.metadata = validated.request.base.metadata_map();
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
 
-            // Settle the reservation to the actual cost.
+            // Settle the reservation to the actual cost. Who it was charged
+            // against goes on the row, for a refund if the job fails (L18).
+            let charged_to = limits.charged_to();
             settle_quota(&state, charge_key, reserved, cost).await;
             limits.settle(&state, cost).await;
 
@@ -653,6 +660,7 @@ pub async fn generate_video(
             let org_id = key_ctx.as_ref().and_then(|c| c.org_id.clone());
             let app_id = key_ctx.as_ref().and_then(|c| c.app_id.clone());
             let request = request_record(&validated.request.base, serde_json::to_value(&extras).ok(), &validated.ctx);
+            let log_metadata = validated.request.base.metadata.clone();
 
             // The row is written BEFORE the response (L2): the caller learns the
             // id only from it and polls `GET /v1/generations/{id}` at once, and
@@ -664,7 +672,7 @@ pub async fn generate_video(
                 let id = id.clone();
                 tokio::spawn(async move {
                     if let Err(e) = db
-                        .log_request(&id, &model, &provider, "pending", "video", cost, latency, None, None, org_id.as_deref(), app_id.as_deref())
+                        .log_request(&id, &model, &provider, "pending", "video", cost, latency, None, log_metadata.as_ref(), org_id.as_deref(), app_id.as_deref())
                         .await
                     {
                         tracing::warn!(generation_id = %id, error = %e, "failed to log the video request");
@@ -681,7 +689,7 @@ pub async fn generate_video(
                         org_id.as_deref(),
                         app_id.as_deref(),
                     ).await?;
-                    let mut recorded = serde_json::json!({ "request": request });
+                    let mut recorded = serde_json::json!({ "request": request, "billing": { "limits": charged_to } });
                     if let Some(segments) = &segments {
                         recorded["segments"] = serde_json::json!(segments);
                     }
@@ -789,6 +797,7 @@ pub async fn get_video_status(
             if let Some(row) = row.as_ref() {
                 resp.created = row.created_at.timestamp();
                 resp.segments = row.metadata.as_ref().and_then(|m| serde_json::from_value(m.get("segments")?.clone()).ok());
+                resp.metadata = row.request_metadata();
             }
             // A terminal answer is persisted here as well as by the poller, so
             // it reads the same however often it is read: the router has let
@@ -801,8 +810,9 @@ pub async fn get_video_status(
                 ).await;
                 match written {
                     Ok(w) if w == crate::db::GenerationWrite::Written => {
-                        if let Err(e) = state.db.update_request_log_status(&id, &resp.status.to_string(), resp.error.as_deref()).await {
-                            tracing::warn!(generation_id = %id, error = %e, "failed to settle the video request log");
+                        let refunded = crate::proxy::poller::settle_terminal(&state.db, &id, &resp.status.to_string(), resp.error.as_deref()).await;
+                        if refunded > 0.0 {
+                            resp.usage = Some(usage_from_row_cost(0.0));
                         }
                         if let Some(row) = row.as_ref() {
                             let gen = crate::types::Generation {
@@ -856,6 +866,7 @@ fn video_response_from_row(gen: &crate::types::Generation) -> VideoGenerationRes
         created: gen.created_at.timestamp(),
         media: gen.metadata.as_ref().and_then(crate::types::VideoMedia::from_assets),
         segments: gen.metadata.as_ref().and_then(|m| serde_json::from_value(m.get("segments")?.clone()).ok()),
+        metadata: gen.request_metadata(),
     }
 }
 
@@ -1395,7 +1406,8 @@ pub async fn generate_3d(
     match state.router.generate_model3d(
         &validated.schema, &validated.request.base, &extras, &materialized, app_creds,
     ).await {
-        Ok(response) => {
+        Ok(mut response) => {
+            response.metadata = validated.request.base.metadata_map();
             let latency = start.elapsed().as_millis() as i64;
             let cost = response.usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
 
@@ -1428,6 +1440,9 @@ pub async fn generate_3d(
             // exactly what the client's poll would.
             let delivery = crate::proxy::model3d_deliver::DeliveryPlan::for_request(&validated.schema, &extras);
             let request = request_record(&validated.request.base, serde_json::to_value(&extras).ok(), &validated.ctx);
+            let log_metadata = validated.request.base.metadata.clone();
+            // Who the job is charged against, for a refund if it fails (L18).
+            let charged_to = limits.charged_to();
             let source_record = lineage.clone();
             let source_delivery = extras.source.as_ref().and_then(|s| s.delivery()).map(|d| d.as_str());
             let vendor_account = vendor_account.clone();
@@ -1459,7 +1474,7 @@ pub async fn generate_3d(
                     // while its log row is still to come — that order is what keeps a
                     // terminal `update_request_log_status` from being overwritten by a
                     // late `pending` insert.
-                    if let Err(e) = db.log_request(&id, &model, &provider, "pending", "model3d", cost, latency, None, None, org_id.as_deref(), app_id.as_deref()).await {
+                    if let Err(e) = db.log_request(&id, &model, &provider, "pending", "model3d", cost, latency, None, log_metadata.as_ref(), org_id.as_deref(), app_id.as_deref()).await {
                         tracing::warn!(generation_id = %id, error = %e, "failed to log the 3d request");
                     }
                     crate::management::enforce::attribute(&db, &id, &attributed).await;
@@ -1483,6 +1498,7 @@ pub async fn generate_3d(
                         "delivery": delivery,
                         "request": request,
                         "vendor_account": vendor_account,
+                        "billing": { "limits": charged_to },
                     });
                     // Lineage (3D doc §3D): the source's generation and hash,
                     // and how it reached the vendor.
@@ -1633,6 +1649,7 @@ pub async fn get_3d_status(
             // `created` is when the job was submitted, on every read: the row's.
             if let Some(gen) = row.as_ref() {
                 resp.created = gen.created_at.timestamp();
+                resp.metadata = gen.request_metadata();
             }
             // Persist the terminal result so `GET /v1/generations/{id}`, the
             // gallery, and any webhook see the same assets the poller would have
@@ -1664,7 +1681,10 @@ pub async fn get_3d_status(
                     resp.status = GenerationStatus::Failed;
                     resp.error = Some(err.to_string());
                     resp.assets.clear();
-                    if fail_model3d_row(&state, &id, resp.progress as i32, err).await {
+                    if let Some(refunded) = fail_model3d_row(&state, &id, resp.progress as i32, err).await {
+                        if refunded > 0.0 {
+                            resp.usage = Some(usage_from_row_cost(0.0));
+                        }
                         dispatch_3d_webhook(&state, row.as_ref(), &resp).await;
                     } else {
                         resp = decided_or(&state, &id, resp).await;
@@ -1672,7 +1692,10 @@ pub async fn get_3d_status(
                 }
             } else if resp.status == GenerationStatus::Failed {
                 let err = resp.error.clone().unwrap_or_else(|| "3d generation failed".to_string());
-                if fail_model3d_row(&state, &id, resp.progress as i32, &err).await {
+                if let Some(refunded) = fail_model3d_row(&state, &id, resp.progress as i32, &err).await {
+                    if refunded > 0.0 {
+                        resp.usage = Some(usage_from_row_cost(0.0));
+                    }
                     dispatch_3d_webhook(&state, row.as_ref(), &resp).await;
                 } else {
                     resp = decided_or(&state, &id, resp).await;
@@ -1693,8 +1716,6 @@ pub async fn get_3d_status(
     }
 }
 
-/// Terminalise a 3D row as `failed`, guarded. Returns whether THIS call wrote
-/// it (so the caller knows whether to dispatch the webhook).
 /// The answer after this observer's guarded terminal write did NOT take: if
 /// another observer (a cancel, the poller, a reap) already decided the row,
 /// that decision is the answer, because clients stop on the first terminal
@@ -1707,21 +1728,21 @@ async fn decided_or(state: &AppState, id: &str, resp: Model3dGenerationResponse)
     }
 }
 
-async fn fail_model3d_row(state: &AppState, id: &str, progress: i32, error: &str) -> bool {
+/// Terminalise a 3D row as `failed`, guarded, and settle it. `Some` with the
+/// amount refunded when THIS call wrote it (so the caller dispatches the
+/// webhook and reports the refund); `None` when another observer decided first.
+async fn fail_model3d_row(state: &AppState, id: &str, progress: i32, error: &str) -> Option<f64> {
     match state.db.update_generation_if_active(
         id, "failed", progress, None, Some(error), Some(chrono::Utc::now()), None,
     ).await {
         Ok(w) if w.owns_outcome() => {}
-        Ok(_) => return false, // the poller (or a cancel) got there first
+        Ok(_) => return None, // the poller (or a cancel) got there first
         Err(e) => {
             tracing::warn!(generation_id = %id, error = %e, "failed to persist the 3d failure");
-            return false;
+            return None;
         }
     }
-    if let Err(e) = state.db.update_request_log_status(id, "failed", Some(error)).await {
-        tracing::warn!(generation_id = %id, error = %e, "failed to mark the 3d request log failed");
-    }
-    true
+    Some(crate::proxy::poller::settle_terminal(&state.db, id, "failed", Some(error)).await)
 }
 
 /// Fire the terminal webhook for a 3D generation this handler terminalised.
@@ -1921,6 +1942,7 @@ pub(crate) fn model3d_response_from_row(gen: &crate::types::Generation) -> Model
         // poll carries the same triple a router-answered one does.
         usage: Some(usage_from_row_cost(gen.cost_usd)),
         created: gen.created_at.timestamp(),
+        metadata: gen.request_metadata(),
     };
     // Third and last observer of completion. The mesh guard above answers "is
     // there a mesh at all"; this answers "is every mesh the caller was promised
@@ -2353,17 +2375,22 @@ pub async fn readiness(
 // ─── Stats / Dashboard ──────────────────────────────────────────────────────
 
 /// GET /v1/stats — Get aggregate usage statistics.
+///
+/// `metadata.<key>=<value>` (repeatable) narrows them to the requests whose
+/// `metadata` holds every pair: spend per project, per asset (L17).
 #[utoipa::path(
     get,
     path = "/v1/stats",
     responses(
         (status = 200, description = "Usage statistics", body = ProxyStats),
+        (status = 400, description = "A `metadata.<key>` filter names a key metadata cannot hold", body = ErrorResponse),
     ),
     tag = "Dashboard"
 )]
 pub async fn get_stats(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
+    Query(pairs): Query<Vec<(String, String)>>,
 ) -> impl IntoResponse {
     // Tenant scope: require an active org; stats are computed over org (+ app when set).
     let org_id = match key_ctx.as_ref().and_then(|c| c.org_id.as_deref()) {
@@ -2371,7 +2398,11 @@ pub async fn get_stats(
         None => return forbidden_no_org(),
     };
     let app_id = key_ctx.as_ref().and_then(|c| c.app_id.as_deref());
-    match state.db.get_stats_for_tenant(org_id, app_id).await {
+    let metadata = match metadata_filter(&pairs) {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
+    match state.db.get_stats_for_tenant(org_id, app_id, &metadata).await {
         Ok(stats) => (StatusCode::OK, Json(serde_json::to_value(stats).unwrap())).into_response(),
         Err(e) => {
             error!(error = %e, "Failed to get stats");
@@ -2970,7 +3001,7 @@ pub struct CancelGenerationBody {
     params(("id" = String, Path, description = "Generation ID (litegen-vid-...)")),
     request_body = CancelGenerationBody,
     responses(
-        (status = 200, description = "Cancelled generation", body = crate::types::Generation),
+        (status = 200, description = "Cancelled generation, and whether its vendor took the cancel", body = crate::types::CancelledGeneration),
         (status = 403, description = "Forbidden", body = ErrorResponse),
         (status = 404, description = "Not found", body = ErrorResponse),
         (status = 409, description = "Not in a cancellable state", body = ErrorResponse),
@@ -3022,16 +3053,36 @@ pub async fn cancel_generation(
             let tracked = state.router.forget_model3d_job(&id).await;
             state.router.forget_video_job(&id).await;
             // ...and stop it at the VENDOR, which otherwise keeps working on a
-            // job nobody will collect — and bills for it. Off the response path:
-            // the row is cancelled whatever the vendor answers.
-            if gen.media_type == "model3d" {
-                tokio::spawn(cancel_model3d_at_vendor(state.clone(), gen.clone(), tracked));
-            }
-            // A cancelled job leaves the poller's active window, so this is the
-            // only terminal update its `pending` request log (same id) will get.
-            if let Err(e) = state.db.update_request_log_status(&id, "cancelled", None).await {
-                tracing::warn!(generation_id = %id, error = %e, "failed to mark the request log cancelled");
-            }
+            // job nobody will collect — and bills for it (L18). The answer says
+            // whether the vendor took it, so it waits briefly; a slow vendor is
+            // still asked, in the background, and reads as not cancelled.
+            let asked = tokio::spawn({
+                let (state, gen) = (state.clone(), gen.clone());
+                async move {
+                    match gen.media_type.as_str() {
+                        "model3d" => cancel_model3d_at_vendor(state, gen, tracked).await,
+                        "video" => cancel_video_at_vendor(state, gen).await,
+                        _ => None,
+                    }
+                }
+            });
+            let vendor_cancelled = matches!(
+                tokio::time::timeout(VENDOR_CANCEL_WAIT, asked).await,
+                Ok(Ok(Some(crate::providers::CancelOutcome::Requested)))
+            );
+            // A cancelled job leaves the poller's active window, so this is its
+            // only settlement: the `pending` request log (same id) takes the
+            // outcome, and what the job was billed goes back.
+            crate::proxy::poller::settle_terminal(&state.db, &id, "cancelled", None).await;
+            // Every other way a job ends sends the terminal webhook; so does this.
+            crate::proxy::poller::dispatch_terminal_webhook(
+                &state.db, &crate::util::ssrf::no_redirect_client(), state.mode, updated.clone(),
+            ).await;
+            // The row as settled: a refunded job reads `cost_usd: 0`.
+            let updated = match state.db.get_generation(&id).await {
+                Ok(Some(row)) => row,
+                _ => updated,
+            };
             log_audit(
                 state.db.clone(),
                 Some(&ctx),
@@ -3041,7 +3092,8 @@ pub async fn cancel_generation(
                 None,
                 serde_json::to_value(&updated).ok(),
             );
-            (StatusCode::OK, Json(serde_json::to_value(&updated).unwrap())).into_response()
+            let answer = crate::types::CancelledGeneration { generation: updated, vendor_cancelled };
+            (StatusCode::OK, Json(serde_json::to_value(&answer).unwrap())).into_response()
         }
         Ok(None) => (StatusCode::CONFLICT, Json(error_response(
             "Generation cannot be cancelled: not in pending or processing state", 409,
@@ -3053,9 +3105,39 @@ pub async fn cancel_generation(
     }
 }
 
+/// How long `PATCH /v1/generations/{id}` waits on the vendor's cancel before
+/// answering `vendor_cancelled: false`.
+const VENDOR_CANCEL_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Ask a cancelled video generation's vendor to stop working on it, rebuilt
+/// from its row as the poller rebuilds it, with the org's own credential
+/// where it has one. `None` when the vendor could not be asked.
+async fn cancel_video_at_vendor(
+    state: Arc<AppState>,
+    gen: crate::types::Generation,
+) -> Option<crate::providers::CancelOutcome> {
+    let provider_job_id = gen.provider_job_id.clone()?;
+    let creds = crate::proxy::poller::resolve_gen_credential(&state.db, state.secrets_key, &gen).await;
+    let Some(provider) = state.router.registry.video_provider_for_request(&gen.provider, creds).await else {
+        tracing::warn!(generation_id = %gen.id, provider = %gen.provider, "video cancel: provider not configured, the vendor job is left running");
+        return None;
+    };
+    let handle = crate::providers::VideoGenerationHandle { provider_job_id, provider: gen.provider.clone(), model: gen.model.clone() };
+    match provider.cancel(&handle).await {
+        Ok(outcome) => {
+            tracing::info!(generation_id = %gen.id, ?outcome, "video cancel: vendor answered");
+            Some(outcome)
+        }
+        Err(e) => {
+            tracing::warn!(generation_id = %gen.id, error = %e, "video cancel: vendor call failed; the row stays cancelled");
+            None
+        }
+    }
+}
+
 /// Ask a cancelled 3D generation's vendor to stop working on it. Best-effort:
-/// the outcome is logged, never surfaced, because the row is already
-/// `cancelled` and nothing will read the job again.
+/// the row is already `cancelled` whatever the vendor answers; the answer
+/// only decides what `vendor_cancelled` reports.
 ///
 /// A job this process is not tracking — the poller drove it, or it was
 /// submitted before a restart — is rebuilt from its row exactly as the poller
@@ -3065,15 +3147,15 @@ async fn cancel_model3d_at_vendor(
     state: Arc<AppState>,
     gen: crate::types::Generation,
     tracked: Option<(crate::providers::Model3dGenerationHandle, Arc<dyn crate::providers::Model3dProvider>)>,
-) {
+) -> Option<crate::providers::CancelOutcome> {
     let (handle, provider) = match tracked {
         Some(job) => job,
         None => {
-            let Some(provider_job_id) = gen.provider_job_id.clone() else { return };
+            let provider_job_id = gen.provider_job_id.clone()?;
             let creds = crate::proxy::poller::resolve_gen_credential(&state.db, state.secrets_key, &gen).await;
             let Some(provider) = state.router.registry.model3d_provider_for_request(&gen.provider, creds).await else {
                 tracing::warn!(generation_id = %gen.id, provider = %gen.provider, "3d cancel: provider not configured, the vendor job is left running");
-                return;
+                return None;
             };
             let handle = crate::providers::Model3dGenerationHandle {
                 provider_job_id,
@@ -3085,8 +3167,14 @@ async fn cancel_model3d_at_vendor(
         }
     };
     match provider.cancel(&handle).await {
-        Ok(outcome) => tracing::info!(generation_id = %gen.id, ?outcome, "3d cancel: vendor answered"),
-        Err(e) => tracing::warn!(generation_id = %gen.id, error = %e, "3d cancel: vendor call failed; the row stays cancelled"),
+        Ok(outcome) => {
+            tracing::info!(generation_id = %gen.id, ?outcome, "3d cancel: vendor answered");
+            Some(outcome)
+        }
+        Err(e) => {
+            tracing::warn!(generation_id = %gen.id, error = %e, "3d cancel: vendor call failed; the row stays cancelled");
+            None
+        }
     }
 }
 
@@ -3308,6 +3396,9 @@ pub struct LogsQuery {
 }
 
 /// GET /v1/logs — Paginated + filtered request logs. Supports `?format=csv`.
+///
+/// `metadata.<key>=<value>` (repeatable) keeps the requests whose `metadata`
+/// holds every pair (L17).
 #[utoipa::path(
     get,
     path = "/v1/logs",
@@ -3317,6 +3408,7 @@ pub struct LogsQuery {
     ),
     responses(
         (status = 200, description = "Request logs", body = PaginatedResponse<RequestLog>),
+        (status = 400, description = "A `metadata.<key>` filter names a key metadata cannot hold", body = ErrorResponse),
     ),
     tag = "Dashboard"
 )]
@@ -3324,6 +3416,7 @@ pub async fn get_logs_filtered(
     State(state): State<Arc<AppState>>,
     OptionalKeyContext(key_ctx): OptionalKeyContext,
     Query(query): Query<LogsQuery>,
+    Query(pairs): Query<Vec<(String, String)>>,
 ) -> impl IntoResponse {
     use crate::auth::permissions::Permission;
     // Session users with only KeyReadOwn (no KeyReadAny) see an empty result for now,
@@ -3364,12 +3457,17 @@ pub async fn get_logs_filtered(
     // down to the DB so a filtered or deep-page query returns the true matching
     // set and total — not a slice of a truncated in-memory window. Unparseable
     // date bounds are ignored (as the old lexicographic compare effectively did).
+    let metadata = match metadata_filter(&pairs) {
+        Ok(m) => m,
+        Err(resp) => return resp,
+    };
     let filter = crate::db::RequestLogFilter {
         model: query.model.as_deref(),
         provider: query.provider.as_deref(),
         status: query.status.as_deref(),
         from: query.from.as_deref().and_then(parse_rfc3339_utc),
         to: query.to.as_deref().and_then(parse_rfc3339_utc),
+        metadata: &metadata,
     };
     let (rows, total) = match state.db
         .get_request_logs_for_tenant_filtered(org_id, app_id, &filter, page, per_page)
@@ -3398,6 +3496,24 @@ pub async fn get_logs_filtered(
         total_pages,
     };
     (StatusCode::OK, Json(serde_json::to_value(response).unwrap())).into_response()
+}
+
+/// The `metadata.<key>=<value>` pairs of a `/v1/logs` or `/v1/stats` query
+/// (L17), or the 400 for a key no request's `metadata` can hold.
+fn metadata_filter(pairs: &[(String, String)]) -> Result<Vec<(String, String)>, axum::response::Response> {
+    pairs
+        .iter()
+        .filter_map(|(k, v)| Some((k.strip_prefix("metadata.")?, v)))
+        .map(|(k, v)| {
+            if crate::api::middleware::validator::is_metadata_key(k) {
+                Ok((k.to_string(), v.clone()))
+            } else {
+                Err((StatusCode::BAD_REQUEST, Json(error_response(
+                    &format!("metadata.{k}: a metadata key is 1-64 letters, digits, '_', '.' or '-'"), 400,
+                ))).into_response())
+            }
+        })
+        .collect()
 }
 
 /// Parse an RFC-3339 timestamp into UTC, returning `None` on failure so an
@@ -4002,6 +4118,7 @@ pub(crate) fn request_record(
         "params": params,
         "extra": base.extra,
         "reference_images": refs,
+        "metadata": base.metadata,
     })
 }
 
@@ -5220,6 +5337,55 @@ mod new_endpoint_tests {
         let (logs, _) = db.get_request_logs(1, 50).await.unwrap();
         let log = logs.iter().find(|l| l.id == "lg-cancel-log-1").unwrap();
         assert_eq!(log.status, GenerationStatus::Cancelled);
+    }
+
+    /// L18: a cancel gives back what the job was billed, and sends the
+    /// terminal webhook every other ending sends — the row as settled, with the
+    /// caller's metadata (L17).
+    #[tokio::test]
+    async fn a_cancel_refunds_the_job_and_sends_its_webhook() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/wh"))
+            .and(body_partial_json(serde_json::json!({
+                "status": "cancelled",
+                "cost_usd": 0.0,
+                "metadata": { "request": { "metadata": { "asset": "knight" } } },
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let state = build_state().await;
+        let key = state.db.create_api_key(
+            "wh", "wh-hash-cancel", "lg-wh", Some(5.0), None, "generate,read", Some(&format!("{}/wh", server.uri())),
+        ).await.unwrap();
+        state.db.atomic_charge_tokens(&key.id, 0.5).await.unwrap();
+        state.db.log_request("lg-cancel-refund-1", "mock/priced-video", "mock", "pending", "video", 0.5, 5, None, None, None, None).await.unwrap();
+        state.db.insert_generation(
+            "lg-cancel-refund-1", Some(&key.id), "mock/priced-video", "mock", "video", Some("job-1"), 0.5, None, None,
+        ).await.unwrap();
+        state.db.merge_generation_metadata_if_active(
+            "lg-cancel-refund-1", &serde_json::json!({ "request": { "metadata": { "asset": "knight" } } }),
+        ).await.unwrap();
+        let db = state.db.clone();
+
+        let app = build_test_router(state);
+        let req = Request::builder()
+            .method("PATCH").uri("/v1/generations/lg-cancel-refund-1")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"status":"cancelled"}"#)).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()).unwrap();
+        // No mock video provider is registered here: nothing took the cancel.
+        assert_eq!((body["status"].as_str(), body["cost_usd"].as_f64(), body["vendor_cancelled"].as_bool()), (Some("cancelled"), Some(0.0), Some(false)), "{body}");
+        assert_eq!(db.get_api_key(&key.id).await.unwrap().unwrap().tokens_used, 0.0, "the quota is back");
+
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        server.verify().await;
     }
 
     // ── POST /v1/keys/{id}/rotate ───────────────────────────────────────────

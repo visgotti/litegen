@@ -7,7 +7,7 @@ use crate::capabilities::ModelSchema;
 use crate::proxy::materializer::{MaterializedRequest, MaterializedRefForm};
 use crate::providers::{
     ApiKeyPool, BaseGenerationRequest, HealthCheckResult, ProviderError, ProviderInstanceConfig,
-    VideoExtras, VideoGenerationHandle, VideoGenerationPollResult, VideoProvider, build_cost_estimate,
+    CancelOutcome, VideoExtras, VideoGenerationHandle, VideoGenerationPollResult, VideoProvider, build_cost_estimate,
 };
 use crate::types::*;
 
@@ -321,6 +321,61 @@ impl VideoProvider for RunwayProvider {
         ))
     }
 
+    /// Cancel a task that has not finished (`DELETE {api_base}/tasks/{id}`).
+    /// The same call DELETES a finished task — refunding nothing and dropping
+    /// its output — so the task's status is read first and a finished one is
+    /// left alone.
+    ///
+    /// @see <https://docs.dev.runwayml.com/openapi.json> — `DELETE /v1/tasks/{id}`, "Cancel or delete
+    /// a task": "Tasks that are running, pending, or throttled can be canceled by invoking this
+    /// method. Invoking this method for other tasks will delete them." 204 on success; 404 for a
+    /// task already deleted or aborted.
+    async fn cancel(&self, handle: &VideoGenerationHandle) -> Result<CancelOutcome, ProviderError> {
+        let api_key = self.api_key()?;
+        let url = format!("{}/tasks/{}", self.api_base(), handle.provider_job_id);
+        let failed = |e: reqwest::Error| ProviderError::RequestFailed {
+            message: format!("runway cancel failed: {e}"),
+            status_code: None,
+            provider_error: None,
+            retryable: true,
+        };
+        let task = crate::providers::inject_trace_headers(
+            self.client
+                .get(&url)
+                .header("Authorization", format!("Bearer {api_key}"))
+                .header("X-Runway-Version", "2024-11-06"),
+        )
+        .send()
+        .await
+        .map_err(failed)?;
+        if task.status().as_u16() == 404 {
+            return Ok(CancelOutcome::NotFound);
+        }
+        let task: Value = task.json().await.unwrap_or(Value::Null);
+        if matches!(task["status"].as_str(), Some("SUCCEEDED" | "FAILED" | "CANCELLED")) {
+            return Ok(CancelOutcome::AlreadyFinished);
+        }
+        let resp = crate::providers::inject_trace_headers(
+            self.client
+                .delete(&url)
+                .header("Authorization", format!("Bearer {api_key}"))
+                .header("X-Runway-Version", "2024-11-06"),
+        )
+        .send()
+        .await
+        .map_err(failed)?;
+        match resp.status().as_u16() {
+            200..=299 => Ok(CancelOutcome::Requested),
+            404 => Ok(CancelOutcome::NotFound),
+            code => Err(ProviderError::RequestFailed {
+                message: format!("runway cancel answered {code}"),
+                status_code: Some(code),
+                provider_error: resp.json().await.ok(),
+                retryable: code >= 500,
+            }),
+        }
+    }
+
     async fn health_check(&self) -> HealthCheckResult {
         if !self.is_configured() {
             return HealthCheckResult {
@@ -612,5 +667,54 @@ mod tests {
 
         let poll = provider.poll_status(&handle).await.expect("poll");
         assert_eq!(poll.status, GenerationStatus::Failed);
+    }
+
+    // ─── Cancel (L18) ───────────────────────────────────────────────────────
+
+    fn task(id: &str) -> VideoGenerationHandle {
+        VideoGenerationHandle { provider_job_id: id.to_string(), provider: "runway".into(), model: "runway/gen4-turbo".into() }
+    }
+
+    #[tokio::test]
+    async fn cancel_deletes_a_task_that_has_not_finished() {
+        use crate::providers::CancelOutcome;
+        use wiremock::matchers::header;
+        for state in ["PENDING", "THROTTLED", "RUNNING"] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/tasks/t1"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "t1", "status": state })))
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .and(path("/tasks/t1"))
+                .and(header("authorization", "Bearer test-key"))
+                .and(header("x-runway-version", "2024-11-06"))
+                .respond_with(ResponseTemplate::new(204))
+                .expect(1)
+                .mount(&server)
+                .await;
+            assert_eq!(make_provider(&server.uri()).cancel(&task("t1")).await.unwrap(), CancelOutcome::Requested, "{state}");
+        }
+    }
+
+    /// For a finished task the same DELETE deletes it, which refunds nothing
+    /// and throws its output away: a finished task is left alone.
+    #[tokio::test]
+    async fn cancel_leaves_a_finished_task_alone_and_reports_one_that_is_gone() {
+        use crate::providers::CancelOutcome;
+        for state in ["SUCCEEDED", "FAILED", "CANCELLED"] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/tasks/t1"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "t1", "status": state })))
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE")).respond_with(ResponseTemplate::new(204)).expect(0).mount(&server).await;
+            assert_eq!(make_provider(&server.uri()).cancel(&task("t1")).await.unwrap(), CancelOutcome::AlreadyFinished, "{state}");
+        }
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/tasks/t2")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+        assert_eq!(make_provider(&server.uri()).cancel(&task("t2")).await.unwrap(), CancelOutcome::NotFound);
     }
 }

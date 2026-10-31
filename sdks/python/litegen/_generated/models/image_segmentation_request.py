@@ -1,17 +1,14 @@
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Type,
-    TypeVar,
-    Union,
-)
+from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..types import UNSET, Unset
+
 if TYPE_CHECKING:
+    from ..models.image_segmentation_request_metadata_type_0 import (
+        ImageSegmentationRequestMetadataType0,
+    )
     from ..models.segmentation_prompt_type_0 import SegmentationPromptType0
     from ..models.segmentation_prompt_type_1 import SegmentationPromptType1
     from ..models.segmentation_prompt_type_2 import SegmentationPromptType2
@@ -30,6 +27,8 @@ class ImageSegmentationRequest:
         prompts (List[Union['SegmentationPromptType0', 'SegmentationPromptType1', 'SegmentationPromptType2']]): What to
             select. Point and box prompts together select one object;
             a text prompt selects every instance of what it names.
+        metadata (Union['ImageSegmentationRequestMetadataType0', None, Unset]): Your own labels for the call, as on a
+            generation (L17).
     """
 
     image: str
@@ -41,9 +40,13 @@ class ImageSegmentationRequest:
             "SegmentationPromptType2",
         ]
     ]
+    metadata: Union["ImageSegmentationRequestMetadataType0", None, Unset] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        from ..models.image_segmentation_request_metadata_type_0 import (
+            ImageSegmentationRequestMetadataType0,
+        )
         from ..models.segmentation_prompt_type_0 import SegmentationPromptType0
         from ..models.segmentation_prompt_type_1 import SegmentationPromptType1
 
@@ -63,6 +66,14 @@ class ImageSegmentationRequest:
 
             prompts.append(prompts_item)
 
+        metadata: Union[Dict[str, Any], None, Unset]
+        if isinstance(self.metadata, Unset):
+            metadata = UNSET
+        elif isinstance(self.metadata, ImageSegmentationRequestMetadataType0):
+            metadata = self.metadata.to_dict()
+        else:
+            metadata = self.metadata
+
         field_dict: Dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -72,11 +83,16 @@ class ImageSegmentationRequest:
                 "prompts": prompts,
             }
         )
+        if metadata is not UNSET:
+            field_dict["metadata"] = metadata
 
         return field_dict
 
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
+        from ..models.image_segmentation_request_metadata_type_0 import (
+            ImageSegmentationRequestMetadataType0,
+        )
         from ..models.segmentation_prompt_type_0 import SegmentationPromptType0
         from ..models.segmentation_prompt_type_1 import SegmentationPromptType1
         from ..models.segmentation_prompt_type_2 import SegmentationPromptType2
@@ -129,10 +145,32 @@ class ImageSegmentationRequest:
 
             prompts.append(prompts_item)
 
+        def _parse_metadata(
+            data: object,
+        ) -> Union["ImageSegmentationRequestMetadataType0", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                metadata_type_0 = ImageSegmentationRequestMetadataType0.from_dict(data)
+
+                return metadata_type_0
+            except:  # noqa: E722
+                pass
+            return cast(
+                Union["ImageSegmentationRequestMetadataType0", None, Unset], data
+            )
+
+        metadata = _parse_metadata(d.pop("metadata", UNSET))
+
         image_segmentation_request = cls(
             image=image,
             model=model,
             prompts=prompts,
+            metadata=metadata,
         )
 
         image_segmentation_request.additional_properties = d

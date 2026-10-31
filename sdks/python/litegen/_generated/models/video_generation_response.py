@@ -8,6 +8,9 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.usage_info import UsageInfo
+    from ..models.video_generation_response_metadata_type_0 import (
+        VideoGenerationResponseMetadataType0,
+    )
     from ..models.video_media import VideoMedia
     from ..models.video_segment import VideoSegment
 
@@ -28,6 +31,7 @@ class VideoGenerationResponse:
         status (GenerationStatus):
         error (Union[None, Unset, str]): Error message if failed.
         media (Union['VideoMedia', None, Unset]):
+        metadata (Union['VideoGenerationResponseMetadataType0', None, Unset]): The request's `metadata`, as sent.
         segments (Union[List['VideoSegment'], None, Unset]): An operation's clip, stretch by stretch: from the source or
             generated
             (3D doc §5). Absent on a plain generation.
@@ -43,6 +47,7 @@ class VideoGenerationResponse:
     status: GenerationStatus
     error: Union[None, Unset, str] = UNSET
     media: Union["VideoMedia", None, Unset] = UNSET
+    metadata: Union["VideoGenerationResponseMetadataType0", None, Unset] = UNSET
     segments: Union[List["VideoSegment"], None, Unset] = UNSET
     usage: Union["UsageInfo", None, Unset] = UNSET
     video_url: Union[None, Unset, str] = UNSET
@@ -50,6 +55,9 @@ class VideoGenerationResponse:
 
     def to_dict(self) -> Dict[str, Any]:
         from ..models.usage_info import UsageInfo
+        from ..models.video_generation_response_metadata_type_0 import (
+            VideoGenerationResponseMetadataType0,
+        )
         from ..models.video_media import VideoMedia
 
         created = self.created
@@ -77,6 +85,14 @@ class VideoGenerationResponse:
             media = self.media.to_dict()
         else:
             media = self.media
+
+        metadata: Union[Dict[str, Any], None, Unset]
+        if isinstance(self.metadata, Unset):
+            metadata = UNSET
+        elif isinstance(self.metadata, VideoGenerationResponseMetadataType0):
+            metadata = self.metadata.to_dict()
+        else:
+            metadata = self.metadata
 
         segments: Union[List[Dict[str, Any]], None, Unset]
         if isinstance(self.segments, Unset):
@@ -120,6 +136,8 @@ class VideoGenerationResponse:
             field_dict["error"] = error
         if media is not UNSET:
             field_dict["media"] = media
+        if metadata is not UNSET:
+            field_dict["metadata"] = metadata
         if segments is not UNSET:
             field_dict["segments"] = segments
         if usage is not UNSET:
@@ -132,6 +150,9 @@ class VideoGenerationResponse:
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         from ..models.usage_info import UsageInfo
+        from ..models.video_generation_response_metadata_type_0 import (
+            VideoGenerationResponseMetadataType0,
+        )
         from ..models.video_media import VideoMedia
         from ..models.video_segment import VideoSegment
 
@@ -173,6 +194,27 @@ class VideoGenerationResponse:
             return cast(Union["VideoMedia", None, Unset], data)
 
         media = _parse_media(d.pop("media", UNSET))
+
+        def _parse_metadata(
+            data: object,
+        ) -> Union["VideoGenerationResponseMetadataType0", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                metadata_type_0 = VideoGenerationResponseMetadataType0.from_dict(data)
+
+                return metadata_type_0
+            except:  # noqa: E722
+                pass
+            return cast(
+                Union["VideoGenerationResponseMetadataType0", None, Unset], data
+            )
+
+        metadata = _parse_metadata(d.pop("metadata", UNSET))
 
         def _parse_segments(data: object) -> Union[List["VideoSegment"], None, Unset]:
             if data is None:
@@ -233,6 +275,7 @@ class VideoGenerationResponse:
             status=status,
             error=error,
             media=media,
+            metadata=metadata,
             segments=segments,
             usage=usage,
             video_url=video_url,

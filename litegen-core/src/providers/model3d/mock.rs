@@ -20,8 +20,9 @@ use crate::types::*;
 /// tests slow.
 const POLLS_BEFORE_DONE: u32 = 3;
 
-/// The model id that terminates in `failed`, for exercising refund paths.
-const FAIL_MODEL: &str = "mock/fail-3d";
+/// The model ids that terminate in `failed`, for exercising refund paths:
+/// free, and priced (so a refund has something to give back).
+const FAIL_MODELS: [&str; 2] = ["mock/fail-3d", "mock/priced-fail-3d"];
 
 /// How long a FINISHED job stays answerable before it is swept. A real vendor
 /// keeps a completed job queryable for hours; the mock only needs to outlive
@@ -568,14 +569,14 @@ impl Model3dProvider for MockModel3dProvider {
         // this. `generate` sweeps jobs finished longer ago than FINISHED_JOB_TTL.
         let _ = job.finished_at.set(std::time::Instant::now());
 
-        if job.model == FAIL_MODEL {
+        if FAIL_MODELS.contains(&job.model.as_str()) {
             return Ok(Model3dGenerationPollResult {
                 stage_context: None,
                 next_stage: None,
                 status: GenerationStatus::Failed,
                 progress: 100,
                 files: Vec::new(),
-                error: Some("mock 3d generation failed (mock/fail-3d always fails)".into()),
+                error: Some(format!("mock 3d generation failed ({} always fails)", job.model)),
                 metadata: meta,
             });
         }

@@ -249,6 +249,7 @@ use utoipa::OpenApi;
         crate::api::handlers::WebhookTestResult,
         // Generations + audit + artifacts + readiness
         crate::types::Generation,
+        crate::types::CancelledGeneration,
         crate::api::handlers::CancelGenerationBody,
         crate::types::AuditLogEntry,
         crate::types::RequestArtifact,

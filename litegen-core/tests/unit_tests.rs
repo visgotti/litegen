@@ -520,6 +520,7 @@ mod tests {
             error: None,
             usage: None,
             created: 1_760_000_000,
+            metadata: None,
         };
         let v = serde_json::to_value(&pending).unwrap();
         assert!(v.get("assets").is_none(), "empty assets must be omitted, not sent as []");

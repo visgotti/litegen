@@ -20,10 +20,12 @@ from .audit_log_entry import AuditLogEntry
 from .auth_config_response import AuthConfigResponse
 from .auth_response import AuthResponse
 from .base_generation_request import BaseGenerationRequest
+from .base_generation_request_metadata_type_0 import BaseGenerationRequestMetadataType0
 from .cache_cleared_response import CacheClearedResponse
 from .cache_config import CacheConfig
 from .cache_status import CacheStatus
 from .cancel_generation_body import CancelGenerationBody
+from .cancelled_generation import CancelledGeneration
 from .capability_media_type import CapabilityMediaType
 from .capability_model_pricing import CapabilityModelPricing
 from .cost_estimate import CostEstimate
@@ -57,10 +59,19 @@ from .health_response import HealthResponse
 from .image_background import ImageBackground
 from .image_generation_request import ImageGenerationRequest
 from .image_generation_response import ImageGenerationResponse
+from .image_generation_response_metadata_type_0 import (
+    ImageGenerationResponseMetadataType0,
+)
 from .image_output_format import ImageOutputFormat
 from .image_result import ImageResult
 from .image_segmentation_request import ImageSegmentationRequest
+from .image_segmentation_request_metadata_type_0 import (
+    ImageSegmentationRequestMetadataType0,
+)
 from .image_segmentation_response import ImageSegmentationResponse
+from .image_segmentation_response_metadata_type_0 import (
+    ImageSegmentationResponseMetadataType0,
+)
 from .image_view import ImageView
 from .in_place_mode import InPlaceMode
 from .invitation import Invitation
@@ -90,6 +101,9 @@ from .model_3d_generation_request_output_format import (
     Model3DGenerationRequestOutputFormat,
 )
 from .model_3d_generation_response import Model3DGenerationResponse
+from .model_3d_generation_response_metadata_type_0 import (
+    Model3DGenerationResponseMetadataType0,
+)
 from .model_3d_joint_naming import Model3DJointNaming
 from .model_3d_skeleton import Model3DSkeleton
 from .model_3d_symmetry import Model3DSymmetry
@@ -235,6 +249,9 @@ from .vendor_error import VendorError
 from .video_camera import VideoCamera
 from .video_generation_request import VideoGenerationRequest
 from .video_generation_response import VideoGenerationResponse
+from .video_generation_response_metadata_type_0 import (
+    VideoGenerationResponseMetadataType0,
+)
 from .video_media import VideoMedia
 from .video_segment import VideoSegment
 from .webhook_delivery import WebhookDelivery
@@ -261,10 +278,12 @@ __all__ = (
     "AuthConfigResponse",
     "AuthResponse",
     "BaseGenerationRequest",
+    "BaseGenerationRequestMetadataType0",
     "CacheClearedResponse",
     "CacheConfig",
     "CacheStatus",
     "CancelGenerationBody",
+    "CancelledGeneration",
     "CapabilityMediaType",
     "CapabilityModelPricing",
     "CostEstimate",
@@ -298,10 +317,13 @@ __all__ = (
     "ImageBackground",
     "ImageGenerationRequest",
     "ImageGenerationResponse",
+    "ImageGenerationResponseMetadataType0",
     "ImageOutputFormat",
     "ImageResult",
     "ImageSegmentationRequest",
+    "ImageSegmentationRequestMetadataType0",
     "ImageSegmentationResponse",
+    "ImageSegmentationResponseMetadataType0",
     "ImageView",
     "InPlaceMode",
     "Invitation",
@@ -329,6 +351,7 @@ __all__ = (
     "Model3DGenerationRequest",
     "Model3DGenerationRequestOutputFormat",
     "Model3DGenerationResponse",
+    "Model3DGenerationResponseMetadataType0",
     "Model3DJointNaming",
     "Model3DSkeleton",
     "Model3DSymmetry",
@@ -468,6 +491,7 @@ __all__ = (
     "VideoCamera",
     "VideoGenerationRequest",
     "VideoGenerationResponse",
+    "VideoGenerationResponseMetadataType0",
     "VideoMedia",
     "VideoSegment",
     "WebhookDelivery",

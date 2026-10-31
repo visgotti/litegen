@@ -545,6 +545,23 @@ impl DatabaseStore for PostgresDatabase {
         Ok(())
     }
 
+    async fn claim_generation_refund(&self, id: &str, cost_usd: f64) -> Result<bool, sqlx::Error> {
+        let claimed = sqlx::query(
+            "UPDATE generations SET cost_usd = 0 \
+             WHERE id = $1 AND cost_usd = $2 AND cost_usd > 0 AND status IN ('failed', 'cancelled')",
+        )
+        .bind(id)
+        .bind(cost_usd)
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            == 1;
+        if claimed {
+            sqlx::query("UPDATE request_logs SET cost_usd = 0 WHERE id = $1").bind(id).execute(&self.pool).await?;
+        }
+        Ok(claimed)
+    }
+
     async fn get_request_logs(
         &self,
         page: u32,
@@ -907,20 +924,30 @@ impl DatabaseStore for PostgresDatabase {
         &self,
         org_id: &str,
         app_id: Option<&str>,
+        metadata: &[(String, String)],
     ) -> Result<ProxyStats, sqlx::Error> {
-        // Tenant predicate; $1 = org_id, $2 = app_id when present.
-        let tenant_clause = if app_id.is_some() {
+        // Tenant predicate; $1 = org_id, $2 = app_id when present, then a key
+        // and a value for each metadata pair the requests must hold (L17).
+        let mut tenant_clause = String::from(if app_id.is_some() {
             "org_id = $1 AND app_id = $2"
         } else {
             "org_id = $1"
-        };
+        });
+        let mut n = if app_id.is_some() { 2 } else { 1 };
+        for _ in metadata {
+            tenant_clause.push_str(&format!(" AND (metadata::jsonb ->> ${}) = ${}", n + 1, n + 2));
+            n += 2;
+        }
         macro_rules! bind_tenant {
             ($q:expr) => {{
-                let q = $q.bind(org_id);
-                match app_id {
-                    Some(a) => q.bind(a),
-                    None => q,
+                let mut q = $q.bind(org_id);
+                if let Some(a) = app_id {
+                    q = q.bind(a);
                 }
+                for (k, v) in metadata {
+                    q = q.bind(k).bind(v);
+                }
+                q
             }};
         }
 
@@ -2328,6 +2355,7 @@ impl DatabaseStore for PostgresDatabase {
         if let Some(s) = filter.status { cb.push(" AND status = ").push_bind(s.to_string()); }
         if let Some(f) = filter.from { cb.push(" AND created_at >= ").push_bind(f); }
         if let Some(t) = filter.to { cb.push(" AND created_at <= ").push_bind(t); }
+        for (k, v) in filter.metadata { cb.push(" AND (metadata::jsonb ->> ").push_bind(k.clone()).push(") = ").push_bind(v.clone()); }
         let (total,): (i64,) = cb.build_query_as().fetch_one(&self.pool).await?;
 
         let offset = crate::api::pagination::offset(page, per_page) as i64;
@@ -2339,6 +2367,7 @@ impl DatabaseStore for PostgresDatabase {
         if let Some(s) = filter.status { qb.push(" AND status = ").push_bind(s.to_string()); }
         if let Some(f) = filter.from { qb.push(" AND created_at >= ").push_bind(f); }
         if let Some(t) = filter.to { qb.push(" AND created_at <= ").push_bind(t); }
+        for (k, v) in filter.metadata { qb.push(" AND (metadata::jsonb ->> ").push_bind(k.clone()).push(") = ").push_bind(v.clone()); }
         qb.push(" ORDER BY created_at DESC LIMIT ").push_bind(per_page as i64).push(" OFFSET ").push_bind(offset);
         let rows: Vec<RequestLogRow> = qb.build_query_as().fetch_all(&self.pool).await?;
         Ok((rows.into_iter().map(request_log_from_row).collect(), total as u64))

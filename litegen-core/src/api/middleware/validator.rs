@@ -60,6 +60,7 @@ pub fn validate_segmentation(schema: &ModelSchema, req: &ImageSegmentationReques
     let Some(ParamSpec::SegmentationPrompts(spec)) = schema.params.get("prompts") else {
         return bad("capability_unsupported", format!("model '{}' takes no segmentation prompts", schema.id));
     };
+    check_metadata(&req.metadata)?;
     if req.prompts.is_empty() {
         return bad("param_required", "prompts is empty: send a point, box or text prompt".into());
     }
@@ -134,6 +135,7 @@ pub fn validate_image(
     let strict = req.base.strict;
 
     check_prompt(schema, &mut req.base.prompt, strict, &mut dropped)?;
+    check_metadata(&req.base.metadata)?;
     check_image_edit(schema, &mut req, strict, &mut dropped)?;
     check_views(schema, &mut req, strict, &mut dropped)?;
     check_expand(schema, &mut req, strict, &mut dropped)?;
@@ -308,6 +310,7 @@ pub fn validate_video(
     let strict = req.base.strict;
 
     check_prompt(schema, &mut req.base.prompt, strict, &mut dropped)?;
+    check_metadata(&req.base.metadata)?;
 
     // seed, negative_prompt — same as image
     if req.base.seed.is_some() {
@@ -503,6 +506,7 @@ pub fn validate_model3d(
     let strict = req.base.strict;
 
     check_prompt(schema, &mut req.base.prompt, strict, &mut dropped)?;
+    check_metadata(&req.base.metadata)?;
 
     // seed / negative_prompt — identical treatment to image and video.
     if req.base.seed.is_some() {
@@ -998,6 +1002,40 @@ fn check_prompt(
                 Some("prompt"),
             ));
         }
+    }
+    Ok(())
+}
+
+/// The most a request's `metadata` may hold, as JSON (L17).
+pub const MAX_METADATA_BYTES: usize = 1024;
+
+/// Whether `key` can name a `metadata` entry: what `metadata.<key>` in a
+/// `/v1/logs` or `/v1/stats` query, and a JSON path, both carry unquoted.
+pub fn is_metadata_key(key: &str) -> bool {
+    (1..=64).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+}
+
+/// `metadata` is the caller's own string map, kept on the row (L17): any
+/// other shape is refused rather than stored, since nothing could filter on it.
+fn check_metadata(metadata: &Option<serde_json::Value>) -> Result<(), ValidationError> {
+    let Some(value) = metadata.as_ref().filter(|v| !v.is_null()) else { return Ok(()) };
+    let bad = |msg: String| ValidationError::new("param_out_of_range", msg, Some("metadata"));
+    let map = value.as_object().ok_or_else(|| bad("metadata must be an object of string values".into()))?;
+    for (k, v) in map {
+        if !is_metadata_key(k) {
+            return Err(bad(format!("metadata key {k:?} must be 1-64 letters, digits, '_', '.' or '-'")));
+        }
+        if !v.is_string() {
+            return Err(bad(format!("metadata.{k} must be a string")));
+        }
+    }
+    let bytes = value.to_string().len();
+    if bytes > MAX_METADATA_BYTES {
+        return Err(ValidationError::new(
+            "param_too_long",
+            format!("metadata is {bytes} bytes as JSON > {MAX_METADATA_BYTES}"),
+            Some("metadata"),
+        ));
     }
     Ok(())
 }
@@ -2114,6 +2152,8 @@ impl FromRequest<Arc<AppState>> for ValidatedModel3d {
 pub struct ValidatedSegmentation {
     pub schema: Arc<ModelSchema>,
     pub input: crate::providers::SegmentationInput,
+    /// The caller's `metadata`, validated.
+    pub metadata: Option<serde_json::Value>,
     pub _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
@@ -2153,7 +2193,7 @@ impl FromRequest<Arc<AppState>> for ValidatedSegmentation {
             prompts: req.prompts,
             max_masks,
         };
-        Ok(ValidatedSegmentation { schema, input, _permit: permit })
+        Ok(ValidatedSegmentation { schema, input, metadata: req.metadata.filter(|m| !m.is_null()), _permit: permit })
     }
 }
 

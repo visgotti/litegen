@@ -17,6 +17,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::Utc;
 use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
 
 use super::budget;
 use super::store::ManagementStore;
@@ -235,10 +236,28 @@ pub struct LimitGuard {
     _slots: Vec<ParallelSlot>,
 }
 
+/// A principal whose limits a generation was charged against: what its
+/// refund gives back to (L18).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChargedLimit {
+    pub entity_type: EntityType,
+    pub entity_id: String,
+}
+
 impl LimitGuard {
     /// Who the request is attributed to, for its request-log row.
     pub fn attribution(&self) -> Attribution {
         self.attribution.clone()
+    }
+
+    /// The principals this request is charged against. An async job records
+    /// them on its row at submit, since its refund comes long after the guard
+    /// is gone.
+    pub fn charged_to(&self) -> Vec<ChargedLimit> {
+        self.charged
+            .iter()
+            .map(|l| ChargedLimit { entity_type: l.entity_type, entity_id: l.entity_id.clone() })
+            .collect()
     }
 
     /// Settle every reservation to `actual` (0.0 releases them), then raise a
@@ -536,5 +555,17 @@ mod tests {
         assert_eq!(bucket_id(EntityType::Org, "o1"), bucket_id(EntityType::Org, "o1"));
         assert_ne!(bucket_id(EntityType::Org, "o1"), bucket_id(EntityType::App, "o1"));
         assert_ne!(bucket_id(EntityType::Org, "o1"), bucket_id(EntityType::Org, "o2"));
+    }
+}
+
+/// Give `amount` back to every principal a failed or cancelled job was
+/// charged against (L18). Best-effort, like settlement: a refund that cannot
+/// be written is logged, never surfaced.
+pub async fn refund_limits(db: &Arc<dyn crate::db::DatabaseStore>, charged: &[ChargedLimit], amount: f64) {
+    let Some(store) = db.management() else { return };
+    for l in charged {
+        if let Err(e) = store.charge_limits_spend(l.entity_type, &l.entity_id, -amount).await {
+            tracing::warn!(error = %e, entity = %l.entity_id, "limits refund failed");
+        }
     }
 }

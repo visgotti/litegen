@@ -15,6 +15,9 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.animation_request import AnimationRequest
+    from ..models.base_generation_request_metadata_type_0 import (
+        BaseGenerationRequestMetadataType0,
+    )
     from ..models.reference_image import ReferenceImage
     from ..models.source_ref import SourceRef
 
@@ -38,7 +41,11 @@ class Model3DGenerationRequest:
         Attributes:
             model (str):
             extra (Union[Unset, Any]):
-            metadata (Union[Unset, Any]):
+            metadata (Union['BaseGenerationRequestMetadataType0', None, Unset]): Your own labels for the job (PixelGenie
+                L17): a map of string values,
+                keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. Kept on
+                the generation, echoed on every answer and webhook, and filters
+                `GET /v1/logs` and `GET /v1/stats` as `metadata.<key>=<value>`.
             n (Union[Unset, int]):
             negative_prompt (Union[None, Unset, str]):
             prompt (Union[Unset, str]): Whether a prompt is required is decided per model, by its
@@ -92,7 +99,7 @@ class Model3DGenerationRequest:
 
     model: str
     extra: Union[Unset, Any] = UNSET
-    metadata: Union[Unset, Any] = UNSET
+    metadata: Union["BaseGenerationRequestMetadataType0", None, Unset] = UNSET
     n: Union[Unset, int] = UNSET
     negative_prompt: Union[None, Unset, str] = UNSET
     prompt: Union[Unset, str] = UNSET
@@ -120,13 +127,22 @@ class Model3DGenerationRequest:
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        from ..models.base_generation_request_metadata_type_0 import (
+            BaseGenerationRequestMetadataType0,
+        )
         from ..models.source_ref import SourceRef
 
         model = self.model
 
         extra = self.extra
 
-        metadata = self.metadata
+        metadata: Union[Dict[str, Any], None, Unset]
+        if isinstance(self.metadata, Unset):
+            metadata = UNSET
+        elif isinstance(self.metadata, BaseGenerationRequestMetadataType0):
+            metadata = self.metadata.to_dict()
+        else:
+            metadata = self.metadata
 
         n = self.n
 
@@ -346,6 +362,9 @@ class Model3DGenerationRequest:
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
         from ..models.animation_request import AnimationRequest
+        from ..models.base_generation_request_metadata_type_0 import (
+            BaseGenerationRequestMetadataType0,
+        )
         from ..models.reference_image import ReferenceImage
         from ..models.source_ref import SourceRef
 
@@ -354,7 +373,24 @@ class Model3DGenerationRequest:
 
         extra = d.pop("extra", UNSET)
 
-        metadata = d.pop("metadata", UNSET)
+        def _parse_metadata(
+            data: object,
+        ) -> Union["BaseGenerationRequestMetadataType0", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                metadata_type_0 = BaseGenerationRequestMetadataType0.from_dict(data)
+
+                return metadata_type_0
+            except:  # noqa: E722
+                pass
+            return cast(Union["BaseGenerationRequestMetadataType0", None, Unset], data)
+
+        metadata = _parse_metadata(d.pop("metadata", UNSET))
 
         n = d.pop("n", UNSET)
 

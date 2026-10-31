@@ -6,8 +6,8 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.cancel_generation_body import CancelGenerationBody
+from ...models.cancelled_generation import CancelledGeneration
 from ...models.error_response import ErrorResponse
-from ...models.generation import Generation
 from ...types import Response
 
 
@@ -36,9 +36,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ErrorResponse, Generation]]:
+) -> Optional[Union[CancelledGeneration, ErrorResponse]]:
     if response.status_code == 200:
-        response_200 = Generation.from_dict(response.json())
+        response_200 = CancelledGeneration.from_dict(response.json())
 
         return response_200
     if response.status_code == 403:
@@ -61,7 +61,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ErrorResponse, Generation]]:
+) -> Response[Union[CancelledGeneration, ErrorResponse]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -75,7 +75,7 @@ def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: CancelGenerationBody,
-) -> Response[Union[ErrorResponse, Generation]]:
+) -> Response[Union[CancelledGeneration, ErrorResponse]]:
     r"""PATCH /v1/generations/{id} — Soft-cancel a generation.
     Live: `curl -X PATCH https://app.litegen.ai/api/v1/generations/{id} -H \"Authorization: Bearer
     sk_live_...\" -d '{\"status\":\"cancelled\"}'`
@@ -89,7 +89,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, Generation]]
+        Response[Union[CancelledGeneration, ErrorResponse]]
     """
 
     kwargs = _get_kwargs(
@@ -109,7 +109,7 @@ def sync(
     *,
     client: Union[AuthenticatedClient, Client],
     body: CancelGenerationBody,
-) -> Optional[Union[ErrorResponse, Generation]]:
+) -> Optional[Union[CancelledGeneration, ErrorResponse]]:
     r"""PATCH /v1/generations/{id} — Soft-cancel a generation.
     Live: `curl -X PATCH https://app.litegen.ai/api/v1/generations/{id} -H \"Authorization: Bearer
     sk_live_...\" -d '{\"status\":\"cancelled\"}'`
@@ -123,7 +123,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, Generation]
+        Union[CancelledGeneration, ErrorResponse]
     """
 
     return sync_detailed(
@@ -138,7 +138,7 @@ async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: CancelGenerationBody,
-) -> Response[Union[ErrorResponse, Generation]]:
+) -> Response[Union[CancelledGeneration, ErrorResponse]]:
     r"""PATCH /v1/generations/{id} — Soft-cancel a generation.
     Live: `curl -X PATCH https://app.litegen.ai/api/v1/generations/{id} -H \"Authorization: Bearer
     sk_live_...\" -d '{\"status\":\"cancelled\"}'`
@@ -152,7 +152,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ErrorResponse, Generation]]
+        Response[Union[CancelledGeneration, ErrorResponse]]
     """
 
     kwargs = _get_kwargs(
@@ -170,7 +170,7 @@ async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
     body: CancelGenerationBody,
-) -> Optional[Union[ErrorResponse, Generation]]:
+) -> Optional[Union[CancelledGeneration, ErrorResponse]]:
     r"""PATCH /v1/generations/{id} — Soft-cancel a generation.
     Live: `curl -X PATCH https://app.litegen.ai/api/v1/generations/{id} -H \"Authorization: Bearer
     sk_live_...\" -d '{\"status\":\"cancelled\"}'`
@@ -184,7 +184,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ErrorResponse, Generation]
+        Union[CancelledGeneration, ErrorResponse]
     """
 
     return (

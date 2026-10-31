@@ -1,13 +1,4 @@
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Type,
-    TypeVar,
-    Union,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -15,6 +6,9 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.image_segmentation_response_metadata_type_0 import (
+        ImageSegmentationResponseMetadataType0,
+    )
     from ..models.segmentation_mask import SegmentationMask
     from ..models.usage_info import UsageInfo
 
@@ -33,6 +27,7 @@ class ImageSegmentationResponse:
             found.
         model (str):
         provider (str):
+        metadata (Union['ImageSegmentationResponseMetadataType0', None, Unset]): The request's `metadata`, as sent.
         usage (Union['UsageInfo', None, Unset]):
     """
 
@@ -41,10 +36,14 @@ class ImageSegmentationResponse:
     masks: List["SegmentationMask"]
     model: str
     provider: str
+    metadata: Union["ImageSegmentationResponseMetadataType0", None, Unset] = UNSET
     usage: Union["UsageInfo", None, Unset] = UNSET
     additional_properties: Dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        from ..models.image_segmentation_response_metadata_type_0 import (
+            ImageSegmentationResponseMetadataType0,
+        )
         from ..models.usage_info import UsageInfo
 
         created = self.created
@@ -59,6 +58,14 @@ class ImageSegmentationResponse:
         model = self.model
 
         provider = self.provider
+
+        metadata: Union[Dict[str, Any], None, Unset]
+        if isinstance(self.metadata, Unset):
+            metadata = UNSET
+        elif isinstance(self.metadata, ImageSegmentationResponseMetadataType0):
+            metadata = self.metadata.to_dict()
+        else:
+            metadata = self.metadata
 
         usage: Union[Dict[str, Any], None, Unset]
         if isinstance(self.usage, Unset):
@@ -79,6 +86,8 @@ class ImageSegmentationResponse:
                 "provider": provider,
             }
         )
+        if metadata is not UNSET:
+            field_dict["metadata"] = metadata
         if usage is not UNSET:
             field_dict["usage"] = usage
 
@@ -86,6 +95,9 @@ class ImageSegmentationResponse:
 
     @classmethod
     def from_dict(cls: Type[T], src_dict: Dict[str, Any]) -> T:
+        from ..models.image_segmentation_response_metadata_type_0 import (
+            ImageSegmentationResponseMetadataType0,
+        )
         from ..models.segmentation_mask import SegmentationMask
         from ..models.usage_info import UsageInfo
 
@@ -104,6 +116,27 @@ class ImageSegmentationResponse:
         model = d.pop("model")
 
         provider = d.pop("provider")
+
+        def _parse_metadata(
+            data: object,
+        ) -> Union["ImageSegmentationResponseMetadataType0", None, Unset]:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                metadata_type_0 = ImageSegmentationResponseMetadataType0.from_dict(data)
+
+                return metadata_type_0
+            except:  # noqa: E722
+                pass
+            return cast(
+                Union["ImageSegmentationResponseMetadataType0", None, Unset], data
+            )
+
+        metadata = _parse_metadata(d.pop("metadata", UNSET))
 
         def _parse_usage(data: object) -> Union["UsageInfo", None, Unset]:
             if data is None:
@@ -128,6 +161,7 @@ class ImageSegmentationResponse:
             masks=masks,
             model=model,
             provider=provider,
+            metadata=metadata,
             usage=usage,
         )
 

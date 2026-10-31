@@ -16,6 +16,7 @@ from .client import (
     _conversion,
     _idempotency,
     _drop_none,
+    _metadata_params,
     _parse_dropped_params,
     _q,
     _raise_for_status,
@@ -29,6 +30,7 @@ from .polling import (
     async_wait_for_video_completion,
 )
 from .types import (
+    CancelledGeneration,
     CostEstimate,
     Generation,
     GenerationAssetList,
@@ -507,10 +509,12 @@ class _AsyncGenerations:
         with only a litegen key. ``index`` is the asset's ``index`` in :meth:`assets`."""
         return await self._c._request("GET", f"/v1/generations/{quote(generation_id, safe='')}/assets/{int(index)}")
 
-    async def cancel(self, generation_id: str) -> Generation:
+    async def cancel(self, generation_id: str) -> CancelledGeneration:
         """Cancel a pending or processing job (``PATCH /v1/generations/{id}``).
 
-        Works for any async job, video or 3D, and returns the updated row. A 3D
+        Works for any async job, video or 3D, and returns the row as settled —
+        a cancelled job is refunded, so ``cost_usd`` is 0 — with
+        ``vendor_cancelled``, whether the vendor took the cancel. A 3D
         job's polls report ``cancelled`` from then on, so an
         :class:`AsyncModel3dJob` being awaited returns it. A job that already
         finished cannot be cancelled: the server answers 409, raised as
@@ -552,17 +556,21 @@ class _AsyncStats:
     def __init__(self, c: AsyncLiteGenClient) -> None:
         self._c = c
 
-    async def get(self) -> Any:
-        return await self._c._request("GET", "/v1/stats")
+    async def get(self, *, metadata: Mapping[str, str] | None = None) -> Any:
+        """Usage stats for the caller's org (and app). ``metadata`` narrows them
+        to the requests whose metadata holds every pair: spend per project or asset."""
+        return await self._c._request("GET", "/v1/stats", params=_metadata_params(metadata) or None)
 
 
 class _AsyncLogs:
     def __init__(self, c: AsyncLiteGenClient) -> None:
         self._c = c
 
-    async def list(self, *, page: int = 1, per_page: int = 50) -> Any:
+    async def list(self, *, page: int = 1, per_page: int = 50, metadata: Mapping[str, str] | None = None) -> Any:
+        """Request logs, newest first; ``metadata`` keeps the requests whose
+        metadata holds every pair."""
         return await self._c._request(
-            "GET", "/v1/logs", params={"page": page, "per_page": per_page}
+            "GET", "/v1/logs", params={"page": page, "per_page": per_page, **_metadata_params(metadata)}
         )
 
 

@@ -317,6 +317,7 @@ impl ProxyRouter {
             provider: provider_name.clone(),
             usage,
             id: format!("litegen-img-{}", uuid::Uuid::new_v4()),
+            metadata: None,
         };
 
         // 4. Store in cache
@@ -405,6 +406,7 @@ impl ProxyRouter {
                 tokens: crate::providers::usd_to_tokens(total, USD_PER_TOKEN),
                 cost_source: CostSource::Estimated,
             }),
+            metadata: None,
         })
     }
 
@@ -742,6 +744,7 @@ impl ProxyRouter {
             created: chrono::Utc::now().timestamp(),
             media: None,
             segments: None,
+            metadata: None,
         })
     }
 
@@ -819,6 +822,7 @@ impl ProxyRouter {
                 created: chrono::Utc::now().timestamp(),
                 media,
                 segments: None,
+                metadata: None,
             },
             assets,
         ))
@@ -973,6 +977,7 @@ impl ProxyRouter {
             error: None,
             usage: usage_info,
             created,
+            metadata: None,
         })
     }
 
@@ -1063,6 +1068,7 @@ impl ProxyRouter {
             // The triple quoted at submit, not `None` — see `get_video_status`.
             usage,
             created,
+            metadata: None,
         };
         enforce_requested_formats(&mut resp, &requested_formats);
         Ok(resp)

@@ -465,6 +465,14 @@ pub trait VideoProvider: Send + Sync {
     ) -> Result<CostEstimate, ProviderError>;
 
     async fn health_check(&self) -> HealthCheckResult;
+
+    /// Ask the vendor to stop a job the caller cancelled (L18). The row is
+    /// already `cancelled`; this decides whether the VENDOR keeps working (and
+    /// billing), and the answer is what `vendor_cancelled` reports. Vendors
+    /// without a cancel endpoint answer `Unsupported`.
+    async fn cancel(&self, _handle: &VideoGenerationHandle) -> Result<CancelOutcome, ProviderError> {
+        Ok(CancelOutcome::Unsupported)
+    }
 }
 
 /// Handle returned when a video generation is started (for polling).

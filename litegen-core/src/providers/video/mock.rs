@@ -285,6 +285,12 @@ impl VideoProvider for MockVideoProvider {
             latency_ms: None,
         }
     }
+
+    /// A mock job is still running until a poll collects it, and nothing polls
+    /// a cancelled one, so every cancel is taken.
+    async fn cancel(&self, _handle: &VideoGenerationHandle) -> Result<crate::providers::CancelOutcome, ProviderError> {
+        Ok(crate::providers::CancelOutcome::Requested)
+    }
 }
 
 #[cfg(test)]

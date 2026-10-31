@@ -1110,7 +1110,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GET /v1/logs — Paginated + filtered request logs. Supports `?format=csv`. */
+        /**
+         * GET /v1/logs — Paginated + filtered request logs. Supports `?format=csv`.
+         * @description `metadata.<key>=<value>` (repeatable) keeps the requests whose `metadata`
+         *     holds every pair (L17).
+         */
         get: operations["get_logs_filtered"];
         put?: never;
         post?: never;
@@ -1537,7 +1541,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GET /v1/stats — Get aggregate usage statistics. */
+        /**
+         * GET /v1/stats — Get aggregate usage statistics.
+         * @description `metadata.<key>=<value>` (repeatable) narrows them to the requests whose
+         *     `metadata` holds every pair: spend per project, per asset (L17).
+         */
         get: operations["get_stats"];
         put?: never;
         post?: never;
@@ -1945,7 +1953,15 @@ export interface components {
         };
         BaseGenerationRequest: {
             extra?: unknown;
-            metadata?: unknown;
+            /**
+             * @description Your own labels for the job (PixelGenie L17): a map of string values,
+             *     keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. Kept on
+             *     the generation, echoed on every answer and webhook, and filters
+             *     `GET /v1/logs` and `GET /v1/stats` as `metadata.<key>=<value>`.
+             */
+            metadata?: {
+                [key: string]: string;
+            } | null;
             model: string;
             /** Format: int32 */
             n?: number;
@@ -1990,6 +2006,18 @@ export interface components {
         CancelGenerationBody: {
             /** @description Target status; only `"cancelled"` is honored. */
             status: string;
+        };
+        /**
+         * @description `PATCH /v1/generations/{id}`'s answer: the cancelled generation as
+         *     settled, and whether its vendor took the cancel (L18).
+         */
+        CancelledGeneration: components["schemas"]["Generation"] & {
+            /**
+             * @description True when the vendor accepted the cancel, so a queued job will not run;
+             *     false when it has no cancel, had already finished, or did not answer
+             *     within 5 seconds. The job is `cancelled` and refunded either way.
+             */
+            vendor_cancelled: boolean;
         };
         /** @enum {string} */
         CapabilityMediaType: "image" | "video" | "model3d";
@@ -2493,6 +2521,10 @@ export interface components {
             data: components["schemas"]["ImageResult"][];
             /** @description Unique request ID for tracking. */
             id: string;
+            /** @description The request's `metadata`, as sent. */
+            metadata?: {
+                [key: string]: string;
+            } | null;
             /** @description The model that was used. */
             model: string;
             /** @description The provider that handled the request. */
@@ -2542,6 +2574,10 @@ export interface components {
         ImageSegmentationRequest: {
             /** @description The image: base64, or a `data:` URI. PNG, JPEG, WebP or GIF. */
             image: string;
+            /** @description Your own labels for the call, as on a generation (L17). */
+            metadata?: {
+                [key: string]: string;
+            } | null;
             /** @description A model whose `task` is `segment`. */
             model: string;
             /**
@@ -2564,6 +2600,10 @@ export interface components {
              *     found.
              */
             masks: components["schemas"]["SegmentationMask"][];
+            /** @description The request's `metadata`, as sent. */
+            metadata?: {
+                [key: string]: string;
+            } | null;
             model: string;
             provider: string;
             usage?: null | components["schemas"]["UsageInfo"];
@@ -2922,6 +2962,10 @@ export interface components {
              *     generation's id under `/v1/generations`.
              */
             id: string;
+            /** @description The request's `metadata`, as sent. */
+            metadata?: {
+                [key: string]: string;
+            } | null;
             model: string;
             /**
              * Format: int32
@@ -4632,6 +4676,10 @@ export interface components {
             /** @description Unique generation ID for polling. */
             id: string;
             media?: null | components["schemas"]["VideoMedia"];
+            /** @description The request's `metadata`, as sent. */
+            metadata?: {
+                [key: string]: string;
+            } | null;
             /** @description The model used. */
             model: string;
             /**
@@ -6944,13 +6992,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Cancelled generation */
+            /** @description Cancelled generation, and whether its vendor took the cancel */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Generation"];
+                    "application/json": components["schemas"]["CancelledGeneration"];
                 };
             };
             /** @description Forbidden */
@@ -7788,6 +7836,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PaginatedResponse_RequestLog"];
+                };
+            };
+            /** @description A `metadata.<key>` filter names a key metadata cannot hold */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9134,6 +9191,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProxyStats"];
+                };
+            };
+            /** @description A `metadata.<key>` filter names a key metadata cannot hold */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

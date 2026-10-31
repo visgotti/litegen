@@ -12,7 +12,7 @@ use crate::capabilities::ModelSchema;
 use crate::proxy::materializer::{MaterializedRequest, MaterializedRefForm};
 use crate::providers::{
     ApiKeyPool, BaseGenerationRequest, HealthCheckResult, ProviderError, ProviderInstanceConfig,
-    VideoExtras, VideoGenerationHandle, VideoGenerationPollResult, VideoProvider, build_cost_estimate,
+    CancelOutcome, VideoExtras, VideoGenerationHandle, VideoGenerationPollResult, VideoProvider, build_cost_estimate,
 };
 use crate::types::*;
 
@@ -572,6 +572,50 @@ impl VideoProvider for FalVideoProvider {
     /// (Fal's token-introspection endpoint).
     ///
     /// @see <https://docs.fal.ai/authentication/key-based> — key-based authentication
+    /// Cancel a request (`PUT .../requests/{id}/cancel`, under the
+    /// `response_url` the submit returned): a queued request is removed and
+    /// never runs; a running one is signalled and may still finish.
+    ///
+    /// @see <https://fal.ai/docs/documentation/model-apis/inference/queue> (Cancel a Request:
+    /// 200 `OK`, 202 `CANCELLATION_REQUESTED`, 400 `ALREADY_COMPLETED`, 404 `NOT_FOUND`)
+    async fn cancel(&self, handle: &VideoGenerationHandle) -> Result<CancelOutcome, ProviderError> {
+        let api_key = self.api_key()?;
+        let job: Value = serde_json::from_str(&handle.provider_job_id).unwrap_or_default();
+        let url = match job["response_url"].as_str().filter(|u| !u.is_empty()) {
+            Some(response_url) => format!("{response_url}/cancel"),
+            None => format!(
+                "{}/{}/requests/{}/cancel",
+                self.api_base(),
+                job["endpoint"].as_str().unwrap_or(""),
+                job["request_id"].as_str().unwrap_or(""),
+            ),
+        };
+        let resp = crate::providers::inject_trace_headers(
+            self.client.put(&url).header("Authorization", format!("Key {api_key}")),
+        )
+        .send()
+        .await
+        .map_err(|e| ProviderError::RequestFailed {
+            message: format!("fal video cancel failed: {e}"),
+            status_code: None,
+            provider_error: None,
+            retryable: true,
+        })?;
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap_or(Value::Null);
+        match (status.as_u16(), body["status"].as_str()) {
+            (200..=299, _) => Ok(CancelOutcome::Requested),
+            (400, Some("ALREADY_COMPLETED")) => Ok(CancelOutcome::AlreadyFinished),
+            (404, _) => Ok(CancelOutcome::NotFound),
+            _ => Err(ProviderError::RequestFailed {
+                message: format!("fal video cancel answered {status}"),
+                status_code: Some(status.as_u16()),
+                provider_error: Some(body),
+                retryable: status.is_server_error(),
+            }),
+        }
+    }
+
     async fn health_check(&self) -> HealthCheckResult {
         if !self.is_configured() {
             return HealthCheckResult {
@@ -1040,5 +1084,39 @@ mod tests {
         assert_eq!(empty.status, GenerationStatus::Failed);
         assert!(empty.video_url.is_none());
         assert!(empty.error.expect("error").contains("no video URL"));
+    }
+
+    // ─── Cancel (L18) ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cancel_puts_to_the_jobs_queue_url_and_maps_fals_four_answers() {
+        use crate::providers::CancelOutcome;
+        use wiremock::matchers::header;
+        let cases = [
+            (ResponseTemplate::new(200).set_body_json(serde_json::json!({ "status": "OK" })), CancelOutcome::Requested),
+            (ResponseTemplate::new(202).set_body_json(serde_json::json!({ "status": "CANCELLATION_REQUESTED" })), CancelOutcome::Requested),
+            (ResponseTemplate::new(400).set_body_json(serde_json::json!({ "status": "ALREADY_COMPLETED" })), CancelOutcome::AlreadyFinished),
+            (ResponseTemplate::new(404).set_body_json(serde_json::json!({ "status": "NOT_FOUND" })), CancelOutcome::NotFound),
+        ];
+        for (answer, expected) in cases {
+            let server = MockServer::start().await;
+            // A sub-path endpoint's request lives under its app id: the
+            // response_url fal returned at submit says where.
+            Mock::given(method("PUT"))
+                .and(path("/fal-ai/kling-video/requests/r1/cancel"))
+                .and(header("authorization", "Key test-key"))
+                .respond_with(answer)
+                .expect(1)
+                .mount(&server)
+                .await;
+            let job = serde_json::json!({
+                "request_id": "r1",
+                "endpoint": "fal-ai/kling-video/v2/master/text-to-video",
+                "status_url": "",
+                "response_url": format!("{}/fal-ai/kling-video/requests/r1", server.uri()),
+            });
+            let handle = VideoGenerationHandle { provider_job_id: job.to_string(), provider: "fal".into(), model: "fal/kling-video-v2-master".into() };
+            assert_eq!(make_provider(&server.uri()).cancel(&handle).await.unwrap(), expected);
+        }
     }
 }

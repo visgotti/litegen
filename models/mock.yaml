@@ -1078,6 +1078,21 @@ models:
     extra_allowlist: []
     tags: [mock, test]
 
+  - id: mock/priced-fail-3d
+    provider: mock
+    media_type: model3d
+    display_name: Mock Priced Failing 3D
+    description: >-
+      Billed $0.25 at submit, then always terminates in `failed`, so a refund
+      has something to give back (L18): the key's quota, its limits, and the
+      job's cost all return to what they were.
+    pricing: { base_cost_usd: 0.25 }
+    capabilities: { text_to_3d: true }
+    prompt: { required: true, max_length: 1000 }
+    params: {}
+    extra_allowlist: []
+    tags: [mock, test, pricing]
+
   - id: mock/partial-3d
     provider: mock
     media_type: model3d

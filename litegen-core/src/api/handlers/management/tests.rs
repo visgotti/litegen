@@ -297,6 +297,34 @@ async fn a_refusal_by_one_principal_releases_every_other_reservation() {
     assert_eq!(l["spend_usd"], 0.0, "org reservation must be refunded: {l}");
 }
 
+/// L18: a cancelled async job gives what it was charged back to every
+/// principal it was charged against, long after the request's guard is gone.
+#[tokio::test]
+async fn a_cancelled_job_refunds_every_principal_it_was_charged_against() {
+    let fx = fixture().await;
+    let org_limits = format!("/v1/orgs/{}/limits", fx.org);
+    let key_limits = format!("/v1/keys/{}/limits", fx.gen_key.id);
+    for path in [&org_limits, &key_limits] {
+        let (s, l) = send(&fx.app, "PUT", path, Auth::Bearer(&fx.admin_key.raw), Some(json!({ "max_budget_usd": 10.0 })), &[]).await;
+        assert_eq!(s, StatusCode::OK, "{l}");
+    }
+    let (s, job) = send(&fx.app, "POST", "/v1/videos/generations", Auth::Bearer(&fx.gen_key.raw), Some(json!({ "model": "mock/priced-video", "prompt": "a cat" })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{job}");
+    let spend = |l: Value| l["spend_usd"].as_f64().unwrap();
+    for path in [&org_limits, &key_limits] {
+        let (_, l) = send(&fx.app, "GET", path, Auth::Bearer(&fx.admin_key.raw), None, &[]).await;
+        assert_eq!(spend(l), 0.5, "charged at submit: {path}");
+    }
+
+    let id = job["id"].as_str().unwrap();
+    let (s, cancelled) = send(&fx.app, "PATCH", &format!("/v1/generations/{id}"), Auth::Bearer(&fx.gen_key.raw), Some(json!({ "status": "cancelled" })), &[]).await;
+    assert_eq!((s, cancelled["vendor_cancelled"].as_bool()), (StatusCode::OK, Some(true)), "{cancelled}");
+    for path in [&org_limits, &key_limits] {
+        let (_, l) = send(&fx.app, "GET", path, Auth::Bearer(&fx.admin_key.raw), None, &[]).await;
+        assert_eq!(spend(l), 0.0, "refunded: {path}");
+    }
+}
+
 #[tokio::test]
 async fn lapsed_budget_window_resets_spend() {
     let fx = fixture().await;

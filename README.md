@@ -27,6 +27,8 @@ LiteGen provides a unified API gateway for all major image and video generation 
 - **DB-backed multi-key auth: scopes, quotas, RPM rate limits** — Create API keys with per-key USD budget caps, requests-per-minute throttles, and CSV scope sets (`generate`, `read`, `admin`).
 - **DB-backed video generations + polling endpoint** — Video jobs are persisted to the `generations` table; poll status via `GET /v1/generations/{id}`. A background poller updates status every 5 s.
 - **Per-key webhook delivery on video completion** — When a generation reaches a terminal status (`completed`, `failed`, `cancelled`), the owning key's `webhook_url` receives a signed `POST` with the generation payload (`X-Litegen-Signature: sha256=<hex>`). Retries 3 times with exponential back-off.
+- **Request metadata, spend per tag** — Send `metadata` (a string map, at most 1 KB) on any generation or segmentation: it is kept on the row, echoed on every answer and webhook, and filters `GET /v1/logs` and `GET /v1/stats` as `metadata.<key>=<value>`, so spend splits by project or asset.
+- **Cancel at the vendor, refund on cancel or failure** — `PATCH /v1/generations/{id}` asks the vendor to stop (fal, Replicate and Runway have a cancel) and reports `vendor_cancelled`; a job that is cancelled or fails gives its charge back to the key's quota and every limit it counted against.
 - **OpenTelemetry OTLP gRPC export** — Set `OTEL_EXPORTER_OTLP_ENDPOINT` to ship traces to any OTel collector.
 - **Prometheus `/metrics`** — Expose Prometheus-format metrics at `GET /metrics`.
 - **Dashboard CRUD UI for keys + model schema panel** — Create, update, and revoke API keys from the React dashboard; inspect full model capability schemas in the Models panel.

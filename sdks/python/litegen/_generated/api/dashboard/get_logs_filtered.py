@@ -5,6 +5,7 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.error_response import ErrorResponse
 from ...models.paginated_response_request_log import PaginatedResponseRequestLog
 from ...types import UNSET, Response, Unset
 
@@ -33,11 +34,15 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[PaginatedResponseRequestLog]:
+) -> Optional[Union[ErrorResponse, PaginatedResponseRequestLog]]:
     if response.status_code == 200:
         response_200 = PaginatedResponseRequestLog.from_dict(response.json())
 
         return response_200
+    if response.status_code == 400:
+        response_400 = ErrorResponse.from_dict(response.json())
+
+        return response_400
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -46,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[PaginatedResponseRequestLog]:
+) -> Response[Union[ErrorResponse, PaginatedResponseRequestLog]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -60,8 +65,11 @@ def sync_detailed(
     client: Union[AuthenticatedClient, Client],
     page: Union[Unset, int] = UNSET,
     per_page: Union[Unset, int] = UNSET,
-) -> Response[PaginatedResponseRequestLog]:
+) -> Response[Union[ErrorResponse, PaginatedResponseRequestLog]]:
     """GET /v1/logs — Paginated + filtered request logs. Supports `?format=csv`.
+
+     `metadata.<key>=<value>` (repeatable) keeps the requests whose `metadata`
+    holds every pair (L17).
 
     Args:
         page (Union[Unset, int]):
@@ -72,7 +80,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[PaginatedResponseRequestLog]
+        Response[Union[ErrorResponse, PaginatedResponseRequestLog]]
     """
 
     kwargs = _get_kwargs(
@@ -92,8 +100,11 @@ def sync(
     client: Union[AuthenticatedClient, Client],
     page: Union[Unset, int] = UNSET,
     per_page: Union[Unset, int] = UNSET,
-) -> Optional[PaginatedResponseRequestLog]:
+) -> Optional[Union[ErrorResponse, PaginatedResponseRequestLog]]:
     """GET /v1/logs — Paginated + filtered request logs. Supports `?format=csv`.
+
+     `metadata.<key>=<value>` (repeatable) keeps the requests whose `metadata`
+    holds every pair (L17).
 
     Args:
         page (Union[Unset, int]):
@@ -104,7 +115,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        PaginatedResponseRequestLog
+        Union[ErrorResponse, PaginatedResponseRequestLog]
     """
 
     return sync_detailed(
@@ -119,8 +130,11 @@ async def asyncio_detailed(
     client: Union[AuthenticatedClient, Client],
     page: Union[Unset, int] = UNSET,
     per_page: Union[Unset, int] = UNSET,
-) -> Response[PaginatedResponseRequestLog]:
+) -> Response[Union[ErrorResponse, PaginatedResponseRequestLog]]:
     """GET /v1/logs — Paginated + filtered request logs. Supports `?format=csv`.
+
+     `metadata.<key>=<value>` (repeatable) keeps the requests whose `metadata`
+    holds every pair (L17).
 
     Args:
         page (Union[Unset, int]):
@@ -131,7 +145,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[PaginatedResponseRequestLog]
+        Response[Union[ErrorResponse, PaginatedResponseRequestLog]]
     """
 
     kwargs = _get_kwargs(
@@ -149,8 +163,11 @@ async def asyncio(
     client: Union[AuthenticatedClient, Client],
     page: Union[Unset, int] = UNSET,
     per_page: Union[Unset, int] = UNSET,
-) -> Optional[PaginatedResponseRequestLog]:
+) -> Optional[Union[ErrorResponse, PaginatedResponseRequestLog]]:
     """GET /v1/logs — Paginated + filtered request logs. Supports `?format=csv`.
+
+     `metadata.<key>=<value>` (repeatable) keeps the requests whose `metadata`
+    holds every pair (L17).
 
     Args:
         page (Union[Unset, int]):
@@ -161,7 +178,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        PaginatedResponseRequestLog
+        Union[ErrorResponse, PaginatedResponseRequestLog]
     """
 
     return (

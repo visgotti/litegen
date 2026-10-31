@@ -1128,7 +1128,7 @@ mod tests {
         db.create_application(&app).await.unwrap();
 
         let by_org = db
-            .get_stats_for_tenant(&org.id, None)
+            .get_stats_for_tenant(&org.id, None, &[])
             .await
             .expect("get_stats_for_tenant (org only) must not error with no logs");
         assert_eq!(by_org.total_requests, 0);
@@ -1136,7 +1136,7 @@ mod tests {
         assert_eq!(by_org.failed_requests, 0);
 
         let by_app = db
-            .get_stats_for_tenant(&org.id, Some(&app.id))
+            .get_stats_for_tenant(&org.id, Some(&app.id), &[])
             .await
             .expect("get_stats_for_tenant (org+app) must not error with no logs");
         assert_eq!(by_app.total_requests, 0);

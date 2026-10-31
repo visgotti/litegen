@@ -42,10 +42,9 @@ async fn reap_generation(db: &Arc<dyn DatabaseStore>, gen_id: &str, reason: &str
         }
     }
     // A reap is a terminal transition like any other: the request log (same
-    // id) must not keep reading `pending` for a generation that has failed.
-    if let Err(e) = db.update_request_log_status(gen_id, "failed", Some(reason)).await {
-        warn!(generation_id = %gen_id, error = %e, "poller: failed to mark the reaped request log failed");
-    }
+    // id) must not keep reading `pending` for a generation that has failed,
+    // and what it was billed goes back.
+    settle_terminal(db, gen_id, "failed", Some(reason)).await;
 }
 
 /// Result of polling one row, normalised across modalities so the reaper, DB
@@ -453,12 +452,7 @@ pub(crate) async fn poll_once(
         // move that row to the outcome too, or `/v1/logs` reads `pending`
         // forever. Best-effort: the generation row above is the source of truth.
         if is_terminal {
-            if let Err(e) = db
-                .update_request_log_status(&gen.id, &status_str, outcome.error.as_deref())
-                .await
-            {
-                warn!(generation_id = %gen.id, error = %e, "poller: failed to update request log status");
-            }
+            settle_terminal(db, &gen.id, &status_str, outcome.error.as_deref()).await;
         }
 
         info!(
@@ -514,6 +508,14 @@ pub(crate) async fn dispatch_terminal_webhook(
     let gen_id = gen.id.clone();
 
     tokio::spawn(async move {
+        // The payload is the row as its terminal write and settlement left it,
+        // re-read: the caller's `metadata` and every other part of the row are
+        // what `GET /v1/generations/{id}` answers, and a refunded job reads
+        // `cost_usd: 0`. The observer's own copy stands in if the read fails.
+        let gen = match db2.get_generation(&gen_id).await {
+            Ok(Some(row)) if row.status.is_terminal() => row,
+            _ => gen,
+        };
         match db2.get_api_key(&key_id).await {
             Ok(Some(key)) if key.webhook_url.is_some() => {
                 let url = key.webhook_url.unwrap();
@@ -554,6 +556,60 @@ pub(crate) async fn dispatch_terminal_webhook(
             }
         }
     });
+}
+
+/// Settle a generation's terminal transition, by the observer whose guarded
+/// write decided it: its request log takes the outcome, and a job that ended
+/// `failed` or `cancelled` gives back what it was billed (L18). Returns the
+/// amount refunded.
+///
+/// Every terminal path calls this — the poller, a reap, `GET /v1/videos/{id}`,
+/// `GET /v1/models3d/{id}` and a cancel — and only after winning the write, so
+/// a generation is settled once; the refund's own claim keeps it once even so.
+pub(crate) async fn settle_terminal(db: &Arc<dyn DatabaseStore>, id: &str, status: &str, error: Option<&str>) -> f64 {
+    if let Err(e) = db.update_request_log_status(id, status, error).await {
+        warn!(generation_id = %id, error = %e, "failed to settle the request log");
+    }
+    if status != "failed" && status != "cancelled" {
+        return 0.0;
+    }
+    refund_generation(db, id).await
+}
+
+/// Give back what a failed or cancelled generation was billed: to its key's
+/// quota, and to every principal's limits it was charged against (recorded
+/// on the row at submit as `billing.limits`). The row's cost and its log's
+/// go to 0, so `usage`, `/v1/logs` and `/v1/stats` read what was kept.
+async fn refund_generation(db: &Arc<dyn DatabaseStore>, id: &str) -> f64 {
+    let gen = match db.get_generation(id).await {
+        Ok(Some(gen)) if gen.cost_usd > 0.0 => gen,
+        Ok(_) => return 0.0,
+        Err(e) => {
+            warn!(generation_id = %id, error = %e, "refund: could not read the generation");
+            return 0.0;
+        }
+    };
+    match db.claim_generation_refund(id, gen.cost_usd).await {
+        Ok(true) => {}
+        Ok(false) => return 0.0, // refunded already, or never billed
+        Err(e) => {
+            warn!(generation_id = %id, error = %e, "refund: could not claim it");
+            return 0.0;
+        }
+    }
+    if let Some(key_id) = gen.key_id {
+        if let Err(e) = db.atomic_charge_tokens(&key_id, -gen.cost_usd).await {
+            warn!(generation_id = %id, error = %e, "refund: the key's quota could not be credited");
+        }
+    }
+    let charged: Vec<crate::management::enforce::ChargedLimit> = gen
+        .metadata
+        .as_ref()
+        .and_then(|m| serde_json::from_value(m.get("billing")?.get("limits")?.clone()).ok())
+        .unwrap_or_default();
+    crate::management::enforce::refund_limits(db, &charged, gen.cost_usd).await;
+    info!(generation_id = %id, refunded_usd = gen.cost_usd, "refunded a generation that did not deliver");
+    gen.cost_usd
 }
 
 /// Resolve a single generation's stored per-org BYO credential, decrypted.
@@ -774,6 +830,66 @@ mod poller_tests {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         server.verify().await;
+    }
+
+    /// L17: the webhook is the row as decided — the caller's `metadata` with
+    /// it — not the observer's patch, which held only the assets.
+    #[tokio::test]
+    async fn the_terminal_webhook_carries_the_callers_metadata() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/wh"))
+            .and(body_partial_json(serde_json::json!({
+                "status": "completed",
+                "metadata": { "request": { "metadata": { "project": "castle" } } },
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let key = db.create_api_key(
+            "wh-key", "wh-hash-meta", "lg-wh", None, None, "generate,read", Some(&format!("{}/wh", server.uri())),
+        ).await.unwrap();
+        let registry = make_registry().await;
+        db.insert_generation(
+            "litegen-vid-wh-meta-1", Some(&key.id), "mock/video-gen", "mock", "video", Some("mock-video-job-1"), 0.0, None, None,
+        ).await.unwrap();
+        db.merge_generation_metadata_if_active(
+            "litegen-vid-wh-meta-1",
+            &serde_json::json!({ "request": { "metadata": { "project": "castle" } } }),
+        ).await.unwrap();
+
+        let store = test_3d_store();
+        poll_once(&db, &registry, None, crate::config::Mode::SingleTenant, &store).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        server.verify().await;
+    }
+
+    /// L18: a reaped job gives back what it was billed — the key's quota, the
+    /// row's cost and its log's — and settling it again gives back nothing.
+    #[tokio::test]
+    async fn a_reaped_job_is_refunded_once() {
+        let db: Arc<dyn DatabaseStore> = in_memory_db().await;
+        let key = db.create_api_key("refund", "refund-hash", "lg-rf", Some(5.0), None, "generate,read", None).await.unwrap();
+        db.atomic_charge_tokens(&key.id, 0.4).await.unwrap();
+        db.log_request("litegen-vid-refund-1", "mock/priced-video", "mock", "pending", "video", 0.4, 5, None, None, None, None).await.unwrap();
+        db.insert_generation(
+            "litegen-vid-refund-1", Some(&key.id), "mock/priced-video", "mock", "video", Some("job"), 0.4, None, None,
+        ).await.unwrap();
+
+        reap_generation(&db, "litegen-vid-refund-1", "timed out").await;
+        assert_eq!(settle_terminal(&db, "litegen-vid-refund-1", "failed", None).await, 0.0, "a second settlement refunds nothing");
+
+        let key = db.get_api_key(&key.id).await.unwrap().unwrap();
+        assert_eq!(key.tokens_used, 0.0, "the quota is back, once");
+        let row = db.get_generation("litegen-vid-refund-1").await.unwrap().unwrap();
+        assert_eq!((row.status, row.cost_usd), (GenerationStatus::Failed, 0.0));
+        let (logs, _) = db.get_request_logs(1, 10).await.unwrap();
+        assert_eq!(logs[0].cost_usd, 0.0, "spend reads what was kept");
     }
 
     // ─── Reaper: stuck rows must leave the active window ──────────────────────

@@ -79,14 +79,14 @@ async fn stats_queries_decode_avg_latency_against_postgres() {
 
     // Tenant-scoped Overview stats — the exact path that errored after login.
     let by_org = db
-        .get_stats_for_tenant(DEFAULT_ORG_ID, None)
+        .get_stats_for_tenant(DEFAULT_ORG_ID, None, &[])
         .await
         .expect("get_stats_for_tenant (org) must decode AVG(latency_ms)");
     assert!(by_org.total_requests >= 1);
     assert!(by_org.avg_latency_ms > 0.0);
 
     let by_app = db
-        .get_stats_for_tenant(DEFAULT_ORG_ID, Some(DEFAULT_APP_ID))
+        .get_stats_for_tenant(DEFAULT_ORG_ID, Some(DEFAULT_APP_ID), &[])
         .await
         .expect("get_stats_for_tenant (org+app) must decode AVG(latency_ms)");
     assert!(by_app.total_requests >= 1);
@@ -345,4 +345,44 @@ async fn idempotency_records_against_postgres() {
     assert_eq!(db.idempotency_begin(&scope, "fresh", "h").await.unwrap(), IdempotencyBegin::Started);
     db.idempotency_release(&scope, "fresh").await.unwrap();
     assert_eq!(db.idempotency_begin(&scope, "fresh", "h2").await.unwrap(), IdempotencyBegin::Started);
+}
+
+/// L17 and L18 against Postgres, where `request_logs.metadata` is TEXT: the
+/// metadata filters cast it to `jsonb`, with their placeholders numbered after
+/// the tenant's; a refund is claimed once, and only for a job that ended.
+#[tokio::test]
+async fn metadata_filters_and_refund_claims_against_postgres() {
+    let Ok(url) = std::env::var("LITEGEN_PG_TEST_URL") else {
+        eprintln!("skipping metadata_filters_and_refund_claims_against_postgres: set LITEGEN_PG_TEST_URL");
+        return;
+    };
+    let db = PostgresDatabase::connect(&url).await.expect("connect + migrate against the test Postgres");
+    let project = format!("castle-{}", Uuid::new_v4());
+    let (castle, forest) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    let tags = serde_json::json!({ "project": project, "asset": "knight" });
+    db.log_request(&castle, "m", "p", "completed", "video", 0.5, 10, None, Some(&tags), None, None).await.unwrap();
+    db.log_request(&forest, "m", "p", "completed", "video", 0.25, 10, None, Some(&serde_json::json!({ "project": "forest" })), None, None)
+        .await
+        .unwrap();
+
+    let pairs = vec![("project".to_string(), project.clone()), ("asset".to_string(), "knight".to_string())];
+    let filter = crate::db::RequestLogFilter { metadata: &pairs, ..Default::default() };
+    let (rows, total) = db.get_request_logs_for_tenant_filtered(DEFAULT_ORG_ID, None, &filter, 1, 50).await.expect("filtered logs");
+    assert_eq!((total, rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()), (1, vec![castle.as_str()]));
+    for app in [None, Some(DEFAULT_APP_ID)] {
+        let stats = db.get_stats_for_tenant(DEFAULT_ORG_ID, app, &pairs).await.expect("filtered stats");
+        assert_eq!((stats.total_requests, stats.total_cost_usd), (1, 0.5), "app {app:?}");
+    }
+
+    let id = Uuid::new_v4().to_string();
+    db.log_request(&id, "m", "p", "pending", "video", 0.5, 10, None, None, None, None).await.unwrap();
+    db.insert_generation(&id, None, "m", "p", "video", None, 0.5, None, None).await.unwrap();
+    assert!(!db.claim_generation_refund(&id, 0.5).await.unwrap(), "a job still running is not refunded");
+    db.cancel_generation(&id).await.unwrap().expect("cancelled");
+    assert!(db.claim_generation_refund(&id, 0.5).await.unwrap(), "a cancelled one is");
+    assert!(!db.claim_generation_refund(&id, 0.5).await.unwrap(), "once");
+    assert_eq!(db.get_generation(&id).await.unwrap().unwrap().cost_usd, 0.0);
+    let filter = crate::types::LogFilters::default();
+    let (logs, _) = db.get_request_logs_filtered(&filter, 1, 1000).await.unwrap();
+    assert_eq!(logs.iter().find(|l| l.id == id).unwrap().cost_usd, 0.0, "its log too");
 }

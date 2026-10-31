@@ -12,6 +12,8 @@ pub struct RequestLogFilter<'a> {
     pub status: Option<&'a str>,
     pub from: Option<chrono::DateTime<chrono::Utc>>,
     pub to: Option<chrono::DateTime<chrono::Utc>>,
+    /// `(key, value)` pairs the request's `metadata` must all hold (L17).
+    pub metadata: &'a [(String, String)],
 }
 
 /// Optional filters for a tenant-scoped audit-log query. Any `None` field is
@@ -350,6 +352,14 @@ pub trait DatabaseStore: Send + Sync {
         error: Option<&str>,
     ) -> Result<(), sqlx::Error>;
 
+    /// Claim the refund of a `failed` or `cancelled` generation billed
+    /// `cost_usd` (L18): zero its cost, and its request log's, if the row
+    /// still holds exactly that charge. True for exactly one caller, however
+    /// many observers of the outcome ask, so it is refunded once.
+    async fn claim_generation_refund(&self, _id: &str, _cost_usd: f64) -> Result<bool, sqlx::Error> {
+        Ok(false)
+    }
+
     // superseded by get_request_logs_for_tenant for the API (kept for tests/back-compat)
     async fn get_request_logs(
         &self,
@@ -457,12 +467,14 @@ pub trait DatabaseStore: Send + Sync {
     async fn get_stats(&self) -> Result<ProxyStats, sqlx::Error>;
 
     /// Tenant-scoped aggregate stats: same shape as `get_stats` but restricted to
-    /// `org_id` (and `app_id` when `Some`). Default impl returns empty stats so
-    /// mock/test implementations still compile.
+    /// `org_id` (and `app_id` when `Some`), and to requests whose `metadata`
+    /// holds every `(key, value)` pair given (L17). Default impl returns empty
+    /// stats so mock/test implementations still compile.
     async fn get_stats_for_tenant(
         &self,
         _org_id: &str,
         _app_id: Option<&str>,
+        _metadata: &[(String, String)],
     ) -> Result<ProxyStats, sqlx::Error> {
         Ok(ProxyStats {
             total_requests: 0,

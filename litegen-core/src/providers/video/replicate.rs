@@ -13,7 +13,7 @@ use crate::capabilities::ModelSchema;
 use crate::proxy::materializer::{MaterializedRequest, MaterializedRefForm};
 use crate::providers::{
     ApiKeyPool, BaseGenerationRequest, HealthCheckResult, ProviderError, ProviderInstanceConfig,
-    VideoExtras, VideoGenerationHandle, VideoGenerationPollResult, VideoProvider, build_cost_estimate,
+    CancelOutcome, VideoExtras, VideoGenerationHandle, VideoGenerationPollResult, VideoProvider, build_cost_estimate,
 };
 use crate::types::*;
 
@@ -406,6 +406,47 @@ impl VideoProvider for ReplicateVideoProvider {
     /// Validate the API token via `GET {api_base}/account`.
     ///
     /// @see <https://replicate.com/docs/reference/http#get-the-authenticated-account> — Get the authenticated account
+    /// Cancel a prediction (`POST {api_base}/predictions/{id}/cancel`). The
+    /// reference documents only the call; what it answers is read as the
+    /// prediction it returns: one that had already succeeded or failed had
+    /// nothing left to stop.
+    ///
+    /// @see <https://replicate.com/docs/reference/http#predictions.cancel> — "Cancel a prediction
+    /// that is currently running."
+    async fn cancel(&self, handle: &VideoGenerationHandle) -> Result<CancelOutcome, ProviderError> {
+        let api_key = self.api_key()?;
+        let job: Value = serde_json::from_str(&handle.provider_job_id).unwrap_or_default();
+        let prediction_id = job["prediction_id"].as_str().unwrap_or("");
+        let resp = crate::providers::inject_trace_headers(
+            self.client
+                .post(format!("{}/predictions/{prediction_id}/cancel", self.api_base()))
+                .header("Authorization", format!("Bearer {api_key}")),
+        )
+        .send()
+        .await
+        .map_err(|e| ProviderError::RequestFailed {
+            message: format!("replicate cancel failed: {e}"),
+            status_code: None,
+            provider_error: None,
+            retryable: true,
+        })?;
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap_or(Value::Null);
+        match status.as_u16() {
+            200..=299 => Ok(match body["status"].as_str() {
+                Some("succeeded") | Some("failed") => CancelOutcome::AlreadyFinished,
+                _ => CancelOutcome::Requested,
+            }),
+            404 => Ok(CancelOutcome::NotFound),
+            code => Err(ProviderError::RequestFailed {
+                message: format!("replicate cancel answered {status}"),
+                status_code: Some(code),
+                provider_error: Some(body),
+                retryable: status.is_server_error(),
+            }),
+        }
+    }
+
     async fn health_check(&self) -> HealthCheckResult {
         if !self.is_configured() {
             return HealthCheckResult {
@@ -572,6 +613,33 @@ mod tests {
                 mv.model, "stability-ai/stable-video-diffusion",
                 "{id} still resolves to a model Replicate has removed"
             );
+        }
+    }
+
+    // ─── Cancel (L18) ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cancel_posts_to_the_predictions_cancel_endpoint() {
+        use crate::providers::CancelOutcome;
+        use wiremock::matchers::header;
+        let cases = [
+            (200, serde_json::json!({ "id": "p1", "status": "canceled" }), CancelOutcome::Requested),
+            (200, serde_json::json!({ "id": "p1", "status": "processing" }), CancelOutcome::Requested),
+            (200, serde_json::json!({ "id": "p1", "status": "succeeded" }), CancelOutcome::AlreadyFinished),
+            (404, serde_json::json!({ "detail": "Not found." }), CancelOutcome::NotFound),
+        ];
+        for (status, body, expected) in cases {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/predictions/p1/cancel"))
+                .and(header("authorization", "Bearer test-key"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(body))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let job = serde_json::json!({ "prediction_id": "p1", "poll_url": "" });
+            let handle = VideoGenerationHandle { provider_job_id: job.to_string(), provider: "replicate".into(), model: "replicate/x".into() };
+            assert_eq!(make_provider(&server.uri()).cancel(&handle).await.unwrap(), expected);
         }
     }
 }
