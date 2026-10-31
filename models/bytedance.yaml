@@ -6,6 +6,7 @@ models:
     provider: bytedance
     media_type: image
     display_name: Seedream 4.0
+    docs_url: https://docs.byteplus.com/en/docs/modelark/image-generation-api
     description: ByteDance Seedream 4.0 text-to-image + multi-reference edit.
     pricing: { base_cost_usd: 0.03 }
     capabilities: { text_to_image: true, image_to_image: true }
@@ -36,7 +37,7 @@ models:
       provider_format: { form: base64 }
       roles:
         init: { required: false, min_count: 0, max_count: 14 }
-    extra_allowlist: [watermark, response_format]
+    extra_allowlist: [watermark]
     tags: [text-to-image, image-to-image]
 
   # Seedream 3.0 (seedream-3-0-t2i-250415) was deactivated 2026-05-13; the
@@ -55,6 +56,7 @@ models:
     provider: bytedance
     media_type: image
     display_name: Seedream 5.0 Lite
+    docs_url: https://docs.byteplus.com/en/docs/modelark/image-generation-api
     description: ByteDance Seedream 5.0 lite text-to-image + multi-reference edit.
     # "seedream-5-0-lite-260128 | Free | 0.035" (USD per output image).
     # @see https://docs.byteplus.com/en/docs/ModelArk/1544106
@@ -82,13 +84,14 @@ models:
       provider_format: { form: base64 }
       roles:
         init: { required: false, min_count: 0, max_count: 14 }
-    extra_allowlist: [watermark, response_format]
+    extra_allowlist: [watermark]
     tags: [text-to-image, image-to-image]
 
   - id: bytedance/seedream-4-5-251128
     provider: bytedance
     media_type: image
     display_name: Seedream 4.5
+    docs_url: https://docs.byteplus.com/en/docs/modelark/image-generation-api
     description: ByteDance Seedream 4.5 text-to-image + multi-reference edit.
     # "seedream-4-5-251128 | Free | 0.04" (USD per output image).
     # @see https://docs.byteplus.com/en/docs/ModelArk/1544106
@@ -111,7 +114,7 @@ models:
       provider_format: { form: base64 }
       roles:
         init: { required: false, min_count: 0, max_count: 14 }
-    extra_allowlist: [watermark, response_format]
+    extra_allowlist: [watermark]
     tags: [text-to-image, image-to-image]
 
   # ─── Seedance (video, async task) ─────────────────────────────────────────
@@ -119,6 +122,7 @@ models:
     provider: bytedance
     media_type: video
     display_name: Seedance 1.0 Pro
+    docs_url: https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
     description: ByteDance Seedance 1.0 Pro text/image-to-video (first/last frame).
     # $2.5 per 1M tokens; the default request (1080p, 16:9 1920x1088, 5 s, 24
     # fps = 244800 tokens) is listed at $0.61. Verified 2026-09-11.
@@ -164,6 +168,7 @@ models:
     provider: bytedance
     media_type: video
     display_name: Seedance 1.0 Pro Fast
+    docs_url: https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
     description: ByteDance Seedance 1.0 Pro Fast text-to-video and first-frame image-to-video.
     # $1 per 1M tokens; the default request (1080p, 16:9 1920x1088, 5 s, 24 fps
     # = 244800 tokens) is listed at $0.24.
@@ -217,6 +222,7 @@ models:
     provider: bytedance
     media_type: video
     display_name: Seedance 2.0 Mini
+    docs_url: https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
     description: ByteDance Dreamina Seedance 2.0 mini text/image-to-video (first/last frame), with generated audio.
     # $3.5 per 1M tokens (480p/720p, input without video); the default request
     # (720p, 5 s) is listed at $0.38 per video. List price: a time-limited 60%

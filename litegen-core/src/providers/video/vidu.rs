@@ -71,7 +71,8 @@ impl ViduProvider {
     fn ref_image(form: &MaterializedRefForm) -> Option<String> {
         match form {
             MaterializedRefForm::Url(u) => Some(u.clone()),
-            MaterializedRefForm::Base64(b64) => Some(format!("data:image/png;base64,{b64}")),
+            // A data URI of the bytes' own type.
+            MaterializedRefForm::Base64(b64) => Some(crate::proxy::materializer::base64_data_uri(b64, Some("image/png"))),
             _ => None,
         }
     }
@@ -140,6 +141,13 @@ impl VideoProvider for ViduProvider {
         // Choose the endpoint + image set by ref roles.
         let has_reference = materialized.refs.iter().any(|r| r.role == "reference");
         let has_last = materialized.refs.iter().any(|r| Self::is_last_frame(&r.role));
+        // img2video uses its one image as the FIRST frame: "The model will use
+        // the image provided via this parameter as the first frame", so a last
+        // frame alone is refused rather than sent as a start.
+        // @see <https://platform.vidu.com/docs/q3-image-to-video.md>
+        if has_last && !has_reference && !materialized.refs.iter().any(|r| r.role == "first_frame" || r.role == "init") {
+            return Err(ProviderError::InvalidRequest(format!("{} needs a first_frame to go with a last_frame", model.id)));
+        }
         // start-end2video reads `images` positionally (start frame, then end
         // frame), so order last-frame refs after the rest instead of trusting
         // the order the caller listed them in. The sort is stable.
@@ -180,17 +188,21 @@ impl VideoProvider for ViduProvider {
         if let Some(res) = extras.resolution.as_deref() {
             body["resolution"] = Value::String(res.to_string());
         }
-        if let Some(ar) = extras.aspect_ratio.as_deref() {
-            body["aspect_ratio"] = Value::String(ar.to_string());
+        // Only text2video and reference2video take an aspect ratio; img2video
+        // and start-end2video follow their images.
+        if matches!(endpoint, "text2video" | "reference2video") {
+            if let Some(ar) = extras.aspect_ratio.as_deref() {
+                body["aspect_ratio"] = Value::String(ar.to_string());
+            }
         }
         if let Some(seed) = base.seed {
             body["seed"] = Value::Number(seed.into());
         }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map {
-                    obj.insert(k.clone(), v.clone());
-                }
+        // `extra` adds the endpoint's own fields; it cannot replace one litegen
+        // sets (rule 11).
+        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
+            for (k, v) in map.iter().filter(|(k, _)| !matches!(k.as_str(), "model" | "prompt" | "images" | "duration" | "resolution" | "aspect_ratio" | "seed")) {
+                obj.insert(k.clone(), v.clone());
             }
         }
         // PixelGenie L10: audio on or off (Vidu's own `audio`).
@@ -210,7 +222,9 @@ impl VideoProvider for ViduProvider {
                 message: format!("Vidu request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
+                // A call that timed out may still run, and bill: only a
+                // connection that never opened is sent again.
+                retryable: e.is_connect(),
             })?;
 
         let status = resp.status();
@@ -267,14 +281,24 @@ impl VideoProvider for ViduProvider {
             _ => GenerationStatus::Processing,
         };
         let video_url = data["creations"][0]["url"].as_str().map(String::from);
+        // A success with no creation to fetch is a failure: nothing can be
+        // delivered from it.
+        let (status, error) = match (status, &video_url) {
+            (GenerationStatus::Completed, None) => (GenerationStatus::Failed, Some("Vidu reported success without a creation URL".to_string())),
+            (GenerationStatus::Failed, _) => (
+                status,
+                Some(data["err_code"].as_str().filter(|s| !s.is_empty()).unwrap_or("Vidu task failed").to_string()),
+            ),
+            _ => (status, None),
+        };
 
         Ok(VideoGenerationPollResult {
             status,
-            progress: if status == GenerationStatus::Completed { 100 } else { 50 },
-            video_url,
+            progress: if status.is_terminal() { 100 } else { 50 },
+            video_url: video_url.filter(|_| status == GenerationStatus::Completed),
             video_data: None,
             content_type: Some("video/mp4".into()),
-            error: data["err_code"].as_str().filter(|s| !s.is_empty()).map(String::from),
+            error,
             metadata: HashMap::new(),
         })
     }
@@ -467,5 +491,78 @@ mod tests {
             .collect();
         let expected: Vec<i64> = cases.iter().map(|c| c.2).collect();
         assert_eq!(sent, expected);
+    }
+
+    // ─── ByteDance/MiniMax/Vidu audit, 2026-10-30: W3, W9, W10, W13, W15 ────
+
+    fn b64_ref(role: &str, bytes: &[u8]) -> MaterializedRef {
+        use base64::Engine;
+        MaterializedRef { role: role.to_string(), form: MaterializedRefForm::Base64(base64::engine::general_purpose::STANDARD.encode(bytes)), time_s: None }
+    }
+
+    const JPEG: [u8; 12] = [0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, b'J', b'F', b'I', b'F', 0, 1];
+
+    /// W3: a last frame alone would be sent to img2video, which uses it as
+    /// the FIRST frame — refused, with nothing sent.
+    #[tokio::test]
+    async fn a_last_frame_without_a_first_is_refused_before_any_call() {
+        let server = MockServer::start().await;
+        let materialized = MaterializedRequest { refs: vec![url_ref("last_frame", "https://x/end.png")], cleanup: Cleanup::empty() };
+        let err = make_provider(&server.uri())
+            .generate(&ref_schema("vidu/viduq3-pro"), &make_base("x", "vidu/viduq3-pro"), &make_extras(), &materialized)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// W10, W13, W9: img2video takes no `aspect_ratio`; a base64 frame goes
+    /// as a data URI of its own type; `extra` cannot replace the model.
+    #[tokio::test]
+    async fn an_image_request_sends_only_what_its_endpoint_takes() {
+        let server = MockServer::start().await;
+        mount_submit(&server, "img2video").await;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "model": "viduq3-turbo", "callback_url": "https://cb.example" }));
+        let materialized = MaterializedRequest { refs: vec![b64_ref("first_frame", &JPEG)], cleanup: Cleanup::empty() };
+        make_provider(&server.uri())
+            .generate(&ref_schema("vidu/viduq3-pro"), &make_base("x", "vidu/viduq3-pro"), &extras, &materialized)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert!(body.get("aspect_ratio").is_none(), "{body}");
+        assert!(body["images"][0].as_str().unwrap().starts_with("data:image/jpeg;base64,"), "{body}");
+        assert_eq!((body["model"].as_str(), body["callback_url"].as_str()), (Some("viduq3-pro"), Some("https://cb.example")), "{body}");
+    }
+
+    /// W15: a finished job reads 100, and a success with no URL is a failure.
+    #[tokio::test]
+    async fn a_success_without_a_url_fails_and_a_finished_job_reads_100() {
+        for (answer, status, progress) in [
+            (json!({ "state": "success", "creations": [] }), GenerationStatus::Failed, 100),
+            (json!({ "state": "failed", "err_code": "CreationPolicyViolation" }), GenerationStatus::Failed, 100),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(answer.clone())).mount(&server).await;
+            let handle = VideoGenerationHandle { provider_job_id: "vd-9".into(), provider: "vidu".into(), model: "vidu/viduq3-pro".into() };
+            let poll = make_provider(&server.uri()).poll_status(&handle).await.unwrap();
+            assert_eq!((poll.status, poll.progress), (status, progress), "{answer}");
+            assert!(poll.error.is_some(), "{answer}");
+        }
+    }
+
+    /// W14: a submit that timed out may still run, and bill, at the vendor:
+    /// it is never sent again.
+    #[tokio::test]
+    async fn a_timed_out_submit_is_never_sent_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})).set_delay(std::time::Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        let mut p = make_provider(&server.uri());
+        p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let err = p.generate(&ref_schema("vidu/viduq1"), &make_base("x", "vidu/viduq1"), &make_extras(), &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() }).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
     }
 }

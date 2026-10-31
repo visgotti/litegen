@@ -4,8 +4,9 @@ models:
     provider: minimax
     media_type: image
     display_name: MiniMax image-01
+    docs_url: https://platform.minimax.io/docs/api-reference/image-generation-t2i
     description: MiniMax image-01 text-to-image with subject reference.
-    # "$0.0035 per image": https://platform.minimax.io/docs/guides/pricing-paygo.md (2026-09-11)
+    # "$0.0035 per image": https://platform.minimax.io/docs/pricing/overview.md (2026-09-11)
     pricing: { base_cost_usd: 0.0035 }
     capabilities: { text_to_image: true, image_to_image: true }
     prompt: { required: true, max_length: 1500 }
@@ -28,9 +29,10 @@ models:
     provider: minimax
     media_type: video
     display_name: MiniMax Hailuo 02
+    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-t2v
     description: Hailuo 02 text-to-video and image-to-video (first/last frame).
     # $0.28 per 768P 6s video (the defaults); $0.56 at 768P 10s, $0.49 at 1080P 6s:
-    # https://platform.minimax.io/docs/guides/pricing-paygo.md (2026-09-11)
+    # https://platform.minimax.io/docs/pricing/overview.md (2026-09-11)
     pricing: { base_cost_usd: 0.28 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2000 }
@@ -60,9 +62,10 @@ models:
     provider: minimax
     media_type: video
     display_name: MiniMax Hailuo 2.3
+    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-t2v
     description: Hailuo 2.3 text-to-video and image-to-video.
     # $0.28 per 768P 6s video (the defaults); $0.56 at 768P 10s, $0.49 at 1080P 6s:
-    # https://platform.minimax.io/docs/guides/pricing-paygo.md (2026-09-11)
+    # https://platform.minimax.io/docs/pricing/overview.md (2026-09-11)
     pricing: { base_cost_usd: 0.28 }
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 2000 }
@@ -89,9 +92,10 @@ models:
     provider: minimax
     media_type: video
     display_name: MiniMax Hailuo 2.3 Fast
+    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-i2v
     description: Hailuo 2.3 Fast image-to-video (requires a first-frame image).
     # $0.19 per 768P 6s video (the defaults); $0.32 at 768P 10s, $0.33 at 1080P 6s:
-    # https://platform.minimax.io/docs/guides/pricing-paygo.md (2026-09-11)
+    # https://platform.minimax.io/docs/pricing/overview.md (2026-09-11)
     pricing: { base_cost_usd: 0.19 }
     # Image-to-video only: the text-to-video `model` enum has no
     # MiniMax-Hailuo-2.3-Fast, and the i2v request requires first_frame_image.
@@ -127,6 +131,7 @@ models:
     provider: minimax
     media_type: video
     display_name: MiniMax T2V-01 Director
+    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-t2v
     description: Text-to-video with camera-movement instructions.
     pricing: { base_cost_usd: 0.43 }
     capabilities: { text_to_video: true }
@@ -140,6 +145,7 @@ models:
     provider: minimax
     media_type: video
     display_name: MiniMax S2V-01
+    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-s2v
     description: Subject-reference video (character consistency from a face photo).
     pricing: { base_cost_usd: 0.65 }
     # subject_reference is required by the S2V-01 request schema, so a
@@ -171,10 +177,11 @@ models:
     provider: minimax
     media_type: video
     display_name: MiniMax H3
+    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-v2-create
     description: MiniMax H3 text-to-video, image-to-video (first/last frame) and reference-to-video, up to 2K.
     # $0.08 per second at 768P, so the default request (768P, 5 s) is $0.40;
     # $0.13 per second at 2K. Input images: the first 5 are free, then $0.04 each.
-    # https://platform.minimax.io/docs/guides/pricing-paygo.md (2026-09-11)
+    # https://platform.minimax.io/docs/pricing/overview.md (2026-09-11)
     pricing:
       base_cost_usd: 0.4
       variable_pricing:
@@ -221,17 +228,20 @@ models:
     provider: minimax
     media_type: video
     display_name: MiniMax H3 Max
-    description: MiniMax H3 Max, the fast H3 variant, text-to-video and image-to-video (first/last frame).
+    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-v2-create
+    description: MiniMax H3 Max, the fast H3 variant — text-to-video, image-to-video (first/last frame) and reference-to-video.
     # $0.08 per second at 768P, so the default request (768P, 5 s) is $0.40;
     # $0.05 per second at 480P. Only the output video is billed.
-    # https://platform.minimax.io/docs/guides/pricing-paygo.md (2026-09-11)
+    # https://platform.minimax.io/docs/pricing/overview.md (2026-09-11)
     pricing:
       base_cost_usd: 0.4
       variable_pricing:
         - { per_second_usd: 0.08 }
         - { when: { resolution: 480P }, per_second_usd: 0.05 }
-    # "Supports text-to-video and image-to-video (first / last frame) only;
-    # reference-to-video (reference image / video / audio) is not supported".
+    # "Supports text-to-video, image-to-video (first / last frame), and
+    # reference-to-video (reference image / video / audio)" (read 2026-10-30).
+    # Reference images: "The first 2 images per task are free; additional
+    # images are billed per image" ($0.074), which the flat price omits.
     capabilities: { text_to_video: true, image_to_video: true }
     prompt: { required: true, max_length: 7000 }
     params:
@@ -247,13 +257,14 @@ models:
         kind: aspect_ratio
         allowed: ["21:9","16:9","4:3","1:1","3:4","9:16"]
         default: "16:9"
-    # No reference role: H3 Max has no reference-to-video.
+    # Reference images, ≤ 9 as on H3.
     ref_inputs:
-      max_total: 2
+      max_total: 9
       default_role: first_frame
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
+        reference:   { required: false, min_count: 0, max_count: 9 }
     extra_allowlist: [callback_url]
-    tags: [text-to-video, image-to-video, fast]
+    tags: [text-to-video, image-to-video, reference-to-video, fast]

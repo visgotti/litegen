@@ -301,6 +301,20 @@ in `X-Litegen-Dropped-Params` (`extra_lax_keeps_only_allowlisted_keys_and_report
 | catalog | `gemini-3.1-flash-lite-image` takes no `imageSize` (1K only); every Google and OpenAI row names its docs page; OpenAI rows take `safety_identifier` (`user` is deprecated) | `gemini_flash_lite_image_takes_no_image_size`, `every_google_and_openai_row_names_its_docs_url`, `openai_rows_take_a_safety_identifier` | ✅ |
 | drift | a model the vendor's own page or spec says "was shut down" is not live (Veo 3.1 previews, `gpt-image-1`); Google's "(Shut down)" rows are skipped; OpenAI's deprecations page is a `lifecycle` source | `scripts/model-drift/test/shutdown.test.mjs` | ✅ |
 
+### ByteDance, MiniMax and Vidu adapters (audit 2026-10-30)
+
+| behaviour | rule | proof | status |
+|---|---|---|---|
+| a last frame needs a first | Vidu img2video would use a lone last frame as the start; BytePlus requires two `image_url`s with roles: refused, nothing sent | `a_last_frame_without_a_first_is_refused_before_any_call` (Vidu, ByteDance) | ✅ wiremock |
+| frame types | a base64 frame is a `data:` URI of its bytes' own type (all five adapters) | `a_base64_frame_is_sent_with_its_own_type`, `an_image_request_sends_only_what_its_endpoint_takes`, `frames_go_with_their_own_type_and_only_the_fields_their_mode_takes`, `the_answer_comes_inline_and_a_reference_goes_with_its_own_type` | ✅ wiremock |
+| only what the endpoint takes | Vidu sends `aspect_ratio` only to text2video and reference2video; MiniMax S2V-01 gets no `duration`/`resolution`; Hailuo first-and-last-frame requests get no `fast_pretreatment`; MiniMax image gets no `n` | same; `subject_to_video_sends_no_duration`, `one_image_is_asked_for` | ✅ wiremock |
+| Hailuo lengths | 6 or 10 s, and only 6 s at 1080P: any other length is refused | `a_hailuo_length_it_cannot_make_is_refused` | ✅ |
+| owned fields | `extra` cannot replace `model`, `prompt`, `content`, `images`, `response_format`, … (Seedream's `response_format` is no longer allowlisted) | the tests above; conformance `seedream_rows_do_not_allowlist_response_format` | ✅ |
+| honest endings | a success with no URL or file is `failed`; a finished job reads 100; BytePlus `cancelled`/`expired` and MiniMax's failed file lookups say so (a lookup failure is retried) | `a_finished_task_reads_100_and_says_why_it_ended`, `a_success_without_a_url_fails_and_a_finished_job_reads_100`, `a_success_without_a_file_fails_and_a_failed_lookup_is_retried` | ✅ wiremock |
+| no second billed submit | a submit that timed out is never sent again | `a_timed_out_submit_is_never_sent_again` (all five) | ✅ wiremock |
+| catalog | no Vidu row allowlists `off_peak` (48 h, against litegen's 2 h reap) or `style`; Q2's bodies have no `bgm`/`movement_amplitude`; Q1 takes 3:4 and 4:3; H3-Max takes ≤ 9 reference images; every row names its docs page | `vidu_rows_allowlist_only_fields_their_bodies_take`, `vidu_3_4_and_4_3_are_only_advertised_for_q1_and_q2_models`, `minimax_h3_max_has_no_2k_no_4s_and_takes_references`, `every_bytedance_minimax_and_vidu_row_names_its_docs_url` | ✅ |
+| drift | BytePlus's restructured model list and pricing are read again (the check failed with exit 2); glued "new" badges and blockquote notes are not content | `scripts/model-drift/test/bytedance.test.mjs` | ✅ |
+
 ### Image
 
 | param | kind | validator rule | # models | Proof | Status |

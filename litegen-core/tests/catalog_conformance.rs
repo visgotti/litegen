@@ -1106,24 +1106,22 @@ fn recraft_v4_1_declares_no_curated_style() {
 
 // ─── Vidu: vendor facts re-read 2026-09-11 (model-drift) ────────────────────
 
-/// "3:4 & 4:3 only support q2 & q3 model" (text2video; reference2video says
-/// q2), and img2video / start-end2video take no aspect_ratio at all — so q1
-/// and 2.0 get 16:9, 9:16 and 1:1 only.
-/// @see <https://platform.vidu.com/docs/text-to-video.md>
-/// @see <https://platform.vidu.com/docs/reference-to-video.md>, read 2026-09-11
+/// Q1 now takes 3:4 and 4:3 ("Accepted values: 16:9, 9:16, 3:4, 4:3, 1:1",
+/// text2video; reference2video the same plus auto); vidu2.0, which no
+/// endpoint page documents any more, keeps 16:9, 9:16 and 1:1.
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video.md> (2026-10-30)
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/reference-to-video.md> (2026-10-30)
 #[test]
-fn vidu_3_4_and_4_3_are_only_advertised_for_q2_models() {
+fn vidu_3_4_and_4_3_are_only_advertised_for_q1_and_q2_models() {
     let reg = registry();
-    for id in ["vidu/viduq1", "vidu/vidu2.0"] {
-        let ratios = aspect_ratios(&reg, id);
-        assert!(!ratios.is_empty(), "{id} declares no aspect ratios");
-        for ar in ratios {
-            assert!(
-                ["16:9", "9:16", "1:1"].contains(&ar.as_str()),
-                "{id} allows {ar:?}; Vidu's q1 / 2.0 models take 16:9, 9:16 and 1:1 only"
-            );
-        }
+    let ratios = aspect_ratios(&reg, "vidu/vidu2.0");
+    assert!(!ratios.is_empty(), "vidu/vidu2.0 declares no aspect ratios");
+    for ar in ratios {
+        assert!(["16:9", "9:16", "1:1"].contains(&ar.as_str()), "vidu/vidu2.0 allows {ar:?}");
     }
+    let mut q1 = aspect_ratios(&reg, "vidu/viduq1");
+    q1.sort();
+    assert_eq!(q1, ["16:9", "1:1", "3:4", "4:3", "9:16"]);
     for ar in aspect_ratios(&reg, "vidu/viduq2-pro") {
         assert!(
             ["16:9", "9:16", "3:4", "4:3", "1:1"].contains(&ar.as_str()),
@@ -1132,20 +1130,25 @@ fn vidu_3_4_and_4_3_are_only_advertised_for_q2_models() {
     }
 }
 
-/// `style` (general / anime) exists only on text2video, so only a model that
-/// can use text2video may allowlist it (vidu2.0 did, and cannot).
-/// @see <https://platform.vidu.com/docs/text-to-video.md>, read 2026-09-11
+/// No current Vidu page documents `style`: Q1's text2video body is model,
+/// prompt, duration, seed, aspect_ratio, resolution, audio, payload,
+/// off_peak, watermark, wm_position, wm_url, meta_data and callback_url.
+/// `off_peak` is allowlisted nowhere: "Tasks submitted in off-peak mode will
+/// be generated within 48 hours", while litegen fails a job still running
+/// after 2 hours (and bills it). Q2's bodies have no `bgm` or
+/// `movement_amplitude`.
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video.md> (2026-10-30)
+/// @see <https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/image-to-video.md> (2026-10-30)
 #[test]
-fn vidu_style_is_only_allowlisted_on_text_to_video_models() {
+fn vidu_rows_allowlist_only_fields_their_bodies_take() {
     let reg = registry();
     for m in reg.for_provider("vidu") {
-        if m.extra_allowlist.iter().any(|k| k == "style") {
-            assert!(
-                m.capabilities.text_to_video,
-                "{} allowlists text2video's `style` but has no text-to-video mode",
-                m.id
-            );
+        for k in ["style", "off_peak"] {
+            assert!(!m.extra_allowlist.iter().any(|a| a == k), "{} allowlists `{k}`", m.id);
         }
+    }
+    for id in ["vidu/viduq2-pro", "vidu/viduq2-pro-fast"] {
+        assert_eq!(reg.get(id).unwrap().extra_allowlist, ["callback_url"], "{id}");
     }
 }
 
@@ -2906,12 +2909,12 @@ fn minimax_h3_matches_the_v2_create_contract() {
     assert!(!ratios.is_empty() && !ratios.iter().any(|r| r == "adaptive"), "{ratios:?}");
 }
 
-/// MiniMax-H3-Max: text-to-video and first/last-frame image-to-video only (no
-/// reference-to-video); `480P` / `768P` ("2K is not supported"); 5–15 s ("4
-/// seconds is not supported").
-/// @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-09-11)
+/// MiniMax-H3-Max: "Supports text-to-video, image-to-video (first / last
+/// frame), and reference-to-video (reference image / video / audio); `480P`
+/// / `768P` resolution, **`2K` is not supported**; 5–15s duration."
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-10-30)
 #[test]
-fn minimax_h3_max_has_no_2k_no_4s_and_no_reference_role() {
+fn minimax_h3_max_has_no_2k_no_4s_and_takes_references() {
     let reg = registry();
     let schema = reg.get("minimax/MiniMax-H3-Max").expect("minimax/MiniMax-H3-Max missing");
     assert!(schema.capabilities.text_to_video && schema.capabilities.image_to_video);
@@ -2922,7 +2925,7 @@ fn minimax_h3_max_has_no_2k_no_4s_and_no_reference_role() {
     }
     let roles = &schema.ref_inputs.as_ref().expect("MiniMax-H3-Max takes first/last frames").roles;
     assert!(roles.contains_key("first_frame") && roles.contains_key("last_frame"));
-    assert!(!roles.contains_key("reference"), "H3 Max has no reference-to-video");
+    assert_eq!(roles.get("reference").map(|r| r.max_count), Some(9), "reference images ≤ 9, as on H3");
 }
 
 // ─── hunyuan: 2026-09-11 drift decisions applied ────────────────────────────
@@ -3515,5 +3518,30 @@ fn every_google_and_openai_row_names_its_docs_url() {
 fn openai_rows_take_a_safety_identifier() {
     for m in registry().all().filter(|m| m.provider == "openai") {
         assert!(m.extra_allowlist.iter().any(|k| k == "safety_identifier"), "{}: {:?}", m.id, m.extra_allowlist);
+    }
+}
+
+// ─── ByteDance / MiniMax / Vidu audit, 2026-10-30: W8, S7 ──────────────────
+
+/// W8: Seedream answers inline (`b64_json`); `response_format: url` would have
+/// litegen fetch the image server-side, so it is not a caller's knob.
+#[test]
+fn seedream_rows_do_not_allowlist_response_format() {
+    for m in registry().all().filter(|m| m.provider == "bytedance" && m.media_type == litegen::capabilities::MediaType::Image) {
+        assert!(!m.extra_allowlist.iter().any(|k| k == "response_format"), "{}: {:?}", m.id, m.extra_allowlist);
+    }
+}
+
+/// S7: every ByteDance, MiniMax and Vidu row names the vendor page its fields
+/// were read from.
+#[test]
+fn every_bytedance_minimax_and_vidu_row_names_its_docs_url() {
+    for m in registry().all().filter(|m| ["bytedance", "minimax", "vidu"].contains(&m.provider.as_str())) {
+        let url = m.docs_url.as_deref().unwrap_or_else(|| panic!("{} names no docs_url", m.id));
+        assert!(
+            ["https://docs.byteplus.com/", "https://platform.minimax.io/", "https://platform.vidu.com/"].iter().any(|p| url.starts_with(p)),
+            "{}: {url}",
+            m.id
+        );
     }
 }

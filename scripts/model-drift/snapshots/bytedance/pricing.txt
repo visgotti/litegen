@@ -1,6 +1,88 @@
-| dreamina-seedance-2-0-mini-260615 > Pricing varies based on whether the input includes video. | * For 480p and 720p outputs: * Input without video: 3.5 * Input with video: 2.1 | Not supported yet |
-| seedance-1-0-pro-250528 | 2.5 | 1.25 |
-| seedance-1-0-pro-fast-251015 | 1 | 0.5 |
-| seedream-5-0-lite-260128 | Free | 0.035 |
-| seedream-4-5-251128 | Free | 0.04 |
-| seedream-4-0-250828 | Free | 0.03 |
+# Video generation models · Input without video
+| Model | Online inference |  |  | Offline inference |
+|  | 480p and 720p | 1080p | 4K |  |
+| dreamina-seedance-2-0-mini-260615 | $3.5 | Not supported | Not supported | Not supported |
+| seedance-1-0-pro-250528 | $2.5 |  |  | $1.25 |
+| seedance-1-0-pro-fast-251015 | $1 |  |  | $0.5 |
+
+# Video generation models · Input with video
+| Model | Online inference |  |  | Offline inference |
+|  | 480p and 720p | 1080p | 4K |  |
+| dreamina-seedance-2-0-mini-260615 | $2.1 | Not supported | Not supported | Not supported |
+
+# Image generation models · Pricing
+| Model ID | Input image | Output image |
+| seedream-5-0-lite-260128 | Free | $0.035 |
+| seedream-4-5-251128 | Free | $0.04 |
+| seedream-4-0-250828 | Free | $0.03 |
+
+# billing example · Dreamina Seedance 2.0 series · Input without video
+| Resolution | 480p | 720p | 1080p | 4K |
+| Aspect ratio | 16:9 | 16:9 | 16:9 | 16:9 |
+| Output video duration (seconds) | 5 | 5 | 5 | 5 |
+| Dreamina Seedance 2.0 | * $0.35 per video * $0.07 per second | * $0.76 per video * $0.15 per second | * $1.87 per video * $0.37 per second | * $3.89 per video * $0.78 per second |
+| Dreamina Seedance 2.0 Fast | * $0.28 per video * $0.06 per second | * $0.60 per video * $0.12 per second | Not supported | Not supported |
+| Dreamina Seedance 2.0 Mini | * $0.18 per video * $0.04 per second | * $0.38 per video * $0.08 per second | Not supported | Not supported |
+
+# billing example · Dreamina Seedance 2.0 series · Input with video
+| Resolution | 480p | 720p | 1080p | 4K |
+| Aspect ratio | 16:9 | 16:9 | 16:9 | 16:9 |
+| Input duration (seconds) | 2-15 | 2-15 | 2-15 | 2-15 |
+| Output duration (seconds) | 5 | 5 | 5 | 5 |
+| Dreamina Seedance 2.0 | $0.39-$0.86 * Lowest price: 2-4 seconds input * Highest price: 15 seconds input | $0.84-$1.86 * Lowest price: 2-4 seconds input * Highest price: 15 seconds input | $2.06-$4.57 * Lowest price: 2-4 seconds input * Highest price: 15 seconds input | $4.20-$9.33 * Lowest price: 2-4 seconds input * Highest price: 15 seconds input |
+| Dreamina Seedance 2.0 Fast | $0.30-$0.66 * Lowest price: 2-4 seconds input * Highest price: 15 seconds input | $0.64-$1.43 * Lowest price: 2-4 seconds input * Highest price: 15 seconds input | Not supported | Not supported |
+| Dreamina Seedance 2.0 Mini | $0.19-$0.42 * Lowest price: 2-4 seconds input * Highest price: 15 seconds input | $0.41-$0.91 * Lowest price: 2-4 seconds input * Highest price: 15 seconds input | Not supported | Not supported |
+
+# billing example · Seedance 1.0 Pro
+| Resolution | Ratio | Long side × short side (px) | Frame rate (frame/s) | Duration (seconds) | Usage (tokens) | Price |
+| 480p | 16:9 | 864×480 | 24 | 5 | 48600 | $0.12 |
+|  | 16:9 | 864×480 | 24 | 10 | 97000 | $0.24 |
+|  | 4:3 | 736×544 | 24 | 5 | 46920 | $0.12 |
+|  | 4:3 | 736×544 | 24 | 10 | 93840 | $0.23 |
+|  | 1:1 | 640×640 | 24 | 5 | 48000 | $0.12 |
+|  | 1:1 | 640×640 | 24 | 10 | 96000 | $0.24 |
+|  | 21:9 | 960×416 | 24 | 5 | 46800 | $0.12 |
+|  | 21:9 | 960×416 | 24 | 10 | 93600 | $0.23 |
+| 720p | 16:9 | 1248×704 | 24 | 5 | 102960 | $0.26 |
+|  | 16:9 | 1248×704 | 24 | 10 | 205920 | $0.51 |
+|  | 4:3 | 1120×832 | 24 | 5 | 109200 | $0.27 |
+|  | 4:3 | 1120×832 | 24 | 10 | 218400 | $0.55 |
+|  | 1:1 | 960×960 | 24 | 5 | 108000 | $0.27 |
+|  | 1:1 | 960×960 | 24 | 10 | 216000 | $0.54 |
+|  | 21:9 | 1504×640 | 24 | 5 | 112800 | $0.28 |
+|  | 21:9 | 1504×640 | 24 | 10 | 225600 | $0.56 |
+| 1080p | 16:9 | 1920×1088 | 24 | 5 | 244800 | $0.61 |
+|  | 16:9 | 1920×1088 | 24 | 10 | 489600 | $1.22 |
+|  | 4:3 | 1664×1248 | 24 | 5 | 243360 | $0.61 |
+|  | 4:3 | 1664×1248 | 24 | 10 | 486720 | $1.22 |
+|  | 1:1 | 1440×1440 | 24 | 5 | 243000 | $0.61 |
+|  | 1:1 | 1440×1440 | 24 | 10 | 486000 | $1.22 |
+|  | 21:9 | 2176×928 | 24 | 5 | 236640 | $0.59 |
+|  | 21:9 | 2176×928 | 24 | 10 | 473280 | $1.18 |
+
+# billing example · Seedance 1.0 Pro Fast
+| Resolution | Ratio | Long side × short side (px) | Frame rate (frame/s) | Duration (seconds) | Usage (tokens) | Price |
+| 480p | 16:9 | 864×480 | 24 | 5 | 48600 | $0.05 |
+|  | 16:9 | 864×480 | 24 | 10 | 97000 | $0.10 |
+|  | 4:3 | 736×544 | 24 | 5 | 46920 | $0.05 |
+|  | 4:3 | 736×544 | 24 | 10 | 93840 | $0.09 |
+|  | 1:1 | 640×640 | 24 | 5 | 48000 | $0.05 |
+|  | 1:1 | 640×640 | 24 | 10 | 96000 | $0.10 |
+|  | 21:9 | 960×416 | 24 | 5 | 46800 | $0.05 |
+|  | 21:9 | 960×416 | 24 | 10 | 93600 | $0.09 |
+| 720p | 16:9 | 1248×704 | 24 | 5 | 102960 | $0.10 |
+|  | 16:9 | 1248×704 | 24 | 10 | 205920 | $0.21 |
+|  | 4:3 | 1120×832 | 24 | 5 | 109200 | $0.11 |
+|  | 4:3 | 1120×832 | 24 | 10 | 218400 | $0.22 |
+|  | 1:1 | 960×960 | 24 | 5 | 108000 | $0.11 |
+|  | 1:1 | 960×960 | 24 | 10 | 216000 | $0.22 |
+|  | 21:9 | 1504×640 | 24 | 5 | 112800 | $0.11 |
+|  | 21:9 | 1504×640 | 24 | 10 | 225600 | $0.23 |
+| 1080p | 16:9 | 1920×1088 | 24 | 5 | 244800 | $0.24 |
+|  | 16:9 | 1920×1088 | 24 | 10 | 489600 | $0.49 |
+|  | 4:3 | 1664×1248 | 24 | 5 | 243360 | $0.24 |
+|  | 4:3 | 1664×1248 | 24 | 10 | 486720 | $0.49 |
+|  | 1:1 | 1440×1440 | 24 | 5 | 243000 | $0.24 |
+|  | 1:1 | 1440×1440 | 24 | 10 | 486000 | $0.49 |
+|  | 21:9 | 2176×928 | 24 | 5 | 236640 | $0.24 |
+|  | 21:9 | 2176×928 | 24 | 10 | 473280 | $0.47 |

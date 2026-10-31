@@ -105,7 +105,8 @@ impl ImageProvider for MiniMaxImageProvider {
         let mut body = json!({
             "model": native,
             "prompt": base.prompt,
-            "n": base.n.max(1),
+            // No `n`: MiniMax makes (and bills) up to 9 images, and litegen
+            // returns and bills one; the default is 1.
             "response_format": "base64",
         });
         if let Some(ar) = extras.aspect_ratio.as_deref() {
@@ -116,7 +117,7 @@ impl ImageProvider for MiniMaxImageProvider {
         for r in &materialized.refs {
             let image_file = match &r.form {
                 MaterializedRefForm::Url(u) => Some(u.clone()),
-                MaterializedRefForm::Base64(b64) => Some(format!("data:image/png;base64,{b64}")),
+                MaterializedRefForm::Base64(b64) => Some(crate::proxy::materializer::base64_data_uri(b64, Some("image/png"))),
                 _ => None,
             };
             if let Some(f) = image_file {
@@ -126,11 +127,11 @@ impl ImageProvider for MiniMaxImageProvider {
         if !subject_ref.is_empty() {
             body["subject_reference"] = Value::Array(subject_ref);
         }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map {
-                    obj.insert(k.clone(), v.clone());
-                }
+        // `extra` adds the endpoint's own fields; it cannot replace one litegen
+        // sets (rule 11).
+        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
+            for (k, v) in map.iter().filter(|(k, _)| !matches!(k.as_str(), "model" | "prompt" | "n" | "response_format" | "aspect_ratio" | "subject_reference")) {
+                obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -146,7 +147,9 @@ impl ImageProvider for MiniMaxImageProvider {
                 message: format!("MiniMax request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
+                // A call that timed out may still run, and bill: only a
+                // connection that never opened is sent again.
+                retryable: e.is_connect(),
             })?;
 
         let status = resp.status();
@@ -290,5 +293,39 @@ mod tests {
         assert_eq!(body["model"], "image-01");
         assert_eq!(body["response_format"], "base64");
         assert_eq!(body["aspect_ratio"], "16:9");
+    }
+
+    // ─── ByteDance/MiniMax/Vidu audit, 2026-10-30: W6 ───────────────────────
+
+    /// W6: `n` is never sent: MiniMax generates (and bills) up to 9 images,
+    /// while litegen returns and bills one.
+    #[tokio::test]
+    async fn one_image_is_asked_for() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/image_generation"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": { "image_base64": [B64.encode(b"IMG")] }, "base_resp": { "status_code": 0 } })))
+            .mount(&server)
+            .await;
+        let mut base = make_base("a fox", "minimax/image-01");
+        base.n = 4;
+        make_provider(&server.uri()).generate(&ref_schema("minimax/image-01"), &base, &make_extras(), &crate::proxy::materializer::MaterializedRequest::default()).await.unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert!(body.get("n").is_none(), "{body}");
+    }
+
+    /// W14: a submit that timed out may still run, and bill, at the vendor:
+    /// it is never sent again.
+    #[tokio::test]
+    async fn a_timed_out_submit_is_never_sent_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})).set_delay(std::time::Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        let mut p = make_provider(&server.uri());
+        p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let err = p.generate(&ref_schema("minimax/image-01"), &make_base("x", "minimax/image-01"), &make_extras(), &crate::proxy::materializer::MaterializedRequest::default()).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
     }
 }

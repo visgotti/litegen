@@ -155,7 +155,8 @@ impl ImageProvider for ByteDanceImageProvider {
         for r in &materialized.refs {
             match &r.form {
                 MaterializedRefForm::Url(u) => images.push(u.clone()),
-                MaterializedRefForm::Base64(b64) => images.push(format!("data:image/png;base64,{b64}")),
+                // "data:image/<image format>;base64,…": the bytes' own type.
+                MaterializedRefForm::Base64(b64) => images.push(crate::proxy::materializer::base64_data_uri(b64, Some("image/png"))),
                 _ => {}
             }
         }
@@ -164,11 +165,12 @@ impl ImageProvider for ByteDanceImageProvider {
         } else if !images.is_empty() {
             body["image"] = Value::Array(images.into_iter().map(Value::String).collect());
         }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map {
-                    obj.insert(k.clone(), v.clone());
-                }
+        // `extra` adds the endpoint's own fields; it cannot replace one litegen
+        // sets (rule 11) — `response_format: url` would have the image fetched
+        // server-side instead of answered inline.
+        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
+            for (k, v) in map.iter().filter(|(k, _)| !matches!(k.as_str(), "model" | "prompt" | "response_format" | "image" | "size" | "seed")) {
+                obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -184,7 +186,9 @@ impl ImageProvider for ByteDanceImageProvider {
                 message: format!("ByteDance request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
+                // A call that timed out may still run, and bill: only a
+                // connection that never opened is sent again.
+                retryable: e.is_connect(),
             })?;
 
         let status = resp.status();
@@ -395,5 +399,47 @@ mod tests {
             "seedance-1-0-pro-fast-251015"
         );
         assert_eq!(ark_model_id("bytedance/seedream-4-5-251128", byteplus), "seedream-4-5-251128");
+    }
+
+    // ─── ByteDance/MiniMax/Vidu audit, 2026-10-30: W8, W13 ──────────────────
+
+    /// W8, W13: litegen asks for base64 — `extra` cannot switch it to a URL
+    /// fetched server-side — and an init image goes as a data URI of its own
+    /// type.
+    #[tokio::test]
+    async fn the_answer_comes_inline_and_a_reference_goes_with_its_own_type() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/images/generations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [{ "b64_json": B64.encode(b"IMG") }] })))
+            .mount(&server)
+            .await;
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "response_format": "url", "model": "seedream-4-5-251128", "watermark": false }));
+        let jpeg = B64.encode([0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, b'J', b'F', b'I', b'F', 0, 1]);
+        let refs = crate::proxy::materializer::MaterializedRequest {
+            refs: vec![crate::proxy::materializer::MaterializedRef { role: "init".into(), form: MaterializedRefForm::Base64(jpeg), time_s: None }],
+            cleanup: crate::proxy::materializer::Cleanup::empty(),
+        };
+        make_provider(&server.uri()).generate(&ref_schema("bytedance/seedream-4-0-250828"), &make_base("x", "bytedance/seedream-4-0-250828"), &extras, &refs).await.unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!((body["response_format"].as_str(), body["model"].as_str(), body["watermark"].as_bool()), (Some("b64_json"), Some("seedream-4-0-250828"), Some(false)), "{body}");
+        let image = body["image"].as_str().or_else(|| body["image"][0].as_str()).unwrap_or("");
+        assert!(image.starts_with("data:image/jpeg;base64,"), "{body}");
+    }
+
+    /// W14: a submit that timed out may still run, and bill, at the vendor:
+    /// it is never sent again.
+    #[tokio::test]
+    async fn a_timed_out_submit_is_never_sent_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})).set_delay(std::time::Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        let mut p = make_provider(&server.uri());
+        p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let err = p.generate(&ref_schema("bytedance/seedream-4-0-250828"), &make_base("x", "bytedance/seedream-4-0-250828"), &make_extras(), &crate::proxy::materializer::MaterializedRequest::default()).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
     }
 }

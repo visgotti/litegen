@@ -14,8 +14,9 @@ use crate::types::*;
 
 /// Vendor model ids served only by the V2 video API. Routing is by id so the
 /// v1 models' requests are untouched.
-/// @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-09-11)
-///   Verbatim: "Model name. Currently available: `MiniMax-H3`, `MiniMax-H3-Max`."
+/// @see <https://platform.minimax.io/docs/api-reference/video-generation-v2-create.md> (2026-10-30)
+///   lists `MiniMax-H3`, `MiniMax-H3-Highspeed`, `MiniMax-H3-Lite` and `MiniMax-H3-Max`; the two
+///   carried are below (a new one needs its id here, or it is sent to v1).
 const V2_MODELS: &[&str] = &["MiniMax-H3", "MiniMax-H3-Max"];
 
 /// MiniMax (Hailuo) video generation provider.
@@ -131,7 +132,7 @@ impl MiniMaxVideoProvider {
         for r in &materialized.refs {
             let img = match &r.form {
                 MaterializedRefForm::Url(u) => Some(u.clone()),
-                MaterializedRefForm::Base64(b64) => Some(format!("data:image/png;base64,{b64}")),
+                MaterializedRefForm::Base64(b64) => Some(crate::proxy::materializer::base64_data_uri(b64, Some("image/png"))),
                 _ => None,
             };
             if let Some(u) = img {
@@ -170,11 +171,11 @@ impl MiniMaxVideoProvider {
         if let Some(r) = ratio {
             body["ratio"] = r;
         }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map {
-                    obj.insert(k.clone(), v.clone());
-                }
+        // `extra` adds the endpoint's own fields; it cannot replace one litegen
+        // sets (rule 11).
+        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
+            for (k, v) in map.iter().filter(|(k, _)| !matches!(k.as_str(), "model" | "content" | "duration" | "resolution" | "ratio")) {
+                obj.insert(k.clone(), v.clone());
             }
         }
 
@@ -190,7 +191,9 @@ impl MiniMaxVideoProvider {
                 message: format!("MiniMax V2 video request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
+                // A call that timed out may still run, and bill: only a
+                // connection that never opened is sent again.
+                retryable: e.is_connect(),
             })?;
 
         // Errors are OpenAI-style: the real HTTP status, and
@@ -302,7 +305,7 @@ impl MiniMaxVideoProvider {
                 provider_error: None,
                 retryable: true,
             })?;
-        let data: Value = resp.json().await.unwrap_or_default();
+        let data = super::read_poll_json(resp, "minimax").await?;
         data["file"]["download_url"]
             .as_str()
             .map(String::from)
@@ -355,17 +358,37 @@ impl VideoProvider for MiniMaxVideoProvider {
         let url = format!("{}/video_generation", self.api_base());
 
         let mut body = json!({ "model": native, "prompt": base.prompt });
-        if extras.duration_seconds > 0.0 {
-            body["duration"] = Value::Number((extras.duration_seconds as i64).into());
+        // S2V-01's request has no duration or resolution: "required: - model
+        // - subject_reference".
+        // @see <https://platform.minimax.io/docs/api-reference/video-generation-s2v.md>
+        let takes_length = native != "S2V-01";
+        if takes_length && extras.duration_seconds > 0.0 {
+            let secs = extras.duration_seconds.round() as i64;
+            // Hailuo makes 6 or 10 s, and only 6 s at 1080P: "| MiniMax-Hailuo-02 |
+            // `6` or `10` | `6` or `10` | `6` |" (512P / 768P / 1080P). A length it
+            // cannot make is refused rather than sent.
+            // @see <https://platform.minimax.io/docs/api-reference/video-generation-i2v.md>
+            if native.starts_with("MiniMax-Hailuo") {
+                let at_1080 = extras.resolution.as_deref() == Some("1080P");
+                if !(secs == 6 || (secs == 10 && !at_1080)) {
+                    return Err(ProviderError::InvalidRequest(format!(
+                        "{} makes 6 or 10 s, and only 6 s at 1080P; asked for {secs} s",
+                        model.id
+                    )));
+                }
+            }
+            body["duration"] = Value::Number(secs.into());
         }
-        if let Some(res) = extras.resolution.as_deref() {
-            body["resolution"] = Value::String(res.to_string());
+        if takes_length {
+            if let Some(res) = extras.resolution.as_deref() {
+                body["resolution"] = Value::String(res.to_string());
+            }
         }
         // first/last frame images (URL or base64 data URL).
         for r in &materialized.refs {
             let img = match &r.form {
                 MaterializedRefForm::Url(u) => Some(u.clone()),
-                MaterializedRefForm::Base64(b64) => Some(format!("data:image/png;base64,{b64}")),
+                MaterializedRefForm::Base64(b64) => Some(crate::proxy::materializer::base64_data_uri(b64, Some("image/png"))),
                 _ => None,
             };
             if let Some(f) = img {
@@ -382,9 +405,14 @@ impl VideoProvider for MiniMaxVideoProvider {
                 }
             }
         }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map {
+        // `extra` adds the endpoint's own fields; it cannot replace one litegen
+        // sets (rule 11). First-and-last-frame requests take no
+        // `fast_pretreatment` ("Applies only to" text- and image-to-video).
+        let with_last = body.get("last_frame_image").is_some();
+        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
+            for (k, v) in map {
+                let owned = matches!(k.as_str(), "model" | "prompt" | "duration" | "resolution" | "first_frame_image" | "last_frame_image" | "subject_reference");
+                if !owned && !(with_last && k == "fast_pretreatment") {
                     obj.insert(k.clone(), v.clone());
                 }
             }
@@ -402,7 +430,9 @@ impl VideoProvider for MiniMaxVideoProvider {
                 message: format!("MiniMax video request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
+                // A call that timed out may still run, and bill: only a
+                // connection that never opened is sent again.
+                retryable: e.is_connect(),
             })?;
 
         let status = resp.status();
@@ -459,27 +489,30 @@ impl VideoProvider for MiniMaxVideoProvider {
         let data = super::read_poll_json(resp, "minimax").await?;
 
         let status_str = data["status"].as_str().unwrap_or("");
-        let (status, video_url) = match status_str {
-            "Success" => {
-                let file_id = data["file_id"].as_str().unwrap_or_default().to_string();
-                let url = if file_id.is_empty() { None } else { self.retrieve_file_url(&file_id).await.ok() };
-                (GenerationStatus::Completed, url)
-            }
-            "Fail" => (GenerationStatus::Failed, None),
-            _ => (GenerationStatus::Processing, None),
+        // `file_id` is "Returned when the task succeeds": a Success without one
+        // can never be delivered, and a file lookup that fails is asked again
+        // next tick (its own error decides whether it can be).
+        // @see <https://platform.minimax.io/docs/api-reference/video-generation-query.md>
+        let (status, video_url, error) = match status_str {
+            "Success" => match data["file_id"].as_str().filter(|f| !f.is_empty()) {
+                Some(file_id) => (GenerationStatus::Completed, Some(self.retrieve_file_url(file_id).await?), None),
+                None => (GenerationStatus::Failed, None, Some("MiniMax reported Success without a file_id".to_string())),
+            },
+            "Fail" => (
+                GenerationStatus::Failed,
+                None,
+                Some(data["base_resp"]["status_msg"].as_str().unwrap_or("failed").to_string()),
+            ),
+            _ => (GenerationStatus::Processing, None, None),
         };
 
         Ok(VideoGenerationPollResult {
             status,
-            progress: if status == GenerationStatus::Completed { 100 } else { 50 },
+            progress: if status.is_terminal() { 100 } else { 50 },
             video_url,
             video_data: None,
             content_type: Some("video/mp4".into()),
-            error: if status == GenerationStatus::Failed {
-                Some(data["base_resp"]["status_msg"].as_str().unwrap_or("failed").to_string())
-            } else {
-                None
-            },
+            error,
             metadata: HashMap::new(),
         })
     }
@@ -512,7 +545,7 @@ impl VideoProvider for MiniMaxVideoProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::materializer::Cleanup;
+    use crate::proxy::materializer::{Cleanup, MaterializedRef};
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -870,5 +903,118 @@ mod tests {
 
         let err = provider.poll_status(&v2_handle("t-notask", "minimax/MiniMax-H3")).await.unwrap_err();
         assert!(err.to_string().contains("missing task"), "{err}");
+    }
+
+    // ─── ByteDance/MiniMax/Vidu audit, 2026-10-30: W7, W11–W13, C6 ──────────
+
+    fn v1_handle(id: &str, model: &str) -> VideoGenerationHandle {
+        VideoGenerationHandle { provider_job_id: id.into(), provider: "minimax".into(), model: model.into() }
+    }
+
+    /// W7: a Success with no file to fetch is a failure; a file lookup that
+    /// fails is asked again next tick, never stored as a video with no URL.
+    #[tokio::test]
+    async fn a_success_without_a_file_fails_and_a_failed_lookup_is_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/query/video_generation"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "Success", "file_id": "", "base_resp": { "status_code": 0 } })))
+            .mount(&server)
+            .await;
+        let poll = make_provider(&server.uri()).poll_status(&v1_handle("t1", "minimax/MiniMax-Hailuo-02")).await.unwrap();
+        assert_eq!((poll.status, poll.progress), (GenerationStatus::Failed, 100));
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/query/video_generation"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "status": "Success", "file_id": "f1", "base_resp": { "status_code": 0 } })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET")).and(path("/files/retrieve")).respond_with(ResponseTemplate::new(503)).mount(&server).await;
+        let got = make_provider(&server.uri()).poll_status(&v1_handle("t2", "minimax/MiniMax-Hailuo-02")).await;
+        assert!(matches!(got, Err(ProviderError::RequestFailed { retryable: true, .. })), "{got:?}");
+    }
+
+    async fn submitted(server: &MockServer) -> Value {
+        serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap()
+    }
+
+    async fn accept(server: &MockServer) {
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "task_id": "t", "base_resp": { "status_code": 0, "status_msg": "success" } })))
+            .mount(server)
+            .await;
+    }
+
+    /// W11: S2V-01's request has no `duration` or `resolution`.
+    #[tokio::test]
+    async fn subject_to_video_sends_no_duration() {
+        let server = MockServer::start().await;
+        accept(&server).await;
+        let refs = MaterializedRequest {
+            refs: vec![MaterializedRef { role: "subject".into(), form: MaterializedRefForm::Url("https://x/face.png".into()), time_s: None }],
+            cleanup: Cleanup::empty(),
+        };
+        make_provider(&server.uri()).generate(&ref_schema("minimax/S2V-01"), &make_base("x", "minimax/S2V-01"), &make_extras(), &refs).await.unwrap();
+        let body = submitted(&server).await;
+        assert!(body.get("duration").is_none() && body.get("resolution").is_none(), "{body}");
+    }
+
+    /// W12: Hailuo takes 6 or 10 s, and only 6 s at 1080P.
+    #[tokio::test]
+    async fn a_hailuo_length_it_cannot_make_is_refused() {
+        let server = MockServer::start().await;
+        accept(&server).await;
+        let none = MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() };
+        let schema = ref_schema("minimax/MiniMax-Hailuo-02");
+        for (secs, res, ok) in [(6.0, "1080P", true), (10.0, "768P", true), (7.0, "768P", false), (10.0, "1080P", false)] {
+            let mut extras = make_extras();
+            extras.duration_seconds = secs;
+            extras.resolution = Some(res.into());
+            let got = make_provider(&server.uri()).generate(&schema, &make_base("x", "minimax/MiniMax-Hailuo-02"), &extras, &none).await;
+            assert_eq!(got.is_ok(), ok, "{secs} s at {res}: {got:?}");
+            if !ok {
+                assert!(matches!(got, Err(ProviderError::InvalidRequest(_))), "{got:?}");
+            }
+        }
+    }
+
+    /// W13, C6: a base64 frame goes as a data URI of its own type, and
+    /// `fast_pretreatment`, which first-and-last-frame requests do not take,
+    /// is not sent with a last frame.
+    #[tokio::test]
+    async fn frames_go_with_their_own_type_and_only_the_fields_their_mode_takes() {
+        use base64::Engine;
+        let server = MockServer::start().await;
+        accept(&server).await;
+        let jpeg = base64::engine::general_purpose::STANDARD.encode([0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, b'J', b'F', b'I', b'F', 0, 1]);
+        let refs = MaterializedRequest {
+            refs: vec![
+                MaterializedRef { role: "first_frame".into(), form: MaterializedRefForm::Base64(jpeg.clone()), time_s: None },
+                MaterializedRef { role: "last_frame".into(), form: MaterializedRefForm::Base64(jpeg), time_s: None },
+            ],
+            cleanup: Cleanup::empty(),
+        };
+        let mut extras = make_extras();
+        extras.extra = Some(json!({ "fast_pretreatment": true }));
+        make_provider(&server.uri()).generate(&ref_schema("minimax/MiniMax-Hailuo-02"), &make_base("x", "minimax/MiniMax-Hailuo-02"), &extras, &refs).await.unwrap();
+        let body = submitted(&server).await;
+        assert!(body["first_frame_image"].as_str().unwrap().starts_with("data:image/jpeg;base64,"), "{body}");
+        assert!(body.get("fast_pretreatment").is_none(), "{body}");
+    }
+
+    /// W14: a submit that timed out may still run, and bill, at the vendor:
+    /// it is never sent again.
+    #[tokio::test]
+    async fn a_timed_out_submit_is_never_sent_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})).set_delay(std::time::Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        let mut p = make_provider(&server.uri());
+        p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let err = p.generate(&ref_schema("minimax/MiniMax-Hailuo-02"), &make_base("x", "minimax/MiniMax-Hailuo-02"), &make_extras(), &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() }).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
     }
 }

@@ -56,8 +56,19 @@ function pageMarkdown(json) {
   }
   const md = json?.Result?.MDContent;
   if (typeof md !== 'string' || md.length === 0) throw new Error('Result.MDContent missing: the docs API changed its payload');
-  return md;
+  return unbadge(md);
 }
+
+/**
+ * The docs CMS glues a "new" badge to the bold run it marks
+ * (`**layer_decompositionnew** \`boolean\``, "Dreamina Seedance 2.5new"): a
+ * badge is not part of a name. A name must keep four characters before it.
+ */
+const unbadge = (md) =>
+  md
+    .replace(/<mark>.*?<\/mark>/g, '')
+    .replace(/\*\*([A-Za-z_][\w.[\]]{3,}?)new\*\*(?=\s+`)/g, '**$1**') // a parameter signature
+    .replace(/\*\*([^*\n]*\d[^*\n]*?)new\*\*/g, '**$1**'); // a model name with a version
 
 /** Lines under a heading (exact line), up to the next heading at the same or higher level. */
 function section(md, heading) {
@@ -212,7 +223,7 @@ function paramDigest(md, heading, ours) {
     } else if (/\b(?:set (?:the value |it )?to|Fixed to) `[^`]+`/.test(t) && !bullet) {
       out.push(`  value: \`${t.match(/\b(?:set (?:the value |it )?to|Fixed to) `([^`]+)`/)[1]}\``);
     } else if (/^\*\s+[^`]+:\s*`[^`]+`\.?$/.test(t)) {
-      out.push(`  - ${plain(t.replace(/^\*\s+/, ''))}`); // "Role of the first frame: `first_frame`"
+      out.push(`  - ${plain(t.replace(/^\*\s+(?:>\s*)?/, ''))}`); // "Role of the first frame: `first_frame`"
     } else if (/^[A-Z][\w\- ()/,]{2,60}$/.test(plain(t)) && !bullet && !t.startsWith('>')) {
       label = plain(t);
     }
@@ -227,13 +238,58 @@ function requestDigest(md, ours) {
   return out.join('\n') + '\n';
 }
 
-/** Model ids in a model-list first cell: [model-id](console link), sometimes "(also supports: other-id)". */
+/**
+ * Model ids in a model-list first cell: [model-id](console link), sometimes a
+ * second one, "(also supports: other-id)" or "<br><br>Also supports `other-id`".
+ */
 const MODEL_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/;
 const rowIds = (first) => {
-  const also = first.match(/also supports:\s*([^)]*)\)/i)?.[1].split(/,|\band\b/) ?? [];
+  const also = [...first.matchAll(/also supports:?\s*\(?([^)|]*)/gi)].flatMap((m) => m[1].split(/,|\band\b|<br\s*\/?>/));
   // Status badges are links too ("[Retired](console link)"): keep id-shaped text only.
-  return [...[...first.matchAll(/\[([^\]]+)\]\(/g)].map((m) => m[1]), ...also].map((s) => s.trim()).filter((s) => MODEL_ID.test(s));
+  return [...[...first.matchAll(/\[([^\]]+)\]\(/g)].map((m) => m[1]), ...also]
+    .map((s) => s.replace(/`/g, '').trim())
+    .filter((s) => MODEL_ID.test(s));
 };
+
+/**
+ * The tables among `lines`, each labelled by the heading above it and any
+ * short caption line between them ("Retiring models", "**Input without
+ * video**"). A table is its run of `|` lines.
+ */
+function tablesIn(lines) {
+  const out = [];
+  let heading = '';
+  let caption = '';
+  let table = null;
+  for (const l of lines) {
+    if (l.startsWith('|')) {
+      if (!table) out.push((table = { label: [heading, caption].filter(Boolean).join(' · '), rows: [] }));
+      table.rows.push(l);
+      continue;
+    }
+    table = null;
+    const t = plain(l);
+    if (/^#+ /.test(l)) {
+      heading = l.replace(/^#+\s*/, '').trim();
+      caption = '';
+    } else if (t && t.length <= 40 && !/[.:]$/.test(t) && !l.startsWith('>')) {
+      caption = t;
+    }
+  }
+  return out;
+}
+
+/** A table row as plain text, links reduced to their text. */
+const plainRow = (row) => `| ${cells(row).map((c) => plain(c.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')).replace(/`/g, '')).join(' | ')} |`;
+
+/** The lines of a `#`-heading inside `lines` (the first one), up to the next of the same or higher level. */
+function subsection(lines, heading) {
+  const start = lines.findIndex((l) => l.trim() === heading);
+  if (start < 0) throw new Error(`section "${heading}" not found — the page was restructured`);
+  const level = heading.match(/^#+/)[0].length;
+  const end = lines.findIndex((l, i) => i > start && /^#+ /.test(l) && l.match(/^#+/)[0].length <= level);
+  return lines.slice(start + 1, end < 0 ? undefined : end);
+}
 
 const paramNames = (md, heading) => section(md, heading).flatMap((l) => l.replace(/<mark>.*?<\/mark>/g, '').match(/^\*\*([\w.[\]]+)\*\*\s+`/)?.[1] ?? []);
 
@@ -245,19 +301,16 @@ const apiPage = (key, code) => ({
   snapshot: (json, _body, { ours }) => requestDigest(pageMarkdown(json), ours),
 });
 
-/** Table rows (first cell = a model id) under each heading, for the ids in `want` (or every id). */
-function idRows(md, headings, want) {
-  return headings.flatMap((h) =>
-    section(md, h)
-      .filter((l) => l.startsWith('|'))
-      .map(cells)
-      .filter((c) => {
-        const id = plain(c[0] ?? '').split(' ')[0];
-        return MODEL_ID.test(id) && (!want || want.includes(id));
-      }),
+// The model list's media and the price page's: a `##` section each.
+const MODEL_FAMILIES = ['## Video generation', '## Image generation'];
+const PRICE_FAMILIES = ['## Video generation models', '## Image generation models'];
+const cellId = (c) => plain(c ?? '').replace(/`/g, '').split(' ')[0];
+
+/** Each medium's price tables, from its `### Pricing` subsection. */
+const priceTables = (md) =>
+  PRICE_FAMILIES.flatMap((h) =>
+    tablesIn(subsection(section(md, h), '### Pricing')).map((t) => ({ ...t, label: t.label || 'Pricing', family: h.replace(/^#+\s*/, '') })),
   );
-}
-const PRICE_TABLES = ['## Pricing', '# Image generation models'];
 
 export default {
   provider: 'bytedance',
@@ -274,25 +327,26 @@ export default {
       ...docPage('model-list', 'model-list'),
       extract: (json) => {
         const md = pageMarkdown(json);
-        return ['# Video generation', '# Image generation']
-          .flatMap((h) => section(md, h))
+        return MODEL_FAMILIES.flatMap((h) => section(md, h))
           .filter((l) => l.startsWith('|'))
           .flatMap((l) => rowIds(cells(l)[0] ?? ''));
       },
-      // Our models' rows without the rate-limit column (quota changes are not typings).
-      // A row counts as ours when any of its ids is (seedream-5-0-lite-260128 is an
-      // "also supports" id on the seedream-5-0-260128 row). The first cell keeps any
-      // status badge, so a "Retired" mark on one of ours shows as a change.
+      // Each table but the rate limits (quota changes are not typings): its
+      // label, header, and our models' rows. A row counts as ours when any of
+      // its ids is (seedream-5-0-lite-260128 is an "also supports" id on the
+      // seedream-5-0-260128 row), so a "Retired" badge, or a move into the
+      // "Retiring models" table, shows as a change.
       snapshot: (json, _body, { ours }) => {
         const md = pageMarkdown(json);
-        const rows = ['# Video generation', '# Image generation'].flatMap((h) =>
-          section(md, h)
-            .filter((l) => l.startsWith('|'))
-            .map(cells)
-            .filter((c) => rowIds(c[0] ?? '').some((id) => ours.includes(id)))
-            .map((c) => `| ${c.slice(0, h === '# Video generation' ? 3 : 2).join(' | ')} |`),
-        );
-        return rows.join('\n') + '\n';
+        const out = [];
+        for (const h of MODEL_FAMILIES) {
+          for (const t of tablesIn(section(md, h)).filter((t) => !/^Limits\b/.test(t.label))) {
+            const mine = t.rows.filter((r) => rowIds(cells(r)[0] ?? '').some((id) => ours.includes(id)));
+            if (mine.length) out.push(`# ${h.replace(/^#+\s*/, '')} · ${t.label}`, plainRow(t.rows[0]), ...mine.map(plainRow), '');
+          }
+        }
+        if (out.length === 0) throw new Error('none of our models is in the model list tables — the page was restructured');
+        return out.join('\n');
       },
     },
     apiPage('video-api', 'create-video-generation-task-api'),
@@ -310,11 +364,31 @@ export default {
     {
       ...docPage('pricing', 'model-pricing'),
       index: true,
-      extract: (json) => idRows(pageMarkdown(json), PRICE_TABLES).map((c) => plain(c[0]).split(' ')[0]),
+      extract: (json) =>
+        priceTables(pageMarkdown(json))
+          .flatMap((t) => t.rows.map((r) => cellId(cells(r)[0])))
+          .filter((id) => MODEL_ID.test(id)),
+      // Each rate table that prices one of ours: its label, header rows (a
+      // second one has an empty first cell), and our rows; then the billing
+      // examples our flat prices are read from.
       snapshot: (json, _body, { ours }) => {
-        const rows = idRows(pageMarkdown(json), PRICE_TABLES, ours).map((c) => `| ${c.map(plain).join(' | ')} |`);
-        if (rows.length === 0) throw new Error('none of our models is in the price tables — the page was restructured');
-        return rows.join('\n') + '\n';
+        const md = pageMarkdown(json);
+        const out = [];
+        for (const t of priceTables(md)) {
+          const mine = t.rows.filter((r) => ours.includes(cellId(cells(r)[0])));
+          if (!mine.length) continue;
+          const head = t.rows.filter((r, i) => i === 0 || (!cellId(cells(r)[0]) && !/^\|\s*-+/.test(r) && !/^\|-/.test(r)));
+          out.push(`# ${t.family} · ${t.label}`, ...head.map(plainRow), ...mine.map(plainRow), '');
+        }
+        if (out.length === 0) throw new Error('none of our models is in the price tables — the page was restructured');
+        const examples = section(md, '## Video generation models');
+        const at = examples.findIndex((l) => l.trim() === '### Billing examples');
+        if (at >= 0) {
+          for (const t of tablesIn(examples.slice(at))) {
+            if (isOurs(t.label.split(' · ')[0], ours)) out.push(`# billing example · ${t.label}`, ...t.rows.filter((r) => !/^\|-/.test(r)).map(plainRow), '');
+          }
+        }
+        return out.join('\n');
       },
     },
     {
@@ -348,7 +422,11 @@ export default {
           out.push('', `# ${batch ?? '(no batch heading)'}`, `notified / deprecated / deactivated: ${dates}`);
           printed = batch;
         };
-        for (const l of pageMarkdown(json).split('\n').map(unescapeMd)) {
+        // Notes are blockquotes now (`> …`, `* > …`); the quote is not content.
+        for (const l of pageMarkdown(json)
+          .split('\n')
+          .map(unescapeMd)
+          .map((x) => x.replace(/^(\s*\*\s+)?>\s?/, '$1').replace(/`/g, ''))) {
           const t = plain(l);
           if (!t) continue;
           if (/^#+ /.test(l)) {

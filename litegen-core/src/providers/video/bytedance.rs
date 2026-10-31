@@ -109,11 +109,20 @@ impl VideoProvider for ByteDanceVideoProvider {
         let native = ark_model_id(&model.id, self.api_base());
         let url = format!("{}/contents/generations/tasks", self.api_base());
 
+        // "Image-to-video (first and last frames) … Two image_url objects must
+        // be provided, and the role field is required": a last frame alone is
+        // refused rather than sent.
+        // @see <https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api>
+        let has_role = |role: &str| materialized.refs.iter().any(|r| r.role == role);
+        if has_role("last_frame") && !has_role("first_frame") {
+            return Err(ProviderError::InvalidRequest(format!("{} needs a first_frame to go with a last_frame", model.id)));
+        }
         let mut content: Vec<Value> = vec![json!({ "type": "text", "text": base.prompt })];
         for r in &materialized.refs {
             let u = match &r.form {
                 MaterializedRefForm::Url(u) => Some(u.clone()),
-                MaterializedRefForm::Base64(b64) => Some(format!("data:image/png;base64,{b64}")),
+                // "data:image/<image format>;base64,…": the bytes' own type.
+                MaterializedRefForm::Base64(b64) => Some(crate::proxy::materializer::base64_data_uri(b64, Some("image/png"))),
                 _ => None,
             };
             if let Some(u) = u {
@@ -135,16 +144,17 @@ impl VideoProvider for ByteDanceVideoProvider {
             body["ratio"] = Value::String(ar.to_string());
         }
         if extras.duration_seconds > 0.0 {
-            body["duration"] = Value::Number((extras.duration_seconds as i64).into());
+            // "duration `integer`": the nearest whole second.
+            body["duration"] = Value::Number((extras.duration_seconds.round() as i64).into());
         }
         if let Some(seed) = base.seed {
             body["seed"] = Value::Number(seed.into());
         }
-        if let Some(Value::Object(map)) = &extras.extra {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in map {
-                    obj.insert(k.clone(), v.clone());
-                }
+        // `extra` adds the endpoint's own fields; it cannot replace one litegen
+        // sets (rule 11).
+        if let (Some(Value::Object(map)), Some(obj)) = (&extras.extra, body.as_object_mut()) {
+            for (k, v) in map.iter().filter(|(k, _)| !matches!(k.as_str(), "model" | "content" | "resolution" | "ratio" | "duration" | "seed")) {
+                obj.insert(k.clone(), v.clone());
             }
         }
         // PixelGenie L10: a still camera, and audio where the model takes it.
@@ -167,7 +177,9 @@ impl VideoProvider for ByteDanceVideoProvider {
                 message: format!("ByteDance video request failed: {e}"),
                 status_code: e.status().map(|s| s.as_u16()),
                 provider_error: None,
-                retryable: e.is_timeout() || e.is_connect(),
+                // A call that timed out may still run, and bill: only a
+                // connection that never opened is sent again.
+                retryable: e.is_connect(),
             })?;
 
         let status = resp.status();
@@ -226,14 +238,24 @@ impl VideoProvider for ByteDanceVideoProvider {
             _ => GenerationStatus::Processing,
         };
         let video_url = data["content"]["video_url"].as_str().map(String::from);
+        // Why a task ended, in BytePlus's words where it gave any: `cancelled`
+        // and `expired` carry no `error`. A success with no video is a failure.
+        // @see <https://docs.byteplus.com/en/docs/modelark/get-video-generation-task-api> — "`expired`:
+        //   Task timed out."
+        let (status, error) = match (data["status"].as_str(), status, &video_url) {
+            (_, GenerationStatus::Completed, None) => (GenerationStatus::Failed, Some("BytePlus reported success without a video URL (no video)".to_string())),
+            (Some(s @ ("cancelled" | "expired")), _, _) => (status, Some(data["error"]["message"].as_str().map_or_else(|| format!("BytePlus task {s}"), String::from))),
+            (_, GenerationStatus::Failed, _) => (status, Some(data["error"]["message"].as_str().unwrap_or("BytePlus task failed").to_string())),
+            _ => (status, None),
+        };
 
         Ok(VideoGenerationPollResult {
             status,
-            progress: if status == GenerationStatus::Completed { 100 } else { 50 },
-            video_url,
+            progress: if status.is_terminal() { 100 } else { 50 },
+            video_url: video_url.filter(|_| status == GenerationStatus::Completed),
             video_data: None,
             content_type: Some("video/mp4".into()),
-            error: data["error"]["message"].as_str().map(String::from),
+            error,
             metadata: HashMap::new(),
         })
     }
@@ -400,5 +422,78 @@ mod tests {
         };
         let poll = provider.poll_status(&handle).await.unwrap();
         assert_eq!(poll.status, GenerationStatus::Failed);
+    }
+
+    // ─── ByteDance/MiniMax/Vidu audit, 2026-10-30: W3, W13, W15 ─────────────
+
+    /// W3: "Two image_url objects must be provided" for first and last
+    /// frames — a last frame alone is refused, with nothing sent.
+    #[tokio::test]
+    async fn a_last_frame_without_a_first_is_refused_before_any_call() {
+        let server = MockServer::start().await;
+        let materialized = MaterializedRequest {
+            refs: vec![MaterializedRef { role: "last_frame".into(), form: MaterializedRefForm::Url("https://x/end.png".into()), time_s: None }],
+            cleanup: Cleanup::empty(),
+        };
+        let err = make_provider(&server.uri())
+            .generate(&ref_schema("bytedance/doubao-seedance-1-0-pro-250528"), &make_base("x", "bytedance/doubao-seedance-1-0-pro-250528"), &make_extras(), &materialized)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::InvalidRequest(_)), "{err:?}");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// W13: a base64 frame goes as a data URI of its own type.
+    #[tokio::test]
+    async fn a_base64_frame_is_sent_with_its_own_type() {
+        use base64::Engine;
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": "cgt-1" }))).mount(&server).await;
+        let jpeg = base64::engine::general_purpose::STANDARD.encode([0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, b'J', b'F', b'I', b'F', 0, 1]);
+        let materialized = MaterializedRequest {
+            refs: vec![MaterializedRef { role: "first_frame".into(), form: MaterializedRefForm::Base64(jpeg), time_s: None }],
+            cleanup: Cleanup::empty(),
+        };
+        make_provider(&server.uri())
+            .generate(&ref_schema("bytedance/doubao-seedance-1-0-pro-250528"), &make_base("x", "bytedance/doubao-seedance-1-0-pro-250528"), &make_extras(), &materialized)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        let image = body["content"].as_array().unwrap().iter().find(|c| c["type"] == "image_url").unwrap();
+        assert!(image["image_url"]["url"].as_str().unwrap().starts_with("data:image/jpeg;base64,"), "{body}");
+    }
+
+    /// W15: a finished job reads 100; `cancelled` and `expired` say so; a
+    /// success with no video is a failure.
+    #[tokio::test]
+    async fn a_finished_task_reads_100_and_says_why_it_ended() {
+        for (answer, says) in [
+            (json!({ "id": "t", "status": "expired" }), "expired"),
+            (json!({ "id": "t", "status": "cancelled" }), "cancelled"),
+            (json!({ "id": "t", "status": "succeeded", "content": {} }), "no video"),
+            (json!({ "id": "t", "status": "failed", "error": { "code": "OutputVideoSensitiveContentDetected", "message": "blocked" } }), "blocked"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(answer.clone())).mount(&server).await;
+            let handle = VideoGenerationHandle { provider_job_id: "t".into(), provider: "bytedance".into(), model: "bytedance/doubao-seedance-1-0-pro-250528".into() };
+            let poll = make_provider(&server.uri()).poll_status(&handle).await.unwrap();
+            assert_eq!((poll.status, poll.progress), (GenerationStatus::Failed, 100), "{answer}");
+            assert!(poll.error.as_deref().unwrap_or("").contains(says), "{says}: {:?}", poll.error);
+        }
+    }
+
+    /// W14: a submit that timed out may still run, and bill, at the vendor:
+    /// it is never sent again.
+    #[tokio::test]
+    async fn a_timed_out_submit_is_never_sent_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})).set_delay(std::time::Duration::from_secs(5)))
+            .mount(&server)
+            .await;
+        let mut p = make_provider(&server.uri());
+        p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
+        let err = p.generate(&ref_schema("bytedance/doubao-seedance-1-0-pro-250528"), &make_base("x", "bytedance/doubao-seedance-1-0-pro-250528"), &make_extras(), &MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() }).await.unwrap_err();
+        assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
     }
 }

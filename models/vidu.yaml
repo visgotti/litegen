@@ -5,6 +5,7 @@ models:
     provider: vidu
     media_type: video
     display_name: Vidu Q1
+    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video
     description: Vidu Q1 text/image/reference/start-end to video.
     # 80 credits ($0.40) for the 5s 1080p clip on every endpoint:
     # https://platform.vidu.com/docs/pricing.md (2026-09-11)
@@ -19,8 +20,9 @@ models:
         enum_values: [1080p]
       aspect_ratio:
         kind: aspect_ratio
-        # "3:4 & 4:3 only support q2 & q3 model": https://platform.vidu.com/docs/text-to-video.md
-        allowed: ["16:9","9:16","1:1"]
+        # "Accepted values: 16:9, 9:16, 3:4, 4:3, 1:1" (Q1 text2video, read 2026-10-30)
+        # https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video.md
+        allowed: ["16:9","9:16","3:4","4:3","1:1"]
     ref_inputs:
       max_total: 7
       default_role: first_frame
@@ -29,13 +31,17 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
         reference:   { required: false, min_count: 0, max_count: 7 }
-    extra_allowlist: [movement_amplitude, style, bgm, off_peak, callback_url]
+    # No `style` (no current page documents it) and no `off_peak`: "Tasks
+    # submitted in off-peak mode will be generated within 48 hours", while
+    # litegen fails a job still running after 2 hours (and bills it).
+    extra_allowlist: [movement_amplitude, bgm, callback_url]
     tags: [text-to-video, image-to-video, reference-to-video]
 
   - id: vidu/vidu2.0
     provider: vidu
     media_type: video
     display_name: Vidu 2.0
+    docs_url: https://platform.vidu.com/docs/model-map
     description: Vidu 2.0 image/reference to video (no text-to-video).
     pricing: { base_cost_usd: 0.20 }
     # Model Map marks Text-to-Video as unsupported for vidu2.0.
@@ -61,13 +67,14 @@ models:
         reference:   { required: false, min_count: 0, max_count: 7 }
     # No `style`: it is a text2video-only field and vidu2.0 has no text2video.
     # https://platform.vidu.com/docs/text-to-video.md
-    extra_allowlist: [movement_amplitude, bgm, off_peak, callback_url]
+    extra_allowlist: [movement_amplitude, bgm, callback_url]
     tags: [image-to-video, reference-to-video]
 
   - id: vidu/viduq2-pro
     provider: vidu
     media_type: video
     display_name: Vidu Q2 Pro
+    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/image-to-video
     description: Vidu Q2 Pro high-quality image/reference to video (no text-to-video).
     pricing: { base_cost_usd: 0.40 }
     # Model Map marks Text-to-Video as unsupported for viduq2-pro.
@@ -95,7 +102,9 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
         reference:   { required: false, min_count: 0, max_count: 7 }
-    extra_allowlist: [movement_amplitude, bgm, off_peak, callback_url]
+    # viduq2-pro's bodies (img2video, start-end2video, reference2video) have no
+    # bgm or movement_amplitude; no off_peak (see viduq1).
+    extra_allowlist: [callback_url]
     tags: [image-to-video, reference-to-video, premium]
 
   # ─── Vidu Q3 / Q2 Pro Fast (added 2026-09-11, model-drift) ─────────────────
@@ -109,6 +118,7 @@ models:
     provider: vidu
     media_type: video
     display_name: Vidu Q3 Turbo
+    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video
     description: Vidu Q3 Turbo text/image/reference/start-end to video with native audio (faster, cheaper Q3).
     # 720p (the default) is $0.055/s on text2video/img2video/start-end2video
     # ($0.05/s on reference2video), so a 5s clip is $0.275:
@@ -152,13 +162,14 @@ models:
     # available in q3 models"), style or movement_amplitude (no effect on q2/q3),
     # voice_id ("The Q3 series model is not effective") or audio_type (q2/q1/2.0).
     # https://platform.vidu.com/docs/image-to-video.md
-    extra_allowlist: [off_peak, callback_url]
+    extra_allowlist: [callback_url]
     tags: [text-to-video, image-to-video, reference-to-video]
 
   - id: vidu/viduq3-pro
     provider: vidu
     media_type: video
     display_name: Vidu Q3 Pro
+    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video
     description: Vidu Q3 Pro text/image/start-end to video with native audio (no reference-to-video).
     # 720p (the default) is $0.10/s, so a 5s clip is $0.50:
     # https://platform.vidu.com/docs/pricing.md (2026-09-11)
@@ -197,13 +208,14 @@ models:
         first_frame: { required: false, min_count: 0, max_count: 1 }
         last_frame:  { required: false, min_count: 0, max_count: 1 }
     # Same q3 field rules as viduq3-turbo.
-    extra_allowlist: [off_peak, callback_url]
+    extra_allowlist: [callback_url]
     tags: [text-to-video, image-to-video, premium]
 
   - id: vidu/viduq2-pro-fast
     provider: vidu
     media_type: video
     display_name: Vidu Q2 Pro Fast
+    docs_url: https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/start-end-to-video
     description: Vidu Q2 Pro Fast image-to-video and start-end to video (fast, low price; no text-to-video).
     # 720p (the default): "Starts at $0.04, +$0.01/sec" (the 1s price plus
     # $0.01 per further second), so a 5s clip is $0.08:
@@ -238,5 +250,6 @@ models:
     # No movement_amplitude ("ineffective for q2, q3 models") and no `audio`
     # (img2video audio on q2 adds 15 credits the price above does not cover).
     # https://platform.vidu.com/docs/image-to-video.md
-    extra_allowlist: [bgm, off_peak, callback_url]
+    # The start-end2video body has no bgm; no off_peak (see viduq1).
+    extra_allowlist: [callback_url]
     tags: [image-to-video, fast]

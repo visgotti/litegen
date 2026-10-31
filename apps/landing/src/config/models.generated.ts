@@ -616,7 +616,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://docs.byteplus.com/en/docs/ModelArk/"
+    "referenceUrl": "https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api"
   },
   {
     "id": "bytedance/dreamina-seedance-2-0-mini-260615",
@@ -694,7 +694,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "fast"
     ],
-    "referenceUrl": "https://docs.byteplus.com/en/docs/ModelArk/"
+    "referenceUrl": "https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api"
   },
   {
     "id": "bytedance/seedance-1-0-pro-fast-251015",
@@ -777,7 +777,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "fast"
     ],
-    "referenceUrl": "https://docs.byteplus.com/en/docs/ModelArk/"
+    "referenceUrl": "https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api"
   },
   {
     "id": "bytedance/seedream-4-0-250828",
@@ -819,7 +819,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://docs.byteplus.com/en/docs/ModelArk/"
+    "referenceUrl": "https://docs.byteplus.com/en/docs/modelark/image-generation-api"
   },
   {
     "id": "bytedance/seedream-4-5-251128",
@@ -861,7 +861,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://docs.byteplus.com/en/docs/ModelArk/"
+    "referenceUrl": "https://docs.byteplus.com/en/docs/modelark/image-generation-api"
   },
   {
     "id": "bytedance/seedream-5-0-lite-260128",
@@ -903,7 +903,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://docs.byteplus.com/en/docs/ModelArk/"
+    "referenceUrl": "https://docs.byteplus.com/en/docs/modelark/image-generation-api"
   },
   {
     "id": "fal/auraflow",
@@ -4453,7 +4453,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-image",
       "image-to-image"
     ],
-    "referenceUrl": "https://platform.minimax.io/docs"
+    "referenceUrl": "https://platform.minimax.io/docs/api-reference/image-generation-t2i"
   },
   {
     "id": "minimax/MiniMax-H3",
@@ -4532,13 +4532,13 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "reference-to-video"
     ],
-    "referenceUrl": "https://platform.minimax.io/docs"
+    "referenceUrl": "https://platform.minimax.io/docs/api-reference/video-generation-v2-create"
   },
   {
     "id": "minimax/MiniMax-H3-Max",
     "provider": "minimax",
     "displayName": "MiniMax H3 Max",
-    "description": "MiniMax H3 Max, the fast H3 variant, text-to-video and image-to-video (first/last frame).",
+    "description": "MiniMax H3 Max, the fast H3 variant — text-to-video, image-to-video (first/last frame) and reference-to-video.",
     "mediaType": "video",
     "output": "video",
     "capabilities": {
@@ -4560,7 +4560,7 @@ export const MODELS: ModelEntry[] = [
       "3:4",
       "9:16"
     ],
-    "maxRefImages": 2,
+    "maxRefImages": 9,
     "refRoles": [
       {
         "name": "first_frame",
@@ -4573,6 +4573,12 @@ export const MODELS: ModelEntry[] = [
         "required": false,
         "min": 0,
         "max": 1
+      },
+      {
+        "name": "reference",
+        "required": false,
+        "min": 0,
+        "max": 9
       }
     ],
     "promptLimits": {
@@ -4603,9 +4609,10 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-video",
       "image-to-video",
+      "reference-to-video",
       "fast"
     ],
-    "referenceUrl": "https://platform.minimax.io/docs"
+    "referenceUrl": "https://platform.minimax.io/docs/api-reference/video-generation-v2-create"
   },
   {
     "id": "minimax/MiniMax-Hailuo-02",
@@ -4669,7 +4676,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://platform.minimax.io/docs"
+    "referenceUrl": "https://platform.minimax.io/docs/api-reference/video-generation-t2v"
   },
   {
     "id": "minimax/MiniMax-Hailuo-2.3",
@@ -4727,7 +4734,7 @@ export const MODELS: ModelEntry[] = [
       "text-to-video",
       "image-to-video"
     ],
-    "referenceUrl": "https://platform.minimax.io/docs"
+    "referenceUrl": "https://platform.minimax.io/docs/api-reference/video-generation-t2v"
   },
   {
     "id": "minimax/MiniMax-Hailuo-2.3-Fast",
@@ -4786,7 +4793,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "fast"
     ],
-    "referenceUrl": "https://platform.minimax.io/docs"
+    "referenceUrl": "https://platform.minimax.io/docs/api-reference/video-generation-i2v"
   },
   {
     "id": "minimax/S2V-01",
@@ -4836,7 +4843,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "subject-reference"
     ],
-    "referenceUrl": "https://platform.minimax.io/docs"
+    "referenceUrl": "https://platform.minimax.io/docs/api-reference/video-generation-s2v"
   },
   {
     "id": "minimax/T2V-01-Director",
@@ -4878,7 +4885,7 @@ export const MODELS: ModelEntry[] = [
     "tags": [
       "text-to-video"
     ],
-    "referenceUrl": "https://platform.minimax.io/docs"
+    "referenceUrl": "https://platform.minimax.io/docs/api-reference/video-generation-t2v"
   },
   {
     "id": "openai/gpt-image-2",
@@ -7967,7 +7974,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "reference-to-video"
     ],
-    "referenceUrl": "https://platform.vidu.com/docs/quick-start"
+    "referenceUrl": "https://platform.vidu.com/docs/model-map"
   },
   {
     "id": "vidu/viduq1",
@@ -7990,6 +7997,8 @@ export const MODELS: ModelEntry[] = [
     "aspectRatios": [
       "16:9",
       "9:16",
+      "3:4",
+      "4:3",
       "1:1"
     ],
     "maxRefImages": 7,
@@ -8041,7 +8050,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "reference-to-video"
     ],
-    "referenceUrl": "https://platform.vidu.com/docs/quick-start"
+    "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q1/text-to-video"
   },
   {
     "id": "vidu/viduq2-pro",
@@ -8119,7 +8128,7 @@ export const MODELS: ModelEntry[] = [
       "reference-to-video",
       "premium"
     ],
-    "referenceUrl": "https://platform.vidu.com/docs/quick-start"
+    "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/image-to-video"
   },
   {
     "id": "vidu/viduq2-pro-fast",
@@ -8184,7 +8193,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "fast"
     ],
-    "referenceUrl": "https://platform.vidu.com/docs/quick-start"
+    "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q2/start-end-to-video"
   },
   {
     "id": "vidu/viduq3-pro",
@@ -8262,7 +8271,7 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "premium"
     ],
-    "referenceUrl": "https://platform.vidu.com/docs/quick-start"
+    "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video"
   },
   {
     "id": "vidu/viduq3-turbo",
@@ -8346,6 +8355,6 @@ export const MODELS: ModelEntry[] = [
       "image-to-video",
       "reference-to-video"
     ],
-    "referenceUrl": "https://platform.vidu.com/docs/quick-start"
+    "referenceUrl": "https://platform.vidu.com/docs/api-reference/video-models/vidu-q3/text-to-video"
   }
 ];
