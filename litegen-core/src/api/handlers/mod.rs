@@ -2590,26 +2590,8 @@ pub async fn create_api_key(
     // mint an admin-scope key. Reject unknown scope tokens too, so a typo is a
     // 400 rather than a silently dropped (and thus missing) scope.
     if let Some(ref ctx) = key_ctx {
-        let grantable = crate::api::middleware::grantable_scopes(ctx);
-        for token in request.scopes.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            match crate::api::middleware::Scope::parse(token) {
-                Some(scope) if grantable.contains(&scope) => {}
-                Some(_) => {
-                    return (
-                        StatusCode::FORBIDDEN,
-                        Json(error_response(
-                            &format!("insufficient privilege to grant scope '{token}'"),
-                            403,
-                        )),
-                    ).into_response();
-                }
-                None => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(error_response(&format!("unknown scope '{token}'"), 400)),
-                    ).into_response();
-                }
-            }
+        if let Err(resp) = crate::api::middleware::validate_grant(ctx, &request.scopes) {
+            return resp;
         }
     }
 
@@ -2911,6 +2893,13 @@ pub async fn patch_api_key_handler(
                     return (StatusCode::FORBIDDEN, Json(error_response("key:write:own permission required", 403))).into_response();
                 }
             }
+        }
+    }
+    // The same privilege check as creation: without it a Member could create a
+    // `generate,read` key and then edit it to `admin`.
+    if let (Some(ctx), Some(scopes)) = (key_ctx.as_ref(), req.scopes.as_deref()) {
+        if let Err(resp) = crate::api::middleware::validate_grant(ctx, scopes) {
+            return resp;
         }
     }
     // SSRF guard: reject a tenant-supplied webhook URL that targets an internal

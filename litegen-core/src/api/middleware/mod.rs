@@ -127,6 +127,38 @@ pub fn grantable_scopes(ctx: &KeyContext) -> Vec<Scope> {
     ctx.scopes.clone()
 }
 
+/// Refuse a scope list naming an unknown scope (400, so a typo is not a silently
+/// missing scope) or a scope `ctx` may not grant (403). Runs when a key is
+/// created and when its scopes are edited, so a key can never hold more
+/// authority than the principal that set its scopes.
+pub(crate) fn validate_grant(ctx: &KeyContext, scopes_csv: &str) -> Result<(), Response> {
+    let grantable = grantable_scopes(ctx);
+    for token in scopes_csv.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        match Scope::parse(token) {
+            Some(scope) if grantable.contains(&scope) => {}
+            Some(_) => {
+                return Err(grant_error(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    format!("insufficient privilege to grant scope '{token}'"),
+                ))
+            }
+            None => {
+                return Err(grant_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    format!("unknown scope '{token}'"),
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn grant_error(status: StatusCode, kind: &str, message: String) -> Response {
+    (status, Json(serde_json::json!({ "error": { "message": message, "type": kind, "code": kind } }))).into_response()
+}
+
 #[cfg(test)]
 mod scope_grant_tests {
     use super::*;

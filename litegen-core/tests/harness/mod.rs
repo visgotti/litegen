@@ -19,7 +19,7 @@ use tower::ServiceExt;
 use bytes::Bytes;
 use litegen::api::middleware::AppState;
 use litegen::capabilities::CapabilityRegistry;
-use litegen::config::{AppConfig, CacheGlobalConfig, DevFlags, Mode};
+use litegen::config::{AppConfig, CacheGlobalConfig, Mode};
 use litegen::db::sqlite::SqliteDatabase;
 use litegen::db::DatabaseStore;
 use litegen::proxy::cache::GenerationCache;
@@ -73,8 +73,22 @@ pub async fn app_with(asset_dir: &std::path::Path, tweak: impl FnOnce(&mut AppCo
 /// The full app over a database the test opened itself — a file it can also
 /// reach with its own connection, to inject a failure or restart over it.
 pub async fn app_over(db: Arc<SqliteDatabase>, asset_dir: &std::path::Path, tweak: impl FnOnce(&mut AppConfig)) -> Router {
+    app_over_with(db, asset_dir, tweak, None, Mode::SingleTenant).await
+}
+
+/// [`app_over`] with authentication on: a master key (so requests need real
+/// credentials) and a tenancy mode. Dev flags come from the tweaked config, as
+/// they do in `main`, so a test can expose invitation tokens.
+pub async fn app_over_with(
+    db: Arc<SqliteDatabase>,
+    asset_dir: &std::path::Path,
+    tweak: impl FnOnce(&mut AppConfig),
+    master_key: Option<&str>,
+    mode: Mode,
+) -> Router {
     let mut app_config = AppConfig::default();
     tweak(&mut app_config);
+    let dev = app_config.dev.clone();
     app_config.providers.insert(
         "mock".to_string(),
         serde_json::from_value(serde_json::json!({ "enabled": true }))
@@ -106,15 +120,15 @@ pub async fn app_over(db: Arc<SqliteDatabase>, asset_dir: &std::path::Path, twea
     let state = Arc::new(AppState {
         router,
         db: db.clone() as Arc<dyn DatabaseStore>,
-        master_key: None,
+        master_key: master_key.map(str::to_string),
         registry: cap_registry,
         materializer,
         rate_limiter: Arc::new(litegen::api::middleware::rate_limit::RateLimiter::new()),
         in_flight: Arc::new(litegen::api::middleware::backpressure::InFlightLimit::new(64)),
         oauth: litegen::auth::oauth::OAuthConfig::default(),
-        mode: Mode::SingleTenant,
+        mode,
         secrets_key: None,
-        dev: DevFlags::default(),
+        dev,
         allow_password: true,
     });
 
