@@ -39,12 +39,18 @@ pub fn exposed_response_headers() -> Vec<HeaderName> {
 /// The CORS layer for `config`. `origins_override` (`LITEGEN_CORS_ORIGINS`,
 /// a CSV) replaces the configured origins when set: `*` allows any origin,
 /// none denies every cross-origin call.
-pub fn layer(config: &CorsConfig, origins_override: Option<&str>) -> CorsLayer {
-    let methods = [Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS];
-    let origins: Vec<String> = match origins_override.filter(|s| !s.is_empty()) {
+/// The browser origins the deployment allows: `LITEGEN_CORS_ORIGINS` (CSV)
+/// when set, else `cors.allowed_origins`. `"*"` in the list means any origin.
+pub fn configured_origins(config: &CorsConfig, origins_override: Option<&str>) -> Vec<String> {
+    match origins_override.filter(|s| !s.is_empty()) {
         Some(csv) => csv.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
         None => config.allowed_origins.clone(),
-    };
+    }
+}
+
+pub fn layer(config: &CorsConfig, origins_override: Option<&str>) -> CorsLayer {
+    let methods = [Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS];
+    let origins = configured_origins(config, origins_override);
     let layer = CorsLayer::new()
         .allow_methods(methods.to_vec())
         .allow_headers(allowed_request_headers())

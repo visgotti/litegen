@@ -274,63 +274,14 @@ pub async fn auth_middleware(
         .and_then(|v| v.to_str().ok())
         .map(|v| v.strip_prefix("Bearer ").unwrap_or(v));
 
-    // Try Bearer token first
+    // Try Bearer token first: the master key, the dev bypass, or a DB key.
+    // master_key None + hosted → fall through (no bypass) to the final 401.
     if let Some(api_key) = auth_header.filter(|k| !k.is_empty()) {
-        // Check master key first — unlimited, all scopes, no rate limit
-        // Use constant-time comparison to prevent timing oracle attacks.
-        if let Some(master) = &state.master_key {
-            if constant_time_eq(api_key, master.as_str()) {
-                // Master key tenant scope depends on mode:
-                //  - single_tenant: god within the default org/app.
-                //  - hosted: platform admin, not bound to any tenant (None).
-                let (org_id, app_id) = match state.mode {
-                    Mode::SingleTenant => (
-                        Some(DEFAULT_ORG_ID.to_string()),
-                        Some(DEFAULT_APP_ID.to_string()),
-                    ),
-                    Mode::Hosted => (None, None),
-                };
-                let ctx = KeyContext {
-                    key_id: None,
-                    scopes: vec![Scope::Generate, Scope::Read, Scope::Admin],
-                    rpm_limit: None,
-                    quota_remaining: None,
-                    webhook_url: None,
-                    user: None,
-                    permissions: vec![],
-                    session_id: None,
-                    org_id,
-                    app_id,
-                };
-                request.extensions_mut().insert(ctx);
-                return next.run(request).await;
-            }
-        }
-
-        // If no master key is configured and a Bearer token is present,
-        // accept any token (dev bypass — the token is irrelevant).
-        // Only enabled in single_tenant mode; hosted mode requires real auth.
-        if state.master_key.is_none() && state.mode == Mode::SingleTenant {
-            let ctx = KeyContext {
-                key_id: None,
-                scopes: vec![Scope::Generate, Scope::Read, Scope::Admin],
-                rpm_limit: None,
-                quota_remaining: None,
-                webhook_url: None,
-                user: None,
-                permissions: vec![],
-                session_id: None,
-                org_id: Some(DEFAULT_ORG_ID.to_string()),
-                app_id: Some(DEFAULT_APP_ID.to_string()),
+        if state.master_key.is_some() || state.mode == Mode::SingleTenant {
+            return match resolve_api_key(&state, api_key).await {
+                Ok(ctx) => run_rate_limited(ctx, state, request, next).await,
+                Err(resp) => resp,
             };
-            request.extensions_mut().insert(ctx);
-            return next.run(request).await;
-        }
-
-        // master_key configured → validate as DB key.
-        // master_key None + hosted → fall through (no bypass) to the final 401.
-        if state.master_key.is_some() {
-            return handle_db_key(api_key, state, request, next).await;
         }
     }
 
@@ -441,34 +392,76 @@ pub async fn auth_middleware(
     // No Bearer and no session cookie.
     // In dev mode (no master key), allow through with an all-scopes context.
     // Only enabled in single_tenant mode; hosted mode requires real auth.
-    if state.master_key.is_none() && state.mode == Mode::SingleTenant {
-        let ctx = KeyContext {
-            key_id: None,
-            scopes: vec![Scope::Generate, Scope::Read, Scope::Admin],
-            rpm_limit: None,
-            quota_remaining: None,
-            webhook_url: None,
-            user: None,
-            permissions: vec![],
-            session_id: None,
-            org_id: Some(DEFAULT_ORG_ID.to_string()),
-            app_id: Some(DEFAULT_APP_ID.to_string()),
-        };
+    if let Some(ctx) = dev_bypass_context(&state) {
         request.extensions_mut().insert(ctx);
         return next.run(request).await;
     }
 
-    (
-        StatusCode::UNAUTHORIZED,
-        Json(serde_json::json!({
-            "error": {
-                "message": "Missing API key. Provide via Authorization: Bearer <key>",
-                "type": "authentication_error",
-                "code": "authentication_error"
-            }
-        })),
-    )
-        .into_response()
+    missing_credentials_response()
+}
+
+/// The 401 for a request that brought no credentials at all.
+pub(crate) fn missing_credentials_response() -> Response {
+    unauthorized_response("Missing API key. Provide via Authorization: Bearer <key>")
+}
+
+/// The context of every request in dev mode (single-tenant, no master key):
+/// all scopes, the default org and app, no credentials needed. `None` in any
+/// other configuration.
+pub(crate) fn dev_bypass_context(state: &AppState) -> Option<KeyContext> {
+    (state.master_key.is_none() && state.mode == Mode::SingleTenant).then(|| KeyContext {
+        key_id: None,
+        scopes: vec![Scope::Generate, Scope::Read, Scope::Admin],
+        rpm_limit: None,
+        quota_remaining: None,
+        webhook_url: None,
+        user: None,
+        permissions: vec![],
+        session_id: None,
+        org_id: Some(DEFAULT_ORG_ID.to_string()),
+        app_id: Some(DEFAULT_APP_ID.to_string()),
+    })
+}
+
+/// The master key's context. Its tenant scope depends on the mode:
+/// single-tenant → god within the default org/app; hosted → the platform
+/// admin, bound to no tenant.
+fn master_key_context(state: &AppState) -> KeyContext {
+    let (org_id, app_id) = match state.mode {
+        Mode::SingleTenant => (Some(DEFAULT_ORG_ID.to_string()), Some(DEFAULT_APP_ID.to_string())),
+        Mode::Hosted => (None, None),
+    };
+    KeyContext {
+        key_id: None,
+        scopes: vec![Scope::Generate, Scope::Read, Scope::Admin],
+        rpm_limit: None,
+        quota_remaining: None,
+        webhook_url: None,
+        user: None,
+        permissions: vec![],
+        session_id: None,
+        org_id,
+        app_id,
+    }
+}
+
+/// Resolve a Bearer token exactly as `auth_middleware` does, minus the
+/// per-minute rate limit: the master key (compared in constant time), the dev
+/// bypass (single-tenant without a master key: any token), or a DB key, which
+/// must be unexpired and under its quota. Anything else is a 401.
+pub(crate) async fn resolve_api_key(state: &AppState, token: &str) -> Result<KeyContext, Response> {
+    if let Some(master) = &state.master_key {
+        if constant_time_eq(token, master.as_str()) {
+            return Ok(master_key_context(state));
+        }
+    }
+    if let Some(ctx) = dev_bypass_context(state) {
+        return Ok(ctx);
+    }
+    if state.master_key.is_some() {
+        return resolve_db_key(state, token).await;
+    }
+    Err(unauthorized_response("Invalid or inactive API key"))
 }
 
 fn unauthorized_response(msg: &str) -> Response {
@@ -517,152 +510,21 @@ pub fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
         })
 }
 
-async fn handle_db_key(
-    api_key: &str,
-    state: Arc<AppState>,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    // Hash and look up DB key
+/// Look a DB key up by its hash and build its context: refused when it is
+/// unknown or inactive (401), expired (401) or over its quota (402).
+async fn resolve_db_key(state: &AppState, api_key: &str) -> Result<KeyContext, Response> {
     let hash = {
         let mut hasher = Sha256::new();
         hasher.update(api_key.as_bytes());
         hex::encode(hasher.finalize())
     };
 
-    match state.db.lookup_api_key_by_hash(&hash).await {
-        Ok(Some(key)) => {
-            // Check expiry
-            if let Some(exp) = key.expires_at {
-                if exp < chrono::Utc::now() {
-                    return (
-                        StatusCode::UNAUTHORIZED,
-                        Json(serde_json::json!({
-                            "error": {
-                                "message": "API key expired",
-                                "type": "authentication_error",
-                                "code": "authentication_error"
-                            }
-                        })),
-                    ).into_response();
-                }
-            }
-
-            // Pre-flight quota check: if tokens_used >= token_quota, reject with 402
-            if let Some(quota) = key.token_quota {
-                if key.tokens_used >= quota {
-                    return (
-                        StatusCode::PAYMENT_REQUIRED,
-                        Json(serde_json::json!({
-                            "error": {
-                                "message": "Token quota exceeded for this API key",
-                                "type": "quota_exceeded",
-                                "code": "quota_exceeded"
-                            }
-                        })),
-                    ).into_response();
-                }
-            }
-
-            let quota_remaining = key.token_quota.map(|quota| quota - key.tokens_used);
-
-            let scopes: Vec<Scope> = key.scopes
-                .split(',')
-                .filter_map(Scope::parse)
-                .collect();
-
-            let ctx = KeyContext {
-                key_id: Some(key.id),
-                scopes,
-                rpm_limit: key.rpm_limit,
-                quota_remaining,
-                webhook_url: key.webhook_url,
-                user: None,
-                permissions: vec![],
-                session_id: None,
-                org_id: key.org_id.clone(),
-                app_id: key.app_id.clone(),
-            };
-
-            // RPM rate limit check
-            if let (Some(key_id), Some(rpm)) = (ctx.key_id, ctx.rpm_limit) {
-                match state.rate_limiter.try_take(key_id, rpm).await {
-                    Ok(()) => {}
-                    Err(retry_after) => {
-                        let rpm_str = rpm.to_string();
-                        let mut resp = (
-                            StatusCode::TOO_MANY_REQUESTS,
-                            Json(serde_json::json!({
-                                "error": {
-                                    "message": format!("Rate limit exceeded. Retry after {} seconds.", retry_after),
-                                    "type": "rate_limit_exceeded",
-                                    "code": "rate_limit_exceeded"
-                                }
-                            })),
-                        ).into_response();
-                        let h = resp.headers_mut();
-                        if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after.to_string()) {
-                            h.insert(axum::http::header::RETRY_AFTER, v);
-                        }
-                        if let Ok(v) = axum::http::HeaderValue::from_str(&rpm_str) {
-                            h.insert("x-ratelimit-limit", v);
-                        }
-                        h.insert("x-ratelimit-remaining", axum::http::HeaderValue::from_static("0"));
-                        let reset_epoch = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs() + retry_after;
-                        if let Ok(v) = axum::http::HeaderValue::from_str(&reset_epoch.to_string()) {
-                            h.insert("x-ratelimit-reset", v);
-                        }
-                        return resp;
-                    }
-                }
-            }
-
-            // Save key_id and rpm_limit before moving ctx into extensions
-            let rate_limit_key_id = ctx.key_id;
-            let rate_limit_rpm = ctx.rpm_limit;
-            request.extensions_mut().insert(ctx);
-
-            let mut response = next.run(request).await;
-
-            // Attach X-RateLimit-* headers for rate-limited keys
-            if let (Some(key_id), Some(rpm)) = (rate_limit_key_id, rate_limit_rpm) {
-                let snapshot = state.rate_limiter.snapshot(key_id, rpm).await;
-                let headers = response.headers_mut();
-                if let Ok(v) = axum::http::HeaderValue::from_str(&rpm.to_string()) {
-                    headers.insert("x-ratelimit-limit", v);
-                }
-                if let Ok(v) = axum::http::HeaderValue::from_str(&snapshot.remaining.to_string()) {
-                    headers.insert("x-ratelimit-remaining", v);
-                }
-                let reset_epoch = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-                    + snapshot.reset_in.as_secs();
-                if let Ok(v) = axum::http::HeaderValue::from_str(&reset_epoch.to_string()) {
-                    headers.insert("x-ratelimit-reset", v);
-                }
-            }
-            // Master key (key_id = None) or keys without rpm_limit get no headers
-
-            response
-        }
-        Ok(None) => (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({
-                "error": {
-                    "message": "Invalid or inactive API key",
-                    "type": "authentication_error",
-                    "code": "authentication_error"
-                }
-            })),
-        ).into_response(),
+    let key = match state.db.lookup_api_key_by_hash(&hash).await {
+        Ok(Some(key)) => key,
+        Ok(None) => return Err(unauthorized_response("Invalid or inactive API key")),
         Err(e) => {
             tracing::error!(error = %e, "Failed to look up API key");
-            (
+            return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
                     "error": {
@@ -671,9 +533,118 @@ async fn handle_db_key(
                         "code": "internal_error"
                     }
                 })),
-            ).into_response()
+            ).into_response());
+        }
+    };
+
+    // Check expiry
+    if let Some(exp) = key.expires_at {
+        if exp < chrono::Utc::now() {
+            return Err(unauthorized_response("API key expired"));
         }
     }
+
+    // Pre-flight quota check: if tokens_used >= token_quota, reject with 402
+    if let Some(quota) = key.token_quota {
+        if key.tokens_used >= quota {
+            return Err((
+                StatusCode::PAYMENT_REQUIRED,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": "Token quota exceeded for this API key",
+                        "type": "quota_exceeded",
+                        "code": "quota_exceeded"
+                    }
+                })),
+            ).into_response());
+        }
+    }
+
+    let quota_remaining = key.token_quota.map(|quota| quota - key.tokens_used);
+
+    let scopes: Vec<Scope> = key.scopes
+        .split(',')
+        .filter_map(Scope::parse)
+        .collect();
+
+    Ok(KeyContext {
+        key_id: Some(key.id),
+        scopes,
+        rpm_limit: key.rpm_limit,
+        quota_remaining,
+        webhook_url: key.webhook_url,
+        user: None,
+        permissions: vec![],
+        session_id: None,
+        org_id: key.org_id.clone(),
+        app_id: key.app_id.clone(),
+    })
+}
+
+/// Run the request as `ctx`, applying a DB key's per-minute rate limit (429
+/// with `Retry-After` once exhausted) and reporting it in `X-RateLimit-*`. The
+/// master key, the dev bypass and keys without an `rpm_limit` are unlimited.
+async fn run_rate_limited(ctx: KeyContext, state: Arc<AppState>, mut request: Request, next: Next) -> Response {
+    let limit = ctx.key_id.zip(ctx.rpm_limit);
+
+    // RPM rate limit check
+    if let Some((key_id, rpm)) = limit {
+        if let Err(retry_after) = state.rate_limiter.try_take(key_id, rpm).await {
+            let rpm_str = rpm.to_string();
+            let mut resp = (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": format!("Rate limit exceeded. Retry after {} seconds.", retry_after),
+                        "type": "rate_limit_exceeded",
+                        "code": "rate_limit_exceeded"
+                    }
+                })),
+            ).into_response();
+            let h = resp.headers_mut();
+            if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after.to_string()) {
+                h.insert(axum::http::header::RETRY_AFTER, v);
+            }
+            if let Ok(v) = axum::http::HeaderValue::from_str(&rpm_str) {
+                h.insert("x-ratelimit-limit", v);
+            }
+            h.insert("x-ratelimit-remaining", axum::http::HeaderValue::from_static("0"));
+            let reset_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() + retry_after;
+            if let Ok(v) = axum::http::HeaderValue::from_str(&reset_epoch.to_string()) {
+                h.insert("x-ratelimit-reset", v);
+            }
+            return resp;
+        }
+    }
+
+    request.extensions_mut().insert(ctx);
+    let mut response = next.run(request).await;
+
+    // Attach X-RateLimit-* headers for rate-limited keys
+    if let Some((key_id, rpm)) = limit {
+        let snapshot = state.rate_limiter.snapshot(key_id, rpm).await;
+        let headers = response.headers_mut();
+        if let Ok(v) = axum::http::HeaderValue::from_str(&rpm.to_string()) {
+            headers.insert("x-ratelimit-limit", v);
+        }
+        if let Ok(v) = axum::http::HeaderValue::from_str(&snapshot.remaining.to_string()) {
+            headers.insert("x-ratelimit-remaining", v);
+        }
+        let reset_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + snapshot.reset_in.as_secs();
+        if let Ok(v) = axum::http::HeaderValue::from_str(&reset_epoch.to_string()) {
+            headers.insert("x-ratelimit-reset", v);
+        }
+    }
+    // Master key (key_id = None) or keys without rpm_limit get no headers
+
+    response
 }
 
 // ─── Scope middleware ─────────────────────────────────────────────────────────

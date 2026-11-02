@@ -58,6 +58,7 @@ pub struct Rpc {
 pub struct Mcp<'a> {
     pub app: &'a Router,
     pub path: String,
+    pub host: String,
     pub bearer: Option<String>,
     pub protocol: &'static str,
     pub extra: Vec<(String, String)>,
@@ -65,7 +66,12 @@ pub struct Mcp<'a> {
 
 impl<'a> Mcp<'a> {
     pub fn new(app: &'a Router, path: &str) -> Self {
-        Mcp { app, path: path.to_string(), bearer: None, protocol: CURRENT, extra: Vec::new() }
+        Mcp { app, path: path.to_string(), host: "localhost".into(), bearer: None, protocol: CURRENT, extra: Vec::new() }
+    }
+
+    pub fn host(mut self, host: &str) -> Self {
+        self.host = host.to_string();
+        self
     }
 
     pub fn bearer(mut self, token: &str) -> Self {
@@ -99,7 +105,7 @@ impl<'a> Mcp<'a> {
         let mut req = Request::builder()
             .method("POST")
             .uri(&self.path)
-            .header("host", "localhost")
+            .header("host", self.host.as_str())
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream")
             .header("mcp-protocol-version", self.protocol);
@@ -185,6 +191,29 @@ fn parse(status: StatusCode, headers: HeaderMap, body: String) -> Rpc {
         }
     }
     rpc
+}
+
+/// Sign up a new user (hosted mode) and return their `litegen_session=…`
+/// cookie: a real browser session.
+pub async fn signup_cookie(app: &Router) -> String {
+    let email = format!("user-{}@example.com", uuid::Uuid::new_v4());
+    let body = json!({ "email": email, "password": "a-long-test-password-1", "org_name": "MCP Org" });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/auth/signup")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "signup failed");
+    resp.headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|s| s.split(';').next())
+        .find(|kv| kv.starts_with("litegen_session="))
+        .expect("session cookie")
+        .to_string()
 }
 
 /// Create an API key with the master key; returns the raw secret.
