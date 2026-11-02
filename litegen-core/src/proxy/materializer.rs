@@ -246,7 +246,7 @@ impl Materializer {
         }
     }
 
-    async fn fetch_url(&self, url: &str) -> Result<Vec<u8>, MaterializeError> {
+    pub(crate) async fn fetch_url(&self, url: &str) -> Result<Vec<u8>, MaterializeError> {
         // SSRF guard: the URL comes straight from the request body
         // (reference_images[].value). Reject non-public targets before issuing
         // the request. The production client also disables redirect following

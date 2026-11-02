@@ -72,14 +72,24 @@ impl ServerHandler for LiteGenMcp {
             let result = match spec {
                 None => CallToolResult::error(vec![ContentBlock::text(format!("Unknown tool: {name}"))]),
                 Some(spec) => match &spec.kind {
-                    SpecKind::Http(plan) => match dispatch::build_request(spec, plan, &caller, &args) {
-                        Ok(req) => {
-                            let reply = dispatch::send(&self.shared.api, req).await;
-                            tracing::debug!(status = reply.status.as_u16(), "mcp tool replied");
-                            content::json_result(spec, &reply)
+                    SpecKind::Http(plan) => {
+                        let request = if plan.binary_in {
+                            match dispatch::upload_bytes(&self.shared, &args).await {
+                                Ok(bytes) => dispatch::build_upload(spec, plan, &caller, &args, bytes),
+                                Err(message) => Err(message),
+                            }
+                        } else {
+                            dispatch::build_request(spec, plan, &caller, &args)
+                        };
+                        match request {
+                            Ok(req) => {
+                                let reply = dispatch::send(&self.shared.api, req).await;
+                                tracing::debug!(status = reply.status.as_u16(), "mcp tool replied");
+                                content::to_result(&self.shared, &caller, spec, &args, &reply).await
+                            }
+                            Err(message) => CallToolResult::error(vec![ContentBlock::text(message)]),
                         }
-                        Err(message) => CallToolResult::error(vec![ContentBlock::text(message)]),
-                    },
+                    }
                     SpecKind::Wait => CallToolResult::error(vec![ContentBlock::text("wait_for_generation is not available yet")]),
                 },
             };

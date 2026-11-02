@@ -367,3 +367,90 @@ async fn generation_is_tagged_mcp() {
     assert!(groups.contains(&"mcp".to_string()), "{groups:?}");
     assert!(groups.contains(&"campaign-7".to_string()), "{groups:?}");
 }
+
+// ─── Task 7: images, assets and mesh files ────────────────────────────────────
+
+fn blocks<'a>(result: &'a serde_json::Value, kind: &str) -> Vec<&'a serde_json::Value> {
+    result["content"].as_array().into_iter().flatten().filter(|c| c["type"] == kind).collect()
+}
+
+#[tokio::test]
+async fn generate_image_includes_preview_and_link() {
+    use base64::Engine;
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    // mock/visual-image-gen renders a real PNG (mock/image-gen's 1x1 placeholder
+    // is not decodable, so it gets no preview); 1024x1024 exercises the downscale.
+    let result = Mcp::new(&app, "/mcp")
+        .call("generate_image", json!({ "model": "mock/visual-image-gen", "prompt": "a red cube", "size": "1024x1024" }))
+        .await;
+    assert!(!is_error(&result), "{result}");
+
+    let images = blocks(&result, "image");
+    assert!((1..=2).contains(&images.len()), "{result}");
+    for image in images {
+        assert_eq!(image["mimeType"], "image/jpeg");
+        let bytes = base64::engine::general_purpose::STANDARD.decode(image["data"].as_str().unwrap()).unwrap();
+        let decoded = image::load_from_memory(&bytes).expect("a decodable JPEG preview");
+        assert!(decoded.width() <= 512 && decoded.height() <= 512, "{}x{}", decoded.width(), decoded.height());
+    }
+    if let Some(url) = result["structuredContent"]["data"][0]["url"].as_str() {
+        let links = blocks(&result, "resource_link");
+        assert!(links.iter().any(|l| l["uri"] == url), "a link to {url}: {result}");
+    }
+    // Base64 image data never floods the text the model reads.
+    assert!(text_of(&result).len() < 20_000, "{}", text_of(&result).len());
+}
+
+#[tokio::test]
+async fn preview_false_has_no_image() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let result = Mcp::new(&app, "/mcp")
+        .call("generate_image", json!({ "model": "mock/image-gen", "prompt": "a red cube", "preview": false }))
+        .await;
+    assert!(!is_error(&result), "{result}");
+    assert!(blocks(&result, "image").is_empty(), "{result}");
+}
+
+#[tokio::test]
+async fn convert_round_trip() {
+    use base64::Engine;
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let triangle = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    let result = Mcp::new(&app, "/mcp")
+        .call(
+            "convert_3d_model",
+            json!({ "from": "obj", "to": "glb", "data_base64": base64::engine::general_purpose::STANDARD.encode(triangle) }),
+        )
+        .await;
+    assert!(!is_error(&result), "{result}");
+    let resource = blocks(&result, "resource");
+    assert_eq!(resource.len(), 1, "{result}");
+    let blob = resource[0]["resource"]["blob"].as_str().unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD.decode(blob).unwrap();
+    assert_eq!(&bytes[..4], b"glTF", "a binary glTF");
+    assert_eq!(resource[0]["resource"]["mimeType"], "model/gltf-binary");
+}
+
+#[tokio::test]
+async fn convert_refuses_two_sources_or_none() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let result = Mcp::new(&app, "/mcp").call("convert_3d_model", json!({ "from": "obj", "to": "glb" })).await;
+    assert!(is_error(&result), "{result}");
+    assert!(text_of(&result).contains("source_url") && text_of(&result).contains("data_base64"), "{result}");
+}
+
+#[tokio::test]
+async fn three_d_status_links_assets() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let id = harness::submit(&app, "mock/mesh-3d", "a fox").await;
+    harness::poll_until_terminal(&app, &id).await;
+    let result = Mcp::new(&app, "/mcp").call("get_3d_model_status", json!({ "id": id })).await;
+    assert!(!is_error(&result), "{result}");
+    let assets = result["structuredContent"]["assets"].as_array().cloned().unwrap_or_default();
+    assert!(!assets.is_empty(), "{result}");
+    let links = blocks(&result, "resource_link");
+    assert_eq!(links.len(), assets.len(), "{result}");
+    for (link, asset) in links.iter().zip(&assets) {
+        assert_eq!(link["uri"], asset["url"]);
+    }
+}
