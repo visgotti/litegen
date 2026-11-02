@@ -8,12 +8,13 @@
 pub mod auth;
 pub mod catalog;
 pub mod gate;
+pub mod registry;
 pub mod schema;
 pub mod server;
 #[cfg(test)]
 mod tests;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
@@ -21,6 +22,20 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 
 use crate::api::middleware::AppState;
 use auth::OriginPolicy;
+use registry::Registry;
+
+/// The tool registry: built from the OpenAPI document once per process. A
+/// tool whose schema cannot be built stops startup, naming the tool.
+pub fn tool_registry() -> Arc<Registry> {
+    static REGISTRY: OnceLock<Arc<Registry>> = OnceLock::new();
+    REGISTRY
+        .get_or_init(|| {
+            use utoipa::OpenApi;
+            let doc = serde_json::to_value(crate::api::openapi::ApiDoc::openapi()).expect("OpenAPI document serializes");
+            Arc::new(Registry::build(&doc).unwrap_or_else(|e| panic!("{e}")))
+        })
+        .clone()
+}
 
 /// Which of the two MCP endpoints a request came in on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -75,6 +90,7 @@ impl Surface {
 pub struct McpShared {
     pub state: Arc<AppState>,
     pub api: axum::Router,
+    pub registry: Arc<Registry>,
     pub http: reqwest::Client,
     pub origins: OriginPolicy,
 }
@@ -110,7 +126,7 @@ pub fn router(state: Arc<AppState>, api: axum::Router) -> axum::Router {
     };
 
     let http = reqwest::Client::builder().timeout(Duration::from_secs(10)).build().unwrap_or_default();
-    let shared = Arc::new(McpShared { state, api, http, origins: OriginPolicy::new(origins) });
+    let shared = Arc::new(McpShared { state, api, registry: tool_registry(), http, origins: OriginPolicy::new(origins) });
 
     let mut routes = axum::Router::new();
     if !config.mcp.enabled {

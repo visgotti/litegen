@@ -135,3 +135,99 @@ async fn unknown_toolset_is_400() {
     assert_eq!(body["error"]["code"], "unknown_toolset");
     assert!(body["error"]["message"].as_str().unwrap().contains("'nope'"), "{body}");
 }
+
+// ─── Task 5: tools/list per credential ────────────────────────────────────────
+
+/// Every AI-endpoint tool a non-user key can see: the 19 AI tools, the
+/// endpoint-shared `get_my_limits`, and `wait_for_generation`.
+const AI_TOOLS_FOR_KEYS: usize = 21;
+
+#[tokio::test]
+async fn ai_key_is_exactly_ai() {
+    let (app, _db, _dir) = mcp_support::secured_app(Mode::SingleTenant).await;
+    let key = mcp_support::create_key(&app, "generate").await;
+
+    let ai = Mcp::new(&app, "/mcp").bearer(&key).tool_names().await;
+    assert_eq!(ai.len(), AI_TOOLS_FOR_KEYS, "{ai:?}");
+    for tool in ["generate_image", "list_models", "wait_for_generation", "get_my_limits"] {
+        assert!(ai.contains(&tool.to_string()), "{tool} missing: {ai:?}");
+    }
+    assert!(!ai.contains(&"get_current_user".to_string()), "a key is not a signed-in user");
+
+    let admin = Mcp::new(&app, "/admin/mcp").bearer(&key).tool_names().await;
+    assert_eq!(admin, vec!["get_my_limits".to_string()]);
+}
+
+#[tokio::test]
+async fn default_key_lists_ai_and_admin_reads() {
+    let (app, _db, _dir) = mcp_support::secured_app(Mode::SingleTenant).await;
+    let key = mcp_support::create_key(&app, "generate,read").await;
+
+    assert_eq!(Mcp::new(&app, "/mcp").bearer(&key).tool_names().await.len(), AI_TOOLS_FOR_KEYS);
+    let admin = Mcp::new(&app, "/admin/mcp").bearer(&key).tool_names().await;
+    assert!(admin.contains(&"get_spend_report".to_string()), "{admin:?}");
+    assert!(admin.contains(&"list_request_logs".to_string()), "{admin:?}");
+    assert!(!admin.contains(&"create_api_key".to_string()), "{admin:?}");
+    assert!(!admin.contains(&"set_org_limits".to_string()), "{admin:?}");
+}
+
+#[tokio::test]
+async fn admin_key_lists_key_tools() {
+    let (app, _db, _dir) = mcp_support::secured_app(Mode::SingleTenant).await;
+    let key = mcp_support::create_key(&app, "generate,read,admin").await;
+    let admin = Mcp::new(&app, "/admin/mcp").bearer(&key).tool_names().await;
+    for tool in ["create_api_key", "revoke_api_key", "set_key_limits", "set_org_limits", "list_audit_log"] {
+        assert!(admin.contains(&tool.to_string()), "{tool} missing: {admin:?}");
+    }
+    // Org, app and member management needs a signed-in user, even for an admin key.
+    assert!(!admin.contains(&"list_orgs".to_string()), "{admin:?}");
+}
+
+#[tokio::test]
+async fn toolsets_filter() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let names = Mcp::new(&app, "/mcp?toolsets=images").tool_names().await;
+    assert_eq!(names, vec!["estimate_image_cost", "generate_image", "segment_image"]);
+}
+
+#[tokio::test]
+async fn annotations_are_explicit() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let mut tools = Mcp::new(&app, "/mcp").tools().await;
+    tools.extend(Mcp::new(&app, "/admin/mcp").tools().await);
+    assert!(tools.len() > 100, "dev mode should list nearly everything: {}", tools.len());
+    for tool in &tools {
+        let name = tool["name"].as_str().unwrap();
+        assert!(tool["title"].as_str().is_some_and(|t| !t.is_empty()), "{name} has no title");
+        assert!(tool["description"].as_str().is_some_and(|d| !d.is_empty()), "{name} has no description");
+        for hint in ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] {
+            assert!(tool["annotations"][hint].is_boolean(), "{name} lacks {hint}");
+        }
+    }
+    let find = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap_or_else(|| panic!("{n} not listed")).clone();
+    assert_eq!(find("revoke_api_key")["annotations"]["destructiveHint"], true);
+    assert_eq!(find("estimate_image_cost")["annotations"]["readOnlyHint"], true);
+    assert_eq!(find("generate_image")["annotations"]["readOnlyHint"], false);
+    assert_eq!(find("generate_image")["annotations"]["openWorldHint"], true);
+    assert_eq!(find("wait_for_generation")["annotations"]["readOnlyHint"], true);
+    assert_eq!(find("generate_3d_model")["title"], "Generate 3D model");
+    // OpenAPI text is cleaned of internal plan references before clients see it.
+    for tool in &tools {
+        let description = tool["description"].as_str().unwrap();
+        assert!(!description.contains("Live:") && !description.contains("```"), "{}: {description}", tool["name"]);
+        assert!(description.chars().count() <= 1_200, "{} description is {} chars", tool["name"], description.len());
+    }
+}
+
+#[tokio::test]
+async fn legacy_and_current_protocols_list_tools() {
+    let (app, _db, _dir) = mcp_support::secured_app(Mode::SingleTenant).await;
+    let key = mcp_support::create_key(&app, "generate,read").await;
+
+    let legacy = Mcp::new(&app, "/mcp").bearer(&key).legacy();
+    legacy.ok("initialize", initialize_params()).await;
+    let legacy_names = legacy.tool_names().await;
+    let current_names = Mcp::new(&app, "/mcp").bearer(&key).tool_names().await;
+    assert_eq!(legacy_names, current_names);
+    assert_eq!(current_names.len(), AI_TOOLS_FOR_KEYS);
+}
