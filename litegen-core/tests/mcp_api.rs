@@ -231,3 +231,139 @@ async fn legacy_and_current_protocols_list_tools() {
     assert_eq!(legacy_names, current_names);
     assert_eq!(current_names.len(), AI_TOOLS_FOR_KEYS);
 }
+
+// ─── Task 6: tools/call through the API router ────────────────────────────────
+
+fn text_of(result: &serde_json::Value) -> String {
+    result["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["type"] == "text")
+        .filter_map(|c| c["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_error(result: &serde_json::Value) -> bool {
+    result["isError"].as_bool().unwrap_or(false)
+}
+
+#[tokio::test]
+async fn generate_image_with_mock_returns_data() {
+    let (app, _db, _dir) = mcp_support::secured_app(Mode::SingleTenant).await;
+    let key = mcp_support::create_key(&app, "generate,read").await;
+    let result = Mcp::new(&app, "/mcp")
+        .bearer(&key)
+        .call("generate_image", json!({ "model": "mock/image-gen", "prompt": "a red cube", "preview": false }))
+        .await;
+    assert!(!is_error(&result), "{result}");
+    let first = &result["structuredContent"]["data"][0];
+    assert!(first.get("url").is_some() || first.get("b64_json").is_some(), "{result}");
+    // The text block carries the same JSON, for clients that read only text.
+    let text: serde_json::Value = serde_json::from_str(&text_of(&result).lines().next().unwrap()).unwrap();
+    assert_eq!(text["model"], result["structuredContent"]["model"]);
+}
+
+#[tokio::test]
+async fn get_model_with_slash_id() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let mcp = Mcp::new(&app, "/mcp");
+    let models = mcp.call("list_models", json!({ "media_type": "image" })).await;
+    let id = models["structuredContent"]["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["id"].as_str())
+        .find(|id| id.contains('/') && !id.starts_with("mock/"))
+        .expect("a catalog id with a slash")
+        .to_string();
+    let result = mcp.call("get_model", json!({ "id": id })).await;
+    assert!(!is_error(&result), "{result}");
+    assert_eq!(result["structuredContent"]["id"], id.as_str());
+}
+
+#[tokio::test]
+async fn bad_arguments_return_api_error() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let rpc = Mcp::new(&app, "/mcp")
+        .rpc("tools/call", json!({ "name": "generate_image", "arguments": { "model": "mock/image-gen", "prompt": 5 } }))
+        .await;
+    assert!(rpc.error.is_none(), "a bad argument is a tool error, not a protocol error: {}", rpc.body);
+    let result = rpc.result.unwrap();
+    assert!(is_error(&result), "{result}");
+    assert!(text_of(&result).starts_with("HTTP 4"), "{result}");
+}
+
+#[tokio::test]
+async fn unknown_model_is_api_error() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let result = Mcp::new(&app, "/mcp").call("generate_image", json!({ "model": "nope/nope", "prompt": "x" })).await;
+    assert!(is_error(&result), "{result}");
+    let code = result["structuredContent"]["error"]["code"].as_str().expect("the API's error code").to_string();
+    assert!(text_of(&result).contains(&code), "{result}");
+}
+
+#[tokio::test]
+async fn hidden_tool_call_is_refused() {
+    let (app, _db, _dir) = mcp_support::secured_app(Mode::SingleTenant).await;
+    let key = mcp_support::create_key(&app, "generate").await;
+    let result = Mcp::new(&app, "/admin/mcp").bearer(&key).call("list_request_logs", json!({})).await;
+    assert!(is_error(&result), "{result}");
+    assert_eq!(text_of(&result), "Unknown tool: list_request_logs");
+}
+
+#[tokio::test]
+async fn budget_is_enforced_through_mcp() {
+    let (app, _db, _dir) = mcp_support::secured_app(Mode::SingleTenant).await;
+    let admin_key = mcp_support::create_key(&app, "generate,read,admin").await;
+    let (key_id, key) = mcp_support::create_key_with_id(&app, "generate").await;
+
+    let set = Mcp::new(&app, "/admin/mcp")
+        .bearer(&admin_key)
+        .call("set_key_limits", json!({ "id": key_id, "max_budget_usd": 0.0000001 }))
+        .await;
+    assert!(!is_error(&set), "{set}");
+
+    let result = Mcp::new(&app, "/mcp")
+        .bearer(&key)
+        .call("generate_image", json!({ "model": "mock/expensive-image", "prompt": "x", "preview": false }))
+        .await;
+    assert!(is_error(&result), "{result}");
+    assert!(text_of(&result).contains("budget_exceeded"), "{result}");
+}
+
+#[tokio::test]
+async fn list_models_fits() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let result = Mcp::new(&app, "/mcp").call("list_models", json!({})).await;
+    assert!(!is_error(&result), "{result}");
+    let text = text_of(&result);
+    assert!(text.len() <= 100_000, "list_models text is {} characters", text.len());
+    assert!(!result["structuredContent"]["data"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn generation_is_tagged_mcp() {
+    let (app, _db, _dir) = mcp_support::secured_app(Mode::SingleTenant).await;
+    let key = mcp_support::create_key(&app, "generate,read").await;
+    let result = Mcp::new(&app, "/mcp")
+        .bearer(&key)
+        .call("generate_image", json!({ "model": "mock/image-gen", "prompt": "a red cube", "preview": false, "tags": ["campaign-7"] }))
+        .await;
+    assert!(!is_error(&result), "{result}");
+
+    // The API writes a request's log row and its tags after responding, so
+    // give that background write a moment.
+    let mut groups: Vec<String> = Vec::new();
+    for _ in 0..50 {
+        let report = mcp_support::http_get(&app, "/v1/spend/report?group_by=tag", mcp_support::MASTER_KEY).await;
+        groups = report["data"].as_array().unwrap().iter().filter_map(|r| r["group"].as_str().map(str::to_string)).collect();
+        if groups.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(groups.contains(&"mcp".to_string()), "{groups:?}");
+    assert!(groups.contains(&"campaign-7".to_string()), "{groups:?}");
+}

@@ -2,12 +2,17 @@
 
 use std::sync::Arc;
 
-use rmcp::model::{CacheScope, Implementation, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig};
+use rmcp::model::{
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation, ListToolsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerConfig,
+};
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
+use tracing::Instrument;
 
 use super::auth::Caller;
-use super::{McpShared, Surface};
+use super::registry::SpecKind;
+use super::{content, dispatch, gate, McpShared, Surface};
 
 /// How long a client may cache `tools/list`. The list depends on the caller's
 /// credential, so only that caller's client may cache it.
@@ -46,5 +51,43 @@ impl ServerHandler for LiteGenMcp {
         let caller = caller(&context)?;
         let tools = self.shared.registry.visible(&caller, &self.shared.state).into_iter().map(|s| s.tool.clone()).collect();
         Ok(ListToolsResult::with_all_items(tools).with_ttl_ms(TOOLS_TTL_MS).with_cache_scope(CacheScope::Private))
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let caller = caller(&context)?;
+        let name = request.name.to_string();
+        let args = request.arguments.unwrap_or_default();
+        let surface = match self.surface {
+            Surface::Ai => "ai",
+            Surface::Admin => "admin",
+        };
+        let span = tracing::info_span!("mcp.tool", tool = %name, surface, caller = ?caller.kind);
+        async move {
+            // A tool the caller cannot see does not exist for them.
+            let spec = self.shared.registry.get(&name).filter(|s| gate::visible(s.def, &caller, &self.shared.state));
+            let result = match spec {
+                None => CallToolResult::error(vec![ContentBlock::text(format!("Unknown tool: {name}"))]),
+                Some(spec) => match &spec.kind {
+                    SpecKind::Http(plan) => match dispatch::build_request(spec, plan, &caller, &args) {
+                        Ok(req) => {
+                            let reply = dispatch::send(&self.shared.api, req).await;
+                            tracing::debug!(status = reply.status.as_u16(), "mcp tool replied");
+                            content::json_result(spec, &reply)
+                        }
+                        Err(message) => CallToolResult::error(vec![ContentBlock::text(message)]),
+                    },
+                    SpecKind::Wait => CallToolResult::error(vec![ContentBlock::text("wait_for_generation is not available yet")]),
+                },
+            };
+            let outcome = if result.is_error == Some(true) { "error" } else { "ok" };
+            metrics::counter!("litegen_mcp_tool_calls_total", "tool" => name.clone(), "surface" => surface, "outcome" => outcome).increment(1);
+            Ok(result.into())
+        }
+        .instrument(span)
+        .await
     }
 }

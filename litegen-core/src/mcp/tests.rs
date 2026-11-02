@@ -334,3 +334,111 @@ fn ai_surface_schema_budget() {
         .sum();
     assert!(total < 90_000, "the AI tools' schemas total {total} characters");
 }
+
+// ─── Dispatch: tool arguments → the API request ───────────────────────────────
+
+use crate::mcp::dispatch::build_request;
+use crate::mcp::registry::SpecKind;
+
+fn dev_caller(surface: Surface) -> Caller {
+    caller(master(true), CallerKind::Dev, surface)
+}
+
+fn request_for(tool: &str, args: Value) -> axum::http::Request<axum::body::Body> {
+    let registry = crate::mcp::tool_registry();
+    let spec = registry.get(tool).unwrap_or_else(|| panic!("no tool {tool}"));
+    let SpecKind::Http(plan) = &spec.kind else { panic!("{tool} is not an HTTP tool") };
+    let surface = if spec.def.surfaces.includes(Surface::Ai) { Surface::Ai } else { Surface::Admin };
+    build_request(spec, plan, &dev_caller(surface), args.as_object().unwrap()).unwrap_or_else(|e| panic!("{tool}: {e}"))
+}
+
+async fn body_json(req: axum::http::Request<axum::body::Body>) -> Value {
+    let bytes = axum::body::to_bytes(req.into_body(), 1 << 20).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+}
+
+#[test]
+fn build_request_keeps_slash_in_catch_all() {
+    let req = request_for("get_model", json!({ "id": "fal/flux-pro" }));
+    assert_eq!(req.method(), axum::http::Method::GET);
+    assert_eq!(req.uri().path(), "/v1/models/fal/flux-pro");
+}
+
+#[test]
+fn build_request_encodes_regular_params() {
+    let req = request_for("get_end_user", json!({ "end_user_id": "a b/c" }));
+    assert_eq!(req.uri().path(), "/v1/end-users/a%20b%2Fc");
+}
+
+#[test]
+fn build_request_names_a_missing_path_parameter() {
+    let registry = crate::mcp::tool_registry();
+    let spec = registry.get("get_end_user").unwrap();
+    let SpecKind::Http(plan) = &spec.kind else { unreachable!() };
+    let err = build_request(spec, plan, &dev_caller(Surface::Admin), &Map::new()).unwrap_err();
+    assert!(err.contains("end_user_id"), "{err}");
+}
+
+#[tokio::test]
+async fn tags_always_include_mcp() {
+    let req = request_for("generate_image", json!({ "model": "m", "prompt": "p", "tags": ["x"], "end_user": "cust-1", "idempotency_key": "k1", "preview": false }));
+    assert_eq!(req.headers()["x-litegen-tags"], "mcp,x");
+    assert_eq!(req.headers()["x-litegen-end-user"], "cust-1");
+    assert_eq!(req.headers()["idempotency-key"], "k1");
+    assert_eq!(req.uri().path(), "/v1/images/generations");
+    let body = body_json(req).await;
+    assert_eq!(body, json!({ "model": "m", "prompt": "p" }), "headers and MCP's own arguments stay out of the body");
+
+    let req = request_for("generate_image", json!({ "model": "m", "prompt": "p" }));
+    assert_eq!(req.headers()["x-litegen-tags"], "mcp");
+}
+
+#[tokio::test]
+async fn unknown_arguments_reach_the_api_for_body_tools() {
+    let body = body_json(request_for("generate_image", json!({ "model": "m", "prompt": "p", "not_a_field": 1 }))).await;
+    assert_eq!(body["not_a_field"], 1, "the API, not MCP, decides what an unknown field means");
+    let registry = crate::mcp::tool_registry();
+    let spec = registry.get("list_end_users").unwrap();
+    let SpecKind::Http(plan) = &spec.kind else { unreachable!() };
+    let err = build_request(spec, plan, &dev_caller(Surface::Admin), json!({ "nope": 1 }).as_object().unwrap()).unwrap_err();
+    assert!(err.contains("nope"), "{err}");
+}
+
+#[test]
+fn query_parameters_go_in_the_query_string() {
+    let req = request_for("list_end_users", json!({ "org_id": "org 1" }));
+    assert_eq!(req.uri().path(), "/v1/end-users");
+    assert_eq!(req.uri().query(), Some("org_id=org%201"));
+}
+
+// ─── Results that fit what clients accept ─────────────────────────────────────
+
+use crate::mcp::content::fit;
+
+#[test]
+fn fit_leaves_small_results_alone() {
+    let value = json!({ "data": [1, 2, 3] });
+    assert_eq!(fit("list_generations", value.clone(), 100_000), value);
+}
+
+#[test]
+fn fit_halves_the_largest_list_and_says_so() {
+    let big: Vec<Value> = (0..1000).map(|i| json!({ "id": i, "pad": "x".repeat(50) })).collect();
+    let fitted = fit("list_request_logs", json!({ "data": big, "total": 1000 }), 20_000);
+    assert!(serde_json::to_string(&fitted).unwrap().len() <= 20_000);
+    let shown = fitted["data"].as_array().unwrap().len();
+    assert!(shown > 0 && shown < 1000);
+    assert_eq!(fitted["_truncated"]["shown"], shown);
+    assert_eq!(fitted["_truncated"]["total"], 1000);
+    assert!(fitted["_truncated"]["hint"].as_str().unwrap().contains("page"));
+}
+
+#[test]
+fn fit_compacts_list_models_first() {
+    let model = json!({ "id": "a/b", "name": "B", "provider": "a", "media_type": "image", "status": "active", "is_available": true, "tags": ["t"], "description": "d".repeat(2000), "pricing": { "x": 1 } });
+    let fitted = fit("list_models", json!({ "object": "list", "data": vec![model; 100] }), 100_000);
+    let first = &fitted["data"][0];
+    assert_eq!(first["id"], "a/b");
+    assert!(first.get("description").is_none() && first.get("pricing").is_none());
+    assert!(fitted["_compact"].as_str().unwrap().contains("get_model"));
+}

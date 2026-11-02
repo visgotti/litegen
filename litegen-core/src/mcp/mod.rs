@@ -7,6 +7,8 @@
 
 pub mod auth;
 pub mod catalog;
+pub mod content;
+pub mod dispatch;
 pub mod gate;
 pub mod registry;
 pub mod schema;

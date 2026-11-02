@@ -218,6 +218,27 @@ pub async fn signup_cookie(app: &Router) -> String {
 
 /// Create an API key with the master key; returns the raw secret.
 pub async fn create_key(app: &Router, scopes: &str) -> String {
+    create_key_with_id(app, scopes).await.1
+}
+
+/// GET an API path with a bearer token; returns the JSON body (asserting 200).
+pub async fn http_get(app: &Router, path: &str, bearer: &str) -> Value {
+    let req = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("authorization", format!("Bearer {bearer}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 16 * 1024 * 1024).await.unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::OK, "GET {path}: {json}");
+    json
+}
+
+/// Create an API key with the master key; returns `(id, secret)`.
+pub async fn create_key_with_id(app: &Router, scopes: &str) -> (String, String) {
     let body = json!({ "name": format!("mcp-{scopes}"), "scopes": scopes });
     let req = Request::builder()
         .method("POST")
@@ -231,5 +252,5 @@ pub async fn create_key(app: &Router, scopes: &str) -> String {
     let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(status, StatusCode::CREATED, "create key {scopes}: {json}");
-    json["key"].as_str().unwrap().to_string()
+    (json["id"].as_str().unwrap().to_string(), json["key"].as_str().unwrap().to_string())
 }
