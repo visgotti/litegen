@@ -304,6 +304,58 @@ fn generate_image_flattens_body() {
 }
 
 #[test]
+fn nullable_refs_collapse_to_the_referenced_schema() {
+    let doc = openapi_doc();
+    let (schema, _) = tool_schema(&doc, "generate_image");
+    let props = schema["properties"].as_object().unwrap();
+    // OpenAPI: `oneOf: [{"type":"null"}, {"$ref": "ImageBackground"}]`.
+    assert!(props["background"].get("oneOf").is_none(), "{}", props["background"]);
+    assert_eq!(props["background"]["enum"], json!(["transparent", "opaque"]));
+    assert_eq!(props["expand"]["type"], json!("object"));
+    // A client that validates arguments must accept a documented value.
+    let validator = jsonschema::draft202012::new(&Value::Object(schema.clone())).unwrap();
+    let args = json!({ "model": "mock/image-gen", "background": "transparent", "output_format": "png" });
+    assert!(validator.is_valid(&args), "{:?}", validator.iter_errors(&args).map(|e| e.to_string()).collect::<Vec<_>>());
+    assert!(!validator.is_valid(&json!({ "model": "mock/image-gen", "background": 42 })));
+}
+
+/// An empty schema accepts everything: in a `oneOf` it makes every value that
+/// matches another member match two, so the union rejects all valid values.
+fn empty_union_members(value: &Value, path: &str, found: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                if key == "oneOf" || key == "anyOf" {
+                    for (i, member) in child.as_array().into_iter().flatten().enumerate() {
+                        if member.as_object().is_some_and(Map::is_empty) {
+                            found.push(format!("{path}.{key}[{i}]"));
+                        }
+                    }
+                }
+                empty_union_members(child, &format!("{path}.{key}"), found);
+            }
+        }
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                empty_union_members(item, &format!("{path}[{i}]"), found);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn no_union_has_an_empty_member() {
+    let doc = openapi_doc();
+    let mut found = Vec::new();
+    for def in TOOLS {
+        let (schema, _) = build(&doc, def).unwrap();
+        empty_union_members(&Value::Object(schema), def.name, &mut found);
+    }
+    assert!(found.is_empty(), "{} empty union members, e.g. {:?}", found.len(), &found[..found.len().min(5)]);
+}
+
+#[test]
 fn catch_all_ids_say_they_may_contain_slashes() {
     let doc = openapi_doc();
     let (schema, plan) = tool_schema(&doc, "get_model");

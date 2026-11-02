@@ -310,9 +310,9 @@ Quote what generate_image would cost with the same arguments. Generates nothing 
 |---|---|---|---|
 | `model` | string | yes |  |
 | `aspect_ratio` | string | no |  |
-| `background` | one of several shapes | no |  |
+| `background` | one of `transparent`, `opaque` | no | `transparent` for a real alpha channel where the model supports it (`supports_transparent_background`); needs `png` or `webp`. |
 | `directions` | integer | no | A character in 4 or 8 facings, one labelled image each. |
-| `expand` | one of several shapes | no |  |
+| `expand` | object | no | Grow the init image's canvas by this many pixels a side; the model's `expand` spec says how much and whether it only centres. |
 | `extra` | any | no |  |
 | `feather_px` | integer | no | With `preserve_unmasked`: blend from the init at the edit area's edge to the vendor's pixels this many pixels inside it (0, a hard edge, by default; at most 256). |
 | `guidance_scale` | number | no |  |
@@ -322,13 +322,13 @@ Quote what generate_image would cost with the same arguments. Generates nothing 
 | `metadata` | object | no | Your own labels for the job: a map of string values, keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. |
 | `n` | integer | no |  |
 | `negative_prompt` | string | no |  |
-| `output_format` | one of several shapes | no |  |
+| `output_format` | one of `png`, `webp`, `jpeg` | no | The image container to return: one of the model's `capabilities.output_formats`. |
 | `palette` | array of string | no | Colours as `#rrggbb`: every pixel one of them on a model whose palette is forced, a hint elsewhere. |
 | `preserve_unmasked` | boolean | no | Paste the init image's pixels back outside the edit area, so they come back byte-identical from any vendor. |
 | `prompt` | string | no | Whether a prompt is required is decided per model, by its `prompt.required` in `GET /v1/models/{id}` — never by the wire format. |
 | `quality` | string | no |  |
 | `reference_images` | array of object | no |  |
-| `region` | one of several shapes | no |  |
+| `region` | object | no | Edit only this rectangle of the `init` image. |
 | `response_format` | string | no |  |
 | `seed` | integer | no |  |
 | `size` | string | no |  |
@@ -348,10 +348,10 @@ Generate or edit images with any image model LiteGen serves. Returns the finishe
 |---|---|---|---|
 | `model` | string | yes |  |
 | `aspect_ratio` | string | no |  |
-| `background` | one of several shapes | no |  |
+| `background` | one of `transparent`, `opaque` | no | `transparent` for a real alpha channel where the model supports it (`supports_transparent_background`); needs `png` or `webp`. |
 | `directions` | integer | no | A character in 4 or 8 facings, one labelled image each. |
 | `end_user` | string | no | Your own customer's id, so spend and budgets can be tracked per customer (sent as x-litegen-end-user). |
-| `expand` | one of several shapes | no |  |
+| `expand` | object | no | Grow the init image's canvas by this many pixels a side; the model's `expand` spec says how much and whether it only centres. |
 | `extra` | any | no |  |
 | `feather_px` | integer | no | With `preserve_unmasked`: blend from the init at the edit area's edge to the vendor's pixels this many pixels inside it (0, a hard edge, by default; at most 256). |
 | `guidance_scale` | number | no |  |
@@ -362,14 +362,14 @@ Generate or edit images with any image model LiteGen serves. Returns the finishe
 | `metadata` | object | no | Your own labels for the job: a map of string values, keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. |
 | `n` | integer | no |  |
 | `negative_prompt` | string | no |  |
-| `output_format` | one of several shapes | no |  |
+| `output_format` | one of `png`, `webp`, `jpeg` | no | The image container to return: one of the model's `capabilities.output_formats`. |
 | `palette` | array of string | no | Colours as `#rrggbb`: every pixel one of them on a model whose palette is forced, a hint elsewhere. |
 | `preserve_unmasked` | boolean | no | Paste the init image's pixels back outside the edit area, so they come back byte-identical from any vendor. |
 | `preview` | boolean | no | Also return small JPEG previews of the images (longest side 512 px, at most 2). |
 | `prompt` | string | no | Whether a prompt is required is decided per model, by its `prompt.required` in `GET /v1/models/{id}` — never by the wire format. |
 | `quality` | string | no |  |
 | `reference_images` | array of object | no |  |
-| `region` | one of several shapes | no |  |
+| `region` | object | no | Edit only this rectangle of the `init` image. |
 | `response_format` | string | no |  |
 | `seed` | integer | no |  |
 | `size` | string | no |  |
@@ -424,7 +424,7 @@ Quote what generate_3d_model would cost with the same arguments. Generates nothi
 | `fps` | integer | no | Frames per second of the delivered clips. |
 | `ground` | boolean | no | Put the mesh's lowest point at y = 0. |
 | `height_m` | number | no | The delivered mesh's height in metres: litegen scales any mesh it delivers to it, and a rig model whose vendor takes a height gets it too. |
-| `joint_naming` | one of several shapes | no |  |
+| `joint_naming` | one of `vendor`, `vrm`, `mixamo`, `unity`, `unreal` | no | The joint names to deliver the rig with. |
 | `keep_uvs` | boolean | no | Paint the source's own UV layout rather than a new one. |
 | `metadata` | object | no | Your own labels for the job: a map of string values, keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. |
 | `n` | integer | no |  |
@@ -436,14 +436,14 @@ Quote what generate_3d_model would cost with the same arguments. Generates nothi
 | `reference_images` | array of object | no |  |
 | `rig` | boolean | no | Auto-rig: deliver the mesh with a skeleton. |
 | `seed` | integer | no |  |
-| `skeleton` | one of several shapes | no |  |
-| `source_model` | one of several shapes | no |  |
+| `skeleton` | one of `humanoid`, `quadruped`, `hexapod`, `octopod`, `avian`, `serpentine`, `aquatic`, `other` | no | The skeleton to rig for, from the model's `skeleton` enum. |
+| `source_model` | object | no | The mesh an operation (`rig`, `animate`, `texture`, `remesh`, `segment`) works on, required by every model whose task is not `generate`. |
 | `strict` | boolean | no |  |
-| `symmetry` | one of several shapes | no |  |
+| `symmetry` | one of `off`, `auto`, `on` | no | Symmetry handling. |
 | `target_polycount` | integer | no | Approximate triangle budget for the mesh, within the model's declared `target_polycount` range. |
 | `texture` | boolean | no | Texture the mesh, rather than returning bare geometry. |
 | `texture_resolution` | integer | no | A `texture` model's map size in pixels, one of its `texture_resolutions`. |
-| `topology` | one of several shapes | no |  |
+| `topology` | one of `triangle`, `quad` | no | Face topology of the output mesh. |
 
 ### `generate_3d_model`
 
@@ -462,7 +462,7 @@ Start a 3D model generation (text-to-3D, image-to-3D, multiview, rigging and oth
 | `ground` | boolean | no | Put the mesh's lowest point at y = 0. |
 | `height_m` | number | no | The delivered mesh's height in metres: litegen scales any mesh it delivers to it, and a rig model whose vendor takes a height gets it too. |
 | `idempotency_key` | string | no | 1–255 visible ASCII characters. |
-| `joint_naming` | one of several shapes | no |  |
+| `joint_naming` | one of `vendor`, `vrm`, `mixamo`, `unity`, `unreal` | no | The joint names to deliver the rig with. |
 | `keep_uvs` | boolean | no | Paint the source's own UV layout rather than a new one. |
 | `metadata` | object | no | Your own labels for the job: a map of string values, keys of letters, digits, `_`, `.` and `-`, at most 1 KB as JSON. |
 | `n` | integer | no |  |
@@ -474,15 +474,15 @@ Start a 3D model generation (text-to-3D, image-to-3D, multiview, rigging and oth
 | `reference_images` | array of object | no |  |
 | `rig` | boolean | no | Auto-rig: deliver the mesh with a skeleton. |
 | `seed` | integer | no |  |
-| `skeleton` | one of several shapes | no |  |
-| `source_model` | one of several shapes | no |  |
+| `skeleton` | one of `humanoid`, `quadruped`, `hexapod`, `octopod`, `avian`, `serpentine`, `aquatic`, `other` | no | The skeleton to rig for, from the model's `skeleton` enum. |
+| `source_model` | object | no | The mesh an operation (`rig`, `animate`, `texture`, `remesh`, `segment`) works on, required by every model whose task is not `generate`. |
 | `strict` | boolean | no |  |
-| `symmetry` | one of several shapes | no |  |
+| `symmetry` | one of `off`, `auto`, `on` | no | Symmetry handling. |
 | `tags` | array of string | no | Spend tags for reporting (sent as x-litegen-tags). |
 | `target_polycount` | integer | no | Approximate triangle budget for the mesh, within the model's declared `target_polycount` range. |
 | `texture` | boolean | no | Texture the mesh, rather than returning bare geometry. |
 | `texture_resolution` | integer | no | A `texture` model's map size in pixels, one of its `texture_resolutions`. |
-| `topology` | one of several shapes | no |  |
+| `topology` | one of `triangle`, `quad` | no | Face topology of the output mesh. |
 
 ### `get_3d_model_status`
 
@@ -513,7 +513,7 @@ Quote what generate_video would cost with the same arguments. Generates nothing 
 | `model` | string | yes |  |
 | `aspect_ratio` | string | no |  |
 | `audio` | boolean | no | `false` for a silent clip, where the model can leave audio out (`supports_audio_toggle`). |
-| `camera` | one of several shapes | no |  |
+| `camera` | one of `fixed`, `auto` | no | `fixed` for a still camera, where the model takes one (`supports_fixed_camera`, PixelGenie L10). |
 | `direction` | string | no | An `extend`: add before (`backward`) or after (`forward`) the source. |
 | `duration_seconds` | number | no | Absent means the model's own `duration_seconds` default (resolved by `resolve_duration_seconds`), not a fixed 5s: models whose minimum is higher (fal/ltx-2.3, bedrock nova-reel) rejected every… |
 | `extra` | any | no |  |
@@ -527,9 +527,9 @@ Quote what generate_video would cost with the same arguments. Generates nothing 
 | `replace` | string | no | A `retake`'s track: `video`, `audio` or `both`. |
 | `resolution` | string | no |  |
 | `seed` | integer | no |  |
-| `source_video` | one of several shapes | no |  |
+| `source_video` | object | no | The clip an operation (`extend`, `retake`, `video_edit`) works on: a litegen generation id, a URL or base64, as `source_model`. |
 | `strict` | boolean | no |  |
-| `time_range` | one of several shapes | no |  |
+| `time_range` | object | no | A `retake`'s window, or a `video_edit`'s where the model takes one. |
 
 ### `generate_video`
 
@@ -542,7 +542,7 @@ Start a video generation (text-to-video, image-to-video, keyframes, edits). Retu
 | `model` | string | yes |  |
 | `aspect_ratio` | string | no |  |
 | `audio` | boolean | no | `false` for a silent clip, where the model can leave audio out (`supports_audio_toggle`). |
-| `camera` | one of several shapes | no |  |
+| `camera` | one of `fixed`, `auto` | no | `fixed` for a still camera, where the model takes one (`supports_fixed_camera`, PixelGenie L10). |
 | `direction` | string | no | An `extend`: add before (`backward`) or after (`forward`) the source. |
 | `duration_seconds` | number | no | Absent means the model's own `duration_seconds` default (resolved by `resolve_duration_seconds`), not a fixed 5s: models whose minimum is higher (fal/ltx-2.3, bedrock nova-reel) rejected every… |
 | `end_user` | string | no | Your own customer's id, so spend and budgets can be tracked per customer (sent as x-litegen-end-user). |
@@ -558,10 +558,10 @@ Start a video generation (text-to-video, image-to-video, keyframes, edits). Retu
 | `replace` | string | no | A `retake`'s track: `video`, `audio` or `both`. |
 | `resolution` | string | no |  |
 | `seed` | integer | no |  |
-| `source_video` | one of several shapes | no |  |
+| `source_video` | object | no | The clip an operation (`extend`, `retake`, `video_edit`) works on: a litegen generation id, a URL or base64, as `source_model`. |
 | `strict` | boolean | no |  |
 | `tags` | array of string | no | Spend tags for reporting (sent as x-litegen-tags). |
-| `time_range` | one of several shapes | no |  |
+| `time_range` | object | no | A `retake`'s window, or a `video_edit`'s where the model takes one. |
 
 ### `get_video_status`
 
@@ -942,7 +942,7 @@ Register an end user ahead of its first request, optionally with limits.
 | `id` | string | yes |  |
 | `alias` | string | no |  |
 | `blocked` | boolean | no |  |
-| `limits` | one of several shapes | no |  |
+| `limits` | object | no | Optional limits to set in the same call. |
 | `metadata` | any | no |  |
 | `org_id` | string | no | Platform admin only: act on another org. |
 
@@ -1075,10 +1075,10 @@ The body is a full model schema, the same shape as a `models/*.yaml` row, and pa
 | `description` | string | no |  |
 | `docs_url` | string | no | The vendor's own API reference page for the endpoint this model calls — the page to re-read when a field mapping is questioned. |
 | `extra_allowlist` | array of string | no |  |
-| `native_orientation` | one of several shapes | no |  |
+| `native_orientation` | object | no | 3D only: the axes the vendor builds its meshes along, declared once a run has shown them. |
 | `params` | object | no |  |
-| `preserves_unmasked` | one of several shapes | no |  |
-| `ref_inputs` | one of several shapes | no |  |
+| `preserves_unmasked` | one of `exact`, `similar`, `unspecified` | no | Image edits: what the vendor promises about pixels outside the edit area, in its own words. |
+| `ref_inputs` | object | no |  |
 | `replaced_by` | string | no | The catalog model to move to. |
 | `retires_at` | string | no | The vendor's announced shutdown date (`YYYY-MM-DD`). |
 | `tags` | array of string | no |  |
@@ -1643,7 +1643,7 @@ Update user role or active status (requires user:write:any).
 |---|---|---|---|
 | `id` | string | yes | User ID |
 | `is_active` | boolean | no |  |
-| `role` | one of several shapes | no |  |
+| `role` | one of `owner`, `admin`, `member`, `viewer` | no |  |
 
 ### `wait_for_generation`
 

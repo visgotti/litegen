@@ -200,10 +200,12 @@ fn normalize(schema: &Value, components: &Value, seen: &mut Vec<String>) -> Map<
 
     for keyword in ["oneOf", "anyOf"] {
         if let Some(members) = obj.get(keyword).and_then(Value::as_array) {
+            // Drop the null member before normalizing: normalized, `{"type":"null"}`
+            // loses its type and becomes `{}`, which matches every value.
             let kept: Vec<Map<String, Value>> = members
                 .iter()
+                .filter(|m| !is_null_schema(m))
                 .map(|m| normalize(m, components, seen))
-                .filter(|m| m.get("type") != Some(&json!("null")))
                 .collect();
             match kept.len() {
                 0 => {}
@@ -248,6 +250,11 @@ fn normalize(schema: &Value, components: &Value, seen: &mut Vec<String>) -> Map<
         }
     }
     out
+}
+
+/// `{"type": "null"}`: the null member of OpenAPI's nullable union.
+fn is_null_schema(schema: &Value) -> bool {
+    schema.get("type").is_some_and(|t| collapse_type(t).is_none())
 }
 
 /// `["string","null"]` → `"string"`; a lone type stays; several stay a list.
