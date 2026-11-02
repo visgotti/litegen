@@ -13,6 +13,7 @@ pub mod gate;
 pub mod registry;
 pub mod schema;
 pub mod server;
+pub mod wait;
 #[cfg(test)]
 mod tests;
 

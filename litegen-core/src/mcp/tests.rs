@@ -442,3 +442,14 @@ fn fit_compacts_list_models_first() {
     assert!(first.get("description").is_none() && first.get("pricing").is_none());
     assert!(fitted["_compact"].as_str().unwrap().contains("get_model"));
 }
+
+// ─── wait_for_generation ──────────────────────────────────────────────────────
+
+#[test]
+fn status_paths() {
+    use crate::mcp::wait::status_path;
+    assert_eq!(status_path("litegen-vid-1234"), "/v1/videos/litegen-vid-1234");
+    assert_eq!(status_path("litegen-3d-abcd"), "/v1/models3d/litegen-3d-abcd");
+    assert_eq!(status_path("litegen-img-9"), "/v1/generations/litegen-img-9");
+    assert_eq!(status_path("a b/c"), "/v1/generations/a%20b%2Fc", "an id is one path segment");
+}

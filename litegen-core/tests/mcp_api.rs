@@ -454,3 +454,73 @@ async fn three_d_status_links_assets() {
         assert_eq!(link["uri"], asset["url"]);
     }
 }
+
+// ─── Task 8: wait_for_generation ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn wait_completes_video() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let mcp = Mcp::new(&app, "/mcp");
+    let job = mcp.call("generate_video", json!({ "model": "mock/video-gen", "prompt": "waves" })).await;
+    assert!(!is_error(&job), "{job}");
+    let id = job["structuredContent"]["id"].as_str().unwrap().to_string();
+
+    let done = mcp.call("wait_for_generation", json!({ "id": id })).await;
+    assert!(!is_error(&done), "{done}");
+    assert_eq!(done["structuredContent"]["status"], "completed", "{done}");
+    assert!(!blocks(&done, "resource_link").is_empty(), "the video is linked: {done}");
+}
+
+#[tokio::test]
+async fn wait_times_out_politely() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let mcp = Mcp::new(&app, "/mcp");
+    // The mock 3D job needs three polls; one second allows one.
+    let job = mcp.call("generate_3d_model", json!({ "model": "mock/mesh-3d", "prompt": "a fox" })).await;
+    assert!(!is_error(&job), "{job}");
+    let id = job["structuredContent"]["id"].as_str().unwrap().to_string();
+
+    let started = std::time::Instant::now();
+    let pending = mcp.call("wait_for_generation", json!({ "id": id, "timeout_seconds": 1 })).await;
+    assert!(started.elapsed() < std::time::Duration::from_secs(3), "the timeout is honored");
+    assert!(!is_error(&pending), "{pending}");
+    assert!(text_of(&pending).contains("Call wait_for_generation again"), "{pending}");
+}
+
+#[tokio::test]
+async fn wait_sends_progress() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let mcp = Mcp::new(&app, "/mcp");
+    let job = mcp.call("generate_3d_model", json!({ "model": "mock/mesh-3d", "prompt": "a fox" })).await;
+    let id = job["structuredContent"]["id"].as_str().unwrap().to_string();
+
+    let rpc = mcp
+        .rpc(
+            "tools/call",
+            json!({ "name": "wait_for_generation", "arguments": { "id": id, "timeout_seconds": 3 }, "_meta": { "progressToken": "p1" } }),
+        )
+        .await;
+    assert_eq!(rpc.status, StatusCode::OK, "{}", rpc.body);
+    let progress: Vec<&serde_json::Value> = rpc.notifications.iter().filter(|n| n["method"] == "notifications/progress").collect();
+    assert!(!progress.is_empty(), "no progress notifications: {}", rpc.body);
+    for n in &progress {
+        assert_eq!(n["params"]["progressToken"], "p1");
+    }
+    let values: Vec<f64> = progress.iter().filter_map(|n| n["params"]["progress"].as_f64()).collect();
+    assert!(values.windows(2).all(|w| w[1] > w[0]), "progress must increase: {values:?}");
+}
+
+#[tokio::test]
+async fn wait_respects_tenant() {
+    let (app, _db, _dir) = mcp_support::secured_app(Mode::Hosted).await;
+    let owner = mcp_support::org_key(&app, "generate,read").await;
+    let stranger = mcp_support::org_key(&app, "generate,read").await;
+
+    let job = Mcp::new(&app, "/mcp").bearer(&owner).call("generate_video", json!({ "model": "mock/video-gen", "prompt": "waves" })).await;
+    assert!(!is_error(&job), "{job}");
+    let id = job["structuredContent"]["id"].as_str().unwrap().to_string();
+
+    let peek = Mcp::new(&app, "/mcp").bearer(&stranger).call("wait_for_generation", json!({ "id": id, "timeout_seconds": 1 })).await;
+    assert!(is_error(&peek), "another org's job must not be readable: {peek}");
+    assert!(text_of(&peek).starts_with("HTTP 404"), "{peek}");
+}
