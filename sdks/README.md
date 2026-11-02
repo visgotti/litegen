@@ -5,6 +5,10 @@ Types and low-level clients are generated from the OpenAPI spec served by
 `litegen-core` at `/openapi.json`; the ergonomic `LiteGenClient` facade is
 hand-written on top of that.
 
+For AI agents and MCP clients (Claude Code, ChatGPT, Codex, Cursor and
+others), LiteGen also serves the same API as an MCP server: see
+[docs/mcp](../docs/mcp/README.md).
+
 ## Packages
 
 - [`typescript/`](./typescript) — `@litegen/sdk` (npm). Universal (Node 18+,

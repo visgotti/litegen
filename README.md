@@ -14,6 +14,7 @@ LiteGen provides a unified API gateway for all major image and video generation 
 - **Caching** — In-memory cache with configurable TTL to avoid duplicate generations
 - **Cost Tracking** — Per-request cost estimation and aggregate spend analytics
 - **API Key Management** — Create/revoke keys, weighted key pools for rate limit distribution
+- **MCP Server** — Claude Code, ChatGPT, Codex, Cursor, VS Code and other MCP clients use the AI API at `/mcp` and the management API at `/admin/mcp`, with the same permissions as the HTTP API ([docs/mcp](docs/mcp/README.md))
 - **Observability** — Request logging, Prometheus metrics, structured tracing
 - **React Dashboard** — Real-time monitoring, provider health, request logs, cost charts
 - **Easy Config** — YAML config + env vars, auto-discovers provider keys

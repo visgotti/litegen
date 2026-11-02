@@ -3,7 +3,9 @@
 LiteGen's management API covers what the LiteLLM proxy's management endpoints
 do, mapped onto LiteGen's own model: orgs ≈ LiteLLM organizations, apps ≈ teams,
 API keys ≈ virtual keys, and end users ≈ customers. Every endpoint is in
-`/openapi.json`, in both SDKs, and used by the dashboard.
+`/openapi.json`, in both SDKs, and used by the dashboard. Every endpoint is
+also an MCP tool at `/admin/mcp`, LiteLLM's path for its admin MCP; see
+[docs/mcp](mcp/README.md).
 
 ## Key scopes
 

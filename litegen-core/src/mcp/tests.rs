@@ -453,3 +453,27 @@ fn status_paths() {
     assert_eq!(status_path("litegen-img-9"), "/v1/generations/litegen-img-9");
     assert_eq!(status_path("a b/c"), "/v1/generations/a%20b%2Fc", "an id is one path segment");
 }
+
+// ─── The generated tool reference ─────────────────────────────────────────────
+
+#[test]
+fn tools_reference_is_current() {
+    let registry = crate::mcp::registry::Registry::build(&openapi_doc()).unwrap();
+    let rendered = crate::mcp::registry::render_reference(&registry);
+    let committed = include_str!("../../../docs/mcp/tools.md");
+    assert!(
+        rendered == committed,
+        "docs/mcp/tools.md is stale: from litegen-core, run `cargo run --example mcp_tools_doc > ../docs/mcp/tools.md`"
+    );
+}
+
+#[test]
+fn tools_reference_covers_every_tool() {
+    let registry = crate::mcp::registry::Registry::build(&openapi_doc()).unwrap();
+    let rendered = crate::mcp::registry::render_reference(&registry);
+    for spec in registry.specs() {
+        assert!(rendered.contains(&format!("\n### `{}`\n", spec.def.name)), "{} has no section", spec.def.name);
+    }
+    assert!(rendered.contains("`POST /v1/images/generations`"));
+    assert!(rendered.contains("platform admin"), "gates are described in words");
+}
