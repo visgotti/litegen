@@ -5,6 +5,31 @@ do, mapped onto LiteGen's own model: orgs ≈ LiteLLM organizations, apps ≈ te
 API keys ≈ virtual keys, and end users ≈ customers. Every endpoint is in
 `/openapi.json`, in both SDKs, and used by the dashboard.
 
+## Key scopes
+
+An API key holds one or more of three scopes. They split the AI API from the
+management API the way LiteLLM's key types do.
+
+| Scope | Opens |
+|---|---|
+| `generate` | Generating images, video and 3D; cost quotes; job status; mesh conversion; the model catalog (`/v1/models`, `/v1/providers`, `/v1/utils/models3d/formats`) and the key's generations and their assets (`/v1/generations…`) |
+| `read` | The model catalog and generations too, plus request logs, stats, provider health, spend, limits and end users |
+| `admin` | Managing keys, budgets and limits, end users, the audit log and the cache; in single-tenant mode also the gateway's models, providers, routes and settings |
+
+The Keys page offers them as presets:
+
+| Preset | Scopes | LiteLLM key type |
+|---|---|---|
+| AI | `generate` | `llm_api` |
+| Management | `read,admin` | `management` |
+| AI + management | `generate,read,admin` | `default` |
+| Read-only | `read` | `read_only` |
+
+A key created without `scopes` gets `generate,read`. A key never gets a scope
+its creator could not grant: only owners and admins, the master key, or an
+`admin`-scope key may grant `admin`. That check runs when a key is created and when its scopes
+are edited. An unknown scope is a 400.
+
 ## Limits and budgets
 
 Each principal can have one **limits** row: a key, an org, an app, an org

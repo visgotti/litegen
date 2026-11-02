@@ -1,14 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { client } from '../sdk-client';
+import { client, getApiKey } from '../sdk-client';
 import type { ApiKeyInfo, PatchKeyBody, WebhookDelivery } from '@litegen/sdk';
 import { showToast } from '../components/toast-store';
+import { permissionsFor } from '../components/permissions';
+import ScopePresetPicker from '../components/ScopePresetPicker';
 import { useTenant } from '../context/tenant';
+import { PRESETS, presetFor, scopeLabel, type ScopePreset } from './key-scopes';
 
 interface EditState {
   id: string;
   token_quota: string;
   rpm_limit: string;
   scopes: string;
+  preset: ScopePreset;
   webhook_url: string;
 }
 
@@ -19,7 +23,10 @@ interface WebhookResult {
 }
 
 export default function Keys() {
-  const { activeApp } = useTenant();
+  const { activeApp, activeOrgRole } = useTenant();
+  // Who may mint an admin-scope key: the server's rule (KeyWriteAny in the
+  // active org). The API-key login is the master key, which may grant anything.
+  const canGrantAdmin = Boolean(getApiKey()) || permissionsFor(activeOrgRole ?? '').includes('key:write:any');
   const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
   const [createdKey, setCreatedKey] = useState('');
   const [createdPublicId, setCreatedPublicId] = useState('');
@@ -30,7 +37,8 @@ export default function Keys() {
   const [newName, setNewName] = useState('');
   const [newTokenQuota, setNewTokenQuota] = useState('');
   const [newRpmLimit, setNewRpmLimit] = useState('');
-  const [newScopes, setNewScopes] = useState('generate,read');
+  const [newScopes, setNewScopes] = useState(PRESETS.ai.scopes);
+  const [newPreset, setNewPreset] = useState<ScopePreset>('ai');
 
   // Edit state: null = not editing
   const [editState, setEditState] = useState<EditState | null>(null);
@@ -62,7 +70,7 @@ export default function Keys() {
     try {
       const body = {
         name: newName.trim(),
-        scopes: newScopes.trim() || 'generate,read',
+        scopes: newScopes.trim() || PRESETS.ai.scopes,
         ...(newTokenQuota.trim() ? { token_quota: parseFloat(newTokenQuota) } : {}),
         ...(newRpmLimit.trim() ? { rpm_limit: parseFloat(newRpmLimit) } : {}),
       };
@@ -74,7 +82,8 @@ export default function Keys() {
       setNewName('');
       setNewTokenQuota('');
       setNewRpmLimit('');
-      setNewScopes('generate,read');
+      setNewScopes(PRESETS.ai.scopes);
+      setNewPreset('ai');
       load();
     } catch (e: unknown) {
       setError((e as Error).message);
@@ -144,6 +153,7 @@ export default function Keys() {
       token_quota: key.token_quota != null ? String(key.token_quota) : '',
       rpm_limit: key.rpm_limit != null ? String(key.rpm_limit) : '',
       scopes: key.scopes ?? '',
+      preset: presetFor(key.scopes ?? ''),
       webhook_url: key.webhook_url ?? '',
     });
   };
@@ -289,14 +299,29 @@ export default function Keys() {
             onChange={e => setNewRpmLimit(e.target.value)}
           />
         </div>
+        <div style={{ gridColumn: '1 / -1' }}>
+          <label style={{ display: 'block', marginBottom: 4, color: '#8b949e', fontSize: 12 }}>Access</label>
+          <ScopePresetPicker
+            preset={newPreset}
+            canGrantAdmin={canGrantAdmin}
+            testId="new-key-preset"
+            onPick={(preset, scopes) => {
+              setNewPreset(preset);
+              if (scopes !== null) setNewScopes(scopes);
+            }}
+          />
+        </div>
         <div>
           <label style={{ display: 'block', marginBottom: 4, color: '#8b949e', fontSize: 12 }}>Scopes (comma-separated)</label>
           <input
             className="input"
             data-testid="new-key-scopes"
-            placeholder="generate,read"
+            placeholder="generate"
             value={newScopes}
-            onChange={e => setNewScopes(e.target.value)}
+            onChange={e => {
+              setNewScopes(e.target.value);
+              setNewPreset('custom');
+            }}
           />
         </div>
         <button
@@ -328,7 +353,14 @@ export default function Keys() {
                 <tr data-testid={`key-row-${k.id}`}>
                   <td data-testid={`key-name-${k.id}`}>{k.name}</td>
                   <td><code data-testid={`key-public-id-${k.id}`}>{k.public_id ?? `${k.prefix}...`}</code></td>
-                  <td data-testid={`key-scopes-${k.id}`}>{k.scopes || '—'}</td>
+                  <td data-testid={`key-scopes-${k.id}`} title={k.scopes || undefined}>
+                    {k.scopes ? (
+                      <>
+                        {scopeLabel(k.scopes) !== k.scopes && <strong style={{ marginRight: 6 }}>{scopeLabel(k.scopes)}</strong>}
+                        <code style={{ color: '#8b949e' }}>{k.scopes}</code>
+                      </>
+                    ) : '—'}
+                  </td>
                   <td data-testid={`key-quota-${k.id}`}>{formatQuota(k)}</td>
                   <td data-testid={`key-rpm-${k.id}`}>{k.rpm_limit ?? '—'}</td>
                   <td>
@@ -532,14 +564,23 @@ export default function Keys() {
                             onChange={e => setEditState({ ...editState, rpm_limit: e.target.value })}
                           />
                         </div>
+                        <div style={{ gridColumn: '1 / -1' }}>
+                          <label style={{ display: 'block', marginBottom: 4, color: '#8b949e', fontSize: 12 }}>Access</label>
+                          <ScopePresetPicker
+                            preset={editState.preset}
+                            canGrantAdmin={canGrantAdmin}
+                            testId="edit-key-preset"
+                            onPick={(preset, scopes) => setEditState({ ...editState, preset, scopes: scopes ?? editState.scopes })}
+                          />
+                        </div>
                         <div>
                           <label style={{ display: 'block', marginBottom: 4, color: '#8b949e', fontSize: 12 }}>Scopes</label>
                           <input
                             className="input"
                             data-testid="edit-scopes"
-                            placeholder="generate,read"
+                            placeholder="generate"
                             value={editState.scopes}
-                            onChange={e => setEditState({ ...editState, scopes: e.target.value })}
+                            onChange={e => setEditState({ ...editState, scopes: e.target.value, preset: 'custom' })}
                           />
                         </div>
                         <div>
