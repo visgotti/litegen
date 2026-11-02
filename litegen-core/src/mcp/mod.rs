@@ -8,6 +8,7 @@
 pub mod auth;
 pub mod catalog;
 pub mod gate;
+pub mod schema;
 pub mod server;
 #[cfg(test)]
 mod tests;

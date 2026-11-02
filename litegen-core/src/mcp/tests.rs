@@ -218,3 +218,119 @@ async fn gates_match_principals() {
     images_only.toolsets = Some(vec!["images".into()]);
     assert_eq!(visible_names(&images_only, &single), vec!["estimate_image_cost", "generate_image", "segment_image"]);
 }
+
+// ─── Input schemas from the OpenAPI document ──────────────────────────────────
+
+use crate::mcp::schema::{build, ArgPlan, BodyPlan};
+use serde_json::{json, Map, Value};
+
+fn openapi_doc() -> Value {
+    use utoipa::OpenApi;
+    serde_json::to_value(crate::api::openapi::ApiDoc::openapi()).unwrap()
+}
+
+fn tool_schema(doc: &Value, name: &str) -> (Map<String, Value>, ArgPlan) {
+    let def = TOOLS.iter().find(|d| d.name == name).unwrap_or_else(|| panic!("no tool {name}"));
+    build(doc, def).unwrap_or_else(|e| panic!("{name}: {e}"))
+}
+
+#[test]
+fn schemas_have_no_refs_and_object_roots() {
+    let doc = openapi_doc();
+    for def in TOOLS {
+        let (schema, _) = build(&doc, def).unwrap_or_else(|e| panic!("{}: {e}", def.name));
+        let text = serde_json::to_string(&schema).unwrap();
+        assert!(!text.contains("\"$ref\""), "{} still has a $ref", def.name);
+        assert_eq!(schema.get("type"), Some(&json!("object")), "{}", def.name);
+        for keyword in ["allOf", "oneOf", "anyOf"] {
+            assert!(!schema.contains_key(keyword), "{} has a root {keyword}", def.name);
+        }
+    }
+}
+
+#[test]
+fn schemas_validate_against_2020_12() {
+    let doc = openapi_doc();
+    for def in TOOLS {
+        let (schema, _) = build(&doc, def).unwrap();
+        let mut schema = Value::Object(schema);
+        schema["$schema"] = json!("https://json-schema.org/draft/2020-12/schema");
+        if let Err(e) = jsonschema::meta::validate(&schema) {
+            panic!("{} is not valid JSON Schema 2020-12: {e}", def.name);
+        }
+        if let Err(e) = jsonschema::draft202012::new(&schema) {
+            panic!("{} does not compile as JSON Schema 2020-12: {e}", def.name);
+        }
+    }
+}
+
+#[test]
+fn property_names_are_portable() {
+    let portable = |n: &str| (1..=64).contains(&n.len()) && n.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c));
+    let doc = openapi_doc();
+    for def in TOOLS {
+        let (schema, _) = build(&doc, def).unwrap();
+        for name in schema["properties"].as_object().unwrap().keys() {
+            assert!(portable(name), "{}: property {name:?} would make Claude Code drop the tool", def.name);
+        }
+    }
+    assert!(!portable("Idempotency Key"), "the check itself must reject spaces");
+}
+
+#[test]
+fn generate_image_flattens_body() {
+    let doc = openapi_doc();
+    let (schema, plan) = tool_schema(&doc, "generate_image");
+    let props = schema["properties"].as_object().unwrap();
+    for p in ["model", "prompt", "n", "idempotency_key", "end_user", "tags", "preview"] {
+        assert!(props.contains_key(p), "generate_image lacks {p}");
+    }
+    // Exactly what the OpenAPI schema requires: BaseGenerationRequest needs only `model`.
+    assert_eq!(schema["required"], json!(["model"]));
+    // A nullable field (`["string","null"]` in OpenAPI) reaches clients as plain `string`.
+    assert_eq!(props["aspect_ratio"]["type"], json!("string"));
+    match &plan.body {
+        BodyPlan::Flattened(fields) => {
+            assert!(fields.contains(&"prompt".to_string()));
+            assert!(!fields.contains(&"idempotency_key".to_string()), "a header is not a body field");
+        }
+        other => panic!("generate_image body should be flattened, got {other:?}"),
+    }
+    let headers: Vec<(&str, &str)> = plan.headers.iter().map(|(a, h)| (a.as_str(), *h)).collect();
+    assert!(headers.contains(&("idempotency_key", "idempotency-key")), "{headers:?}");
+    assert!(headers.contains(&("end_user", "x-litegen-end-user")), "{headers:?}");
+    assert!(headers.contains(&("tags", "x-litegen-tags")), "{headers:?}");
+    assert_eq!(plan.local, vec!["preview".to_string()], "preview is MCP's own argument, never sent to the API");
+}
+
+#[test]
+fn catch_all_ids_say_they_may_contain_slashes() {
+    let doc = openapi_doc();
+    let (schema, plan) = tool_schema(&doc, "get_model");
+    assert_eq!(plan.path, vec!["id".to_string()]);
+    let description = schema["properties"]["id"]["description"].as_str().unwrap_or("");
+    assert!(description.contains("may contain '/'"), "{description:?}");
+}
+
+#[test]
+fn convert_takes_url_or_base64() {
+    let doc = openapi_doc();
+    let (schema, plan) = tool_schema(&doc, "convert_3d_model");
+    let props = schema["properties"].as_object().unwrap();
+    assert!(props.contains_key("source_url") && props.contains_key("data_base64"), "{props:?}");
+    assert!(plan.binary_in);
+    assert!(plan.binary_out, "the converted mesh comes back as bytes");
+    let (_, json_tool) = tool_schema(&doc, "list_models");
+    assert!(!json_tool.binary_in && !json_tool.binary_out);
+}
+
+#[test]
+fn ai_surface_schema_budget() {
+    let doc = openapi_doc();
+    let total: usize = TOOLS
+        .iter()
+        .filter(|d| d.surfaces.includes(Surface::Ai))
+        .map(|d| serde_json::to_string(&build(&doc, d).unwrap().0).unwrap().len())
+        .sum();
+    assert!(total < 90_000, "the AI tools' schemas total {total} characters");
+}
