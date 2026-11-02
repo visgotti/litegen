@@ -19,7 +19,8 @@ path = "src/lib.rs"
 [dependencies]
 # Web framework
 axum = { version = "0.8", features = ["json", "multipart"] }
-tower = "0.5"
+tower = { version = "0.5", features = ["util"] }
+rmcp = { version = "3.8", default-features = false, features = ["base64", "server", "transport-streamable-http-server"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "timeout"] }
 tokio = { version = "1", features = ["full"] }
 hyper = { version = "1", features = ["full"] }
@@ -133,6 +134,7 @@ openidconnect = "3"
 urlencoding = "2"
 
 [dev-dependencies]
+jsonschema = "0.60"
 tokio-test = "0.4"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

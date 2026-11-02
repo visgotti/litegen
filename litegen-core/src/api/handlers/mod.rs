@@ -3990,7 +3990,7 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .merge(management::routes(csrf_state.clone()))
         .layer(auth_layer);
 
-    axum::Router::new()
+    let api = axum::Router::new()
         .merge(authenticated_routes)
         // Unauth routes — no auth middleware needed, no CSRF
         .merge(unauth_routes)
@@ -4009,7 +4009,16 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         // is unreachable, since ids are minted `litegen-3d-{uuid}`).
         .route("/v1/models3d/assets/{*key}", get(get_model3d_asset_bytes))
         .route("/v1/refs/{token}", get(get_published_ref))
-        .with_state(state)
+        .with_state(state.clone());
+
+    // MCP (`/mcp`, `/admin/mcp`) replays every tool call through `api`, the
+    // router above, so it gets the HTTP API's own checks.
+    if state.router.config.mcp.enabled {
+        let mcp = crate::mcp::router(state, api.clone());
+        api.merge(mcp)
+    } else {
+        api
+    }
 }
 
 // ─── Artifact endpoint ──────────────────────────────────────────────────────

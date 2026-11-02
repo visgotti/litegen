@@ -101,6 +101,32 @@ pub struct AppConfig {
     /// Authentication configuration (password-auth toggle, etc.).
     #[serde(default)]
     pub auth: AuthConfig,
+    /// The MCP endpoints (`/mcp` and `/admin/mcp`).
+    #[serde(default)]
+    pub mcp: McpConfig,
+}
+
+/// LiteGen's MCP server. `/mcp` serves the AI API and `/admin/mcp` the
+/// management API, on LiteLLM's paths.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct McpConfig {
+    /// Serve MCP at all. Off turns both endpoints off.
+    pub enabled: bool,
+    /// Also serve `/admin/mcp` (like LiteLLM's `LITELLM_ENABLE_ADMIN_MCP`).
+    pub admin_enabled: bool,
+    /// Extra `Host` values MCP accepts. Loopback and the host of
+    /// `server.public_base_url` are always accepted; `["*"]` turns the check off.
+    pub allowed_hosts: Vec<String>,
+    /// Extra browser `Origin`s MCP accepts. The CORS origins and the origin of
+    /// `server.public_base_url` are always accepted.
+    pub allowed_origins: Vec<String>,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self { enabled: true, admin_enabled: true, allowed_hosts: Vec::new(), allowed_origins: Vec::new() }
+    }
 }
 
 impl Default for AppConfig {
@@ -122,6 +148,7 @@ impl Default for AppConfig {
             secrets_key: None,
             dev: DevFlags::default(),
             auth: AuthConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 }

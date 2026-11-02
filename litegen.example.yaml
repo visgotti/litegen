@@ -175,3 +175,15 @@ observability:
 #   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 # When unset, only local tracing-subscriber fmt output is used.
 # The service.name attribute is set to "litegen" automatically.
+
+# ─── MCP ─────────────────────────────────────────────────────────────────────
+# LiteGen is an MCP server, on LiteLLM's paths: {public_base_url}/mcp serves
+# the AI API (generate, quote, poll, models, generations) and
+# {public_base_url}/admin/mcp the management API (keys, budgets, end users,
+# spend, logs, orgs, gateway). Tool calls run with the caller's own API-key
+# scopes or account role. Setup per client: docs/mcp/README.md.
+# mcp:
+#   enabled: true             # serve MCP at all
+#   admin_enabled: true       # also serve /admin/mcp
+#   allowed_hosts: []         # extra Host values; loopback and public_base_url's host always pass; ["*"] = no check
+#   allowed_origins: []       # extra browser Origins; the CORS origins and public_base_url's origin always pass
