@@ -1,0 +1,52 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "ai.litegen/litegen",
+  "title": "LiteGen",
+  "description": "Generate images, video and 3D models with any provider; manage keys, budgets and spend.",
+  "version": "0.1.0",
+  "websiteUrl": "https://litegen.ai",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://app.litegen.ai/api/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer token: a LiteGen API key with the AI preset.",
+          "value": "Bearer {api_key}",
+          "isRequired": true,
+          "isSecret": true,
+          "variables": {
+            "api_key": {
+              "description": "LiteGen API key with the AI preset (dashboard → Keys).",
+              "placeholder": "sk_live_...",
+              "isRequired": true,
+              "isSecret": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "streamable-http",
+      "url": "https://app.litegen.ai/api/admin/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer token: a LiteGen API key with the Management preset.",
+          "value": "Bearer {api_key}",
+          "isRequired": true,
+          "isSecret": true,
+          "variables": {
+            "api_key": {
+              "description": "LiteGen API key with the Management preset (dashboard → Keys).",
+              "placeholder": "sk_live_...",
+              "isRequired": true,
+              "isSecret": true
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

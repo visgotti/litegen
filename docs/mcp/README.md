@@ -42,6 +42,19 @@ bearer_token_env_var = "LITEGEN_API_KEY"
 tool_timeout_sec = 600
 ```
 
+**Cursor** (`~/.cursor/mcp.json`)
+
+```json
+{
+  "mcpServers": {
+    "litegen": {
+      "url": "https://app.litegen.ai/api/mcp",
+      "headers": { "Authorization": "Bearer ${env:LITEGEN_API_KEY}" }
+    }
+  }
+}
+```
+
 Then ask: "List LiteGen's image models." Every other client is below.
 
 ## Connect a client
@@ -49,16 +62,16 @@ Then ask: "List LiteGen's image models." Every other client is below.
 | Client | Page | API key | Sign-in (OAuth) |
 |---|---|---|---|
 | Claude Code | [claude-code.md](clients/claude-code.md) | Yes | Yes |
-| Claude Desktop, claude.ai | [claude.md](clients/claude.md) | Limited (request-headers beta) | Yes |
+| Claude Desktop, claude.ai | [claude-apps.md](clients/claude-apps.md) | Limited (request-headers beta) | Yes |
 | ChatGPT | [chatgpt.md](clients/chatgpt.md) | No | Yes |
 | Codex (CLI, IDE extension) | [codex.md](clients/codex.md) | Yes | Yes |
 | VS Code (GitHub Copilot), Visual Studio | [vscode.md](clients/vscode.md) | Yes | Yes |
 | Cursor | [cursor.md](clients/cursor.md) | Yes | Yes |
-| Windsurf | [windsurf.md](clients/windsurf.md) | Yes | See page |
+| Windsurf | [windsurf.md](clients/windsurf.md) | Yes | Yes |
 | Gemini CLI | [gemini-cli.md](clients/gemini-cli.md) | Yes | Yes |
-| Zed | [zed.md](clients/zed.md) | Yes | See page |
-| JetBrains (AI Assistant, Junie) | [jetbrains.md](clients/jetbrains.md) | Yes | See page |
-| Cline, Continue, Goose, GitHub Copilot coding agent, Kiro | [other-clients.md](clients/other-clients.md) | Yes | Varies |
+| Zed | [zed.md](clients/zed.md) | Yes | Yes |
+| JetBrains (Junie, AI Assistant) | [jetbrains.md](clients/jetbrains.md) | Yes | Junie |
+| Cline, Continue, Goose, GitHub Copilot (cloud agent, CLI), Kiro, local-only clients | [other-clients.md](clients/other-clients.md) | Yes | Varies |
 | OpenAI Responses API and Agents SDK, Anthropic Messages API and Claude Agent SDK, MCP SDKs | [apis-and-sdks.md](clients/apis-and-sdks.md) | Yes | Bring your own token |
 | MCP Inspector (testing) | [mcp-inspector.md](clients/mcp-inspector.md) | Yes | Yes |
 
@@ -124,9 +137,21 @@ name is refused with the list of valid ones.
   on some models, so raise your client's tool timeout: each client page says
   how.
 
+## Publishing
+
+[`server.json`](../../server.json) at the repository root describes both
+endpoints for the [MCP Registry](https://modelcontextprotocol.io/registry/remote-servers),
+under the name `ai.litegen/litegen`, so registry-aware clients can offer
+LiteGen and ask for the key. It is **not published**. Publishing a name in
+the `ai.litegen` namespace needs the owner of `litegen.ai` to prove it with a
+DNS record, then `mcp-publisher publish`. Bump `version` in `server.json`
+with each publish.
+
 ## More
 
 - [Permissions](permissions.md): what each key and role can do through MCP.
 - [Tool reference](tools.md): every tool, its arguments and what it needs.
 - [Self-hosting](self-hosting.md): configuration and reverse proxies.
 - [Troubleshooting](troubleshooting.md).
+- [`scripts/mcp-smoke`](../../scripts/mcp-smoke/README.md): a smoke test for
+  a deployment's endpoints.

@@ -1,0 +1,12 @@
+{
+  "name": "litegen-mcp-smoke",
+  "private": true,
+  "type": "module",
+  "description": "Smoke-tests a LiteGen MCP endpoint with the official MCP TypeScript SDK: connect, list tools, list image models, optionally generate an image.",
+  "scripts": {
+    "smoke": "node smoke.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2"
+  }
+}

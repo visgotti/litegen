@@ -12,6 +12,7 @@
     "deploy:provision": "node deploy.js provision",
     "deploy:proxy": "node deploy.js proxy",
     "deploy:landing": "node deploy.js landing",
+    "mcp:smoke": "node scripts/mcp-smoke/smoke.mjs",
     "model-drift": "node scripts/model-drift/check.mjs",
     "test:model-drift": "node --test 'scripts/model-drift/test/*.test.mjs'"
   },
