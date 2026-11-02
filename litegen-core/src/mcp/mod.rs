@@ -131,8 +131,7 @@ pub fn router(state: Arc<AppState>, api: axum::Router) -> axum::Router {
         Some(hosts)
     };
 
-    let http = reqwest::Client::builder().timeout(Duration::from_secs(10)).build().unwrap_or_default();
-    let shared = Arc::new(McpShared { state, api, registry: tool_registry(), http, origins: OriginPolicy::new(origins) });
+    let shared = Arc::new(McpShared { state, api, registry: tool_registry(), http: preview_client(), origins: OriginPolicy::new(origins) });
 
     let mut routes = axum::Router::new();
     if !config.mcp.enabled {
@@ -143,6 +142,13 @@ pub fn router(state: Arc<AppState>, api: axum::Router) -> axum::Router {
         routes = routes.route_service(Surface::Admin.path(), service(Surface::Admin, shared.clone(), hosts));
     }
     routes.layer(axum::middleware::from_fn_with_state(shared, auth::mcp_auth))
+}
+
+/// The client that fetches external images for previews. It never follows a
+/// redirect: a URL passes `validate_public_url` first, and a public host must
+/// not be able to 3xx the fetch into a private address.
+pub(crate) fn preview_client() -> reqwest::Client {
+    crate::util::ssrf::no_redirect_client_with_timeout(Duration::from_secs(10))
 }
 
 fn service(

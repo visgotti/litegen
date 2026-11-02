@@ -495,6 +495,25 @@ fn fit_compacts_list_models_first() {
     assert!(fitted["_compact"].as_str().unwrap().contains("get_model"));
 }
 
+/// `fetch_image` checks a preview URL with `validate_public_url` and then
+/// fetches it; a client that followed redirects would let a public host
+/// 3xx-redirect the fetch into a private address (util::ssrf's contract).
+#[tokio::test]
+async fn preview_client_does_not_follow_redirects() {
+    use wiremock::matchers::path;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    let target = format!("{}/private", server.uri());
+    Mock::given(path("/public"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", target.as_str()))
+        .mount(&server)
+        .await;
+    Mock::given(path("/private")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"secret".to_vec())).mount(&server).await;
+
+    let resp = crate::mcp::preview_client().get(format!("{}/public", server.uri())).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 302, "the preview client followed a redirect");
+}
+
 // ─── wait_for_generation ──────────────────────────────────────────────────────
 
 #[test]
