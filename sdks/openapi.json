@@ -7636,7 +7636,7 @@
                     },
                     "scopes": {
                         "type": "string",
-                        "description": "CSV of scopes (default: \"generate,read\")."
+                        "description": "CSV of scopes (default: \"generate,read\"). `generate`: create generations,\nquote costs, and read the model catalog and the key's generations, so a\n`generate` key is an AI-only key. `read`: read the catalog, generations,\nrequest logs, stats, spend, limits and end users. `admin`: manage keys,\nbudgets, end users and settings. A key gets only scopes its creator may\ngrant."
                     },
                     "token_quota": {
                         "type": [
@@ -14369,7 +14369,8 @@
                         "type": [
                             "string",
                             "null"
-                        ]
+                        ],
+                        "description": "Replace the key's scopes: the same values and the same privilege check\nas on create (an unknown scope is a 400, one the caller may not grant a\n403)."
                     },
                     "token_quota": {
                         "type": [

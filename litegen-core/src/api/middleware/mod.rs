@@ -681,9 +681,15 @@ async fn handle_db_key(
 /// Axum middleware function that checks the `KeyContext` for the required scope.
 /// Returns 403 if the scope is missing, 401 if there's no context.
 pub async fn check_scope(required: Scope, request: Request, next: Next) -> Response {
+    check_any_scope(std::slice::from_ref(&required), request, next).await
+}
+
+/// [`check_scope`] for routes several scopes may call: passes when the context
+/// holds any of `required`.
+pub async fn check_any_scope(required: &[Scope], request: Request, next: Next) -> Response {
     let ctx = request.extensions().get::<KeyContext>().cloned();
     match ctx {
-        Some(ctx) if ctx.scopes.contains(&required) => next.run(request).await,
+        Some(ctx) if required.iter().any(|s| ctx.scopes.contains(s)) => next.run(request).await,
         Some(_) => (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({

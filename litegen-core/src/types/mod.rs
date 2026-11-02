@@ -2153,6 +2153,9 @@ pub struct UpdateApiKeyRequest {
     pub name: Option<String>,
     pub token_quota: Option<f64>,
     pub rpm_limit: Option<u32>,
+    /// Replace the key's scopes: the same values and the same privilege check
+    /// as on create (an unknown scope is a 400, one the caller may not grant a
+    /// 403).
     pub scopes: Option<String>,
     pub webhook_url: Option<String>,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,

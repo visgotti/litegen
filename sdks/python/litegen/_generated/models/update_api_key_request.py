@@ -27,7 +27,9 @@ class UpdateApiKeyRequest:
         is_active (Union[None, Unset, bool]):
         name (Union[None, Unset, str]):
         rpm_limit (Union[None, Unset, int]):
-        scopes (Union[None, Unset, str]):
+        scopes (Union[None, Unset, str]): Replace the key's scopes: the same values and the same privilege check
+            as on create (an unknown scope is a 400, one the caller may not grant a
+            403).
         token_quota (Union[None, Unset, float]):
         webhook_url (Union[None, Unset, str]):
     """

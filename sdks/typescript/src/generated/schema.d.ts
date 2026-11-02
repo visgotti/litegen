@@ -2076,7 +2076,14 @@ export interface components {
              * @description Requests-per-minute cap; None = unlimited.
              */
             rpm_limit?: number | null;
-            /** @description CSV of scopes (default: "generate,read"). */
+            /**
+             * @description CSV of scopes (default: "generate,read"). `generate`: create generations,
+             *     quote costs, and read the model catalog and the key's generations, so a
+             *     `generate` key is an AI-only key. `read`: read the catalog, generations,
+             *     request logs, stats, spend, limits and end users. `admin`: manage keys,
+             *     budgets, end users and settings. A key gets only scopes its creator may
+             *     grant.
+             */
             scopes?: string;
             /**
              * Format: double
@@ -4608,6 +4615,11 @@ export interface components {
             name?: string | null;
             /** Format: int32 */
             rpm_limit?: number | null;
+            /**
+             * @description Replace the key's scopes: the same values and the same privilege check
+             *     as on create (an unknown scope is a 400, one the caller may not grant a
+             *     403).
+             */
             scopes?: string | null;
             /** Format: double */
             token_quota?: number | null;

@@ -2495,7 +2495,12 @@ pub struct CreateApiKeyRequest {
     /// Requests-per-minute cap; None = unlimited.
     #[serde(default)]
     pub rpm_limit: Option<u32>,
-    /// CSV of scopes (default: "generate,read").
+    /// CSV of scopes (default: "generate,read"). `generate`: create generations,
+    /// quote costs, and read the model catalog and the key's generations, so a
+    /// `generate` key is an AI-only key. `read`: read the catalog, generations,
+    /// request logs, stats, spend, limits and end users. `admin`: manage keys,
+    /// budgets, end users and settings. A key gets only scopes its creator may
+    /// grant.
     #[serde(default = "default_key_scopes")]
     pub scopes: String,
     /// Webhook URL for async callbacks.
@@ -3791,7 +3796,7 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
     use axum::routing::{delete, get, patch, post};
     use axum::middleware;
     use super::metrics::metrics_handler;
-    use super::middleware::{auth_middleware, check_scope, csrf_middleware, Scope};
+    use super::middleware::{auth_middleware, check_any_scope, check_scope, csrf_middleware, Scope};
 
     let auth_state = state.clone();
     let csrf_state = state.clone();
@@ -3830,26 +3835,41 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
             csrf_middleware,
         ));
 
-    // Read routes — require Scope::Read
-    let read_routes = axum::Router::new()
+    // AI read routes — the model catalog and the caller's generations. Open to
+    // `generate` as well as `read`, so a `generate` key is a complete AI-only
+    // key (LiteLLM's `llm_api` key type) and `read` stays the scope for the
+    // management reads below.
+    let ai_read_routes = axum::Router::new()
         .route("/v1/models", get(list_models))
         .route("/v1/models/{*id}", get(get_model_schema))
         .route("/v1/providers", get(list_providers))
         .route("/v1/utils/models3d/formats", get(convert::list_model3d_convert_formats))
-        .route("/health", get(health_check))
-        .route("/v1/stats", get(get_stats))
-        .route("/v1/logs", get(get_logs_filtered))
-        .route("/v1/logs/{id}/artifact", get(get_log_artifact))
         .route("/v1/generations", get(list_generations))
         .route("/v1/generations/{id}", get(get_generation))
         .route("/v1/generations/{id}", patch(cancel_generation))
         .route("/v1/generations/{id}/assets", get(list_generation_assets))
         .route("/v1/generations/{id}/assets/{index}", get(get_generation_asset))
         .layer(middleware::from_fn(|req: axum::extract::Request, next: middleware::Next| async {
-            check_scope(Scope::Read, req, next).await
+            check_any_scope(&[Scope::Generate, Scope::Read], req, next).await
         }))
         // CSRF: no-ops for safe methods and Bearer/API-key auth; only enforces
         // on mutating cookie-session requests (e.g. PATCH cancel_generation).
+        .layer(middleware::from_fn_with_state(
+            csrf_state.clone(),
+            csrf_middleware,
+        ));
+
+    // Read routes — require Scope::Read
+    let read_routes = axum::Router::new()
+        .route("/health", get(health_check))
+        .route("/v1/stats", get(get_stats))
+        .route("/v1/logs", get(get_logs_filtered))
+        .route("/v1/logs/{id}/artifact", get(get_log_artifact))
+        .layer(middleware::from_fn(|req: axum::extract::Request, next: middleware::Next| async {
+            check_scope(Scope::Read, req, next).await
+        }))
+        // CSRF: no-ops for safe methods and Bearer/API-key auth; same layer as
+        // the other route groups.
         .layer(middleware::from_fn_with_state(
             csrf_state.clone(),
             csrf_middleware,
@@ -3963,6 +3983,7 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
 
     let authenticated_routes = axum::Router::new()
         .merge(generate_routes)
+        .merge(ai_read_routes)
         .merge(read_routes)
         .merge(admin_routes)
         .merge(auth_required_routes)

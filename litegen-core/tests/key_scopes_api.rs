@@ -1,5 +1,6 @@
-//! API-key scopes over the real route table: who may grant which scope, on
-//! create and on edit.
+//! API-key scopes over the real route table: who may grant which scope (on
+//! create and on edit), and what each scope opens. A `generate` key is an
+//! AI-only key; `read` adds the management reads; `admin` the management writes.
 
 mod harness;
 
@@ -115,6 +116,10 @@ fn message(r: &Reply) -> &str {
     r.body["error"]["message"].as_str().unwrap_or("")
 }
 
+async fn get_with_key(app: &Router, key: &str, path: &str) -> Reply {
+    send(app, "GET", path, None, &[("authorization", &format!("Bearer {key}"))]).await
+}
+
 // ─── (a) edits are privilege-checked like creation ────────────────────────────
 
 #[tokio::test]
@@ -153,4 +158,57 @@ async fn owner_can_edit_to_admin() {
     let r = owner.call(&app, "PATCH", &format!("/v1/keys/{id}"), Some(json!({ "scopes": "admin" }))).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!(r.body["scopes"], "admin");
+}
+
+// ─── (b) what each scope opens ────────────────────────────────────────────────
+
+const AI_READS: [&str; 4] = ["/v1/models", "/v1/providers", "/v1/generations", "/v1/utils/models3d/formats"];
+const MANAGEMENT_READS: [&str; 4] = ["/v1/logs", "/v1/stats", "/v1/spend/report?group_by=day", "/v1/limits"];
+
+#[tokio::test]
+async fn generate_only_key_reads_ai_routes() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (_, key) = owner.create_key(&app, "generate").await;
+
+    for path in AI_READS {
+        let r = get_with_key(&app, &key, path).await;
+        assert_eq!(r.status, StatusCode::OK, "{path}: {:?}", r.body);
+    }
+}
+
+#[tokio::test]
+async fn generate_only_key_has_no_management_reads() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (_, key) = owner.create_key(&app, "generate").await;
+
+    for path in MANAGEMENT_READS {
+        let r = get_with_key(&app, &key, path).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{path}: {:?}", r.body);
+    }
+    for path in ["/v1/logs", "/v1/stats"] {
+        assert_eq!(get_with_key(&app, &key, path).await.body["error"]["code"], "forbidden_scope", "{path}");
+    }
+}
+
+#[tokio::test]
+async fn read_only_key_unchanged() {
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (_, key) = owner.create_key(&app, "read").await;
+
+    for path in AI_READS.iter().chain(MANAGEMENT_READS.iter()) {
+        let r = get_with_key(&app, &key, path).await;
+        assert_eq!(r.status, StatusCode::OK, "{path}: {:?}", r.body);
+    }
+    let generate = send(
+        &app,
+        "POST",
+        "/v1/images/generations",
+        Some(json!({ "model": "mock/image", "prompt": "x" })),
+        &[("authorization", &format!("Bearer {key}"))],
+    )
+    .await;
+    assert_eq!(generate.status, StatusCode::FORBIDDEN, "{:?}", generate.body);
 }
