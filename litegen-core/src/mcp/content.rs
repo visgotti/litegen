@@ -381,7 +381,8 @@ async fn file_result(shared: &McpShared, caller: &Caller, spec: &ToolSpec, args:
             // Too big to embed: point at the asset's own URL.
             let list = dispatch::get(shared, caller, &format!("/v1/generations/{}/assets", urlencoding::encode(&id))).await;
             let listed: Value = serde_json::from_slice(&list.body).unwrap_or(Value::Null);
-            let asset = listed["data"].as_array().into_iter().flatten().find(|a| a["index"].to_string() == index || a["index"].as_str() == Some(index.as_str()));
+            let wanted: Option<u64> = index.parse().ok();
+            let asset = listed["data"].as_array().into_iter().flatten().find(|a| wanted.is_some() && a["index"].as_u64() == wanted);
             let mut content = vec![ContentBlock::text(format!("Asset {index} of {id} is {} MiB, too large to embed; download it from its URL.", size.div_ceil(1024 * 1024)))];
             content.extend(asset.and_then(asset_link));
             CallToolResult::success(content)

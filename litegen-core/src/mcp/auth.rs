@@ -11,6 +11,7 @@ use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use tracing::Instrument;
 
 use super::{McpShared, Surface};
 use crate::api::middleware::{dev_bypass_context, missing_credentials_response, resolve_api_key, KeyContext};
@@ -61,8 +62,9 @@ fn normalize_origin(origin: &str) -> String {
     origin.trim().trim_end_matches('/').to_ascii_lowercase()
 }
 
-/// The `toolsets` query parameter, checked against the endpoint's toolsets.
-fn requested_toolsets(req: &Request, surface: Surface) -> Result<Option<Vec<String>>, Response> {
+/// The `toolsets` query parameter, checked against the endpoint's toolsets;
+/// the error is the message for a 400.
+fn requested_toolsets(req: &Request, surface: Surface) -> Result<Option<Vec<String>>, String> {
     let query = Query::<HashMap<String, String>>::try_from_uri(req.uri()).map(|q| q.0).unwrap_or_default();
     let Some(raw) = query.get("toolsets") else { return Ok(None) };
     let names: Vec<String> = raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
@@ -70,12 +72,7 @@ fn requested_toolsets(req: &Request, surface: Surface) -> Result<Option<Vec<Stri
         return Ok(None);
     }
     if let Some(unknown) = names.iter().find(|n| !surface.toolsets().contains(&n.as_str())) {
-        let message = format!("unknown toolset '{unknown}'; valid toolsets: {}", surface.toolsets().join(", "));
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": { "message": message, "type": "unknown_toolset", "code": "unknown_toolset" } })),
-        )
-            .into_response());
+        return Err(format!("unknown toolset '{unknown}'; valid toolsets: {}", surface.toolsets().join(", ")));
     }
     Ok(Some(names))
 }
@@ -107,7 +104,13 @@ pub async fn mcp_auth(State(shared): State<Arc<McpShared>>, mut req: Request, ne
 
     let toolsets = match requested_toolsets(&req, surface) {
         Ok(t) => t,
-        Err(resp) => return resp,
+        Err(message) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": { "message": message, "type": "unknown_toolset", "code": "unknown_toolset" } })),
+            )
+                .into_response()
+        }
     };
 
     // The API accepts the token with or without the `Bearer ` prefix.
@@ -144,5 +147,50 @@ pub async fn mcp_auth(State(shared): State<Arc<McpShared>>, mut req: Request, ne
         _ => authorization,
     };
     req.extensions_mut().insert(Caller { ctx, kind, authorization, surface, toolsets });
-    next.run(req).await
+
+    // Read the body once to name the JSON-RPC method for metrics and tracing,
+    // then hand it on unchanged.
+    let (parts, body) = req.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, super::MAX_BODY_BYTES).await else {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({ "error": { "message": "The request is over MCP's 16 MiB limit", "type": "payload_too_large", "code": "payload_too_large" } })),
+        )
+            .into_response();
+    };
+    let method = rpc_method(&bytes);
+    let surface_label = match surface {
+        Surface::Ai => "ai",
+        Surface::Admin => "admin",
+    };
+    metrics::counter!("litegen_mcp_requests_total", "surface" => surface_label, "method" => method).increment(1);
+    let span = tracing::info_span!("mcp.request", method, surface = surface_label, caller = ?kind);
+    next.run(Request::from_parts(parts, axum::body::Body::from(bytes))).instrument(span).await
+}
+
+/// The JSON-RPC method a request names, from a fixed list (a client must not
+/// be able to mint metric labels).
+fn rpc_method(body: &[u8]) -> &'static str {
+    const KNOWN: [&str; 14] = [
+        "initialize",
+        "notifications/initialized",
+        "server/discover",
+        "ping",
+        "tools/list",
+        "tools/call",
+        "notifications/cancelled",
+        "resources/list",
+        "resources/templates/list",
+        "resources/read",
+        "prompts/list",
+        "prompts/get",
+        "completion/complete",
+        "subscriptions/listen",
+    ];
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else { return "invalid" };
+    if value.is_array() {
+        return "batch";
+    }
+    let method = value.get("method").and_then(serde_json::Value::as_str).unwrap_or("");
+    KNOWN.iter().find(|m| **m == method).copied().unwrap_or("other")
 }

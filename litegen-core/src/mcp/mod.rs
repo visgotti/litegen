@@ -27,6 +27,9 @@ use crate::api::middleware::AppState;
 use auth::OriginPolicy;
 use registry::Registry;
 
+/// The largest MCP request body: room for a base64-encoded mesh upload.
+pub const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+
 /// The tool registry: built from the OpenAPI document once per process. A
 /// tool whose schema cannot be built stops startup, naming the tool.
 pub fn tool_registry() -> Arc<Registry> {
@@ -153,7 +156,7 @@ fn service(
     let config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
         .with_json_response(true)
-        .with_max_request_body_bytes(16 * 1024 * 1024);
+        .with_max_request_body_bytes(MAX_BODY_BYTES);
     let config = match hosts {
         Some(hosts) => config.with_allowed_hosts(hosts),
         None => config.disable_allowed_hosts(),

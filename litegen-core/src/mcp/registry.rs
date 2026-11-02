@@ -132,9 +132,7 @@ fn openapi_description(doc: &Value, def: &ToolDef) -> Option<String> {
     let op = doc.pointer(&pointer)?;
     let summary = op.get("summary").and_then(Value::as_str).unwrap_or("").trim();
     let description = op.get("description").and_then(Value::as_str).unwrap_or("").trim();
-    let text = if description.is_empty() || description.starts_with(summary) {
-        description.to_string()
-    } else if summary.is_empty() {
+    let text = if description.is_empty() || summary.is_empty() || description.starts_with(summary) {
         description.to_string()
     } else {
         format!("{summary}\n\n{description}")

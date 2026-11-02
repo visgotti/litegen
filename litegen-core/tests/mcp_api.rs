@@ -261,7 +261,7 @@ async fn generate_image_with_mock_returns_data() {
     let first = &result["structuredContent"]["data"][0];
     assert!(first.get("url").is_some() || first.get("b64_json").is_some(), "{result}");
     // The text block carries the same JSON, for clients that read only text.
-    let text: serde_json::Value = serde_json::from_str(&text_of(&result).lines().next().unwrap()).unwrap();
+    let text: serde_json::Value = serde_json::from_str(text_of(&result).lines().next().unwrap()).unwrap();
     assert_eq!(text["model"], result["structuredContent"]["model"]);
 }
 
@@ -523,4 +523,93 @@ async fn wait_respects_tenant() {
     let peek = Mcp::new(&app, "/mcp").bearer(&stranger).call("wait_for_generation", json!({ "id": id, "timeout_seconds": 1 })).await;
     assert!(is_error(&peek), "another org's job must not be readable: {peek}");
     assert!(text_of(&peek).starts_with("HTTP 404"), "{peek}");
+}
+
+// ─── Task 9: protocol edges and observability ─────────────────────────────────
+
+async fn raw(app: &axum::Router, req: Request<Body>) -> (StatusCode, axum::http::HeaderMap, String) {
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024 * 1024).await.unwrap();
+    (status, headers, String::from_utf8_lossy(&bytes).to_string())
+}
+
+#[tokio::test]
+async fn delete_is_405() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let req = Request::builder().method("DELETE").uri("/mcp").header("host", "localhost").body(Body::empty()).unwrap();
+    assert_eq!(raw(&app, req).await.0, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn unsupported_protocol_version_is_400() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let mut mcp = Mcp::new(&app, "/mcp");
+    mcp.protocol = "1999-01-01";
+    let rpc = mcp.rpc("tools/list", json!({})).await;
+    assert_eq!(rpc.status, StatusCode::BAD_REQUEST, "{}", rpc.body);
+}
+
+#[tokio::test]
+async fn json_only_accept_is_406() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": initialize_params() });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("host", "localhost")
+        .header("content-type", "application/json")
+        .header("accept", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    assert_eq!(raw(&app, req).await.0, StatusCode::NOT_ACCEPTABLE);
+}
+
+#[tokio::test]
+async fn sse_has_no_buffering_header() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let mcp = Mcp::new(&app, "/mcp");
+    let job = mcp.call("generate_3d_model", json!({ "model": "mock/mesh-3d", "prompt": "a fox" })).await;
+    let id = job["structuredContent"]["id"].as_str().unwrap().to_string();
+    let rpc = mcp
+        .rpc(
+            "tools/call",
+            json!({ "name": "wait_for_generation", "arguments": { "id": id, "timeout_seconds": 1 }, "_meta": { "progressToken": "p" } }),
+        )
+        .await;
+    let content_type = rpc.headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
+    assert!(content_type.starts_with("text/event-stream"), "progress needs a stream: {content_type}");
+    assert_eq!(rpc.headers.get("x-accel-buffering").and_then(|v| v.to_str().ok()), Some("no"));
+    assert_eq!(rpc.headers.get("cache-control").and_then(|v| v.to_str().ok()), Some("no-cache"));
+}
+
+#[tokio::test]
+async fn big_body_is_413() {
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    let padding = "x".repeat(17 * 1024 * 1024);
+    let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": { "pad": padding } });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("host", "localhost")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-protocol-version", CURRENT)
+        .header("mcp-method", "tools/list")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    assert_eq!(raw(&app, req).await.0, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn metrics_count_calls() {
+    litegen::api::metrics::init_prometheus();
+    let (app, _db, _dir) = mcp_support::app(|_| {}).await;
+    Mcp::new(&app, "/mcp").call("list_models", json!({ "media_type": "video" })).await;
+    let req = Request::builder().method("GET").uri("/metrics").body(Body::empty()).unwrap();
+    let (status, _, text) = raw(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains("litegen_mcp_tool_calls_total"), "{text}");
+    assert!(text.contains("litegen_mcp_requests_total"), "{text}");
 }
