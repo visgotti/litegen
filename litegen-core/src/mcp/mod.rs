@@ -6,7 +6,11 @@
 //! permissions the HTTP API enforces.
 
 pub mod auth;
+pub mod catalog;
+pub mod gate;
 pub mod server;
+#[cfg(test)]
+mod tests;
 
 use std::sync::Arc;
 use std::time::Duration;
