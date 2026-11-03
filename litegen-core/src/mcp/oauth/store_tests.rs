@@ -355,8 +355,8 @@ async fn purge_drops_only_what_expired(db: &dyn DatabaseStore) {
     s.insert_token(&stale).await.unwrap();
     s.insert_token(&live).await.unwrap();
 
-    let removed = s.purge_expired(base).await.unwrap();
-    assert!(removed >= 2, "the old request and the stale token: {removed}");
+    // (No count of what went: another test's purge may take these rows first.)
+    s.purge_expired(base).await.unwrap();
     assert!(s.get_request(&old.id).await.unwrap().is_none());
     assert!(s.get_request(&fresh.id).await.unwrap().is_some());
     assert!(s.get_token(&stale.token_hash).await.unwrap().is_none());
@@ -402,12 +402,14 @@ async fn purge_drops_unused_clients(db: &dyn DatabaseStore) {
     let stale_doc = client(Registration::Cimd, base - Duration::days(2));
     let stale_doc_connected = client(Registration::Cimd, base - Duration::days(2));
     let fresh_doc = client(Registration::Cimd, base - Duration::hours(12));
-    for c in [&abandoned, &newer, &signing_in, &idle, &idle_connected, &recently_used, &stale_doc, &stale_doc_connected, &fresh_doc] {
-        s.upsert_client(c).await.unwrap();
-    }
+    // What refers to a client goes in first: another test's purge may run
+    // at any moment against a shared Postgres database.
     s.insert_request(&request(&signing_in.client_id, base)).await.unwrap();
     s.insert_grant(&grant_in(&org, &app, &idle_connected.client_id, &uid("user"), base - Duration::days(400))).await.unwrap();
     s.insert_grant(&grant_in(&org, &app, &stale_doc_connected.client_id, &uid("user"), base - Duration::days(2))).await.unwrap();
+    for c in [&abandoned, &newer, &signing_in, &idle, &idle_connected, &recently_used, &stale_doc, &stale_doc_connected, &fresh_doc] {
+        s.upsert_client(c).await.unwrap();
+    }
 
     s.purge_expired(base).await.unwrap();
     let kept = |c: &OAuthClient| {
