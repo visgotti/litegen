@@ -156,7 +156,13 @@ pub fn router(state: Arc<AppState>, api: axum::Router) -> axum::Router {
     if config.mcp.admin_enabled {
         routes = mount(routes, Surface::Admin, service(Surface::Admin, shared.clone(), hosts));
     }
-    routes.layer(axum::middleware::from_fn_with_state(shared, auth::mcp_auth))
+    let state = shared.state.clone();
+    let routes = routes.layer(axum::middleware::from_fn_with_state(shared, auth::mcp_auth));
+    if config.mcp.oauth.enabled {
+        routes.merge(oauth::discovery::routes(state))
+    } else {
+        routes
+    }
 }
 
 /// An endpoint at its path and with a trailing slash: people and clients

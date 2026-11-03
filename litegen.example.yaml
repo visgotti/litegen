@@ -187,3 +187,8 @@ observability:
 #   admin_enabled: true       # also serve /admin/mcp
 #   allowed_hosts: []         # extra Host values; loopback and public_base_url's host always pass; ["*"] = no check
 #   allowed_origins: []       # extra browser Origins; the CORS origins and public_base_url's origin always pass
+#   oauth:                    # sign-in for clients that can't send a key (ChatGPT, claude.ai)
+#     enabled: true           # the authorization server; its issuer is server.public_base_url (public HTTPS)
+#     consent_url: null       # default: public_base_url's origin + /oauth/consent (the dashboard page)
+#     access_token_ttl_secs: 3600
+#     refresh_token_ttl_days: 30

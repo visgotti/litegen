@@ -3,7 +3,7 @@
 //! may read (L19: an SDK that shows headers).
 
 use axum::http::{header, HeaderName, HeaderValue, Method};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
 use crate::config::CorsConfig;
 
@@ -36,9 +36,6 @@ pub fn exposed_response_headers() -> Vec<HeaderName> {
     [header::CONTENT_DISPOSITION, header::RETRY_AFTER].into_iter().chain(litegen.map(HeaderName::from_static)).collect()
 }
 
-/// The CORS layer for `config`. `origins_override` (`LITEGEN_CORS_ORIGINS`,
-/// a CSV) replaces the configured origins when set: `*` allows any origin,
-/// none denies every cross-origin call.
 /// The browser origins the deployment allows: `LITEGEN_CORS_ORIGINS` (CSV)
 /// when set, else `cors.allowed_origins`. `"*"` in the list means any origin.
 pub fn configured_origins(config: &CorsConfig, origins_override: Option<&str>) -> Vec<String> {
@@ -48,6 +45,10 @@ pub fn configured_origins(config: &CorsConfig, origins_override: Option<&str>) -
     }
 }
 
+/// The CORS layer for `config`. `origins_override` (`LITEGEN_CORS_ORIGINS`,
+/// a CSV) replaces the configured origins when set: `*` allows any origin,
+/// none denies every cross-origin call. OAuth's public endpoints answer any
+/// origin regardless ([`crate::mcp::oauth::is_public_path`]).
 pub fn layer(config: &CorsConfig, origins_override: Option<&str>) -> CorsLayer {
     let methods = [Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS];
     let origins = configured_origins(config, origins_override);
@@ -57,10 +58,11 @@ pub fn layer(config: &CorsConfig, origins_override: Option<&str>) -> CorsLayer {
         .expose_headers(exposed_response_headers());
     let layer = if origins.iter().any(|o| o == "*") {
         layer.allow_origin(Any)
-    } else if origins.is_empty() {
-        layer
     } else {
-        layer.allow_origin(origins.iter().filter_map(|o| HeaderValue::from_str(o).ok()).collect::<Vec<_>>())
+        let allowed: Vec<HeaderValue> = origins.iter().filter_map(|o| HeaderValue::from_str(o).ok()).collect();
+        layer.allow_origin(AllowOrigin::predicate(move |origin, request| {
+            allowed.contains(origin) || crate::mcp::oauth::is_public_path(request.uri.path())
+        }))
     };
     if config.allow_credentials {
         layer.allow_credentials(true)
@@ -141,5 +143,36 @@ mod tests {
         assert!(denied.headers().get("access-control-allow-origin").is_none());
         let allowed = get(app.layer(layer(&config, Some(&format!("https://other.example, {ORIGIN}"))))).await;
         assert_eq!(allowed.headers()["access-control-allow-origin"], ORIGIN);
+    }
+
+    #[tokio::test]
+    async fn any_origin_may_use_the_oauth_endpoints_and_nothing_else() {
+        // An MCP client in a browser (MCP Inspector) signs in from its own origin.
+        let elsewhere = "http://localhost:6274";
+        let config = CorsConfig { allowed_origins: vec![ORIGIN.into()], allow_credentials: true };
+        let ok = || axum::routing::post(|| async { "ok" }).get(|| async { "ok" });
+        let app = axum::Router::new()
+            .route("/oauth/register", ok())
+            .route("/oauth/token", ok())
+            .route("/.well-known/oauth-authorization-server", ok())
+            .route("/oauth/authorize", ok())
+            .route("/v1/x", ok())
+            .layer(layer(&config, None));
+        let preflight = |path: &str| {
+            Request::options(path)
+                .header("origin", elsewhere)
+                .header("access-control-request-method", "POST")
+                .header("access-control-request-headers", "content-type")
+                .body(Body::empty())
+                .unwrap()
+        };
+        for path in ["/oauth/register", "/oauth/token", "/.well-known/oauth-authorization-server"] {
+            let resp = app.clone().oneshot(preflight(path)).await.unwrap();
+            assert_eq!(resp.headers().get("access-control-allow-origin").map(|v| v.to_str().unwrap()), Some(elsewhere), "{path}");
+        }
+        for path in ["/v1/x", "/oauth/authorize"] {
+            let resp = app.clone().oneshot(preflight(path)).await.unwrap();
+            assert!(resp.headers().get("access-control-allow-origin").is_none(), "{path} stays closed to other origins");
+        }
     }
 }

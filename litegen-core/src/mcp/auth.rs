@@ -13,8 +13,9 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use tracing::Instrument;
 
+use super::oauth::discovery;
 use super::{McpShared, Surface};
-use crate::api::middleware::{dev_bypass_context, missing_credentials_response, resolve_api_key, KeyContext};
+use crate::api::middleware::{dev_bypass_context, missing_credentials_response, resolve_api_key, AppState, KeyContext};
 
 /// How the caller authenticated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,17 +78,22 @@ fn requested_toolsets(req: &Request, surface: Surface) -> Result<Option<Vec<Stri
     Ok(Some(names))
 }
 
-/// 401 that tells an MCP client to authenticate, with the API's JSON error.
-pub fn challenge(_surface: Surface, body: Option<Response>) -> Response {
+/// 401 that tells an MCP client on `path` how to authenticate (see
+/// [`discovery::challenge_header`]), with the API's JSON error. `error` names
+/// why a token was refused.
+pub fn challenge(state: &AppState, path: &str, body: Option<Response>, error: Option<&str>) -> Response {
     let mut resp = body.unwrap_or_else(missing_credentials_response);
     *resp.status_mut() = StatusCode::UNAUTHORIZED;
-    resp.headers_mut().insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer realm=\"litegen\""));
+    if let Ok(value) = HeaderValue::from_str(&discovery::challenge_header(state, path, error)) {
+        resp.headers_mut().insert(header::WWW_AUTHENTICATE, value);
+    }
     resp
 }
 
 /// Authenticate an MCP request: Origin, then `?toolsets=`, then credentials.
 pub async fn mcp_auth(State(shared): State<Arc<McpShared>>, mut req: Request, next: Next) -> Response {
-    let Some(surface) = Surface::from_path(req.uri().path()) else {
+    let path = req.uri().path().to_string();
+    let Some(surface) = Surface::from_path(&path) else {
         return next.run(req).await;
     };
 
@@ -133,12 +139,12 @@ pub async fn mcp_auth(State(shared): State<Arc<McpShared>>, mut req: Request, ne
                 };
                 (ctx, kind)
             }
-            Err(resp) if resp.status() == StatusCode::UNAUTHORIZED => return challenge(surface, Some(resp)),
+            Err(resp) if resp.status() == StatusCode::UNAUTHORIZED => return challenge(&shared.state, &path, Some(resp), None),
             Err(resp) => return resp,
         },
         None => match dev_bypass_context(&shared.state) {
             Some(ctx) => (ctx, CallerKind::Dev),
-            None => return challenge(surface, None),
+            None => return challenge(&shared.state, &path, None, None),
         },
     };
 
@@ -159,12 +165,8 @@ pub async fn mcp_auth(State(shared): State<Arc<McpShared>>, mut req: Request, ne
             .into_response();
     };
     let method = rpc_method(&bytes);
-    let surface_label = match surface {
-        Surface::Ai => "ai",
-        Surface::Admin => "admin",
-    };
-    metrics::counter!("litegen_mcp_requests_total", "surface" => surface_label, "method" => method).increment(1);
-    let span = tracing::info_span!("mcp.request", method, surface = surface_label, caller = ?kind);
+    metrics::counter!("litegen_mcp_requests_total", "surface" => surface.as_str(), "method" => method).increment(1);
+    let span = tracing::info_span!("mcp.request", method, surface = surface.as_str(), caller = ?kind);
     next.run(Request::from_parts(parts, axum::body::Body::from(bytes))).instrument(span).await
 }
 

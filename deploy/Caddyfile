@@ -17,6 +17,12 @@ litegen.ai {
 }
 
 app.litegen.ai {
+    # MCP OAuth discovery at the root, where clients derive it from the
+    # endpoint URL (RFC 9728 / RFC 8414): /.well-known/oauth-protected-resource/api/mcp
+    # and /.well-known/oauth-authorization-server/api. Not stripped.
+    handle /.well-known/oauth-* {
+        reverse_proxy litegen:4000
+    }
     handle_path /api/* {
         reverse_proxy litegen:4000
     }

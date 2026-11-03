@@ -121,11 +121,40 @@ pub struct McpConfig {
     /// Extra browser `Origin`s MCP accepts. The CORS origins and the origin of
     /// `server.public_base_url` are always accepted.
     pub allowed_origins: Vec<String>,
+    /// Sign-in for clients that cannot send an API key (ChatGPT, claude.ai).
+    pub oauth: McpOAuthConfig,
 }
 
 impl Default for McpConfig {
     fn default() -> Self {
-        Self { enabled: true, admin_enabled: true, allowed_hosts: Vec::new(), allowed_origins: Vec::new() }
+        Self {
+            enabled: true,
+            admin_enabled: true,
+            allowed_hosts: Vec::new(),
+            allowed_origins: Vec::new(),
+            oauth: McpOAuthConfig::default(),
+        }
+    }
+}
+
+/// LiteGen as the OAuth 2.1 authorization server for its MCP endpoints. The
+/// issuer is `server.public_base_url`, which must be the public HTTPS URL for
+/// ChatGPT and claude.ai to sign in.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct McpOAuthConfig {
+    /// Serve the discovery documents and the authorization server.
+    pub enabled: bool,
+    /// The dashboard's consent page. Default: the origin of
+    /// `server.public_base_url` + `/oauth/consent`.
+    pub consent_url: Option<String>,
+    pub access_token_ttl_secs: u64,
+    pub refresh_token_ttl_days: u64,
+}
+
+impl Default for McpOAuthConfig {
+    fn default() -> Self {
+        Self { enabled: true, consent_url: None, access_token_ttl_secs: 3600, refresh_token_ttl_days: 30 }
     }
 }
 
