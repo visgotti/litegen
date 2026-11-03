@@ -153,6 +153,9 @@ use utoipa::OpenApi;
         crate::api::handlers::management::admin::delete_routes,
         crate::api::handlers::management::admin::get_settings,
         crate::api::handlers::management::admin::put_settings,
+        crate::mcp::oauth::authorize::get_request,
+        crate::mcp::oauth::authorize::approve_request,
+        crate::mcp::oauth::authorize::deny_request,
     ),
     components(schemas(
         // Request / response types (from `types`)
@@ -358,6 +361,12 @@ use utoipa::OpenApi;
         crate::management::types::GatewaySettingsView,
         crate::api::handlers::management::DeletedResponse,
         crate::api::handlers::management::limits::KeyActiveResponse,
+        crate::mcp::oauth::authorize::OAuthRequestView,
+        crate::mcp::oauth::authorize::OAuthClientView,
+        crate::mcp::oauth::authorize::OAuthOrgChoice,
+        crate::mcp::oauth::authorize::OAuthAppChoice,
+        crate::mcp::oauth::authorize::ApproveOAuthRequest,
+        crate::mcp::oauth::authorize::OAuthRedirect,
     )),
     tags(
         (name = "Images", description = "Image generation endpoints"),
@@ -379,6 +388,7 @@ use utoipa::OpenApi;
         (name = "End Users", description = "End users (your callers' customers): tracking, blocking and per-end-user budgets"),
         (name = "Spend", description = "Spend reports and the attributed request log"),
         (name = "Gateway", description = "Gateway admin: runtime models, provider configs, routing and settings"),
+        (name = "OAuth", description = "Sign-in for MCP clients: the consent page's requests and the apps a person has connected"),
     )
 )]
 pub struct ApiDoc;

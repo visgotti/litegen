@@ -47,7 +47,7 @@ fn every_openapi_operation_is_a_tool_or_excluded() {
     stale.sort();
     assert!(stale.is_empty(), "catalog rows naming operations the API does not have: {stale:?}");
     assert_eq!(TOOLS.len(), 112);
-    assert_eq!(EXCLUDED.len(), 20);
+    assert_eq!(EXCLUDED.len(), 23);
 }
 
 fn portable_tool_name(name: &str) -> bool {

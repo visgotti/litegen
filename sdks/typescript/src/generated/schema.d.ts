@@ -1237,6 +1237,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/oauth/requests/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/oauth/requests/{id} — A pending sign-in request, for the consent page. */
+        get: operations["get_request"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/oauth/requests/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/oauth/requests/{id}/approve — Approve a sign-in request. */
+        post: operations["approve_request"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/oauth/requests/{id}/deny": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /v1/oauth/requests/{id}/deny — Deny a sign-in request. */
+        post: operations["deny_request"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/orgs": {
         parameters: {
             query?: never;
@@ -1911,6 +1962,14 @@ export interface components {
             status: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        /** @description The person's approval. */
+        ApproveOAuthRequest: {
+            /** @description The app the app acts in; the org's first app when omitted. */
+            app_id?: string | null;
+            org_id: string;
+            /** @description A subset of the requested scopes that the person's role can grant. */
+            scopes: string[];
         };
         /** @description One audit log entry recording an admin action. */
         AuditLogEntry: {
@@ -3332,6 +3391,52 @@ export interface components {
              *     keeps its source's axes.
              */
             up: string;
+        };
+        OAuthAppChoice: {
+            id: string;
+            name: string;
+        };
+        /** @description The app asking to sign in. */
+        OAuthClientView: {
+            client_id: string;
+            client_uri?: string | null;
+            logo_uri?: string | null;
+            name: string;
+            /** @description The host the browser is sent back to after the decision. */
+            redirect_host: string;
+            /** @description `cimd`: identified by its metadata document's URL. `dcr`: registered here. */
+            registration: string;
+        };
+        /** @description An org the person may approve the request in. */
+        OAuthOrgChoice: {
+            apps: components["schemas"]["OAuthAppChoice"][];
+            /** @description The requested scopes the role can grant: what it could give an API key. */
+            grantable_scopes: string[];
+            id: string;
+            name: string;
+            /** @description The person's role in the org. */
+            role: string;
+        };
+        /** @description Where to send the browser next. */
+        OAuthRedirect: {
+            /** @description The app's redirect URI, carrying the code or the error, `state` and `iss`. */
+            redirect_to: string;
+        };
+        /** @description A pending sign-in request, as the consent page shows it. */
+        OAuthRequestView: {
+            client: components["schemas"]["OAuthClientView"];
+            /** Format: date-time */
+            expires_at: string;
+            id: string;
+            /**
+             * @description The person's orgs, each with its apps and the requested scopes their
+             *     role there lets them grant.
+             */
+            orgs: components["schemas"]["OAuthOrgChoice"][];
+            /** @description The scopes the app asked for, all of one endpoint. */
+            requested_scopes: string[];
+            /** @description The endpoint the grant would be for: `ai` (`/mcp`) or `admin` (`/admin/mcp`). */
+            surface: string;
         };
         OrgAllowedModels: {
             models: string[];
@@ -8117,6 +8222,178 @@ export interface operations {
             };
             /** @description Not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_request: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The request id from the consent page's `request` parameter */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The request, the app and the orgs the person can approve it in */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OAuthRequestView"];
+                };
+            };
+            /** @description No dashboard session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unknown or expired */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Already approved or denied */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    approve_request: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The request id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveOAuthRequest"];
+            };
+        };
+        responses: {
+            /** @description Send the browser to `redirect_to`: the app's redirect URI with an authorization code */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OAuthRedirect"];
+                };
+            };
+            /** @description No scopes, or an app outside the org */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description No dashboard session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description `not_a_member` of the org, or `scope_not_grantable` by the person's role there */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unknown or expired */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Already approved or denied */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deny_request: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The request id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Send the browser to `redirect_to`: the app's redirect URI with `error=access_denied` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OAuthRedirect"];
+                };
+            };
+            /** @description No dashboard session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unknown or expired */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Already approved or denied */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

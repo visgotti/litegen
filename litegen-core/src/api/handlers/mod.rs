@@ -3947,6 +3947,11 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
             "/v1/apps/{app_id}/allowed-models",
             get(orgs::get_app_allowed_models).put(orgs::put_app_allowed_models),
         )
+        // MCP OAuth consent: the dashboard's consent page reads a sign-in
+        // request and records the signed-in person's decision.
+        .route("/v1/oauth/requests/{id}", get(crate::mcp::oauth::authorize::get_request))
+        .route("/v1/oauth/requests/{id}/approve", post(crate::mcp::oauth::authorize::approve_request))
+        .route("/v1/oauth/requests/{id}/deny", post(crate::mcp::oauth::authorize::deny_request))
         .layer(middleware::from_fn_with_state(
             csrf_state.clone(),
             csrf_middleware,

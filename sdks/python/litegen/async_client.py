@@ -99,6 +99,7 @@ class AsyncLiteGenClient:
         self.end_users = _AsyncEndUsers(self)
         self.spend = _AsyncSpend(self)
         self.admin = _AsyncAdmin(self)
+        self.oauth = _AsyncOAuth(self)
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -887,3 +888,22 @@ class _AsyncAdmin:
         self.providers = _AsyncAdminProviders(client)
         self.routes = _AsyncAdminRoutes(client)
         self.settings = _AsyncAdminSettings(client)
+
+
+class _AsyncOAuth:
+    """The MCP OAuth consent page's API, for a signed-in dashboard session: read
+    a sign-in request, then approve or deny it and send the browser to the
+    returned ``redirect_to``."""
+
+    def __init__(self, client: AsyncLiteGenClient) -> None:
+        self._c = client
+
+    async def get_request(self, request_id: str) -> Any:
+        return await self._c._request("GET", f"/v1/oauth/requests/{_q(request_id)}")
+
+    async def approve_request(self, request_id: str, *, org_id: str, scopes: list[str], app_id: str | None = None) -> Any:
+        body = _drop_none({"org_id": org_id, "app_id": app_id, "scopes": scopes})
+        return await self._c._request("POST", f"/v1/oauth/requests/{_q(request_id)}/approve", json=body)
+
+    async def deny_request(self, request_id: str) -> Any:
+        return await self._c._request("POST", f"/v1/oauth/requests/{_q(request_id)}/deny")

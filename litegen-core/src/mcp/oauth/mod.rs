@@ -4,6 +4,7 @@
 //! on one endpoint only. ChatGPT and most claude.ai users cannot send an API
 //! key, so for them this is the only way in.
 
+pub mod authorize;
 pub mod clients;
 pub mod crypto;
 pub mod discovery;
@@ -17,7 +18,7 @@ mod tests;
 use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::Router;
 
 use crate::api::middleware::AppState;
@@ -42,6 +43,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
     let shared = Arc::new(OAuthShared { state: state.clone(), fetcher: Arc::new(PublicFetcher) });
     Router::new()
         .route("/oauth/register", post(clients::register).layer(DefaultBodyLimit::max(clients::REGISTER_MAX_BYTES)))
+        .route("/oauth/authorize", get(authorize::authorize))
         .with_state(shared)
         .merge(discovery::routes(state))
 }

@@ -55,6 +55,10 @@ type TransferOwnerRequest = Schemas["TransferOwnerRequest"];
 type AccountUser = Schemas["AccountUser"];
 type PatchAccountRequest = Schemas["PatchAccountRequest"];
 type SessionInfo = Schemas["SessionInfo"];
+// MCP OAuth consent
+export type OAuthRequestView = Schemas["OAuthRequestView"];
+export type ApproveOAuthRequest = Schemas["ApproveOAuthRequest"];
+export type OAuthRedirect = Schemas["OAuthRedirect"];
 // Tenancy (orgs / apps / members / provider credentials)
 type OrgView = Schemas["OrgView"];
 type OrgSummary = Schemas["OrgSummary"];
@@ -538,6 +542,8 @@ export class LiteGenClient {
   readonly spend: SpendNamespace;
   /** Gateway admin: runtime models, provider configs, routes and settings. */
   readonly admin: AdminNamespace;
+  /** Sign-in for MCP clients: the consent page's requests. */
+  readonly oauth: OAuthNamespace;
 
   constructor(opts: LiteGenClientOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? "http://localhost:4000").replace(/\/$/, "");
@@ -572,6 +578,7 @@ export class LiteGenClient {
     this.endUsers = new EndUsersNamespace(this);
     this.spend = new SpendNamespace(this);
     this.admin = new AdminNamespace(this);
+    this.oauth = new OAuthNamespace(this);
 
     this.activeOrgId = opts.activeOrgId;
     this.activeAppId = opts.activeAppId;
@@ -1396,6 +1403,25 @@ class AccountNamespace {
       undefined,
       signal,
     );
+  }
+}
+
+/**
+ * The MCP OAuth consent page's API, for a signed-in dashboard session: read a
+ * sign-in request, then approve or deny it and send the browser to the
+ * returned `redirect_to`.
+ */
+class OAuthNamespace {
+  constructor(private readonly client: LiteGenClient) {}
+
+  getRequest(id: string, signal?: AbortSignal): Promise<OAuthRequestView> {
+    return this.client.request("GET", `/v1/oauth/requests/${encodeURIComponent(id)}`, undefined, signal);
+  }
+  approveRequest(id: string, body: ApproveOAuthRequest, signal?: AbortSignal): Promise<OAuthRedirect> {
+    return this.client.request("POST", `/v1/oauth/requests/${encodeURIComponent(id)}/approve`, body, signal);
+  }
+  denyRequest(id: string, signal?: AbortSignal): Promise<OAuthRedirect> {
+    return this.client.request("POST", `/v1/oauth/requests/${encodeURIComponent(id)}/deny`, undefined, signal);
   }
 }
 

@@ -1279,6 +1279,58 @@ def test_gateway_admin(master_client, owner, base_url):
 
 
 # =============================================================================
+# oauth: the MCP consent page's API  (owner.session)
+# =============================================================================
+from urllib.parse import parse_qs, urlsplit  # noqa: E402
+
+from litegen._generated.api.o_auth import approve_request, deny_request, get_request  # noqa: E402
+from litegen._generated.models import ApproveOAuthRequest  # noqa: E402
+
+
+def _oauth_request(base_url: str) -> str:
+    """Register an MCP client and start its sign-in; returns the pending request id."""
+    with httpx.Client(base_url=base_url, follow_redirects=False, timeout=30) as hc:
+        reg = hc.post("/oauth/register", json={"redirect_uris": ["http://127.0.0.1/callback"], "client_name": "IT client"})
+        assert reg.status_code == 201, reg.text
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(b"an-integration-test-code-verifier").digest()).rstrip(b"=").decode()
+        r = hc.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": reg.json()["client_id"],
+                "redirect_uri": "http://127.0.0.1:5555/callback",
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": "it",
+                "scope": "ai:read",
+            },
+        )
+    assert r.status_code == 302, r.text
+    return parse_qs(urlsplit(r.headers["location"]).query)["request"][0]
+
+
+def test_oauth_consent(base_url, owner):
+    request_id = _oauth_request(base_url)
+    view = _ok(get_request.sync_detailed(id=request_id, client=owner.session), 200)
+    EXERCISED.add("get_request")
+    assert view.parsed.surface == "ai"
+    assert view.parsed.requested_scopes == ["ai:read"]
+
+    approved = _ok(
+        approve_request.sync_detailed(
+            id=request_id, client=owner.session, body=ApproveOAuthRequest(org_id=owner.org_id, scopes=["ai:read"])
+        ),
+        200,
+    )
+    EXERCISED.add("approve_request")
+    assert parse_qs(urlsplit(approved.parsed.redirect_to).query)["code"]
+
+    denied = _ok(deny_request.sync_detailed(id=_oauth_request(base_url), client=owner.session), 200)
+    EXERCISED.add("deny_request")
+    assert parse_qs(urlsplit(denied.parsed.redirect_to).query)["error"] == ["access_denied"]
+
+
+# =============================================================================
 # COVERAGE GUARANTEE
 # =============================================================================
 def _discover_endpoint_modules() -> tuple[set[str], int]:
@@ -1308,9 +1360,9 @@ def test_every_generated_endpoint_is_covered(base_url):
 
     Compares EXERCISED (populated by every other test) against the discovered
     universe of endpoint module names, and independently asserts the raw module
-    file count is 132. Both `transfer_owner` modules are exercised
+    file count is 135. Both `transfer_owner` modules are exercised
     (organizations + users); they share a bare name, so the deduped name set has
-    131 entries while the file count is 132.
+    134 entries while the file count is 135.
 
     Takes `base_url` only so it skips with the rest of the suite when the binary
     isn't built: without the binary nothing populates EXERCISED, and this would
@@ -1324,6 +1376,6 @@ def test_every_generated_endpoint_is_covered(base_url):
     unexpected = EXERCISED - discovered
     assert not missing, f"{len(missing)} endpoint(s) never exercised: {sorted(missing)}"
     assert not unexpected, f"recorded names not found in generated API: {sorted(unexpected)}"
-    # 132 endpoint module files in total (131 unique names + duplicate transfer_owner).
-    assert file_count == 132, f"expected 132 endpoint module files, found {file_count}"
-    assert len(discovered) == 131, f"expected 131 unique names, found {len(discovered)}"
+    # 135 endpoint module files in total (134 unique names + duplicate transfer_owner).
+    assert file_count == 135, f"expected 135 endpoint module files, found {file_count}"
+    assert len(discovered) == 134, f"expected 134 unique names, found {len(discovered)}"

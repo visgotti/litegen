@@ -58,7 +58,7 @@ fn internal_error(message: &str) -> Response {
 /// necessarily the session's active org). Fire-and-forget: a failed insert is
 /// logged, never surfaced to the caller. Mirrors `super::log_audit` but takes an
 /// explicit target org so org-management actions are recoverable per-tenant.
-fn log_org_audit(
+pub(crate) fn log_org_audit(
     state: &AppState,
     ctx: &KeyContext,
     org_id: &str,

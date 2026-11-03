@@ -95,6 +95,7 @@ class LiteGenClient:
         self.end_users = _EndUsersNamespace(self)
         self.spend = _SpendNamespace(self)
         self.admin = _AdminNamespace(self)
+        self.oauth = _OAuthNamespace(self)
 
     def close(self) -> None:
         self._http.close()
@@ -1026,3 +1027,22 @@ class _AdminNamespace:
         self.providers = _AdminProvidersNamespace(client)
         self.routes = _AdminRoutesNamespace(client)
         self.settings = _AdminSettingsNamespace(client)
+
+
+class _OAuthNamespace:
+    """The MCP OAuth consent page's API, for a signed-in dashboard session: read
+    a sign-in request, then approve or deny it and send the browser to the
+    returned ``redirect_to``."""
+
+    def __init__(self, client: LiteGenClient) -> None:
+        self._c = client
+
+    def get_request(self, request_id: str) -> Any:
+        return self._c._request("GET", f"/v1/oauth/requests/{_q(request_id)}")
+
+    def approve_request(self, request_id: str, *, org_id: str, scopes: list[str], app_id: str | None = None) -> Any:
+        body = _drop_none({"org_id": org_id, "app_id": app_id, "scopes": scopes})
+        return self._c._request("POST", f"/v1/oauth/requests/{_q(request_id)}/approve", json=body)
+
+    def deny_request(self, request_id: str) -> Any:
+        return self._c._request("POST", f"/v1/oauth/requests/{_q(request_id)}/deny")

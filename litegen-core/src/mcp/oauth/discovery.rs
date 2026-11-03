@@ -40,6 +40,42 @@ pub fn scopes(surface: Surface) -> &'static [&'static str] {
     }
 }
 
+/// What an RFC 8707 `resource` parameter names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceTarget {
+    /// One endpoint's URL (a trailing slash allowed).
+    Endpoint(Surface),
+    /// A URL that only leads up to the endpoints, such as the bare origin
+    /// ChatGPT sends: the scopes decide.
+    Prefix,
+    /// Not a resource this server serves.
+    Foreign,
+}
+
+pub fn resource_target(state: &AppState, resource: &str) -> ResourceTarget {
+    let wanted = resource.strip_suffix('/').unwrap_or(resource);
+    let endpoints: Vec<(Surface, String)> = surfaces(state).into_iter().map(|s| (s, resource_url(state, s))).collect();
+    if let Some((surface, _)) = endpoints.iter().find(|(_, url)| *url == wanted) {
+        ResourceTarget::Endpoint(*surface)
+    } else if endpoints.iter().any(|(_, url)| leads_to(wanted, url)) {
+        ResourceTarget::Prefix
+    } else {
+        ResourceTarget::Foreign
+    }
+}
+
+/// Whether `resource` may stand for `surface`'s endpoint: its URL, or a URL
+/// leading up to it.
+pub fn resource_allows(state: &AppState, surface: Surface, resource: &str) -> bool {
+    leads_to(resource.strip_suffix('/').unwrap_or(resource), &resource_url(state, surface))
+}
+
+/// Whether `prefix` is `url` cut at a path boundary: `https://h` and
+/// `https://h/api` lead to `https://h/api/mcp`; `https://h/ap` does not.
+fn leads_to(prefix: &str, url: &str) -> bool {
+    url.strip_prefix(prefix).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
 /// The endpoints this deployment serves.
 pub fn surfaces(state: &AppState) -> Vec<Surface> {
     let mcp = &state.router.config.mcp;

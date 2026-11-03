@@ -4356,6 +4356,222 @@
                 }
             }
         },
+        "/v1/oauth/requests/{id}": {
+            "get": {
+                "tags": [
+                    "OAuth"
+                ],
+                "summary": "GET /v1/oauth/requests/{id} \u2014 A pending sign-in request, for the consent page.",
+                "operationId": "get_request",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "The request id from the consent page's `request` parameter",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The request, the app and the orgs the person can approve it in",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OAuthRequestView"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No dashboard session",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Unknown or expired",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Already approved or denied",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/oauth/requests/{id}/approve": {
+            "post": {
+                "tags": [
+                    "OAuth"
+                ],
+                "summary": "POST /v1/oauth/requests/{id}/approve \u2014 Approve a sign-in request.",
+                "operationId": "approve_request",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "The request id",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ApproveOAuthRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Send the browser to `redirect_to`: the app's redirect URI with an authorization code",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OAuthRedirect"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "No scopes, or an app outside the org",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No dashboard session",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "`not_a_member` of the org, or `scope_not_grantable` by the person's role there",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Unknown or expired",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Already approved or denied",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/oauth/requests/{id}/deny": {
+            "post": {
+                "tags": [
+                    "OAuth"
+                ],
+                "summary": "POST /v1/oauth/requests/{id}/deny \u2014 Deny a sign-in request.",
+                "operationId": "deny_request",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "The request id",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Send the browser to `redirect_to`: the app's redirect URI with `error=access_denied`",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OAuthRedirect"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No dashboard session",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Unknown or expired",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Already approved or denied",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v1/orgs": {
             "get": {
                 "tags": [
@@ -7289,6 +7505,33 @@
                     "updated_at": {
                         "type": "string",
                         "format": "date-time"
+                    }
+                }
+            },
+            "ApproveOAuthRequest": {
+                "type": "object",
+                "description": "The person's approval.",
+                "required": [
+                    "org_id",
+                    "scopes"
+                ],
+                "properties": {
+                    "app_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The app the app acts in; the org's first app when omitted."
+                    },
+                    "org_id": {
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "A subset of the requested scopes that the person's role can grant."
                     }
                 }
             },
@@ -10443,6 +10686,150 @@
                     "up": {
                         "type": "string",
                         "description": "`+x`, `-x`, `+y`, `-y`, `+z` or `-z`; `source` on an operation that\nkeeps its source's axes."
+                    }
+                }
+            },
+            "OAuthAppChoice": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "name"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    }
+                }
+            },
+            "OAuthClientView": {
+                "type": "object",
+                "description": "The app asking to sign in.",
+                "required": [
+                    "client_id",
+                    "name",
+                    "redirect_host",
+                    "registration"
+                ],
+                "properties": {
+                    "client_id": {
+                        "type": "string"
+                    },
+                    "client_uri": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "logo_uri": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "redirect_host": {
+                        "type": "string",
+                        "description": "The host the browser is sent back to after the decision."
+                    },
+                    "registration": {
+                        "type": "string",
+                        "description": "`cimd`: identified by its metadata document's URL. `dcr`: registered here."
+                    }
+                }
+            },
+            "OAuthOrgChoice": {
+                "type": "object",
+                "description": "An org the person may approve the request in.",
+                "required": [
+                    "id",
+                    "name",
+                    "role",
+                    "apps",
+                    "grantable_scopes"
+                ],
+                "properties": {
+                    "apps": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/OAuthAppChoice"
+                        }
+                    },
+                    "grantable_scopes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "The requested scopes the role can grant: what it could give an API key."
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "The person's role in the org."
+                    }
+                }
+            },
+            "OAuthRedirect": {
+                "type": "object",
+                "description": "Where to send the browser next.",
+                "required": [
+                    "redirect_to"
+                ],
+                "properties": {
+                    "redirect_to": {
+                        "type": "string",
+                        "description": "The app's redirect URI, carrying the code or the error, `state` and `iss`."
+                    }
+                }
+            },
+            "OAuthRequestView": {
+                "type": "object",
+                "description": "A pending sign-in request, as the consent page shows it.",
+                "required": [
+                    "id",
+                    "client",
+                    "surface",
+                    "requested_scopes",
+                    "expires_at",
+                    "orgs"
+                ],
+                "properties": {
+                    "client": {
+                        "$ref": "#/components/schemas/OAuthClientView"
+                    },
+                    "expires_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "orgs": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/OAuthOrgChoice"
+                        },
+                        "description": "The person's orgs, each with its apps and the requested scopes their\nrole there lets them grant."
+                    },
+                    "requested_scopes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "The scopes the app asked for, all of one endpoint."
+                    },
+                    "surface": {
+                        "type": "string",
+                        "description": "The endpoint the grant would be for: `ai` (`/mcp`) or `admin` (`/admin/mcp`)."
                     }
                 }
             },
@@ -14981,6 +15368,10 @@
         {
             "name": "Gateway",
             "description": "Gateway admin: runtime models, provider configs, routing and settings"
+        },
+        {
+            "name": "OAuth",
+            "description": "Sign-in for MCP clients: the consent page's requests and the apps a person has connected"
         }
     ]
 }

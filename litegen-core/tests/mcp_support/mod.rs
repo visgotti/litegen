@@ -216,20 +216,34 @@ pub async fn signup_cookie(app: &Router) -> String {
         .to_string()
 }
 
+/// The CSRF token for a session cookie.
+pub async fn csrf_for(app: &Router, cookie: &str) -> String {
+    let req = Request::builder().method("GET").uri("/v1/auth/csrf").header("cookie", cookie).body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let csrf: Value = serde_json::from_slice(&bytes).unwrap();
+    csrf["csrf_token"].as_str().expect("csrf_token").to_string()
+}
+
+/// Hosted mode: a new user (owner of a new org) signed in through the
+/// password endpoints; returns their session cookie and CSRF token, as the
+/// dashboard holds them on the OAuth consent page.
+pub async fn oauth_session(app: &Router) -> (String, String) {
+    let cookie = signup_cookie(app).await;
+    let csrf = csrf_for(app, &cookie).await;
+    (cookie, csrf)
+}
+
 /// Hosted mode: sign up a new user (a new org) and create a key in that org
 /// through their session; returns the raw secret.
 pub async fn org_key(app: &Router, scopes: &str) -> String {
-    let cookie = signup_cookie(app).await;
-    let csrf_req = Request::builder().method("GET").uri("/v1/auth/csrf").header("cookie", &cookie).body(Body::empty()).unwrap();
-    let csrf_resp = app.clone().oneshot(csrf_req).await.unwrap();
-    let csrf_bytes = axum::body::to_bytes(csrf_resp.into_body(), 1024 * 1024).await.unwrap();
-    let csrf: Value = serde_json::from_slice(&csrf_bytes).unwrap();
+    let (cookie, csrf) = oauth_session(app).await;
     let body = json!({ "name": format!("org-{scopes}"), "scopes": scopes });
     let req = Request::builder()
         .method("POST")
         .uri("/v1/keys")
         .header("cookie", &cookie)
-        .header("x-csrf-token", csrf["csrf_token"].as_str().unwrap())
+        .header("x-csrf-token", csrf)
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap();

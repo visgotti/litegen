@@ -16,6 +16,7 @@ from .api_key_list_response import ApiKeyListResponse
 from .app_model_access import AppModelAccess
 from .app_storage_info import AppStorageInfo
 from .application import Application
+from .approve_o_auth_request import ApproveOAuthRequest
 from .audit_log_entry import AuditLogEntry
 from .auth_config_response import AuthConfigResponse
 from .auth_response import AuthResponse
@@ -121,6 +122,11 @@ from .model_status import ModelStatus
 from .model_task import ModelTask
 from .model_usage_stat import ModelUsageStat
 from .native_orientation import NativeOrientation
+from .o_auth_app_choice import OAuthAppChoice
+from .o_auth_client_view import OAuthClientView
+from .o_auth_org_choice import OAuthOrgChoice
+from .o_auth_redirect import OAuthRedirect
+from .o_auth_request_view import OAuthRequestView
 from .org_allowed_models import OrgAllowedModels
 from .org_summary import OrgSummary
 from .org_transfer_owner_request import OrgTransferOwnerRequest
@@ -273,6 +279,7 @@ __all__ = (
     "ApiKeyListResponse",
     "Application",
     "AppModelAccess",
+    "ApproveOAuthRequest",
     "AppStorageInfo",
     "AuditLogEntry",
     "AuthConfigResponse",
@@ -369,6 +376,11 @@ __all__ = (
     "ModelTask",
     "ModelUsageStat",
     "NativeOrientation",
+    "OAuthAppChoice",
+    "OAuthClientView",
+    "OAuthOrgChoice",
+    "OAuthRedirect",
+    "OAuthRequestView",
     "OrgAllowedModels",
     "Organization",
     "OrganizationMember",

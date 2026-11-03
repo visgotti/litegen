@@ -1357,4 +1357,7 @@ pub static EXCLUDED: &[Excluded] = &[
     Excluded { method: Http::Delete, path: "/v1/account/sessions/{id}", reason: "browser-session settings" },
     Excluded { method: Http::Get, path: "/health/live", reason: "infrastructure probe" },
     Excluded { method: Http::Get, path: "/health/ready", reason: "infrastructure probe" },
+    Excluded { method: Http::Get, path: "/v1/oauth/requests/{id}", reason: "browser consent flow" },
+    Excluded { method: Http::Post, path: "/v1/oauth/requests/{id}/approve", reason: "browser consent flow" },
+    Excluded { method: Http::Post, path: "/v1/oauth/requests/{id}/deny", reason: "browser consent flow" },
 ];

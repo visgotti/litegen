@@ -95,6 +95,17 @@ CASES: list[Case] = [
         lambda c: c.admin.settings.update(cost_markup_percent=10.0),
         "PUT", "/v1/admin/settings", {}, {"cost_markup_percent": 10.0},
     ),
+    # oauth: the MCP consent page's API
+    (lambda c: c.oauth.get_request("r/1"), "GET", "/v1/oauth/requests/r%2F1", {}, None),
+    (
+        lambda c: c.oauth.approve_request("r1", org_id="o1", scopes=["ai:read"]),
+        "POST", "/v1/oauth/requests/r1/approve", {}, {"org_id": "o1", "scopes": ["ai:read"]},
+    ),
+    (
+        lambda c: c.oauth.approve_request("r1", org_id="o1", app_id="a1", scopes=["ai:generate", "ai:read"]),
+        "POST", "/v1/oauth/requests/r1/approve", {}, {"org_id": "o1", "app_id": "a1", "scopes": ["ai:generate", "ai:read"]},
+    ),
+    (lambda c: c.oauth.deny_request("r1"), "POST", "/v1/oauth/requests/r1/deny", {}, None),
 ]
 
 # Every response carries a `data` list so the unwrapping methods have one.
