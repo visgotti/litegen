@@ -150,11 +150,14 @@ pub struct McpOAuthConfig {
     pub consent_url: Option<String>,
     pub access_token_ttl_secs: u64,
     pub refresh_token_ttl_days: u64,
+    /// Requests each address may make a minute to `/oauth/register` and
+    /// `/oauth/authorize`, which anyone may call; 0 turns the limit off.
+    pub rate_limit_per_minute: u32,
 }
 
 impl Default for McpOAuthConfig {
     fn default() -> Self {
-        Self { enabled: true, consent_url: None, access_token_ttl_secs: 3600, refresh_token_ttl_days: 30 }
+        Self { enabled: true, consent_url: None, access_token_ttl_secs: 3600, refresh_token_ttl_days: 30, rate_limit_per_minute: 30 }
     }
 }
 

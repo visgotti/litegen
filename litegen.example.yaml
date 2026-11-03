@@ -192,3 +192,4 @@ observability:
 #     consent_url: null       # default: public_base_url's origin + /oauth/consent (the dashboard page)
 #     access_token_ttl_secs: 3600
 #     refresh_token_ttl_days: 30
+#     rate_limit_per_minute: 30   # /oauth/register + /oauth/authorize requests per address a minute; 0 = off

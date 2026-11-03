@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 
 use super::assertion::{verify, AssertionError, KeyCache};
 use super::clients::{redirect_allowed, resolve_client, uses_refresh_tokens, ClientError, MetadataFetcher, PublicFetcher};
+use super::limit::{client_address, AddressLimiter};
 use super::store::{McpOAuthStore, OAuthClient, Registration};
 use crate::db::DatabaseStore;
 
@@ -136,6 +137,44 @@ async fn production_fetcher_refuses_private_addresses() {
         assert!(PublicFetcher.fetch(url).await.is_err(), "{url}");
         assert!(started.elapsed() < Duration::from_secs(1), "{url} refused without a network call");
     }
+}
+
+// ─── The per-address limit ────────────────────────────────────────────────────
+
+#[test]
+fn the_address_a_request_counts_against() {
+    use std::net::{IpAddr, SocketAddr};
+    let peer = |ip: &str| Some(SocketAddr::new(ip.parse().unwrap(), 4000));
+    let ip = |s: &str| s.parse::<IpAddr>().ok();
+    // A visitor counts as itself, whatever its X-Forwarded-For says.
+    assert_eq!(client_address(peer("203.0.113.5"), Some("198.51.100.7")), ip("203.0.113.5"));
+    // Behind a proxy on this machine or a private network: the address the
+    // proxy saw, which it put last.
+    for proxy in ["127.0.0.1", "10.1.2.3", "172.18.0.4", "192.168.1.10", "::1", "fd00::5", "::ffff:172.18.0.4"] {
+        assert_eq!(client_address(peer(proxy), Some("198.51.100.1, 203.0.113.5")), ip("203.0.113.5"), "{proxy}");
+        assert_eq!(client_address(peer(proxy), Some("203.0.113.5:4711")), ip("203.0.113.5"), "{proxy}: with a port");
+        assert!(client_address(peer(proxy), None).is_some(), "{proxy}: no header, the proxy itself");
+        assert_eq!(client_address(peer(proxy), Some("unknown")), client_address(peer(proxy), None), "{proxy}: nothing usable");
+    }
+    // IPv6 counts by /64, which one subscriber holds whole; IPv4-mapped as IPv4.
+    assert_eq!(client_address(peer("2001:db8:1:2:aaaa::1"), None), ip("2001:db8:1:2::"));
+    assert_eq!(client_address(peer("2001:db8:1:2:bbbb::9"), None), ip("2001:db8:1:2::"));
+    assert_eq!(client_address(peer("::ffff:203.0.113.5"), None), ip("203.0.113.5"));
+    assert_eq!(client_address(None, Some("203.0.113.5")), None, "no connection, nothing to count");
+}
+
+#[test]
+fn an_address_gets_its_allowance_back_over_a_minute() {
+    let limiter = AddressLimiter::default();
+    let (a, b) = ("203.0.113.5".parse().unwrap(), "203.0.113.6".parse().unwrap());
+    let start = Instant::now();
+    assert!(limiter.try_take(a, 2, start).is_ok());
+    assert!(limiter.try_take(a, 2, start).is_ok());
+    let wait = limiter.try_take(a, 2, start).unwrap_err();
+    assert!((1..=30).contains(&wait), "two a minute: one back within 30 s, said {wait}");
+    assert!(limiter.try_take(b, 2, start).is_ok(), "each address has its own");
+    assert!(limiter.try_take(a, 2, start + Duration::from_secs(30)).is_ok(), "one back after half a minute");
+    assert!(limiter.try_take(a, 2, start + Duration::from_secs(30)).is_err());
 }
 
 #[test]

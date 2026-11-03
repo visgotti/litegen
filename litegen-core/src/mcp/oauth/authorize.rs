@@ -253,16 +253,33 @@ fn found(location: &str) -> Response {
 
 /// The page for a request LiteGen cannot answer at a verified redirect URI.
 fn error_page(reason: &str) -> Response {
+    page(
+        StatusCode::BAD_REQUEST,
+        &format!("This app's sign-in link is invalid: {}", html_escape(reason)),
+        "Go back to the app and connect again. If this keeps happening, the app's LiteGen setup is wrong.",
+    )
+}
+
+/// The page for a sign-in from a network that started too many at once.
+pub(super) fn busy_page(wait_secs: u64) -> Response {
+    page(
+        StatusCode::TOO_MANY_REQUESTS,
+        "Too many sign-in attempts came from your network.",
+        &format!("Wait {wait_secs} seconds, then connect again from the app."),
+    )
+}
+
+/// A sign-in page that ends there, never cached or framed. `problem` and
+/// `advice` are HTML.
+fn page(status: StatusCode, problem: &str, advice: &str) -> Response {
     let body = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>LiteGen sign-in</title>\
          <style>body{{font-family:system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem;line-height:1.5}}</style>\
-         </head><body><h1>Can't sign in to LiteGen</h1><p>This app's sign-in link is invalid: {}</p>\
-         <p>Go back to the app and connect again. If this keeps happening, the app's LiteGen setup is wrong.</p></body></html>",
-        html_escape(reason)
+         </head><body><h1>Can't sign in to LiteGen</h1><p>{problem}</p><p>{advice}</p></body></html>"
     );
     (
-        StatusCode::BAD_REQUEST,
+        status,
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (header::CACHE_CONTROL, "no-store"),

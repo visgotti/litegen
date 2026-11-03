@@ -217,6 +217,73 @@ async fn dcr_registers_what_litegen_supports() {
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
 }
 
+/// A request that arrived over a connection from `peer`.
+fn from_peer(mut req: Request<Body>, peer: [u8; 4]) -> Request<Body> {
+    req.extensions_mut().insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((peer, 40000))));
+    req
+}
+
+/// `POST /oauth/register` from `peer`, through a proxy that says
+/// `forwarded_for` when given.
+async fn register_from(app: &axum::Router, peer: [u8; 4], forwarded_for: Option<&str>) -> axum::response::Response {
+    let mut req = Request::post("/oauth/register").header("content-type", "application/json");
+    if let Some(forwarded_for) = forwarded_for {
+        req = req.header("x-forwarded-for", forwarded_for);
+    }
+    let req = req.body(Body::from(json!({ "redirect_uris": ["http://127.0.0.1/callback"] }).to_string())).unwrap();
+    app.clone().oneshot(from_peer(req, peer)).await.unwrap()
+}
+
+#[tokio::test]
+async fn sign_in_endpoints_are_limited_per_address() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, |c| {
+        public(c);
+        c.mcp.oauth.rate_limit_per_minute = 2;
+    })
+    .await;
+    let visitor = [203, 0, 113, 5];
+    assert_eq!(register_from(&app, visitor, None).await.status(), StatusCode::CREATED);
+    assert_eq!(register_from(&app, visitor, None).await.status(), StatusCode::CREATED);
+    let refused = register_from(&app, visitor, None).await;
+    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    let wait: u64 = refused.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).expect("Retry-After");
+    assert!((1..=30).contains(&wait), "{wait}");
+    let body: Value = serde_json::from_slice(&axum::body::to_bytes(refused.into_body(), 1 << 20).await.unwrap()).unwrap();
+    assert_eq!(body["error"], "temporarily_unavailable", "{body}");
+
+    // The sign-in page counts against the same allowance, and says so as a page.
+    let page = app.clone().oneshot(from_peer(Request::get("/oauth/authorize?client_id=lgc_any").body(Body::empty()).unwrap(), visitor)).await.unwrap();
+    assert_eq!(page.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(page.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").starts_with("text/html"));
+    assert!(page.headers().get("retry-after").is_some());
+    let text = String::from_utf8(axum::body::to_bytes(page.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
+    assert!(text.contains("Too many sign-in attempts"), "{text}");
+
+    // Another address has its own allowance. A visitor can't pick its
+    // address with X-Forwarded-For; a proxy on this machine names it.
+    assert_eq!(register_from(&app, [203, 0, 113, 6], None).await.status(), StatusCode::CREATED);
+    assert_eq!(register_from(&app, visitor, Some("198.51.100.7")).await.status(), StatusCode::TOO_MANY_REQUESTS);
+    let proxy = [127, 0, 0, 1];
+    assert_eq!(register_from(&app, proxy, Some("203.0.113.5")).await.status(), StatusCode::TOO_MANY_REQUESTS, "the visitor, behind the proxy");
+    assert_eq!(register_from(&app, proxy, Some("203.0.113.5, 198.51.100.7")).await.status(), StatusCode::CREATED, "the proxy's own entry is the last");
+
+    // Tokens are not limited: a refresh never waits on a busy network.
+    let token = Request::post("/oauth/token").header("content-type", "application/x-www-form-urlencoded").body(Body::from("grant_type=refresh_token")).unwrap();
+    assert_eq!(app.clone().oneshot(from_peer(token, visitor)).await.unwrap().status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn sign_in_limit_can_be_turned_off() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, |c| {
+        public(c);
+        c.mcp.oauth.rate_limit_per_minute = 0;
+    })
+    .await;
+    for _ in 0..40 {
+        assert_eq!(register_from(&app, [203, 0, 113, 5], None).await.status(), StatusCode::CREATED);
+    }
+}
+
 // ─── Task 4: authorization and consent ────────────────────────────────────────
 
 const VERIFIER: &str = "a-test-code-verifier-that-is-long-enough-0123456789";

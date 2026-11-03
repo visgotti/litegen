@@ -263,7 +263,9 @@ async fn main() -> anyhow::Result<()> {
     println!("  📈 Metrics at http://{}/metrics", addr);
     println!();
 
-    axum::serve(listener, app)
+    // With each connection's peer address: the MCP OAuth endpoints limit
+    // sign-ins per address.
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(server_shutdown)
         .await?;
 

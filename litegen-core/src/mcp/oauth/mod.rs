@@ -10,6 +10,7 @@ pub mod clients;
 pub mod crypto;
 pub mod discovery;
 pub mod grants;
+pub mod limit;
 pub mod principal;
 pub mod sql;
 pub mod store;
@@ -37,6 +38,8 @@ pub struct OAuthShared {
     pub fetcher: Arc<dyn MetadataFetcher>,
     /// The key sets of clients that sign their token requests.
     pub keys: assertion::KeyCache,
+    /// What each address has left of its sign-in allowance.
+    pub limiter: limit::AddressLimiter,
 }
 
 /// Whether this deployment offers OAuth: switched on, and its database has
@@ -48,10 +51,11 @@ pub fn available(state: &AppState) -> bool {
 /// The discovery documents and the authorization server's endpoints, all
 /// outside MCP's authentication.
 pub fn routes(state: Arc<AppState>) -> Router {
-    let shared = Arc::new(OAuthShared { state: state.clone(), fetcher: Arc::new(PublicFetcher), keys: Default::default() });
+    let shared = Arc::new(OAuthShared { state: state.clone(), fetcher: Arc::new(PublicFetcher), keys: Default::default(), limiter: Default::default() });
+    let limited = axum::middleware::from_fn_with_state(shared.clone(), limit::by_address);
     Router::new()
-        .route("/oauth/register", post(clients::register).layer(DefaultBodyLimit::max(clients::REGISTER_MAX_BYTES)))
-        .route("/oauth/authorize", get(authorize::authorize))
+        .route("/oauth/register", post(clients::register).layer(DefaultBodyLimit::max(clients::REGISTER_MAX_BYTES)).layer(limited.clone()))
+        .route("/oauth/authorize", get(authorize::authorize).layer(limited))
         .route("/oauth/token", post(token::token).layer(DefaultBodyLimit::max(token::FORM_MAX_BYTES)))
         .route("/oauth/revoke", post(token::revoke).layer(DefaultBodyLimit::max(token::FORM_MAX_BYTES)))
         .with_state(shared)
