@@ -613,3 +613,25 @@ async fn metrics_count_calls() {
     assert!(text.contains("litegen_mcp_tool_calls_total"), "{text}");
     assert!(text.contains("litegen_mcp_requests_total"), "{text}");
 }
+
+// ─── Follow-ups: the trailing slash, read-only waits, rate limits ─────────────
+
+#[tokio::test]
+async fn trailing_slash_is_the_same_endpoint() {
+    let (app, _db, _dir) = mcp_support::secured_app(Mode::SingleTenant).await;
+    for path in ["/mcp/", "/admin/mcp/"] {
+        let rpc = Mcp::new(&app, path).rpc("server/discover", json!({})).await;
+        assert_eq!(rpc.status, StatusCode::UNAUTHORIZED, "{path} still needs credentials: {}", rpc.body);
+    }
+
+    let key = mcp_support::create_key(&app, "generate,read,admin").await;
+    let ai = Mcp::new(&app, "/mcp/").bearer(&key).ok("server/discover", json!({})).await;
+    assert!(ai["instructions"].as_str().unwrap().starts_with(AI_INSTRUCTIONS), "{ai}");
+    let admin = Mcp::new(&app, "/admin/mcp/").bearer(&key).ok("server/discover", json!({})).await;
+    assert!(admin["instructions"].as_str().unwrap().starts_with(ADMIN_INSTRUCTIONS), "{admin}");
+    assert_eq!(
+        Mcp::new(&app, "/admin/mcp/").bearer(&key).tool_names().await,
+        Mcp::new(&app, "/admin/mcp").bearer(&key).tool_names().await,
+        "the same tools either way"
+    );
+}

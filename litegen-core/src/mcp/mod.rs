@@ -60,7 +60,9 @@ impl Surface {
         }
     }
 
+    /// The endpoint a request path names, with or without a trailing slash.
     pub fn from_path(path: &str) -> Option<Surface> {
+        let path = path.strip_suffix('/').unwrap_or(path);
         [Surface::Ai, Surface::Admin].into_iter().find(|s| s.path() == path)
     }
 
@@ -137,11 +139,17 @@ pub fn router(state: Arc<AppState>, api: axum::Router) -> axum::Router {
     if !config.mcp.enabled {
         return routes;
     }
-    routes = routes.route_service(Surface::Ai.path(), service(Surface::Ai, shared.clone(), hosts.clone()));
+    routes = mount(routes, Surface::Ai, service(Surface::Ai, shared.clone(), hosts.clone()));
     if config.mcp.admin_enabled {
-        routes = routes.route_service(Surface::Admin.path(), service(Surface::Admin, shared.clone(), hosts));
+        routes = mount(routes, Surface::Admin, service(Surface::Admin, shared.clone(), hosts));
     }
     routes.layer(axum::middleware::from_fn_with_state(shared, auth::mcp_auth))
+}
+
+/// An endpoint at its path and with a trailing slash: people and clients
+/// paste either, and one form must not 404 while the other works.
+fn mount(routes: axum::Router, surface: Surface, svc: StreamableHttpService<server::LiteGenMcp, NeverSessionManager>) -> axum::Router {
+    routes.route_service(surface.path(), svc.clone()).route_service(&format!("{}/", surface.path()), svc)
 }
 
 /// The client that fetches external images for previews. It never follows a
