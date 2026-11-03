@@ -519,10 +519,41 @@ async fn preview_client_does_not_follow_redirects() {
 #[test]
 fn status_paths() {
     use crate::mcp::wait::status_path;
-    assert_eq!(status_path("litegen-vid-1234"), "/v1/videos/litegen-vid-1234");
-    assert_eq!(status_path("litegen-3d-abcd"), "/v1/models3d/litegen-3d-abcd");
-    assert_eq!(status_path("litegen-img-9"), "/v1/generations/litegen-img-9");
-    assert_eq!(status_path("a b/c"), "/v1/generations/a%20b%2Fc", "an id is one path segment");
+    let maker = caller(key(&[Scope::Generate]), CallerKind::ApiKey, Surface::Ai);
+    assert_eq!(status_path("litegen-vid-1234", &maker), "/v1/videos/litegen-vid-1234");
+    assert_eq!(status_path("litegen-3d-abcd", &maker), "/v1/models3d/litegen-3d-abcd");
+    assert_eq!(status_path("litegen-img-9", &maker), "/v1/generations/litegen-img-9");
+    assert_eq!(status_path("a b/c", &maker), "/v1/generations/a%20b%2Fc", "an id is one path segment");
+
+    // Only `generate` may move a job along; any other key reads its record.
+    let reader = caller(key(&[Scope::Read]), CallerKind::ApiKey, Surface::Ai);
+    assert_eq!(status_path("litegen-vid-1234", &reader), "/v1/generations/litegen-vid-1234");
+    assert_eq!(status_path("litegen-3d-abcd", &reader), "/v1/generations/litegen-3d-abcd");
+    assert_eq!(status_path("litegen-vid-1234", &dev_caller(Surface::Ai)), "/v1/videos/litegen-vid-1234");
+}
+
+#[test]
+fn a_stored_record_links_its_files() {
+    use crate::mcp::content::links;
+    let link_json = |tool: &str, record: Value| -> Vec<Value> {
+        links(tool, &record).iter().map(|b| serde_json::to_value(b).unwrap()).collect()
+    };
+
+    let video = json!({
+        "media_type": "video",
+        "result_url": "https://cdn.example/v.mp4",
+        "metadata": { "assets": [{ "url": "https://cdn.example/v.mp4", "format": "mp4", "kind": "video", "size_bytes": 10 }] }
+    });
+    let linked = link_json("get_generation", video);
+    assert_eq!(linked.len(), 1, "the asset, not the same file twice: {linked:?}");
+    assert_eq!(linked[0]["mimeType"], "video/mp4");
+
+    // A record with no asset list still links its result.
+    let image = json!({ "media_type": "image", "result_url": "https://cdn.example/i.png" });
+    let linked = link_json("wait_for_generation", image);
+    assert_eq!(linked.len(), 1, "{linked:?}");
+    assert_eq!(linked[0]["uri"], "https://cdn.example/i.png");
+    assert_eq!(linked[0]["mimeType"], "image/png");
 }
 
 // ─── The generated tool reference ─────────────────────────────────────────────

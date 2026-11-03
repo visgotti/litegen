@@ -200,11 +200,20 @@ pub fn links(tool: &str, value: &Value) -> Vec<ContentBlock> {
             }
         }
         "get_video_status" | "get_3d_model_status" | "wait_for_generation" | "get_generation" => {
+            // A status route names `video_url` and `assets`; a stored
+            // generation record, `metadata.assets` and `result_url`.
             if let Some(url) = value["video_url"].as_str() {
                 out.push(link(url, "video".into(), &mime_for(extension(url), "video")));
             }
-            for asset in value["assets"].as_array().into_iter().flatten() {
+            let assets = value["assets"].as_array().or_else(|| value["metadata"]["assets"].as_array());
+            for asset in assets.into_iter().flatten() {
                 out.extend(asset_link(asset));
+            }
+            if out.is_empty() {
+                if let Some(url) = value["result_url"].as_str() {
+                    let kind = value["media_type"].as_str().unwrap_or("file");
+                    out.push(link(url, kind.to_string(), &mime_for(extension(url), kind)));
+                }
             }
         }
         "list_generation_assets" => {

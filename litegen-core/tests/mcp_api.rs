@@ -635,3 +635,27 @@ async fn trailing_slash_is_the_same_endpoint() {
         "the same tools either way"
     );
 }
+
+#[tokio::test]
+async fn wait_works_for_a_read_only_key() {
+    let (app, _db, _dir) = mcp_support::secured_app(Mode::SingleTenant).await;
+    let maker = Mcp::new(&app, "/mcp").bearer(&mcp_support::create_key(&app, "generate").await);
+    let reader = Mcp::new(&app, "/mcp").bearer(&mcp_support::create_key(&app, "read").await);
+    let job = maker.call("generate_video", json!({ "model": "mock/video-gen", "prompt": "waves" })).await;
+    assert!(!is_error(&job), "{job}");
+    let id = job["structuredContent"]["id"].as_str().unwrap().to_string();
+
+    // Nothing has polled the vendor yet, so the stored record is still running.
+    let running = reader.call("wait_for_generation", json!({ "id": id, "timeout_seconds": 1 })).await;
+    assert!(!is_error(&running), "a read-only key may wait: {running}");
+    assert!(text_of(&running).contains("Call wait_for_generation again"), "{running}");
+
+    let done = maker.call("wait_for_generation", json!({ "id": id })).await;
+    assert_eq!(done["structuredContent"]["status"], "completed", "{done}");
+    let seen = reader.call("wait_for_generation", json!({ "id": id })).await;
+    assert!(!is_error(&seen), "{seen}");
+    assert_eq!(seen["structuredContent"]["status"], "completed", "{seen}");
+    assert!(!blocks(&seen, "resource_link").is_empty(), "the video is linked: {seen}");
+    let record = reader.call("get_generation", json!({ "id": id })).await;
+    assert!(!blocks(&record, "resource_link").is_empty(), "get_generation links it too: {record}");
+}

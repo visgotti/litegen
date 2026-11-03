@@ -25,7 +25,7 @@ What each scope opens:
 | Scope | Tools it opens |
 |---|---|
 | `generate` | Generating images, video and 3D, cost quotes, job status, `wait_for_generation`, mesh conversion, the model catalog, and the org's generations and their files |
-| `read` | The model catalog and generations, plus request logs, usage stats, provider health, spend reports and logs, limits and end users |
+| `read` | The model catalog and generations, and `wait_for_generation` (it follows the job's stored record, which LiteGen refreshes every few seconds), plus request logs, usage stats, provider health, spend reports and logs, limits and end users |
 | `admin` | Creating, editing, rotating, blocking and revoking keys; setting and resetting limits; managing end users; the audit log; clearing the cache; in single-tenant mode, the gateway's models, providers, routes and settings |
 
 A key is bound to one organization and app, and never sees another

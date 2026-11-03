@@ -1,8 +1,8 @@
 //! `wait_for_generation`: an agent cannot sleep between polls, so this tool
-//! polls a job's own status route through the API router (the caller's own
-//! permissions, as for every tool) until the job ends or the timeout passes.
-//! It returns well inside client limits (45 s by default, 230 s at most) and
-//! reports progress when the client asked for it.
+//! reads a job's state through the API router (the caller's own permissions,
+//! as for every tool) until the job ends or the timeout passes. It returns
+//! well inside client limits (45 s by default, 230 s at most) and reports
+//! progress when the client asked for it.
 
 use std::time::{Duration, Instant};
 
@@ -14,17 +14,21 @@ use tokio::sync::Mutex;
 use super::auth::Caller;
 use super::registry::{ToolSpec, WAIT_DEFAULT_SECS, WAIT_MAX_SECS};
 use super::{content, dispatch, McpShared};
+use crate::api::middleware::Scope;
 
 /// How often a job's status is read.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// The status route for a job id: videos and 3D jobs have their own (open to
-/// a `generate` key), anything else the generations route.
-pub fn status_path(id: &str) -> String {
+/// Where `caller` reads a job's state. A video or 3D job's own status route
+/// moves the job along (it polls the vendor and keeps the finished files), so
+/// the API opens it to `generate` only; any other caller reads the stored
+/// record, which LiteGen's background poller keeps current.
+pub fn status_path(id: &str, caller: &Caller) -> String {
     let encoded = urlencoding::encode(id);
-    if id.starts_with("litegen-vid-") {
+    let own_route = caller.ctx.scopes.contains(&Scope::Generate);
+    if own_route && id.starts_with("litegen-vid-") {
         format!("/v1/videos/{encoded}")
-    } else if id.starts_with("litegen-3d-") {
+    } else if own_route && id.starts_with("litegen-3d-") {
         format!("/v1/models3d/{encoded}")
     } else {
         format!("/v1/generations/{encoded}")
@@ -62,7 +66,7 @@ pub async fn run(shared: &McpShared, caller: &Caller, spec: &ToolSpec, args: &Js
     let timeout = args.get("timeout_seconds").and_then(Value::as_u64).unwrap_or(WAIT_DEFAULT_SECS).clamp(1, WAIT_MAX_SECS);
     let deadline = Duration::from_secs(timeout);
     let started = Instant::now();
-    let path = status_path(id.trim());
+    let path = status_path(id.trim(), caller);
 
     loop {
         let reply = dispatch::get(shared, caller, &path).await;
