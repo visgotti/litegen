@@ -565,6 +565,13 @@ pub trait DatabaseStore: Send + Sync {
         None
     }
 
+    /// The MCP OAuth store (clients, requests, grants, tokens), when this
+    /// backend has one. Test doubles keep the `None` default, and MCP then
+    /// offers no OAuth.
+    fn mcp_oauth(&self) -> Option<&dyn crate::mcp::oauth::store::McpOAuthStore> {
+        None
+    }
+
     // ─── Liveness ───────────────────────────────────────────────────────
 
     /// Liveness ping: execute `SELECT 1`. Returns Ok(()) if DB is reachable.

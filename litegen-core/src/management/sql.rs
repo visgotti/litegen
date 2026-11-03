@@ -159,12 +159,12 @@ fn group_column(g: SpendGroupBy) -> &'static str {
     }
 }
 
-fn identity_sql(s: &str) -> String {
+pub(crate) fn identity_sql(s: &str) -> String {
     s.to_string()
 }
 
 /// Rewrite `?` placeholders as Postgres `$1, $2, …`.
-fn pg_sql(s: &str) -> String {
+pub(crate) fn pg_sql(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     let mut n = 0;
     for c in s.chars() {

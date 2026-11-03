@@ -86,6 +86,10 @@ impl DatabaseStore for PostgresDatabase {
         Some(self)
     }
 
+    fn mcp_oauth(&self) -> Option<&dyn crate::mcp::oauth::store::McpOAuthStore> {
+        Some(self)
+    }
+
     // ─── Generations ────────────────────────────────────────────────────────────
 
     async fn insert_generation(

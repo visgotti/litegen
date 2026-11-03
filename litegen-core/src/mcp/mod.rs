@@ -10,6 +10,7 @@ pub mod catalog;
 pub mod content;
 pub mod dispatch;
 pub mod gate;
+pub mod oauth;
 pub mod registry;
 pub mod schema;
 pub mod server;
@@ -64,6 +65,18 @@ impl Surface {
     pub fn from_path(path: &str) -> Option<Surface> {
         let path = path.strip_suffix('/').unwrap_or(path);
         [Surface::Ai, Surface::Admin].into_iter().find(|s| s.path() == path)
+    }
+
+    /// The endpoint's name in storage, metrics and the consent API.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Surface::Ai => "ai",
+            Surface::Admin => "admin",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Surface> {
+        [Surface::Ai, Surface::Admin].into_iter().find(|surface| surface.as_str() == s)
     }
 
     /// The `?toolsets=` names a client may pick on this endpoint.
