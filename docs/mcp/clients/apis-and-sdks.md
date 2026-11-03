@@ -303,7 +303,11 @@ for a self-hosted one at the root of its domain. Your app needs:
 
 - **A client ID.** Register through dynamic client registration (the
   metadata's `registration_endpoint`), or use the HTTPS URL of a client ID
-  metadata document you host.
+  metadata document you host. A server-side app that can keep a private key
+  may declare `private_key_jwt` in that document and publish its public
+  keys (`jwks_uri` or `jwks`); it then signs every token request with a
+  short-lived JWT (RS256, PS256, ES256 or EdDSA), whose audience is
+  LiteGen's issuer or token endpoint.
 - **Redirect URIs** on HTTPS, or HTTP on `localhost`, `127.0.0.1` or `[::1]`,
   where any port matches.
 - **PKCE with S256.**
@@ -322,10 +326,75 @@ and the tokens. Its `redirectToAuthorization(url)` sends the person to
 LiteGen; when your redirect URI receives the code, `transport.finishAuth(code)`
 completes the sign-in, and the SDK refreshes tokens from then on.
 [`scripts/mcp-smoke/oauth-e2e.mjs`](../../../scripts/mcp-smoke/oauth-e2e.mjs)
-runs the flow against LiteGen, refresh and revocation included. In Python,
-`mcp.client.auth.OAuthClientProvider` (with a `TokenStorage`, a
-`redirect_handler` and a `callback_handler`) is the `auth` of the
-`httpx2.AsyncClient`.
+runs the flow against LiteGen, refresh and revocation included.
+
+In Python, an `OAuthClientProvider` is the `auth` of the `httpx2.AsyncClient`
+the transport uses. Its `redirect_handler` sends the person to LiteGen, and
+its `callback_handler` returns what your redirect URI received (`code`,
+`state` and `iss`, which the SDK checks):
+
+```python
+import asyncio
+import webbrowser
+from urllib.parse import parse_qs, urlsplit
+
+import httpx2
+from mcp import Client
+from mcp.client.auth import OAuthClientProvider, TokenStorage
+from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
+
+URL = "https://app.litegen.ai/api/mcp"
+
+
+class Storage(TokenStorage):
+    """Keep these in your app's database, per person, to skip signing in next time."""
+
+    def __init__(self):
+        self.tokens = self.client_info = None
+
+    async def get_tokens(self):
+        return self.tokens
+
+    async def set_tokens(self, tokens):
+        self.tokens = tokens
+
+    async def get_client_info(self):
+        return self.client_info
+
+    async def set_client_info(self, client_info):
+        self.client_info = client_info
+
+
+async def send_to_litegen(authorization_url: str) -> None:
+    webbrowser.open(authorization_url)
+
+
+async def receive_code() -> AuthorizationCodeResult:
+    # Your redirect URI's handler gets ?code=…&state=…&iss=…; here it is pasted in.
+    query = parse_qs(urlsplit(input("Paste the URL LiteGen sent you to: ")).query)
+    return AuthorizationCodeResult(code=query["code"][0], state=query["state"][0], iss=query["iss"][0])
+
+
+async def main():
+    auth = OAuthClientProvider(
+        server_url=URL,
+        client_metadata=OAuthClientMetadata(client_name="My app", redirect_uris=["http://127.0.0.1:3030/callback"]),
+        storage=Storage(),
+        redirect_handler=send_to_litegen,
+        callback_handler=receive_code,
+    )
+    http = httpx2.AsyncClient(auth=auth, timeout=httpx2.Timeout(30, read=600))
+    async with http, Client(streamable_http_client(URL, http_client=http)) as client:
+        tools = await client.list_tools()
+        print(len(tools.tools))
+
+
+asyncio.run(main())
+```
+
+The SDK registers the app the first time, and refreshes the access token
+when it expires.
 
 **OpenAI's and Anthropic's APIs** take a token but neither sign in nor
 refresh: get the token with an OAuth library (or the MCP SDKs' OAuth
@@ -346,6 +415,9 @@ and the MCP SDKs' own source. The MCP TypeScript SDK (1.32.2) and Python
 SDK (2.3.0) examples were run against a local LiteGen server: both listed
 21 tools and 99 image models with an AI key. The OpenAI and Anthropic
 examples were checked against docs only; their servers cannot reach a local
-LiteGen. The OAuth section was checked on 2026-11-03: the TypeScript flow by
-`scripts/mcp-smoke/oauth-e2e.mjs` with SDK 1.32.2 against a local LiteGen,
-and the Python SDK's `OAuthClientProvider` against its 2.3.0 source.
+LiteGen. The OAuth section was checked on 2026-11-03 against a local
+LiteGen: the TypeScript flow by `scripts/mcp-smoke/oauth-e2e.mjs` with SDK
+1.32.2, and the Python example above with SDK 2.3.0, its two handlers
+replaced by a script that approved the sign-in and returned the redirect.
+It registered, signed in and listed 22 tools; in a second run, the SDK
+refreshed an expired access token and the call went through.

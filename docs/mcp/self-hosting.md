@@ -21,6 +21,7 @@ mcp:
     consent_url: null    # default: the origin of public_base_url + /oauth/consent
     access_token_ttl_secs: 3600
     refresh_token_ttl_days: 30
+    rate_limit_per_minute: 30   # sign-in requests per address a minute; 0 turns the limit off
 ```
 
 `server.public_base_url` matters to MCP in four ways: it is the host MCP
@@ -45,6 +46,11 @@ The endpoints are `{public_base_url}/mcp` and `{public_base_url}/admin/mcp`.
   under that cut calls off.
 - **Allow 16 MiB bodies** on the MCP paths if your agents send meshes to
   `convert_3d_model` as base64.
+- **Pass the visitor's address in `X-Forwarded-For`.** When the proxy is on
+  the same machine or a private network, LiteGen counts each sign-in request
+  against the last address in that header (see [OAuth](#oauth)); without
+  it, every visitor shares the proxy's allowance. Caddy sets it by default;
+  nginx needs the line below.
 
 Caddy, as LiteGen's own deployment uses (`deploy/Caddyfile`):
 
@@ -65,6 +71,7 @@ nginx:
 location /api/ {
     proxy_pass http://litegen:4000/;
     proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_buffering off;
     proxy_read_timeout 300s;
     client_max_body_size 16m;
@@ -145,8 +152,13 @@ does.
 - **Register on their own**, with dynamic client registration
   (`/oauth/register`) or a client ID metadata document: an HTTPS URL used as
   the client ID, which LiteGen fetches and keeps for a day. LiteGen fetches
-  those documents only from public addresses, so the server needs outbound
-  HTTPS to the clients' hosts (`claude.ai` and `chatgpt.com` among them).
+  those documents, and the keys of clients that sign their requests, only
+  from public addresses, so the server needs outbound HTTPS to the clients'
+  hosts (`claude.ai` and `chatgpt.com` among them).
+- **Sign their token requests**, when their metadata document says
+  `private_key_jwt`, as ChatGPT's does. LiteGen checks every such request's
+  signed JWT (RS256, PS256, ES256 or EdDSA) against the keys the document
+  publishes, and accepts each one once.
 - **Use PKCE (S256)**, with redirect URIs on HTTPS, or HTTP on `localhost`,
   `127.0.0.1` or `[::1]`, where any port matches.
 - **Call from browsers.** The discovery documents, `/oauth/register`,
@@ -154,8 +166,14 @@ does.
   running in a browser (the MCP Inspector) can sign in. None of them reads
   a cookie.
 
-LiteGen does not rate-limit `/oauth/register` or `/oauth/authorize` by
-address. On a server open to the internet, limit them at your proxy.
+**Sign-in requests are limited per address.** Anyone may call
+`/oauth/register` and `/oauth/authorize`, so each address may make
+`mcp.oauth.rate_limit_per_minute` of those requests (30) and gets them back
+over a minute; more get a 429 with `Retry-After`. IPv6 addresses count by
+their /64. Behind a proxy on the same machine or a private network, the
+address is the last one in `X-Forwarded-For` (see
+[behind a reverse proxy](#behind-a-reverse-proxy)). Tokens, revocation and
+discovery are not limited.
 
 ### Tokens and revoking
 
@@ -165,7 +183,10 @@ address. On a server open to the internet, limit them at your proxy.
   codes last a minute and work once; an unanswered sign-in expires after ten
   minutes.
 - LiteGen stores only hashes of codes and tokens, and deletes them a day
-  after they expire.
+  after they expire. An hourly cleanup also deletes the sign-ins of deleted
+  organizations and apps, registrations never used within 30 days or unused
+  for a year with no sign-in left (the app registers again when it next
+  connects), and its copies of metadata documents once nothing uses them.
 - People revoke their own sign-ins under **Connected apps** on the
   dashboard's Connect AI tools page. The master key can list anyone's with
   `GET /v1/oauth/grants?user_id=…` and revoke any with

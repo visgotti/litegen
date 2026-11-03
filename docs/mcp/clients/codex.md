@@ -112,9 +112,11 @@ Codex opens LiteGen's sign-in page in your browser: pick the organization,
 the app and the scopes, and approve. Codex identifies itself with a client
 metadata document when LiteGen offers it, as LiteGen does, and listens for
 the answer on `127.0.0.1`; it checks that the answer comes from LiteGen
-(`iss`). `codex mcp logout litegen` forgets the tokens. To cut Codex off on
-LiteGen's side, revoke it under **Connected apps** on the dashboard's
-Connect AI tools page.
+(`iss`). On a machine with no browser, `codex mcp login litegen
+--no-browser` prints the sign-in URL: open it anywhere, approve, and paste
+the URL your browser ends up on back into Codex. `codex mcp logout litegen`
+forgets the tokens. To cut Codex off on LiteGen's side, revoke it under
+**Connected apps** on the dashboard's Connect AI tools page.
 
 ## Troubleshooting
 
@@ -138,3 +140,10 @@ entry above and `codex mcp list` showed it. Codex has no command that
 connects without a signed-in session; the connection itself was checked
 with the [smoke script](../../../scripts/mcp-smoke/README.md), which sends
 the same header.
+
+OAuth checked on 2026-11-03 with codex-cli 0.166.0 against a local LiteGen
+server: `codex mcp login litegen --no-browser` signed in with Codex's client
+metadata document (`https://chatgpt.com/oauth/codex/client.json`, which
+LiteGen fetched), and again with `--oauth-client-registration dcr`, which
+registers instead. Each time `codex mcp list` showed `OAuth`, and the access
+token Codex kept listed 22 tools on `/mcp` and called `list_models`.

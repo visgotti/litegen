@@ -119,8 +119,10 @@ makes that explicit. Jobs that run unattended should send an API key.
 against a local LiteGen server: the `tools/list`, `tools/call` and
 `initialize` commands above, `--strict` (no errors on either endpoint), and a
 wrong key (exit `3`). The OAuth section was checked against
-`docs/cli-smoke-testing.md` and `docs/test-servers.md` on 2026-11-03; the
-Inspector's sign-in was not run against LiteGen, but it uses the MCP
-TypeScript SDK's OAuth client, which
+`docs/cli-smoke-testing.md` and `docs/test-servers.md` on 2026-11-03, and the
+CLI's sign-in was run that day against a local LiteGen: from a terminal,
+with no `--header`, `--method tools/list` registered the Inspector, took
+the answer on `127.0.0.1:6276`, and listed 22 tools. The web UI's sign-in
+was not run; it uses the MCP TypeScript SDK's OAuth client, which
 [`scripts/mcp-smoke/oauth-e2e.mjs`](../../../scripts/mcp-smoke/README.md)
 runs against LiteGen end to end.

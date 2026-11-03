@@ -97,6 +97,10 @@ dashboard (**Connect AI tools**): its tokens stop working at once.
   [self-hosting](../self-hosting.md#oauth).
 - If a firewall limits who reaches the server, allow OpenAI's
   [egress IP ranges](https://developers.openai.com/api/docs/guides/ip-addresses).
+- The server must reach `chatgpt.com` over HTTPS. ChatGPT names itself
+  with a client metadata document (`https://chatgpt.com/oauth/client.json`)
+  that LiteGen fetches, and signs each token request with a key LiteGen
+  checks against `https://chatgpt.com/oauth/jwks.json`.
 - A server that must stay off the internet can be reached through OpenAI's
   [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
   (the **Tunnel** connection in step 3). The sign-in still runs in your
@@ -124,5 +128,13 @@ dashboard (**Connect AI tools**): its tokens stop working at once.
 
 <https://developers.openai.com/plugins/deploy/connect-chatgpt.md> and
 <https://developers.openai.com/plugins/build/auth.md> on 2026-11-03.
-Checked against docs: ChatGPT was not run. LiteGen's OAuth was run end to
-end with the official MCP TypeScript SDK and with Claude Code.
+Checked against docs: ChatGPT was not run; it cannot reach a local server.
+LiteGen's OAuth was run end to end with the official MCP SDKs and with
+Claude Code, Codex, Gemini CLI, mcp-remote and the MCP Inspector. What could
+run of ChatGPT's own sign-in did, on 2026-11-03 against a local LiteGen:
+LiteGen fetched ChatGPT's live client metadata document
+(`token_endpoint_auth_method: private_key_jwt`, RS256, `jwks_uri`) and sent
+the sign-in to the consent page; at the token endpoint it fetched ChatGPT's
+live key set and refused an assertion signed with another key, and a
+request with no assertion. A request signed by ChatGPT itself was not
+tried.

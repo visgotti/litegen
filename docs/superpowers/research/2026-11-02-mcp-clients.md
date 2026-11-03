@@ -618,3 +618,41 @@ Claude Code's real `~/.claude.json` was unchanged (same mtime and size).
   URL (3335–49150); tokens in `~/.mcp-auth` (`MCP_REMOTE_CONFIG_DIR`);
   `--auth-timeout` defaults to 30 seconds; `--resource`, CIMD with
   `--client-metadata-url`.
+
+## Sign-ins run against a local LiteGen (2026-11-03)
+
+Each against a fresh single-tenant debug build on `127.0.0.1:4000`, the person's
+approval played through the consent API, no real browser:
+
+- **Claude Code 2.1.317**: `claude mcp login <name> --no-browser` prints the URL and
+  takes the redirect URL pasted back. CIMD
+  (`https://claude.ai/oauth/claude-code-client-metadata`, public, both grants),
+  redirect `http://localhost:<port>/callback`. `claude mcp list` → `✔ Connected`.
+- **Codex 0.166.0**: `codex mcp login <name> --no-browser`, paste-back as above;
+  `--oauth-client-registration auto|cimd|dcr` (lowercase). Auto picks CIMD:
+  `https://chatgpt.com/oauth/codex/client.json` (public, both grants, loopback
+  redirects); `dcr` registers as "Codex". `mcp_oauth_credentials_store = "file"` keeps
+  tokens in `$CODEX_HOME/.credentials.json` instead of the keychain.
+- **Gemini CLI 0.66.0**: no CLI login command; `/mcp auth <name>` in a session. DCR as
+  "Gemini CLI MCP Client", redirect `http://localhost:<port>/oauth/callback`. Asks for
+  every scope in the AS metadata (`ai:generate ai:read admin:read admin:write`) plus
+  `resource`; LiteGen keeps the resource's endpoint's scopes. Prints the URL when
+  `BROWSER=www-browser`, `CI` or SSH. MCP tokens in `~/.gemini/mcp-oauth-tokens.json`
+  (plain file unless `GEMINI_FORCE_ENCRYPTED_FILE_STORAGE=true`). Relaunches itself in
+  a child process: stopping it means its process group.
+- **mcp-remote 0.16.0**: DCR as "MCP CLI Proxy", opens the browser through the `open`
+  command, then proxies stdio to Streamable HTTP.
+- **MCP Inspector 2.13.0 CLI**: needs a terminal for interactive OAuth; DCR as "MCP
+  Inspector", callback `127.0.0.1:6276`. `MCP_INSPECTOR_SECRET_STORE=keyring|file|memory`
+  and `MCP_INSPECTOR_OAUTH_STATE_PATH` isolate its secrets and state.
+- **MCP Python SDK 2.3.0**: `OAuthClientProvider(server_url, client_metadata, storage,
+  redirect_handler, callback_handler)` as the `auth` of an `httpx2.AsyncClient`;
+  `AuthorizationCodeResult(code, state, iss)`, iss checked. 2.x results are snake_case
+  (`is_error`, `server_info`). Registration sends no `token_endpoint_auth_method`.
+- **ChatGPT** (not runnable locally): its live `https://chatgpt.com/oauth/client.json`
+  declares `token_endpoint_auth_method: private_key_jwt`,
+  `token_endpoint_auth_methods_supported: ["none", "private_key_jwt"]`,
+  `token_endpoint_auth_signing_alg: RS256`, `jwks_uri: https://chatgpt.com/oauth/jwks.json`
+  (one RSA key, kid `cimd-20260428030119`), redirect
+  `https://chatgpt.com/connector_platform_oauth_redirect`. CIMD draft §6.2: such a client
+  is confidential and every request must carry that authentication.

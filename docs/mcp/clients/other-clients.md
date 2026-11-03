@@ -340,5 +340,9 @@ The other clients were checked against docs only.
 
 The OAuth sections were checked on 2026-11-03 against the same Cline, Goose,
 Copilot and Kiro pages and mcp-remote's README; Continue's OAuth note comes
-from its `core/context/mcp/MCPConnection.ts`, read on 2026-11-02. None of
-these clients' sign-ins was run against LiteGen.
+from its `core/context/mcp/MCPConnection.ts`, read on 2026-11-02.
+mcp-remote 0.16.0's sign-in was also run that day against a local LiteGen:
+with no `--header`, it registered (as "MCP CLI Proxy"), took the answer on
+its local callback, connected over Streamable HTTP, and the session it
+proxied over stdio listed 22 tools and called `list_models`. The other
+clients' sign-ins were not run against LiteGen.

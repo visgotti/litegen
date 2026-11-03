@@ -59,11 +59,21 @@ to the public HTTPS URL, prefix included (`https://app.example.com/api`).
 
 **"Can't sign in to LiteGen: This app's sign-in link is invalid".** LiteGen
 could not trust the request enough to send you back to the app: it doesn't
-know the client, the client's metadata document could not be fetched, or the
-redirect URI is not one the client declared. Connect again from the app. If
-it repeats, remove LiteGen from the app and add it again, so the app
-registers afresh. A self-hosted server must be able to reach the client's
+know the client, the client's metadata document could not be fetched, the
+redirect URI is not one the client declared, or the link gives the client
+or the redirect URI twice. Connect again from the app. If it repeats, remove
+LiteGen from the app and add it again, so the app registers afresh: LiteGen
+deletes a registration never used within 30 days, or unused for a year with
+no sign-in left. A self-hosted server must be able to reach the client's
 metadata URL over HTTPS (on `claude.ai` or `chatgpt.com`, for example).
+
+**"Too many sign-in attempts came from your network", or a 429 from
+`/oauth/register`.** Each address may start 30 sign-ins a minute
+(`mcp.oauth.rate_limit_per_minute`). Wait the seconds the page or the
+`Retry-After` header gives, then connect again. On a self-hosted server
+where this happens to everyone at once, the proxy is probably not passing
+visitors' addresses, so they all share its allowance; see
+[self-hosting](self-hosting.md#behind-a-reverse-proxy).
 
 **"This sign-in request has expired. Go back to the app and connect
 again."** A sign-in must be answered within ten minutes, and only once.
@@ -86,6 +96,19 @@ at once (one sign-in is for one endpoint: connect each endpoint on its own),
 for `admin:` scopes on a server without `/admin/mcp`, or, when refreshing,
 for more than you approved.
 
+**The app reports `invalid_client`.** The message says why:
+- "LiteGen has no client with this client_id": the app's registration was
+  deleted (see above). Remove LiteGen from the app and add it again.
+- A message about the client assertion: the app signs its requests
+  (`private_key_jwt`, as ChatGPT does), and LiteGen could not check the
+  signature. The app's clock may be more than a minute off, or its keys
+  moved. A self-hosted server must be able to fetch the app's `jwks_uri`
+  over HTTPS (`https://chatgpt.com/oauth/jwks.json` for ChatGPT).
+
+**The app reports `unauthorized_client` when refreshing.** It registered
+without the `refresh_token` grant, so LiteGen gives it no refresh tokens. It
+signs in again when its access token expires, every hour.
+
 **401 `invalid_token` after signing in.** LiteGen no longer accepts the
 access token. The client should refresh it or sign in again; the message
 says why:
@@ -105,6 +128,8 @@ The refresh token stopped working. The message says why:
   apps**, or the app revoked it itself.
 - "the person who approved this app can no longer use LiteGen there": you
   left the organization, or your account was deactivated.
+- "the app this sign-in was approved for no longer exists": the app picked on
+  the sign-in page was deleted. Sign in again and pick another.
 - "the refresh token is expired or revoked": refresh tokens last 30 days by
   default.
 - "the refresh token was used before; the app's access is revoked": a

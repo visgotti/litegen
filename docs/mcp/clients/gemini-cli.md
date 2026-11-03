@@ -147,3 +147,11 @@ on 2026-11-02, and with Gemini CLI 0.66.0 against a local LiteGen server:
 entries with `$LITEGEN_API_KEY`, with `${LITEGEN_API_KEY}` and from
 `gemini mcp add --header` all showed `Connected` in a trusted folder; with
 the variable unset, the first two showed `Disconnected`.
+
+OAuth checked on 2026-11-03 with Gemini CLI 0.66.0 against a local LiteGen
+server: after `gemini mcp add` with no header, `/mcp auth litegen` in a
+session registered Gemini CLI, printed the sign-in URL (no browser could
+open), took the answer on `localhost`, and said "Successfully authenticated
+and reloaded tools"; `gemini mcp list` then showed `Connected`. Gemini CLI
+asks for every scope LiteGen lists; LiteGen keeps the scopes of the
+endpoint in the server entry's URL.
