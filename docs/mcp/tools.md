@@ -56,7 +56,7 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 | [`get_current_user`](#get_current_user) | Get current user | `GET /v1/auth/me` | a signed-in user | yes | no |
 | [`get_my_limits`](#get_my_limits) | Get my limits | `GET /v1/limits/me` | any credential | yes | no |
 
-## `/admin/mcp`: the management API (93 tools)
+## `/admin/mcp`: the management API (92 tools)
 
 ### Toolset `keys`
 
@@ -136,7 +136,6 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 
 | Tool | What it does | API operation | Needs | Read-only | Destructive |
 |---|---|---|---|---|---|
-| [`create_org`](#create_org) | Create org | `POST /v1/orgs` | a signed-in user | no | no |
 | [`delete_org`](#delete_org) | Delete org | `DELETE /v1/orgs/{id}` | a signed-in member with `org:delete`, or the platform admin | no | yes |
 | [`delete_org_provider_credential`](#delete_org_provider_credential) | Delete org provider credential | `DELETE /v1/orgs/{org_id}/provider-credentials/{provider}` | a signed-in member with `provider_cred:delete`, or the platform admin | no | yes |
 | [`get_org`](#get_org) | Get org | `GET /v1/orgs/{id}` | a signed-in member with `org:read`, or the platform admin | yes | no |
@@ -1419,16 +1418,6 @@ Change a member's role (requires member:write).
 | `id` | string | yes | Organization ID |
 | `role` | one of `owner`, `admin`, `member`, `viewer` | yes |  |
 | `user_id` | string | yes | Member user ID |
-
-### `create_org`
-
-Create an organization owned by the caller (any session user).
-
-`POST /v1/orgs` · on `/admin/mcp` · needs a signed-in user
-
-| Argument | Type | Required | Description |
-|---|---|---|---|
-| `name` | string | yes |  |
 
 ### `delete_org`
 

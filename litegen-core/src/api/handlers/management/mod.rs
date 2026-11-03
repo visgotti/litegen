@@ -114,6 +114,9 @@ pub(crate) async fn require_org(
         return Ok(());
     }
     if let Some(user) = &ctx.user {
+        if !crate::api::middleware::within_grant(ctx, org_id) {
+            return Err(forbidden("this app was approved for another organization"));
+        }
         return match state.db.get_membership(org_id, &user.user_id).await {
             Ok(Some(role)) if role_has(role, perm) => Ok(()),
             Ok(Some(_)) => Err(forbidden("insufficient role for this organization")),

@@ -23,9 +23,13 @@ use super::discovery::resource_allows;
 use super::store::{AuthRequest, ConsumeOutcome, Grant, McpOAuthStore, RotateOutcome, TokenKind, TokenRow};
 use super::OAuthShared;
 use crate::api::middleware::AppState;
+use crate::types::{Role, User};
 
 /// The largest token or revocation request.
 pub const FORM_MAX_BYTES: usize = 16 * 1024;
+/// What every access token starts with, and every refresh token.
+pub const ACCESS_PREFIX: &str = "lgat_";
+pub const REFRESH_PREFIX: &str = "lgrt_";
 
 #[derive(Debug, Serialize)]
 struct TokenAnswer {
@@ -153,7 +157,7 @@ async fn refresh(state: &AppState, store: &dyn McpOAuthStore, params: &Params) -
         }
     }
     let now = Utc::now();
-    if !grant_is_live(state, &grant).await? {
+    if live_member(state, &grant).await?.is_none() {
         store.revoke_grant(&grant.id, now).await?;
         return Err(TokenError::grant("the person who approved this app can no longer use LiteGen there"));
     }
@@ -170,14 +174,16 @@ async fn refresh(state: &AppState, store: &dyn McpOAuthStore, params: &Params) -
     }
 }
 
-/// Whether a grant still speaks for its person: unrevoked, the person
-/// active, and still a member of the grant's org.
-pub async fn grant_is_live(state: &AppState, grant: &Grant) -> Result<bool, sqlx::Error> {
+/// The grant's person and their role in its org, while the grant still
+/// speaks for them: unrevoked, the person active, and still a member.
+pub async fn live_member(state: &AppState, grant: &Grant) -> Result<Option<(User, Role)>, sqlx::Error> {
     if grant.revoked_at.is_some() {
-        return Ok(false);
+        return Ok(None);
     }
-    let active = state.db.get_user_by_id(&grant.user_id).await?.is_some_and(|u| u.is_active);
-    Ok(active && state.db.get_membership(&grant.org_id, &grant.user_id).await?.is_some())
+    let Some(user) = state.db.get_user_by_id(&grant.user_id).await?.filter(|u| u.is_active) else {
+        return Ok(None);
+    };
+    Ok(state.db.get_membership(&grant.org_id, &grant.user_id).await?.map(|role| (user, role)))
 }
 
 /// Revoke the grant a replayed code's request led to, with its tokens.
@@ -193,8 +199,8 @@ async fn revoke_issued(store: &dyn McpOAuthStore, request: &AuthRequest, now: Da
 /// A new token for `grant_id` and the row that stores its hash.
 fn mint(grant_id: &str, kind: TokenKind, now: DateTime<Utc>, ttl: Duration) -> (String, TokenRow) {
     let prefix = match kind {
-        TokenKind::Access => "lgat_",
-        TokenKind::Refresh => "lgrt_",
+        TokenKind::Access => ACCESS_PREFIX,
+        TokenKind::Refresh => REFRESH_PREFIX,
     };
     let token = random_token(prefix, 32);
     let row = TokenRow {

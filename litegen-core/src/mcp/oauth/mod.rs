@@ -8,6 +8,7 @@ pub mod authorize;
 pub mod clients;
 pub mod crypto;
 pub mod discovery;
+pub mod principal;
 pub mod sql;
 pub mod store;
 #[cfg(test)]

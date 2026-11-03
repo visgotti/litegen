@@ -152,6 +152,9 @@ async fn require_member_perm(
         .user
         .as_ref()
         .ok_or_else(|| forbidden("session required"))?;
+    if !crate::api::middleware::within_grant(ctx, org_id) {
+        return Err(forbidden("this app was approved for another organization"));
+    }
     match state.db.get_membership(org_id, &user.user_id).await {
         Ok(Some(role)) if role_has(role, perm) => Ok(user.user_id.clone()),
         Ok(Some(_)) => Err(forbidden("insufficient role for this organization")),
@@ -293,6 +296,9 @@ pub async fn create_org(
         Some(u) => u,
         None => return err(StatusCode::UNAUTHORIZED, "session_required", "Session required"),
     };
+    if ctx.oauth_grant_id.is_some() {
+        return forbidden("an app connected through OAuth acts only in the organization it was approved for");
+    }
 
     let name = body.name.trim().to_string();
     if name.is_empty() {
@@ -364,6 +370,8 @@ pub async fn list_orgs(
         Ok(orgs) => {
             let out: Vec<OrgSummary> = orgs
                 .into_iter()
+                // An app connected through OAuth sees only the org it was approved for.
+                .filter(|(o, _)| crate::api::middleware::within_grant(&ctx, &o.id))
                 .map(|(o, role)| OrgSummary {
                     id: o.id,
                     name: o.name,

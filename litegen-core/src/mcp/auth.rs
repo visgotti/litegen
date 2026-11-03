@@ -14,6 +14,8 @@ use axum::Json;
 use tracing::Instrument;
 
 use super::oauth::discovery;
+use super::oauth::principal::{resolve_access_token, AccessError};
+use super::oauth::token::ACCESS_PREFIX;
 use super::{McpShared, Surface};
 use crate::api::middleware::{dev_bypass_context, missing_credentials_response, resolve_api_key, AppState, KeyContext};
 
@@ -26,6 +28,9 @@ pub enum CallerKind {
     MasterKey,
     /// Dev mode: single-tenant with no master key, so no credentials at all.
     Dev,
+    /// An OAuth access token: the person who approved the app, as their role
+    /// lets them, within the grant's org and scopes.
+    OAuth,
 }
 
 /// The authenticated caller of one MCP request, put into the request's
@@ -128,6 +133,25 @@ pub async fn mcp_auth(State(shared): State<Arc<McpShared>>, mut req: Request, ne
         .filter(|t| !t.is_empty());
 
     let (ctx, kind) = match token {
+        Some(token) if token.starts_with(ACCESS_PREFIX) => match resolve_access_token(&shared.state, &token, surface).await {
+            Ok(ctx) => (ctx, CallerKind::OAuth),
+            Err(AccessError::Invalid(reason)) => {
+                let body = (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({ "error": { "message": reason, "type": "invalid_token", "code": "invalid_token" } })),
+                )
+                    .into_response();
+                return challenge(&shared.state, &path, Some(body), Some("invalid_token"));
+            }
+            Err(AccessError::Store(e)) => {
+                tracing::error!(error = %e, "resolving an MCP OAuth token failed");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({ "error": { "message": "try again", "type": "service_unavailable", "code": "service_unavailable" } })),
+                )
+                    .into_response();
+            }
+        },
         Some(token) => match resolve_api_key(&shared.state, &token).await {
             Ok(ctx) => {
                 let kind = if ctx.key_id.is_some() {
@@ -148,8 +172,10 @@ pub async fn mcp_auth(State(shared): State<Arc<McpShared>>, mut req: Request, ne
         },
     };
 
+    // Tool calls replay the API key; an OAuth caller's resolved principal
+    // travels as a request extension instead (see `dispatch::authorized`).
     let authorization = match kind {
-        CallerKind::Dev => None,
+        CallerKind::Dev | CallerKind::OAuth => None,
         _ => authorization,
     };
     req.extensions_mut().insert(Caller { ctx, kind, authorization, surface, toolsets });

@@ -46,8 +46,8 @@ fn every_openapi_operation_is_a_tool_or_excluded() {
     let mut stale: Vec<_> = listed.difference(&ops).collect();
     stale.sort();
     assert!(stale.is_empty(), "catalog rows naming operations the API does not have: {stale:?}");
-    assert_eq!(TOOLS.len(), 112);
-    assert_eq!(EXCLUDED.len(), 23);
+    assert_eq!(TOOLS.len(), 111);
+    assert_eq!(EXCLUDED.len(), 24);
 }
 
 fn portable_tool_name(name: &str) -> bool {
@@ -134,6 +134,7 @@ fn key(scopes: &[Scope]) -> KeyContext {
         session_id: None,
         org_id: Some(DEFAULT_ORG_ID.to_string()),
         app_id: Some(DEFAULT_APP_ID.to_string()),
+        oauth_grant_id: None,
     }
 }
 
@@ -150,6 +151,44 @@ fn master(org: bool) -> KeyContext {
 
 fn caller(ctx: KeyContext, kind: CallerKind, surface: Surface) -> Caller {
     Caller { ctx, kind, authorization: None, surface, toolsets: None }
+}
+
+/// A person with `role` in the default org, signed in through OAuth with a
+/// grant holding `scopes`.
+fn oauth(role: crate::types::Role, scopes: &[Scope]) -> KeyContext {
+    KeyContext {
+        key_id: None,
+        user: Some(crate::api::middleware::UserContext { user_id: "u1".into(), email: "u1@example.com".into(), role }),
+        permissions: crate::auth::permissions::permissions_for(role).to_vec(),
+        oauth_grant_id: Some("grant-1".into()),
+        ..key(scopes)
+    }
+}
+
+#[tokio::test]
+async fn oauth_principals_see_what_their_grant_allows() {
+    use crate::types::Role;
+    let single = state(Mode::SingleTenant, Some("mk")).await;
+    let hosted = state(Mode::Hosted, Some("mk")).await;
+    let admin = |ctx: KeyContext| caller(ctx, CallerKind::OAuth, Surface::Admin);
+
+    let reader = admin(oauth(Role::Owner, &[Scope::Read]));
+    for read in ["get_org", "list_members", "get_spend_report", "list_orgs"] {
+        assert!(sees(&reader, &hosted, read), "{read}");
+    }
+    for write in ["update_org", "set_org_limits", "revoke_api_key", "remove_member"] {
+        assert!(!sees(&reader, &hosted, write), "{write} needs admin:write");
+    }
+    assert!(sees(&reader, &single, "list_users"), "a global read");
+    assert!(!sees(&reader, &single, "delete_user"), "a global write needs admin:write");
+
+    let writer = admin(oauth(Role::Owner, &[Scope::Admin]));
+    assert!(sees(&writer, &hosted, "get_org"), "admin covers reads, as the API's role checks have it");
+    assert!(sees(&writer, &hosted, "update_org"));
+    assert!(sees(&writer, &single, "delete_user"));
+
+    let member = admin(oauth(Role::Member, &[Scope::Read, Scope::Admin]));
+    assert!(!sees(&member, &hosted, "update_org"), "the role still decides");
 }
 
 fn sees(caller: &Caller, state: &AppState, tool: &str) -> bool {
@@ -190,7 +229,7 @@ async fn gates_match_principals() {
     assert!(sees(&admin(key(&[Generate, Read, Admin]), ApiKey), &single, "create_api_key"));
 
     // Org, app and member management needs a signed-in user: no key sees it.
-    for tool in ["list_orgs", "create_org"] {
+    for tool in ["list_orgs", "list_members"] {
         assert!(!sees(&admin(key(&[Generate, Read, Admin]), ApiKey), &single, tool), "{tool}");
     }
 

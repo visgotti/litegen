@@ -486,10 +486,20 @@ impl Flow {
 
     /// Access and refresh tokens for an approved AI request.
     async fn tokens(&self, app: &axum::Router, scopes: &[&str]) -> (String, String) {
-        let code = self.code(app, &authorize_query(&self.client), scopes).await;
+        self.tokens_for(app, &authorize_query(&self.client), scopes).await
+    }
+
+    /// Access and refresh tokens for an approved request with this query.
+    async fn tokens_for(&self, app: &axum::Router, query: &[(String, String)], scopes: &[&str]) -> (String, String) {
+        let code = self.code(app, query, scopes).await;
         let (status, _, body) = form_post(app, "/oauth/token", &exchange(&self.client, &code)).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         (body["access_token"].as_str().unwrap().to_string(), body["refresh_token"].as_str().unwrap().to_string())
+    }
+
+    /// Admin-endpoint tokens with these scopes.
+    async fn admin_tokens(&self, app: &axum::Router, scopes: &[&str]) -> (String, String) {
+        self.tokens_for(app, &with(authorize_query(&self.client), "scope", Some("admin:read admin:write")), scopes).await
     }
 }
 
@@ -581,6 +591,8 @@ async fn code_reuse_revokes_grant() {
     let access = store.get_token(&hashed(first["access_token"].as_str().unwrap())).await.unwrap().unwrap();
     assert!(access.revoked_at.is_some(), "a replayed code revokes what it issued");
     assert!(store.get_grant(&access.grant_id).await.unwrap().unwrap().revoked_at.is_some());
+    let rpc = Mcp::new(&app, "/mcp").bearer(first["access_token"].as_str().unwrap()).rpc("tools/list", json!({})).await;
+    assert_eq!(rpc.status, StatusCode::UNAUTHORIZED, "the first token stops working");
 }
 
 #[tokio::test]
@@ -691,4 +703,152 @@ async fn token_endpoint_errors() {
     let req = Request::post("/oauth/token").header("content-type", "application/json").body(Body::from(r#"{"grant_type":"refresh_token"}"#)).unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+// ─── Task 6: OAuth callers on the MCP endpoints ───────────────────────────────
+
+fn is_error(result: &Value) -> bool {
+    result["isError"].as_bool().unwrap_or(false)
+}
+
+fn text_of(result: &Value) -> String {
+    result["content"].as_array().into_iter().flatten().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("\n")
+}
+
+/// The signed-in user's id and email.
+async fn whoami(app: &axum::Router, session: &(String, String)) -> (String, String) {
+    let (_, me) = consent(app, session, "GET", "/v1/auth/me", None).await;
+    let user = if me["user"].is_object() { &me["user"] } else { &me };
+    (user["id"].as_str().unwrap().to_string(), user["email"].as_str().unwrap().to_string())
+}
+
+#[tokio::test]
+async fn oauth_ai_token_lists_and_generates() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let (access, _) = flow.tokens(&app, &["ai:generate", "ai:read"]).await;
+    let mcp = Mcp::new(&app, "/mcp").bearer(&access);
+    let names = mcp.tool_names().await;
+    assert!(names.iter().any(|n| n == "generate_image"), "{names:?}");
+    assert!(names.iter().any(|n| n == "get_current_user"), "{names:?}");
+
+    let image = mcp.call("generate_image", json!({ "model": "mock/image-gen", "prompt": "a fox", "preview": false })).await;
+    assert!(!is_error(&image), "{image}");
+    let me = mcp.call("get_current_user", json!({})).await;
+    assert!(!is_error(&me), "{me}");
+    let (_, email) = whoami(&app, &flow.session).await;
+    assert!(text_of(&me).contains(&email), "acts as the person who approved: {me}");
+
+    // ai:read alone cannot generate.
+    let (reader, _) = flow.tokens(&app, &["ai:read"]).await;
+    let names = Mcp::new(&app, "/mcp").bearer(&reader).tool_names().await;
+    assert!(!names.iter().any(|n| n == "generate_image"), "{names:?}");
+    assert!(names.iter().any(|n| n == "list_models"), "{names:?}");
+}
+
+#[tokio::test]
+async fn oauth_management_read_token_sees_only_reads() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let (access, _) = flow.admin_tokens(&app, &["admin:read"]).await;
+    let names = Mcp::new(&app, "/admin/mcp").bearer(&access).tool_names().await;
+    for read in ["get_spend_report", "list_members", "get_org"] {
+        assert!(names.iter().any(|n| n == read), "{read} missing: {names:?}");
+    }
+    for write in ["set_org_limits", "revoke_api_key", "update_org", "create_org"] {
+        assert!(!names.iter().any(|n| n == write), "{write} must be hidden: {names:?}");
+    }
+
+    let (writer, _) = flow.admin_tokens(&app, &["admin:read", "admin:write"]).await;
+    let names = Mcp::new(&app, "/admin/mcp").bearer(&writer).tool_names().await;
+    assert!(names.iter().any(|n| n == "set_org_limits"), "{names:?}");
+    assert!(!names.iter().any(|n| n == "create_org"), "a connected app acts in its one org: {names:?}");
+}
+
+#[tokio::test]
+async fn oauth_token_wrong_endpoint_is_401() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let (access, _) = flow.tokens(&app, &["ai:read"]).await;
+    let rpc = Mcp::new(&app, "/admin/mcp").bearer(&access).rpc("tools/list", json!({})).await;
+    assert_eq!(rpc.status, StatusCode::UNAUTHORIZED, "{}", rpc.body);
+    let challenge = www_authenticate(&rpc);
+    assert!(challenge.contains(r#"error="invalid_token""#), "{challenge}");
+    assert!(challenge.contains("oauth-protected-resource/admin/mcp"), "{challenge}");
+
+    let rpc = Mcp::new(&app, "/mcp").bearer("lgat_not-a-real-token").rpc("tools/list", json!({})).await;
+    assert_eq!(rpc.status, StatusCode::UNAUTHORIZED);
+    assert!(www_authenticate(&rpc).contains(r#"error="invalid_token""#));
+}
+
+#[tokio::test]
+async fn oauth_token_on_rest_api_is_401() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let (access, _) = flow.tokens(&app, &["ai:generate", "ai:read"]).await;
+    for path in ["/v1/models", "/v1/generations"] {
+        let req = Request::get(path).header("authorization", format!("Bearer {access}")).body(Body::empty()).unwrap();
+        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::UNAUTHORIZED, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn revoked_grant_stops_working() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let (access, refresh) = flow.tokens(&app, &["ai:read"]).await;
+    let mcp = Mcp::new(&app, "/mcp").bearer(&access);
+    assert_eq!(mcp.rpc("tools/list", json!({})).await.status, StatusCode::OK);
+    assert_eq!(form_post(&app, "/oauth/revoke", &[("token", refresh.as_str())]).await.0, StatusCode::OK);
+    assert_eq!(mcp.rpc("tools/list", json!({})).await.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn removed_member_stops_working() {
+    let (app, db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let owner = Flow::new(&app).await;
+    let member_session = mcp_support::oauth_session(&app).await;
+    let (member_id, _) = whoami(&app, &member_session).await;
+    use litegen::db::DatabaseStore;
+    db.add_org_member(&owner.org, &member_id, litegen::types::Role::Member).await.unwrap();
+    let member = Flow { client: owner.client.clone(), session: member_session, org: owner.org.clone() };
+    let (access, _) = member.tokens(&app, &["ai:read"]).await;
+    let mcp = Mcp::new(&app, "/mcp").bearer(&access);
+    assert_eq!(mcp.rpc("tools/list", json!({})).await.status, StatusCode::OK);
+
+    let (status, _) = consent(&app, &owner.session, "DELETE", &format!("/v1/orgs/{}/members/{member_id}", owner.org), None).await;
+    assert!(status.is_success(), "the owner removes the member: {status}");
+    assert_eq!(mcp.rpc("tools/list", json!({})).await.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn oauth_token_is_confined_to_its_org() {
+    let (app, db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    // The same person owns a second org.
+    let elsewhere = Flow::new(&app).await;
+    let (user_id, _) = whoami(&app, &flow.session).await;
+    use litegen::db::DatabaseStore;
+    db.add_org_member(&elsewhere.org, &user_id, litegen::types::Role::Owner).await.unwrap();
+
+    let (access, _) = flow.admin_tokens(&app, &["admin:read", "admin:write"]).await;
+    let mcp = Mcp::new(&app, "/admin/mcp").bearer(&access);
+    let own = mcp.call("get_org", json!({ "id": flow.org })).await;
+    assert!(!is_error(&own), "{own}");
+    let other = mcp.call("get_org", json!({ "id": elsewhere.org })).await;
+    assert!(is_error(&other), "the grant is for one org: {other}");
+    assert!(text_of(&other).starts_with("HTTP 403"), "{other}");
+    let renamed = mcp.call("update_org", json!({ "id": elsewhere.org, "name": "hijacked" })).await;
+    assert!(is_error(&renamed), "{renamed}");
+
+    let orgs = mcp.call("list_orgs", json!({})).await;
+    let listed: Vec<String> = orgs["structuredContent"]
+        .as_array()
+        .or_else(|| orgs["structuredContent"]["data"].as_array())
+        .or_else(|| orgs["structuredContent"]["items"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|o| o["id"].as_str().map(String::from))
+        .collect();
+    assert_eq!(listed, vec![flow.org.clone()], "only the grant's org: {orgs}");
 }

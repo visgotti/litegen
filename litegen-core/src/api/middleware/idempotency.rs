@@ -281,6 +281,7 @@ mod tests {
             session_id: None,
             org_id: Some(org.to_string()),
             app_id: Some("app".to_string()),
+            oauth_grant_id: None,
         };
         let k = uuid::Uuid::new_v4();
         assert_ne!(scope_of(Some(&ctx("org-a", Some(k)))), scope_of(Some(&ctx("org-b", Some(k)))));

@@ -13,10 +13,11 @@ use rmcp::model::JsonObject;
 use serde_json::{Map, Value};
 use tower::ServiceExt;
 
-use super::auth::Caller;
+use super::auth::{Caller, CallerKind};
 use super::registry::ToolSpec;
 use super::schema::{ArgPlan, BodyPlan};
 use super::McpShared;
+use crate::api::middleware::McpPrincipal;
 
 /// A reply from the API router.
 #[derive(Debug, Clone)]
@@ -134,11 +135,14 @@ fn head<'a>(spec: &ToolSpec, plan: &'a ArgPlan, caller: &Caller, args: &JsonObje
     Ok((builder, known))
 }
 
-/// A request builder carrying the caller's credentials.
+/// A request builder carrying the caller's credentials: their API key, or
+/// for an OAuth caller the principal MCP already resolved (an OAuth token is
+/// never accepted by the HTTP API itself).
 pub fn authorized(builder: Builder, caller: &Caller) -> Builder {
-    match &caller.authorization {
-        Some(authorization) => builder.header(header::AUTHORIZATION, authorization.clone()),
-        None => builder,
+    match (caller.kind, &caller.authorization) {
+        (CallerKind::OAuth, _) => builder.extension(McpPrincipal(caller.ctx.clone())),
+        (_, Some(authorization)) => builder.header(header::AUTHORIZATION, authorization.clone()),
+        (_, None) => builder,
     }
 }
 

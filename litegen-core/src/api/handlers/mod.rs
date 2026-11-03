@@ -3986,13 +3986,17 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         }
     });
 
+    // The groups that authorize people by role carry no scope layer of their
+    // own (a browser session holds every scope); an OAuth principal still
+    // needs its grant's scope for each call there.
+    let grant_scope = || middleware::from_fn(super::middleware::check_grant_scope);
     let authenticated_routes = axum::Router::new()
         .merge(generate_routes)
         .merge(ai_read_routes)
         .merge(read_routes)
         .merge(admin_routes)
-        .merge(auth_required_routes)
-        .merge(management::routes(csrf_state.clone()))
+        .merge(auth_required_routes.layer(grant_scope()))
+        .merge(management::routes(csrf_state.clone()).layer(grant_scope()))
         .layer(auth_layer);
 
     let api = axum::Router::new()
@@ -4490,6 +4494,7 @@ mod cache_scope_tests {
             session_id: None,
             org_id: org.map(String::from),
             app_id: app.map(String::from),
+            oauth_grant_id: None,
         }
     }
 

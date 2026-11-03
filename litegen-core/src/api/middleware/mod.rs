@@ -92,6 +92,53 @@ pub struct KeyContext {
     pub org_id: Option<String>,
     /// Active application id for this request (tenant context).
     pub app_id: Option<String>,
+    /// Set when the caller signed in to MCP through OAuth: the grant it acts
+    /// under. Such a principal acts as its `user`, confined to `org_id` and to
+    /// `scopes` (see [`within_grant`] and [`check_grant_scope`]).
+    pub oauth_grant_id: Option<String>,
+}
+
+/// The principal an in-process caller already resolved (MCP, for an OAuth
+/// access token). Request extensions cannot come from the network, so only
+/// code in this process can set one; [`auth_middleware`] then takes it as is.
+#[derive(Debug, Clone)]
+pub(crate) struct McpPrincipal(pub KeyContext);
+
+/// Whether `ctx` may act on `org_id`: every principal may try (the handler's
+/// own checks decide), except an OAuth one, which stays in the org its grant
+/// names.
+pub fn within_grant(ctx: &KeyContext, org_id: &str) -> bool {
+    ctx.oauth_grant_id.is_none() || ctx.org_id.as_deref() == Some(org_id)
+}
+
+/// For an OAuth principal, the scope its grant must hold for the request:
+/// `read` (or `admin`) to look, `admin` to change. Sessions hold every scope
+/// and API keys are checked by their routes' own scope layers, so only OAuth
+/// principals are checked here. Layered on the route groups that authorize
+/// people by role (accounts, orgs, members, management).
+pub async fn check_grant_scope(request: Request, next: Next) -> Response {
+    let read = matches!(*request.method(), axum::http::Method::GET | axum::http::Method::HEAD);
+    // Any signed-in app may ask whose account it acts for.
+    let whoami = read && request.uri().path() == "/v1/auth/me";
+    let refused = !whoami
+        && request.extensions().get::<KeyContext>().filter(|c| c.oauth_grant_id.is_some()).is_some_and(|ctx| {
+            let has = |s: Scope| ctx.scopes.contains(&s);
+            !(has(Scope::Admin) || (read && has(Scope::Read)))
+        });
+    if refused {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": {
+                    "message": "This app's sign-in does not include the scope this call needs",
+                    "type": "forbidden_scope",
+                    "code": "forbidden_scope"
+                }
+            })),
+        )
+            .into_response();
+    }
+    next.run(request).await
 }
 
 /// The platform admin (master key) is the only principal bound to no tenant:
@@ -181,6 +228,7 @@ mod scope_grant_tests {
             session_id: Some("sess-1".into()),
             org_id: Some("org-1".into()),
             app_id: Some("app-1".into()),
+            oauth_grant_id: None,
         }
     }
 
@@ -196,7 +244,50 @@ mod scope_grant_tests {
             session_id: None,
             org_id: Some("org-1".into()),
             app_id: Some("app-1".into()),
+            oauth_grant_id: None,
         }
+    }
+
+    /// An org owner signed in to MCP through OAuth, with a grant holding `scopes`.
+    fn oauth_ctx(scopes: Vec<Scope>) -> KeyContext {
+        KeyContext { scopes, session_id: None, oauth_grant_id: Some("grant-1".into()), ..session_ctx(Role::Owner) }
+    }
+
+    #[tokio::test]
+    async fn an_oauth_principal_needs_its_grants_scope_where_roles_decide() {
+        use axum::body::Body;
+        use axum::routing::get;
+        use tower::ServiceExt;
+        let status = |ctx: KeyContext, method: &str, path: &str| {
+            let app = axum::Router::new()
+                .route("/v1/orgs/o1", get(|| async { "ok" }).patch(|| async { "ok" }))
+                .route("/v1/auth/me", get(|| async { "me" }))
+                .layer(axum::middleware::from_fn(check_grant_scope))
+                .layer(axum::Extension(ctx));
+            let req = Request::builder().method(method).uri(path).body(Body::empty()).unwrap();
+            async move { app.oneshot(req).await.unwrap().status() }
+        };
+        let ok = StatusCode::OK;
+        let refused = StatusCode::FORBIDDEN;
+
+        assert_eq!(status(oauth_ctx(vec![Scope::Read]), "GET", "/v1/orgs/o1").await, ok);
+        assert_eq!(status(oauth_ctx(vec![Scope::Read]), "PATCH", "/v1/orgs/o1").await, refused, "a read grant changes nothing");
+        assert_eq!(status(oauth_ctx(vec![Scope::Admin]), "PATCH", "/v1/orgs/o1").await, ok);
+        assert_eq!(status(oauth_ctx(vec![Scope::Admin]), "GET", "/v1/orgs/o1").await, ok, "admin covers reads");
+        assert_eq!(status(oauth_ctx(vec![Scope::Generate]), "GET", "/v1/orgs/o1").await, refused, "an AI grant reads no org data");
+        assert_eq!(status(oauth_ctx(vec![Scope::Generate]), "GET", "/v1/auth/me").await, ok, "but may ask who it is");
+
+        // Sessions hold every scope and keys answer to their routes' own layers.
+        assert_eq!(status(session_ctx(Role::Viewer), "PATCH", "/v1/orgs/o1").await, ok);
+        assert_eq!(status(bearer_ctx(vec![Scope::Read]), "PATCH", "/v1/orgs/o1").await, ok);
+    }
+
+    #[test]
+    fn an_oauth_principal_stays_in_its_grants_org() {
+        assert!(within_grant(&oauth_ctx(vec![Scope::Admin]), "org-1"));
+        assert!(!within_grant(&oauth_ctx(vec![Scope::Admin]), "org-2"));
+        assert!(within_grant(&session_ctx(Role::Owner), "org-2"), "a session's handlers check membership themselves");
+        assert!(within_grant(&bearer_ctx(vec![Scope::Admin]), "org-2"), "a key's handlers check its org themselves");
     }
 
     #[test]
@@ -269,6 +360,12 @@ pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Response {
+    // A principal MCP resolved in this process (an OAuth access token) is
+    // taken as is: it carries no credentials to check again.
+    if let Some(McpPrincipal(ctx)) = request.extensions_mut().remove::<McpPrincipal>() {
+        return run_rate_limited(ctx, state, request, next).await;
+    }
+
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -380,6 +477,7 @@ pub async fn auth_middleware(
                     session_id: Some(sid),
                     org_id,
                     app_id,
+                    oauth_grant_id: None,
                 };
                 request.extensions_mut().insert(ctx);
                 return next.run(request).await;
@@ -420,6 +518,7 @@ pub(crate) fn dev_bypass_context(state: &AppState) -> Option<KeyContext> {
         session_id: None,
         org_id: Some(DEFAULT_ORG_ID.to_string()),
         app_id: Some(DEFAULT_APP_ID.to_string()),
+        oauth_grant_id: None,
     })
 }
 
@@ -442,6 +541,7 @@ fn master_key_context(state: &AppState) -> KeyContext {
         session_id: None,
         org_id,
         app_id,
+        oauth_grant_id: None,
     }
 }
 
@@ -578,6 +678,7 @@ async fn resolve_db_key(state: &AppState, api_key: &str) -> Result<KeyContext, R
         session_id: None,
         org_id: key.org_id.clone(),
         app_id: key.app_id.clone(),
+        oauth_grant_id: None,
     })
 }
 
