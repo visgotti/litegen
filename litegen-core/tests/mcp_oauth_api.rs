@@ -945,3 +945,29 @@ async fn management_tool_lists_connected_apps() {
     assert!(!is_error(&revoked), "an app may disconnect itself: {revoked}");
     assert_eq!(mcp.rpc("tools/list", json!({})).await.status, StatusCode::UNAUTHORIZED);
 }
+
+// ─── Task 9: the endpoints the dashboard's Connect page shows ────────────────
+
+#[tokio::test]
+async fn auth_config_names_the_mcp_endpoints() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let (status, config) = get_json(&app, "/v1/auth/config").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        config["mcp"],
+        json!({ "ai_url": format!("{BASE}/mcp"), "admin_url": format!("{BASE}/admin/mcp"), "oauth": true })
+    );
+
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, |c| {
+        public(c);
+        c.mcp.admin_enabled = false;
+        c.mcp.oauth.enabled = false;
+    })
+    .await;
+    let (_, config) = get_json(&app, "/v1/auth/config").await;
+    assert_eq!(config["mcp"], json!({ "ai_url": format!("{BASE}/mcp"), "admin_url": null, "oauth": false }));
+
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, |c| c.mcp.enabled = false).await;
+    let (_, config) = get_json(&app, "/v1/auth/config").await;
+    assert!(config["mcp"].is_null(), "{config}");
+}

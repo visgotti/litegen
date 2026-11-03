@@ -91,6 +91,7 @@ from .limits_list_response import LimitsListResponse
 from .liveness_response import LivenessResponse
 from .login_request import LoginRequest
 from .mask_convention import MaskConvention
+from .mcp_endpoints import McpEndpoints
 from .media_type import MediaType
 from .member_view import MemberView
 from .model_3d_animation_preset import Model3DAnimationPreset
@@ -351,6 +352,7 @@ __all__ = (
     "LivenessResponse",
     "LoginRequest",
     "MaskConvention",
+    "McpEndpoints",
     "MediaType",
     "MemberView",
     "Model3DAnimationPreset",

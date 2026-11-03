@@ -2031,6 +2031,7 @@ export interface components {
             target_type: string;
         };
         AuthConfigResponse: {
+            mcp?: null | components["schemas"]["McpEndpoints"];
             /** @description Whether email/password signup + login is enabled. */
             password_enabled: boolean;
             /**
@@ -2864,6 +2865,15 @@ export interface components {
          * @enum {string}
          */
         MaskConvention: "white_edits" | "black_edits" | "transparent_edits";
+        /** @description The MCP endpoints a deployment serves, for the dashboard's Connect page. */
+        McpEndpoints: {
+            /** @description The management endpoint, `{public_base_url}/admin/mcp`, when it is served. */
+            admin_url?: string | null;
+            /** @description The AI endpoint: `{public_base_url}/mcp`. */
+            ai_url: string;
+            /** @description Whether clients can sign in with OAuth (ChatGPT and claude.ai need it). */
+            oauth: boolean;
+        };
         /** @enum {string} */
         MediaType: "image" | "video" | "model3d";
         MemberView: {

@@ -7708,6 +7708,17 @@
                     "signup_open"
                 ],
                 "properties": {
+                    "mcp": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/McpEndpoints",
+                                "description": "Where MCP clients connect, when this deployment serves MCP."
+                            }
+                        ]
+                    },
                     "password_enabled": {
                         "type": "boolean",
                         "description": "Whether email/password signup + login is enabled."
@@ -9643,6 +9654,31 @@
                     "black_edits",
                     "transparent_edits"
                 ]
+            },
+            "McpEndpoints": {
+                "type": "object",
+                "description": "The MCP endpoints a deployment serves, for the dashboard's Connect page.",
+                "required": [
+                    "ai_url",
+                    "oauth"
+                ],
+                "properties": {
+                    "admin_url": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The management endpoint, `{public_base_url}/admin/mcp`, when it is served."
+                    },
+                    "ai_url": {
+                        "type": "string",
+                        "description": "The AI endpoint: `{public_base_url}/mcp`."
+                    },
+                    "oauth": {
+                        "type": "boolean",
+                        "description": "Whether clients can sign in with OAuth (ChatGPT and claude.ai need it)."
+                    }
+                }
             },
             "MediaType": {
                 "type": "string",

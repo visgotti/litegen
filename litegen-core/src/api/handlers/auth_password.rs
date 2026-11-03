@@ -414,6 +414,19 @@ pub struct AuthConfigResponse {
     pub providers_enabled: Vec<String>,
     /// Whether self-service signup is open (true in hosted mode).
     pub signup_open: bool,
+    /// Where MCP clients connect, when this deployment serves MCP.
+    pub mcp: Option<McpEndpoints>,
+}
+
+/// The MCP endpoints a deployment serves, for the dashboard's Connect page.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct McpEndpoints {
+    /// The AI endpoint: `{public_base_url}/mcp`.
+    pub ai_url: String,
+    /// The management endpoint, `{public_base_url}/admin/mcp`, when it is served.
+    pub admin_url: Option<String>,
+    /// Whether clients can sign in with OAuth (ChatGPT and claude.ai need it).
+    pub oauth: bool,
 }
 
 /// GET /v1/auth/config — Public auth-method discovery for the dashboard.
@@ -432,10 +445,19 @@ pub async fn auth_config(State(state): State<Arc<AppState>>) -> Response {
         .into_iter()
         .map(|s| s.to_string())
         .collect();
+    let mcp = &state.router.config.mcp;
     let body = AuthConfigResponse {
         password_enabled: state.allow_password,
         providers_enabled,
         signup_open: state.mode == Mode::Hosted,
+        mcp: mcp.enabled.then(|| {
+            use crate::mcp::{oauth, Surface};
+            McpEndpoints {
+                ai_url: oauth::discovery::resource_url(&state, Surface::Ai),
+                admin_url: mcp.admin_enabled.then(|| oauth::discovery::resource_url(&state, Surface::Admin)),
+                oauth: oauth::available(&state),
+            }
+        }),
     };
     (StatusCode::OK, Json(body)).into_response()
 }

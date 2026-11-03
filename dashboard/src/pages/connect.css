@@ -1,0 +1,156 @@
+/* Connect AI tools */
+
+.connect-intro {
+  color: var(--muted);
+  margin: -8px 0 24px;
+  max-width: 760px;
+  line-height: 1.5;
+}
+
+.connect-intro a {
+  color: var(--accent);
+}
+
+.connect-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.connect-section h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  color: var(--text-strong);
+}
+
+.connect-section > p {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.connect-url {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.connect-url-label {
+  width: 110px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.connect-url code {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.connect-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.connect-tab {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.connect-tab.active {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  color: var(--text-strong);
+}
+
+.connect-snippet {
+  margin-bottom: 14px;
+}
+
+.connect-snippet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.connect-snippet pre {
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.connect-install {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.connect-presets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.connect-preset {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.connect-preset input {
+  margin-top: 3px;
+}
+
+.connect-preset-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.connect-preset-text strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.connect-key-form {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.connect-small {
+  color: var(--muted);
+  font-size: 12px;
+}

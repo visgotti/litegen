@@ -4,6 +4,7 @@ import type { ApiKeyInfo, PatchKeyBody, WebhookDelivery } from '@litegen/sdk';
 import { showToast } from '../components/toast-store';
 import { permissionsFor } from '../components/permissions';
 import ScopePresetPicker from '../components/ScopePresetPicker';
+import KeyCreatedBanner from '../components/KeyCreatedBanner';
 import { useTenant } from '../context/tenant';
 import { PRESETS, presetFor, scopeLabel, type ScopePreset } from './key-scopes';
 
@@ -231,19 +232,7 @@ export default function Keys() {
       <h2 className="page-title">API Keys</h2>
 
       {error && <div className="alert alert-error" data-testid="keys-error">{error}</div>}
-      {createdKey && (
-        <div className="alert alert-success" data-testid="key-created-banner">
-          {createdPublicId && (
-            <>
-              Public key id: <code data-testid="key-public-id" style={{ userSelect: 'all' }}>{createdPublicId}</code>
-              <br />
-            </>
-          )}
-          Secret key: <code data-testid="key-secret" style={{ userSelect: 'all' }}>{createdKey}</code>
-          <br />
-          <small>Copy the secret now — it won't be shown again.</small>
-        </div>
-      )}
+      {createdKey && <KeyCreatedBanner secret={createdKey} publicId={createdPublicId} />}
       {rotatedKey && (
         <div className="alert alert-success" data-testid="key-rotate-result-banner">
           Key rotated — new secret: <code style={{ userSelect: 'all' }}>{rotatedKey}</code>

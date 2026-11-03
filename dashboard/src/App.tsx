@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
-import { BarChart3, Activity, Layers, Database, Key, Plug, Sparkles, Film, ShieldAlert, Users as UsersIcon, Building2, Wallet, PieChart, UserRound, SlidersHorizontal } from 'lucide-react';
+import { BarChart3, Activity, Layers, Database, Key, Plug, PlugZap, Sparkles, Film, ShieldAlert, Users as UsersIcon, Building2, Wallet, PieChart, UserRound, SlidersHorizontal } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import Overview from './pages/Overview';
 import Logs from './pages/Logs';
@@ -13,6 +13,7 @@ import Login from './pages/Login';
 import Signup from './pages/Signup';
 import AcceptInvite from './pages/AcceptInvite';
 import OAuthConsent from './pages/OAuthConsent';
+import Connect from './pages/Connect';
 import Account from './pages/Account';
 import Users from './pages/Users';
 import Organization from './pages/Organization';
@@ -37,6 +38,7 @@ const BASE_NAV_ITEMS = [
   { to: '/health', icon: Database, label: 'Health', testid: undefined },
   { to: '/providers', icon: Plug, label: 'Providers', testid: 'nav-providers' },
   { to: '/keys', icon: Key, label: 'API Keys', testid: undefined },
+  { to: '/connect', icon: PlugZap, label: 'Connect AI tools', testid: 'nav-connect' },
   { to: '/playground', icon: Sparkles, label: 'Playground', testid: undefined },
   { to: '/generations', icon: Film, label: 'Generations', testid: undefined },
   { to: '/audit', icon: ShieldAlert, label: 'Audit', testid: undefined },
@@ -121,6 +123,7 @@ function AppShell() {
           <Route path="/models" element={<Models />} />
           <Route path="/health" element={<Health />} />
           <Route path="/keys" element={<Keys />} />
+          <Route path="/connect" element={<Connect />} />
           <Route path="/playground" element={<Playground />} />
           <Route path="/generations" element={<Generations />} />
           <Route path="/audit" element={<Audit />} />

@@ -268,6 +268,7 @@ use utoipa::OpenApi;
         crate::types::PasswordReset,
         // Auth handler schemas
         crate::api::handlers::auth_password::AuthConfigResponse,
+        crate::api::handlers::auth_password::McpEndpoints,
         crate::api::handlers::auth_password::PublicUser,
         crate::api::handlers::auth_password::AuthResponse,
         crate::api::handlers::auth_password::SignupRequest,
