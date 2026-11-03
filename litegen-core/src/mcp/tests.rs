@@ -533,6 +533,35 @@ fn status_paths() {
 }
 
 #[test]
+fn waiting_slows_down_and_heeds_the_api() {
+    use crate::mcp::dispatch::HttpReply;
+    use crate::mcp::wait::next_delay;
+    use std::time::Duration;
+    let reply = |status: u16, headers: &[(&str, &str)]| {
+        let mut map = axum::http::HeaderMap::new();
+        for (name, value) in headers {
+            map.insert(axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(), value.parse().unwrap());
+        }
+        HttpReply { status: axum::http::StatusCode::from_u16(status).unwrap(), headers: map, body: Bytes::new() }
+    };
+    let ok = reply(200, &[]);
+    assert_eq!(next_delay(1, &ok), Duration::from_secs(2));
+    assert_eq!(next_delay(2, &ok), Duration::from_secs(3));
+    assert_eq!(next_delay(3, &ok), Duration::from_millis(4500));
+    assert_eq!(next_delay(200, &ok), Duration::from_secs(10), "at most ten seconds apart");
+
+    // A 429 or 503 is sat out for as long as it asks, never less than the schedule.
+    assert_eq!(next_delay(1, &reply(429, &[("retry-after", "7")])), Duration::from_secs(7));
+    assert_eq!(next_delay(1, &reply(503, &[("retry-after", "1")])), Duration::from_secs(2));
+    assert_eq!(next_delay(1, &reply(429, &[("retry-after", "Wed, 21 Oct 2015 07:28:00 GMT")])), Duration::from_secs(2), "a date is ignored");
+
+    // A rate-limited key's reads spend at most half its requests per minute.
+    assert_eq!(next_delay(1, &reply(200, &[("x-ratelimit-limit", "6")])), Duration::from_secs(20));
+    assert_eq!(next_delay(1, &reply(200, &[("x-ratelimit-limit", "6000")])), Duration::from_secs(2));
+    assert_eq!(next_delay(1, &reply(200, &[("x-ratelimit-limit", "0")])), Duration::from_secs(2), "0 is no limit");
+}
+
+#[test]
 fn a_stored_record_links_its_files() {
     use crate::mcp::content::links;
     let link_json = |tool: &str, record: Value| -> Vec<Value> {

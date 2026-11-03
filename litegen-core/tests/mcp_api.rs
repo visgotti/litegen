@@ -659,3 +659,46 @@ async fn wait_works_for_a_read_only_key() {
     let record = reader.call("get_generation", json!({ "id": id })).await;
     assert!(!blocks(&record, "resource_link").is_empty(), "get_generation links it too: {record}");
 }
+
+/// A key limited to `rpm` requests a minute, and a 3D job it started (the
+/// mock needs three reads to finish).
+async fn limited_key_with_job(app: &axum::Router, rpm: u32) -> (String, String) {
+    let body = json!({ "name": "limited", "scopes": "generate,read", "rpm_limit": rpm });
+    let (_, key) = mcp_support::create_key_from(app, body).await;
+    let job = Mcp::new(app, "/mcp").bearer(&key).call("generate_3d_model", json!({ "model": "mock/mesh-3d", "prompt": "a fox" })).await;
+    assert!(!is_error(&job), "{job}");
+    (key, job["structuredContent"]["id"].as_str().unwrap().to_string())
+}
+
+#[tokio::test]
+async fn wait_rides_out_the_rate_limit() {
+    let (app, _db, _dir) = mcp_support::secured_app(Mode::SingleTenant).await;
+    let (key, id) = limited_key_with_job(&app, 60).await;
+
+    // Spend the rest of the key's minute.
+    let mut limited = false;
+    for _ in 0..200 {
+        let req = Request::builder().uri("/v1/models").header("authorization", format!("Bearer {key}")).body(Body::empty()).unwrap();
+        if raw(&app, req).await.0 == StatusCode::TOO_MANY_REQUESTS {
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited, "the key never hit its limit");
+
+    let result = Mcp::new(&app, "/mcp").bearer(&key).call("wait_for_generation", json!({ "id": id, "timeout_seconds": 5 })).await;
+    assert!(!is_error(&result), "the wait sat out the 429 instead of failing: {result}");
+}
+
+#[tokio::test]
+async fn wait_leaves_room_in_the_rate_limit() {
+    let (app, _db, _dir) = mcp_support::secured_app(Mode::SingleTenant).await;
+    // Six a minute: reading every 20 s spends half of them.
+    let (key, id) = limited_key_with_job(&app, 6).await;
+
+    let started = std::time::Instant::now();
+    let result = Mcp::new(&app, "/mcp").bearer(&key).call("wait_for_generation", json!({ "id": id, "timeout_seconds": 5 })).await;
+    assert!(started.elapsed() < std::time::Duration::from_secs(2), "the next read is 20 s off, past the timeout, so it returns at once");
+    assert!(!is_error(&result), "{result}");
+    assert!(text_of(&result).contains("Call wait_for_generation again"), "one read, still running: {result}");
+}

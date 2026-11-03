@@ -264,7 +264,12 @@ pub async fn http_get(app: &Router, path: &str, bearer: &str) -> Value {
 
 /// Create an API key with the master key; returns `(id, secret)`.
 pub async fn create_key_with_id(app: &Router, scopes: &str) -> (String, String) {
-    let body = json!({ "name": format!("mcp-{scopes}"), "scopes": scopes });
+    create_key_from(app, json!({ "name": format!("mcp-{scopes}"), "scopes": scopes })).await
+}
+
+/// Create an API key with the master key from a whole `POST /v1/keys` body
+/// (scopes, `rpm_limit`, …); returns `(id, secret)`.
+pub async fn create_key_from(app: &Router, body: Value) -> (String, String) {
     let req = Request::builder()
         .method("POST")
         .uri("/v1/keys")
@@ -276,6 +281,6 @@ pub async fn create_key_with_id(app: &Router, scopes: &str) -> (String, String) 
     let status = resp.status();
     let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(status, StatusCode::CREATED, "create key {scopes}: {json}");
+    assert_eq!(status, StatusCode::CREATED, "create key {body}: {json}");
     (json["id"].as_str().unwrap().to_string(), json["key"].as_str().unwrap().to_string())
 }

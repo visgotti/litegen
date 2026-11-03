@@ -65,7 +65,9 @@ status, code and message the HTTP API gives. Common ones:
 - `invalid_request_error` (400): a parameter is wrong; `get_model` shows the
   model's parameters.
 - `rate_limit_exceeded` (429): the key's per-minute limit. Each tool call
-  counts as one request.
+  counts as one request, and each status read `wait_for_generation` makes
+  counts too. It paces itself to use at most half the key's limit and sits
+  out a 429 instead of failing.
 
 **"LiteGen ignored these parameters".** The call used `strict: false` and
 the model doesn't take those parameters. Drop them, or check `get_model`.
@@ -84,7 +86,11 @@ least 600 s.
 
 **`wait_for_generation` keeps returning "Still processing".** It waits at
 most `timeout_seconds` (default 45, max 230) so it fits client limits. Call
-it again with the same id; the job keeps running on LiteGen in between.
+it again with the same id; the job keeps running on LiteGen in between. It
+reads the job's state at once, then again after two seconds, and the gap
+grows to ten. A key limited to N requests a minute reads at most N/2 times a
+minute: at 6 a minute, every 20 seconds. So a tightly limited key can get
+"Still processing" after a single read.
 
 **No progress updates.** Progress needs a client that sends a progress token
 and a proxy that does not buffer `text/event-stream` responses. See
