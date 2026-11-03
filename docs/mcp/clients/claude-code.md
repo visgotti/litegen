@@ -129,7 +129,25 @@ server and its tools; `claude mcp get litegen` shows the stored entry.
 
 ## OAuth
 
-Coming with OAuth support.
+Instead of a key, Claude Code can sign in with your LiteGen account. Add the
+server without a header:
+
+```bash
+claude mcp add --transport http --scope user litegen https://app.litegen.ai/api/mcp
+```
+
+`claude mcp list` then shows `! Needs authentication`. Sign in with
+`claude mcp login litegen` (it opens your browser; `--no-browser` prints the
+URL instead, for an SSH session), or run `/mcp` in a session and choose
+**Authenticate**. On LiteGen's consent page, pick the organization, the app
+and the scopes, and approve. LiteGen shows Claude Code as "Published by
+claude.ai": Claude Code identifies itself with its client metadata document.
+After that, `claude mcp list` shows `✔ Connected`, and Claude Code renews
+its token on its own.
+
+`claude mcp logout litegen` forgets Claude Code's tokens. To cut the app off
+on LiteGen's side, revoke it under **Connected apps** on the dashboard's
+Connect AI tools page.
 
 ## Troubleshooting
 
@@ -153,4 +171,9 @@ Coming with OAuth support.
 2.1.316 against a local LiteGen server: `claude mcp add-json` with
 `${LITEGEN_API_KEY}` and `claude mcp add --header` both showed
 `✔ Connected`, on `/mcp` and `/admin/mcp`; with the variable unset, the
-401 and the warning above.
+401 and the warning above. OAuth checked on 2026-11-03 with Claude Code
+2.1.317 against a local server: the server added without a key showed
+`! Needs authentication`; `claude mcp login --no-browser` signed in (LiteGen
+fetched Claude Code's client metadata document from claude.ai, the loopback
+redirect matched on Claude Code's own port, and Claude Code accepted the
+`iss`), then `claude mcp list` showed `✔ Connected`.
