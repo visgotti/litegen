@@ -78,6 +78,60 @@ fn token(grant_id: &str, kind: TokenKind, now: DateTime<Utc>) -> TokenRow {
     }
 }
 
+fn client(registration: Registration, at: DateTime<Utc>) -> OAuthClient {
+    let client_id = match registration {
+        Registration::Dcr => uid("lgc"),
+        Registration::Cimd => format!("https://{}.example.com/client.json", uid("c")),
+    };
+    OAuthClient {
+        client_id,
+        registration,
+        client_name: "Test client".into(),
+        redirect_uris: vec!["http://127.0.0.1/callback".into()],
+        logo_uri: None,
+        client_uri: None,
+        metadata: serde_json::json!({ "client_name": "Test client" }),
+        created_at: at,
+        refreshed_at: at,
+        last_used_at: None,
+    }
+}
+
+/// An org with one app, as real rows: purging keeps only the grants whose
+/// org and app still exist.
+async fn org_and_app(db: &dyn DatabaseStore) -> (String, String) {
+    let now = Utc::now();
+    let (org, app) = (uid("org"), uid("app"));
+    db.create_organization(&crate::types::Organization {
+        id: org.clone(),
+        name: "Store Test".into(),
+        slug: org.clone(),
+        plan: "free".into(),
+        status: "active".into(),
+        created_at: now,
+        updated_at: now,
+    })
+    .await
+    .unwrap();
+    db.create_application(&crate::types::Application {
+        id: app.clone(),
+        org_id: org.clone(),
+        name: "Store Test".into(),
+        slug: app.clone(),
+        status: "active".into(),
+        created_at: now,
+        updated_at: now,
+    })
+    .await
+    .unwrap();
+    (org, app)
+}
+
+/// A grant in a real org and app.
+fn grant_in(org: &str, app: &str, client_id: &str, user_id: &str, now: DateTime<Utc>) -> Grant {
+    Grant { org_id: org.to_string(), app_id: Some(app.to_string()), ..grant(client_id, user_id, now) }
+}
+
 async fn clients_round_trip(db: &dyn DatabaseStore) {
     let s = store(db);
     let now = Utc::now();
@@ -91,19 +145,23 @@ async fn clients_round_trip(db: &dyn DatabaseStore) {
         metadata: serde_json::json!({ "client_name": "Test client" }),
         created_at: now,
         refreshed_at: now,
+        last_used_at: None,
     };
     assert!(s.get_client(&client.client_id).await.unwrap().is_none());
     s.upsert_client(&client).await.unwrap();
     let got = s.get_client(&client.client_id).await.unwrap().expect("stored");
     assert_eq!(got.redirect_uris, client.redirect_uris);
     assert_eq!(got.registration, Registration::Dcr);
+    assert_eq!(got.last_used_at, None);
 
+    s.touch_client(&client.client_id, now).await.unwrap();
     client.client_name = "Renamed".into();
     client.refreshed_at = now + Duration::hours(1);
     s.upsert_client(&client).await.unwrap();
     let got = s.get_client(&client.client_id).await.unwrap().unwrap();
     assert_eq!(got.client_name, "Renamed");
     assert_eq!(got.created_at.timestamp(), now.timestamp(), "an update keeps the first registration time");
+    assert_eq!(got.last_used_at.map(|t| t.timestamp()), Some(now.timestamp()), "and when it was last used");
 }
 
 async fn request_approve_then_consume_once(db: &dyn DatabaseStore) {
@@ -232,24 +290,72 @@ async fn find_active_grant_ignores_revoked(db: &dyn DatabaseStore) {
     assert_eq!(s.find_active_grant(&client, &user, "org-1", None, Surface::Ai).await.unwrap().map(|f| f.id), Some(appless.id));
 }
 
+async fn claim_grant_keeps_one_live_grant(db: &dyn DatabaseStore) {
+    let s = store(db);
+    let now = Utc::now();
+    let (client, user) = (uid("lgc"), uid("user"));
+    let first = grant(&client, &user, now);
+    assert_eq!(s.claim_grant(&first).await.unwrap(), first, "the first claim inserts");
+
+    // Signing in again: the same grant, holding the new scopes.
+    let again = Grant { scopes: vec!["ai:read".into()], ..grant(&client, &user, now) };
+    let claimed = s.claim_grant(&again).await.unwrap();
+    assert_eq!(claimed.id, first.id);
+    assert_eq!(claimed.scopes, vec!["ai:read".to_string()]);
+    assert_eq!(s.get_grant(&first.id).await.unwrap().unwrap().scopes, vec!["ai:read".to_string()]);
+    assert!(s.get_grant(&again.id).await.unwrap().is_none(), "no second grant");
+
+    // The database itself refuses a second live grant for the same client,
+    // person, org, app and endpoint.
+    assert!(s.insert_grant(&grant(&client, &user, now)).await.is_err());
+
+    // Another app is another grant, and so is one after a revocation.
+    let appless = Grant { app_id: None, ..grant(&client, &user, now) };
+    assert_eq!(s.claim_grant(&appless).await.unwrap().id, appless.id);
+    s.revoke_grant(&first.id, now).await.unwrap();
+    let fresh = grant(&client, &user, now);
+    assert_eq!(s.claim_grant(&fresh).await.unwrap().id, fresh.id);
+}
+
+async fn concurrent_claims_share_one_grant(db: &dyn DatabaseStore) {
+    let s = store(db);
+    let now = Utc::now();
+    for _ in 0..10 {
+        let (client, user) = (uid("lgc"), uid("user"));
+        let (a, b) = (grant(&client, &user, now), grant(&client, &user, now));
+        let (a, b) = tokio::join!(s.claim_grant(&a), s.claim_grant(&b));
+        assert_eq!(a.unwrap().id, b.unwrap().id, "two first sign-ins at once end with one grant");
+    }
+}
+
+async fn assertion_ids_are_single_use(db: &dyn DatabaseStore) {
+    let s = store(db);
+    let now = Utc::now();
+    let (client, jti) = (uid("https://c.example/client.json"), uid("jti"));
+    assert!(s.record_assertion(&client, &jti, now + Duration::minutes(5)).await.unwrap(), "first use");
+    assert!(!s.record_assertion(&client, &jti, now + Duration::minutes(5)).await.unwrap(), "a replay");
+    assert!(s.record_assertion(&uid("https://d.example/client.json"), &jti, now).await.unwrap(), "ids are per client");
+}
+
 async fn purge_drops_only_what_expired(db: &dyn DatabaseStore) {
     let s = store(db);
     // Ten years back, so purging never touches rows other tests write
     // concurrently into a shared Postgres database.
     let base = Utc::now() - Duration::days(3650);
+    let (org, app) = org_and_app(db).await;
     let old = request(&uid("lgc"), base - Duration::days(3));
     let fresh = request(&uid("lgc"), base);
     s.insert_request(&old).await.unwrap();
     s.insert_request(&fresh).await.unwrap();
 
-    let g = grant(&uid("lgc"), &uid("user"), base - Duration::days(3));
+    let g = grant_in(&org, &app, &uid("lgc"), &uid("user"), base - Duration::days(3));
     s.insert_grant(&g).await.unwrap();
     let stale = token(&g.id, TokenKind::Access, base - Duration::days(3));
     let live = TokenRow { expires_at: base + Duration::days(30), ..token(&g.id, TokenKind::Refresh, base) };
     s.insert_token(&stale).await.unwrap();
     s.insert_token(&live).await.unwrap();
 
-    let removed = s.purge_expired(base - Duration::days(1)).await.unwrap();
+    let removed = s.purge_expired(base).await.unwrap();
     assert!(removed >= 2, "the old request and the stale token: {removed}");
     assert!(s.get_request(&old.id).await.unwrap().is_none());
     assert!(s.get_request(&fresh.id).await.unwrap().is_some());
@@ -257,16 +363,93 @@ async fn purge_drops_only_what_expired(db: &dyn DatabaseStore) {
     assert!(s.get_token(&live.token_hash).await.unwrap().is_some());
     assert!(s.get_grant(&g.id).await.unwrap().is_some(), "an active grant stays");
 
-    // A grant revoked before the cutoff goes, with its tokens; one revoked
-    // after it stays.
+    // A grant revoked over a day ago goes, with its tokens; one revoked
+    // since stays.
     s.revoke_grant(&g.id, base - Duration::days(2)).await.unwrap();
-    let recent = grant(&uid("lgc"), &uid("user"), base);
+    let recent = grant_in(&org, &app, &uid("lgc"), &uid("user"), base);
     s.insert_grant(&recent).await.unwrap();
     s.revoke_grant(&recent.id, base).await.unwrap();
-    s.purge_expired(base - Duration::days(1)).await.unwrap();
+    s.purge_expired(base).await.unwrap();
     assert!(s.get_token(&live.token_hash).await.unwrap().is_none());
     assert!(s.get_grant(&g.id).await.unwrap().is_none());
     assert!(s.get_grant(&recent.id).await.unwrap().is_some());
+
+    // An assertion id is remembered until a day after its assertion expires.
+    let (spent, current) = (uid("jti"), uid("jti"));
+    s.record_assertion("client", &spent, base - Duration::days(2)).await.unwrap();
+    s.record_assertion("client", &current, base).await.unwrap();
+    s.purge_expired(base).await.unwrap();
+    assert!(s.record_assertion("client", &spent, base).await.unwrap(), "forgotten");
+    assert!(!s.record_assertion("client", &current, base).await.unwrap(), "still remembered");
+}
+
+async fn purge_drops_unused_clients(db: &dyn DatabaseStore) {
+    let s = store(db);
+    let base = Utc::now() - Duration::days(3650);
+    let (org, app) = org_and_app(db).await;
+
+    // Registered but never signed in: gone after 30 days, unless a sign-in
+    // is under way.
+    let abandoned = client(Registration::Dcr, base - Duration::days(31));
+    let newer = client(Registration::Dcr, base - Duration::days(29));
+    let signing_in = client(Registration::Dcr, base - Duration::days(31));
+    // Signed in before: kept while someone has it connected, and for a year
+    // after its last use.
+    let used = |days_ago: i64| OAuthClient { last_used_at: Some(base - Duration::days(days_ago)), ..client(Registration::Dcr, base - Duration::days(400)) };
+    let (idle, idle_connected, recently_used) = (used(366), used(366), used(300));
+    // A copy of a metadata document is fetched again when needed: it goes
+    // once it is a day stale and nothing refers to it.
+    let stale_doc = client(Registration::Cimd, base - Duration::days(2));
+    let stale_doc_connected = client(Registration::Cimd, base - Duration::days(2));
+    let fresh_doc = client(Registration::Cimd, base - Duration::hours(12));
+    for c in [&abandoned, &newer, &signing_in, &idle, &idle_connected, &recently_used, &stale_doc, &stale_doc_connected, &fresh_doc] {
+        s.upsert_client(c).await.unwrap();
+    }
+    s.insert_request(&request(&signing_in.client_id, base)).await.unwrap();
+    s.insert_grant(&grant_in(&org, &app, &idle_connected.client_id, &uid("user"), base - Duration::days(400))).await.unwrap();
+    s.insert_grant(&grant_in(&org, &app, &stale_doc_connected.client_id, &uid("user"), base - Duration::days(2))).await.unwrap();
+
+    s.purge_expired(base).await.unwrap();
+    let kept = |c: &OAuthClient| {
+        let id = c.client_id.clone();
+        async move { s.get_client(&id).await.unwrap().is_some() }
+    };
+    assert!(!kept(&abandoned).await, "never signed in, registered 31 days ago");
+    assert!(kept(&newer).await);
+    assert!(kept(&signing_in).await, "a sign-in is under way");
+    assert!(!kept(&idle).await, "no grant, unused for over a year");
+    assert!(kept(&idle_connected).await, "someone still has it connected");
+    assert!(kept(&recently_used).await);
+    assert!(!kept(&stale_doc).await, "a stale copy nothing refers to");
+    assert!(kept(&stale_doc_connected).await);
+    assert!(kept(&fresh_doc).await);
+}
+
+async fn purge_drops_grants_of_deleted_orgs_and_apps(db: &dyn DatabaseStore) {
+    let s = store(db);
+    let base = Utc::now() - Duration::days(3650);
+    let (org, app) = org_and_app(db).await;
+    let (gone_org, its_app) = org_and_app(db).await;
+    let (kept_org, gone_app) = org_and_app(db).await;
+    let at = base - Duration::days(2);
+    let live = grant_in(&org, &app, &uid("lgc"), &uid("user"), at);
+    let appless = Grant { app_id: None, ..grant_in(&org, &app, &uid("lgc"), &uid("user"), at) };
+    let org_deleted = grant_in(&gone_org, &its_app, &uid("lgc"), &uid("user"), at);
+    let app_deleted = grant_in(&kept_org, &gone_app, &uid("lgc"), &uid("user"), at);
+    for g in [&live, &appless, &org_deleted, &app_deleted] {
+        s.insert_grant(g).await.unwrap();
+    }
+    let orphaned_token = token(&org_deleted.id, TokenKind::Refresh, base);
+    s.insert_token(&orphaned_token).await.unwrap();
+    assert!(db.delete_organization(&gone_org).await.unwrap());
+    assert!(db.delete_application(&gone_app).await.unwrap());
+
+    s.purge_expired(base).await.unwrap();
+    assert!(s.get_grant(&live.id).await.unwrap().is_some());
+    assert!(s.get_grant(&appless.id).await.unwrap().is_some(), "acts in its org's first app");
+    assert!(s.get_grant(&org_deleted.id).await.unwrap().is_none(), "its org was deleted");
+    assert!(s.get_token(&orphaned_token.token_hash).await.unwrap().is_none(), "with its tokens");
+    assert!(s.get_grant(&app_deleted.id).await.unwrap().is_none(), "its app was deleted");
 }
 
 /// Each contract as one test per backend, so a failure names both.
@@ -304,5 +487,10 @@ on_every_backend!(
     rotate_refresh_detects_reuse,
     revoke_grant_revokes_tokens,
     find_active_grant_ignores_revoked,
+    claim_grant_keeps_one_live_grant,
+    concurrent_claims_share_one_grant,
+    assertion_ids_are_single_use,
     purge_drops_only_what_expired,
+    purge_drops_unused_clients,
+    purge_drops_grants_of_deleted_orgs_and_apps,
 );

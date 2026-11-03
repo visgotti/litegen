@@ -89,6 +89,9 @@ sha2 = "0.10"
 aes-gcm = "0.10"
 # HMAC for webhook signing
 hmac = "0.12"
+# Signature checks for MCP OAuth private_key_jwt client assertions (RS256,
+# PS256, ES256, EdDSA); already built as rustls's crypto provider
+aws-lc-rs = "1"
 
 # Password hashing (user accounts)
 argon2 = { version = "0.5", features = ["password-hash", "rand"] }

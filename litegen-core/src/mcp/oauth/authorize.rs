@@ -5,13 +5,14 @@
 //! (`/v1/oauth/requests/{id}`, `…/approve`, `…/deny`), which answers with
 //! where to send the browser back.
 //!
-//! A request that names an unknown client or an undeclared redirect URI gets
-//! an error page: LiteGen never redirects to a URI it has not verified. Every
-//! other error, and every answer, goes back to the client's redirect URI with
-//! `iss` (RFC 9207).
+//! A request that names an unknown client or an undeclared redirect URI, or
+//! names either twice, gets an error page: LiteGen never redirects to a URI it
+//! has not verified. Every other error, and every answer, goes back to the
+//! client's redirect URI with `iss` (RFC 9207).
 
 use std::sync::Arc;
 
+use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -38,7 +39,8 @@ const CODE_TTL: Duration = Duration::seconds(60);
 
 // ─── GET /oauth/authorize ─────────────────────────────────────────────────────
 
-#[derive(Debug, Default, Deserialize)]
+/// The parameters LiteGen reads, the first of each.
+#[derive(Debug, Default)]
 pub struct AuthorizeParams {
     pub response_type: Option<String>,
     pub client_id: Option<String>,
@@ -48,11 +50,48 @@ pub struct AuthorizeParams {
     pub code_challenge: Option<String>,
     pub code_challenge_method: Option<String>,
     pub resource: Option<String>,
+    /// Those given more than once, which RFC 6749 §3.1 does not allow.
+    pub repeated: Vec<String>,
 }
 
-pub async fn authorize(State(shared): State<Arc<OAuthShared>>, Query(p): Query<AuthorizeParams>) -> Response {
+impl AuthorizeParams {
+    fn from_pairs(pairs: &[(String, String)]) -> AuthorizeParams {
+        let mut p = AuthorizeParams::default();
+        for (key, value) in pairs {
+            let slot = match key.as_str() {
+                "response_type" => &mut p.response_type,
+                "client_id" => &mut p.client_id,
+                "redirect_uri" => &mut p.redirect_uri,
+                "scope" => &mut p.scope,
+                "state" => &mut p.state,
+                "code_challenge" => &mut p.code_challenge,
+                "code_challenge_method" => &mut p.code_challenge_method,
+                "resource" => &mut p.resource,
+                _ => continue,
+            };
+            if slot.is_none() {
+                *slot = Some(value.clone());
+            } else if !p.repeated.contains(key) {
+                p.repeated.push(key.clone());
+            }
+        }
+        p
+    }
+
+    fn is_repeated(&self, key: &str) -> bool {
+        self.repeated.iter().any(|r| r == key)
+    }
+}
+
+pub async fn authorize(State(shared): State<Arc<OAuthShared>>, query: Result<Query<Vec<(String, String)>>, QueryRejection>) -> Response {
     let state = &shared.state;
     let Some(store) = state.db.mcp_oauth() else { return error_page("OAuth is not available on this server.") };
+    let Ok(Query(pairs)) = query else { return error_page("its parameters can't be read.") };
+    let p = AuthorizeParams::from_pairs(&pairs);
+    // Where to answer must be beyond doubt before anything goes back to the app.
+    if let Some(key) = ["client_id", "redirect_uri"].into_iter().find(|key| p.is_repeated(key)) {
+        return error_page(&format!("it gives {key} more than once."));
+    }
     let Some(client_id) = p.client_id.as_deref().filter(|s| !s.is_empty()) else {
         return error_page("it names no client_id.");
     };
@@ -71,6 +110,12 @@ pub async fn authorize(State(shared): State<Arc<OAuthShared>>, Query(p): Query<A
     // The redirect URI is verified: from here on the client hears about
     // problems there.
     let back = Back { redirect_uri: &redirect_uri, state: p.state.as_deref(), issuer: issuer(state) };
+    if p.is_repeated("resource") {
+        return back.error("invalid_target", "name one resource: one sign-in is for one MCP endpoint");
+    }
+    if let Some(key) = p.repeated.first() {
+        return back.error("invalid_request", &format!("{key} is given more than once"));
+    }
     if p.response_type.as_deref() != Some("code") {
         return back.error("unsupported_response_type", "response_type must be code");
     }

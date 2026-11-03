@@ -22,10 +22,11 @@ struct ClientRow {
     metadata_json: String,
     created_at: DateTime<Utc>,
     refreshed_at: DateTime<Utc>,
+    last_used_at: Option<DateTime<Utc>>,
 }
 
 const CLIENT_COLS: &str =
-    "client_id, registration, client_name, redirect_uris, logo_uri, client_uri, metadata_json, created_at, refreshed_at";
+    "client_id, registration, client_name, redirect_uris, logo_uri, client_uri, metadata_json, created_at, refreshed_at, last_used_at";
 
 fn client_from_row(r: ClientRow) -> Option<OAuthClient> {
     Some(OAuthClient {
@@ -38,6 +39,7 @@ fn client_from_row(r: ClientRow) -> Option<OAuthClient> {
         metadata: serde_json::from_str(&r.metadata_json).unwrap_or(serde_json::Value::Null),
         created_at: r.created_at,
         refreshed_at: r.refreshed_at,
+        last_used_at: r.last_used_at,
     })
 }
 
@@ -150,6 +152,20 @@ fn split(scopes: &str) -> Vec<String> {
     scopes.split_whitespace().map(String::from).collect()
 }
 
+fn is_unique_violation(e: &sqlx::Error) -> bool {
+    e.as_database_error().is_some_and(|d| d.is_unique_violation())
+}
+
+/// Grants whose org, or whose named app, no longer exists; `?` is a cutoff
+/// on when the grant was made.
+const ORPHANED_GRANTS: &str = "SELECT g.id FROM mcp_oauth_grants g WHERE g.created_at < ? \
+     AND (NOT EXISTS (SELECT 1 FROM organizations o WHERE o.id = g.org_id) \
+     OR (g.app_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM applications a WHERE a.id = g.app_id)))";
+
+/// No sign-in under way for the client, and no grant refers to it.
+const CLIENT_UNREFERENCED: &str = "NOT EXISTS (SELECT 1 FROM mcp_oauth_requests r WHERE r.client_id = mcp_oauth_clients.client_id) \
+     AND NOT EXISTS (SELECT 1 FROM mcp_oauth_grants g WHERE g.client_id = mcp_oauth_clients.client_id)";
+
 macro_rules! impl_mcp_oauth_store {
     ($ty:ty, $sql:path) => {
         #[async_trait]
@@ -157,7 +173,7 @@ macro_rules! impl_mcp_oauth_store {
             // ─── Clients ────────────────────────────────────────────────
             async fn upsert_client(&self, c: &OAuthClient) -> Result<(), sqlx::Error> {
                 let sql = $sql(&format!(
-                    "INSERT INTO mcp_oauth_clients ({CLIENT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                    "INSERT INTO mcp_oauth_clients ({CLIENT_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                      ON CONFLICT (client_id) DO UPDATE SET registration = excluded.registration, \
                      client_name = excluded.client_name, redirect_uris = excluded.redirect_uris, \
                      logo_uri = excluded.logo_uri, client_uri = excluded.client_uri, \
@@ -173,6 +189,7 @@ macro_rules! impl_mcp_oauth_store {
                     .bind(c.metadata.to_string())
                     .bind(c.created_at)
                     .bind(c.refreshed_at)
+                    .bind(c.last_used_at)
                     .execute(self.pool())
                     .await?;
                 Ok(())
@@ -182,6 +199,12 @@ macro_rules! impl_mcp_oauth_store {
                 let sql = $sql(&format!("SELECT {CLIENT_COLS} FROM mcp_oauth_clients WHERE client_id = ?"));
                 let row = sqlx::query_as::<_, ClientRow>(&sql).bind(client_id).fetch_optional(self.pool()).await?;
                 Ok(row.and_then(client_from_row))
+            }
+
+            async fn touch_client(&self, client_id: &str, at: DateTime<Utc>) -> Result<(), sqlx::Error> {
+                let sql = $sql("UPDATE mcp_oauth_clients SET last_used_at = ? WHERE client_id = ?");
+                sqlx::query(&sql).bind(at).bind(client_id).execute(self.pool()).await?;
+                Ok(())
             }
 
             // ─── Requests and codes ─────────────────────────────────────
@@ -279,6 +302,23 @@ macro_rules! impl_mcp_oauth_store {
                     .execute(self.pool())
                     .await?;
                 Ok(())
+            }
+
+            async fn claim_grant(&self, g: &Grant) -> Result<Grant, sqlx::Error> {
+                // When two first sign-ins race, the unique index fails the
+                // later insert, and that claim takes the grant that won.
+                for _ in 0..3 {
+                    if let Some(live) = self.find_active_grant(&g.client_id, &g.user_id, &g.org_id, g.app_id.as_deref(), g.surface).await? {
+                        self.update_grant_scopes(&live.id, &g.scopes).await?;
+                        return Ok(Grant { scopes: g.scopes.clone(), ..live });
+                    }
+                    match self.insert_grant(g).await {
+                        Ok(()) => return Ok(g.clone()),
+                        Err(e) if is_unique_violation(&e) => continue,
+                        Err(e) => return Err(e),
+                    }
+                }
+                Err(sqlx::Error::Protocol("the grant kept changing while it was claimed".into()))
             }
 
             async fn get_grant(&self, id: &str) -> Result<Option<Grant>, sqlx::Error> {
@@ -408,17 +448,47 @@ macro_rules! impl_mcp_oauth_store {
                 Ok(())
             }
 
-            async fn purge_expired(&self, before: DateTime<Utc>) -> Result<u64, sqlx::Error> {
+            async fn record_assertion(&self, client_id: &str, jti: &str, expires_at: DateTime<Utc>) -> Result<bool, sqlx::Error> {
+                let sql = $sql("INSERT INTO mcp_oauth_assertions (client_id, jti, expires_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING");
+                let inserted = sqlx::query(&sql).bind(client_id).bind(jti).bind(expires_at).execute(self.pool()).await?.rows_affected();
+                Ok(inserted == 1)
+            }
+
+            async fn purge_expired(&self, now: DateTime<Utc>) -> Result<u64, sqlx::Error> {
+                let spent = now - KEEP_SPENT;
                 let mut removed = 0;
+                // Grants whose org or app was deleted: refused already, now gone.
+                for table in ["mcp_oauth_tokens WHERE grant_id", "mcp_oauth_grants WHERE id"] {
+                    let sql = $sql(&format!("DELETE FROM {table} IN ({ORPHANED_GRANTS})"));
+                    removed += sqlx::query(&sql).bind(spent).execute(self.pool()).await?.rows_affected();
+                }
                 let sql = $sql("DELETE FROM mcp_oauth_requests WHERE expires_at < ?");
-                removed += sqlx::query(&sql).bind(before).execute(self.pool()).await?.rows_affected();
+                removed += sqlx::query(&sql).bind(spent).execute(self.pool()).await?.rows_affected();
                 let sql = $sql("DELETE FROM mcp_oauth_tokens WHERE expires_at < ? OR revoked_at < ?");
-                removed += sqlx::query(&sql).bind(before).bind(before).execute(self.pool()).await?.rows_affected();
+                removed += sqlx::query(&sql).bind(spent).bind(spent).execute(self.pool()).await?.rows_affected();
                 let sql = $sql(
                     "DELETE FROM mcp_oauth_grants WHERE revoked_at < ? \
                      AND NOT EXISTS (SELECT 1 FROM mcp_oauth_tokens t WHERE t.grant_id = mcp_oauth_grants.id)",
                 );
-                removed += sqlx::query(&sql).bind(before).execute(self.pool()).await?.rows_affected();
+                removed += sqlx::query(&sql).bind(spent).execute(self.pool()).await?.rows_affected();
+
+                // Registrations: never used, or idle with no grant left.
+                let sql = $sql(&format!(
+                    "DELETE FROM mcp_oauth_clients WHERE registration = 'dcr' AND last_used_at IS NULL AND created_at < ? AND {CLIENT_UNREFERENCED}"
+                ));
+                removed += sqlx::query(&sql).bind(now - UNUSED_CLIENT).execute(self.pool()).await?.rows_affected();
+                let sql = $sql(&format!(
+                    "DELETE FROM mcp_oauth_clients WHERE registration = 'dcr' AND last_used_at < ? AND {CLIENT_UNREFERENCED}"
+                ));
+                removed += sqlx::query(&sql).bind(now - IDLE_CLIENT).execute(self.pool()).await?.rows_affected();
+                // Copies of metadata documents: fetched again when needed.
+                let sql = $sql(&format!(
+                    "DELETE FROM mcp_oauth_clients WHERE registration = 'cimd' AND refreshed_at < ? AND {CLIENT_UNREFERENCED}"
+                ));
+                removed += sqlx::query(&sql).bind(spent).execute(self.pool()).await?.rows_affected();
+
+                let sql = $sql("DELETE FROM mcp_oauth_assertions WHERE expires_at < ?");
+                removed += sqlx::query(&sql).bind(spent).execute(self.pool()).await?.rows_affected();
                 Ok(removed)
             }
         }

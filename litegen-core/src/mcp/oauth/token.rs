@@ -2,9 +2,10 @@
 //!
 //! A code is redeemed once, with its PKCE verifier, by the client and
 //! redirect URI it was issued to; a refresh token is exchanged once for a new
-//! pair. A second use of either is a replay, and revokes the grant. Tokens are
-//! opaque (`lgat_…` access, `lgrt_…` refresh), stored only as SHA-256 hashes,
-//! and work only on their grant's MCP endpoint. Every answer is `no-store`.
+//! pair. A second use of either is a replay, and revokes the grant. A client
+//! that registered `private_key_jwt` signs every request. Tokens are opaque
+//! (`lgat_…` access, `lgrt_…` refresh), stored only as SHA-256 hashes, and
+//! work only on their grant's MCP endpoint. Every answer is `no-store`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,9 +19,12 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use serde_json::json;
 
+use super::assertion::{self, AssertionError, ASSERTION_TYPE};
+use super::clients::uses_refresh_tokens;
 use super::crypto::{random_token, s256_challenge, sha256_hex};
-use super::discovery::resource_allows;
-use super::store::{AuthRequest, ConsumeOutcome, Grant, McpOAuthStore, RotateOutcome, TokenKind, TokenRow};
+use super::discovery::{issuer, resource_allows};
+use super::principal::{grant_app, AccessError};
+use super::store::{AuthRequest, ConsumeOutcome, Grant, McpOAuthStore, OAuthClient, RotateOutcome, TokenKind, TokenRow};
 use super::OAuthShared;
 use crate::api::middleware::AppState;
 use crate::types::{Role, User};
@@ -36,20 +40,21 @@ struct TokenAnswer {
     access_token: String,
     token_type: &'static str,
     expires_in: i64,
-    refresh_token: String,
+    /// None for a client that registered without the refresh_token grant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refresh_token: Option<String>,
     scope: String,
 }
 
 /// `POST /oauth/token`.
 pub async fn token(State(shared): State<Arc<OAuthShared>>, form: Result<Form<Vec<(String, String)>>, FormRejection>) -> Response {
-    let state = &shared.state;
-    let Some(store) = state.db.mcp_oauth() else {
+    let Some(store) = shared.state.db.mcp_oauth() else {
         return TokenError::new(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable", "OAuth is not available").into_response();
     };
     let answer = match Params::parse(form) {
         Ok(params) => match params.get("grant_type") {
-            Some("authorization_code") => redeem_code(state, store, &params).await,
-            Some("refresh_token") => refresh(state, store, &params).await,
+            Some("authorization_code") => redeem_code(&shared, store, &params).await,
+            Some("refresh_token") => refresh(&shared, store, &params).await,
             Some(_) => Err(TokenError::bad("unsupported_grant_type", "grant_type must be authorization_code or refresh_token")),
             None => Err(TokenError::request("grant_type is required")),
         },
@@ -61,19 +66,47 @@ pub async fn token(State(shared): State<Arc<OAuthShared>>, form: Result<Form<Vec
     }
 }
 
+/// The client a token request comes from, authenticated as it registered:
+/// a public client by its `client_id` (its PKCE verifier or refresh token
+/// proves the rest), a `private_key_jwt` client by a valid assertion, which
+/// may stand in for `client_id`.
+async fn authenticate(shared: &OAuthShared, store: &dyn McpOAuthStore, params: &Params, now: DateTime<Utc>) -> Result<OAuthClient, TokenError> {
+    let assertion = match params.get("client_assertion_type") {
+        Some(ASSERTION_TYPE) => Some(params.require("client_assertion")?),
+        Some(_) => return Err(TokenError::request(&format!("client_assertion_type must be {ASSERTION_TYPE}"))),
+        None => None,
+    };
+    let client_id = match (params.get("client_id"), assertion) {
+        (Some(id), _) => id.to_string(),
+        (None, Some(assertion)) => assertion::claimed_client(assertion).ok_or_else(|| TokenError::unauthenticated("the client assertion names no client (sub)"))?,
+        (None, None) => return Err(TokenError::request("client_id is required")),
+    };
+    let client = store.get_client(&client_id).await?.ok_or_else(TokenError::client)?;
+    if assertion::required(&client) {
+        let assertion = assertion.ok_or_else(|| TokenError::unauthenticated("this client signs in with private_key_jwt: send a client_assertion"))?;
+        let state = &shared.state;
+        let audiences = [issuer(state), format!("{}/oauth/token", issuer(state))];
+        match assertion::verify(assertion, &client, &audiences, &shared.keys, shared.fetcher.as_ref(), store, now).await {
+            Ok(()) => {}
+            Err(AssertionError::Invalid(reason)) => return Err(TokenError::unauthenticated(&reason)),
+            Err(AssertionError::Store(e)) => return Err(e.into()),
+        }
+    }
+    Ok(client)
+}
+
 /// `grant_type=authorization_code`.
-async fn redeem_code(state: &AppState, store: &dyn McpOAuthStore, params: &Params) -> Result<TokenAnswer, TokenError> {
+async fn redeem_code(shared: &OAuthShared, store: &dyn McpOAuthStore, params: &Params) -> Result<TokenAnswer, TokenError> {
+    let state = &shared.state;
     let code = params.require("code")?;
     let redirect_uri = params.require("redirect_uri")?;
-    let client_id = params.require("client_id")?;
     let verifier = params.require("code_verifier")?;
-    if store.get_client(client_id).await?.is_none() {
-        return Err(TokenError::client());
-    }
+    let now = Utc::now();
+    let client = authenticate(shared, store, params, now).await?;
+    let client_id = client.client_id.as_str();
 
     // The code is spent by its first presentation, right or wrong: a stolen
     // code cannot be tried against verifiers.
-    let now = Utc::now();
     let request = match store.consume_code(&sha256_hex(code), now).await? {
         ConsumeOutcome::Consumed(request) => request,
         ConsumeOutcome::AlreadyUsed(request) => {
@@ -100,43 +133,44 @@ async fn redeem_code(state: &AppState, store: &dyn McpOAuthStore, params: &Param
         return Err(TokenError::grant("the code was never approved"));
     };
 
-    // One grant per client, person, tenant and endpoint: signing in again
+    // One grant per client, person, org, app and endpoint: signing in again
     // updates it instead of piling up grants.
-    let grant = match store.find_active_grant(client_id, &user_id, &org_id, request.app_id.as_deref(), request.surface).await? {
-        Some(grant) => {
-            store.update_grant_scopes(&grant.id, &scopes).await?;
-            Grant { scopes, ..grant }
-        }
-        None => {
-            let grant = Grant {
-                id: uuid::Uuid::new_v4().to_string(),
-                client_id: client_id.to_string(),
-                user_id,
-                org_id,
-                app_id: request.app_id,
-                surface: request.surface,
-                scopes,
-                created_at: now,
-                last_used_at: None,
-                revoked_at: None,
-            };
-            store.insert_grant(&grant).await?;
-            grant
-        }
-    };
+    let grant = store
+        .claim_grant(&Grant {
+            id: uuid::Uuid::new_v4().to_string(),
+            client_id: client_id.to_string(),
+            user_id,
+            org_id,
+            app_id: request.app_id,
+            surface: request.surface,
+            scopes,
+            created_at: now,
+            last_used_at: None,
+            revoked_at: None,
+        })
+        .await?;
     let (access, access_row) = mint(&grant.id, TokenKind::Access, now, access_ttl(state));
-    let (refresh, refresh_row) = mint(&grant.id, TokenKind::Refresh, now, refresh_ttl(state));
     store.insert_token(&access_row).await?;
-    store.insert_token(&refresh_row).await?;
+    let refresh = if uses_refresh_tokens(&client) {
+        let (refresh, refresh_row) = mint(&grant.id, TokenKind::Refresh, now, refresh_ttl(state));
+        store.insert_token(&refresh_row).await?;
+        Some(refresh)
+    } else {
+        None
+    };
+    store.touch_client(client_id, now).await?;
     Ok(answer(state, access, refresh, &grant.scopes))
 }
 
 /// `grant_type=refresh_token`.
-async fn refresh(state: &AppState, store: &dyn McpOAuthStore, params: &Params) -> Result<TokenAnswer, TokenError> {
+async fn refresh(shared: &OAuthShared, store: &dyn McpOAuthStore, params: &Params) -> Result<TokenAnswer, TokenError> {
+    let state = &shared.state;
     let token = params.require("refresh_token")?;
-    let client_id = params.require("client_id")?;
-    if store.get_client(client_id).await?.is_none() {
-        return Err(TokenError::client());
+    let now = Utc::now();
+    let client = authenticate(shared, store, params, now).await?;
+    let client_id = client.client_id.as_str();
+    if !uses_refresh_tokens(&client) {
+        return Err(TokenError::bad("unauthorized_client", "this client registered without the refresh_token grant"));
     }
     let row = store
         .get_token(&sha256_hex(token))
@@ -156,16 +190,28 @@ async fn refresh(state: &AppState, store: &dyn McpOAuthStore, params: &Params) -
             return Err(TokenError::bad("invalid_scope", "scope asks for more than was granted"));
         }
     }
-    let now = Utc::now();
+    // A sign-in whose new access token would be refused ends here, so the
+    // client signs in again instead of refreshing in a loop.
     if live_member(state, &grant).await?.is_none() {
         store.revoke_grant(&grant.id, now).await?;
         return Err(TokenError::grant("the person who approved this app can no longer use LiteGen there"));
+    }
+    match grant_app(state, &grant).await {
+        Ok(_) => {}
+        Err(AccessError::Invalid(reason)) => {
+            store.revoke_grant(&grant.id, now).await?;
+            return Err(TokenError::grant(reason));
+        }
+        Err(AccessError::Store(e)) => return Err(e.into()),
     }
 
     let (access, access_row) = mint(&grant.id, TokenKind::Access, now, access_ttl(state));
     let (refresh, refresh_row) = mint(&grant.id, TokenKind::Refresh, now, refresh_ttl(state));
     match store.rotate_refresh(&row.token_hash, &access_row, &refresh_row, now).await? {
-        RotateOutcome::Rotated => Ok(answer(state, access, refresh, &grant.scopes)),
+        RotateOutcome::Rotated => {
+            store.touch_client(client_id, now).await?;
+            Ok(answer(state, access, Some(refresh), &grant.scopes))
+        }
         RotateOutcome::Reused { grant_id } => {
             store.revoke_grant(&grant_id, now).await?;
             Err(TokenError::grant("the refresh token was used before; the app's access is revoked"))
@@ -215,7 +261,7 @@ fn mint(grant_id: &str, kind: TokenKind, now: DateTime<Utc>, ttl: Duration) -> (
     (token, row)
 }
 
-fn answer(state: &AppState, access: String, refresh: String, scopes: &[String]) -> TokenAnswer {
+fn answer(state: &AppState, access: String, refresh: Option<String>, scopes: &[String]) -> TokenAnswer {
     TokenAnswer {
         access_token: access,
         token_type: "Bearer",
@@ -314,7 +360,12 @@ impl TokenError {
     }
 
     fn client() -> Self {
-        Self::new(StatusCode::UNAUTHORIZED, "invalid_client", "LiteGen has no client with this client_id")
+        Self::unauthenticated("LiteGen has no client with this client_id")
+    }
+
+    /// The client is unknown or failed to authenticate (RFC 6749 §5.2).
+    fn unauthenticated(description: &str) -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, "invalid_client", description)
     }
 }
 

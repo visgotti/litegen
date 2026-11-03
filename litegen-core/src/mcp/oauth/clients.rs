@@ -2,8 +2,10 @@
 //! is a Client ID Metadata Document (CIMD): LiteGen fetches the JSON it
 //! names, checks it, and keeps it for a day; Claude and ChatGPT identify
 //! themselves this way. Any other id was minted by dynamic registration
-//! (RFC 7591, `POST /oauth/register`). Every client is public: PKCE, not a
-//! secret, protects the code exchange.
+//! (RFC 7591, `POST /oauth/register`). PKCE protects every code exchange; no
+//! client has a secret. A registered client is public, and so is a document
+//! unless it declares `private_key_jwt` and publishes its keys, as ChatGPT's
+//! does: then it signs every token request (see [`super::assertion`]).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -103,8 +105,12 @@ pub async fn resolve_client(
         .fetch(client_id)
         .await
         .map_err(|e| ClientError::InvalidMetadata(format!("the client's metadata document could not be fetched: {e}")))?;
-    let created_at = known.map(|c| c.created_at).unwrap_or(now);
-    let client = metadata_client(client_id, &bytes, created_at, now)?;
+    let client = metadata_client(client_id, &bytes, now)?;
+    // A fetch again keeps when the client registered and was last used.
+    let client = match known {
+        Some(k) => OAuthClient { created_at: k.created_at, last_used_at: k.last_used_at, ..client },
+        None => client,
+    };
     store.upsert_client(&client).await?;
     Ok(client)
 }
@@ -122,8 +128,9 @@ fn is_metadata_url(client_id: &str) -> bool {
         && url.as_str() == client_id
 }
 
-/// The client a metadata document describes, or what is wrong with it.
-fn metadata_client(client_id: &str, bytes: &[u8], created_at: DateTime<Utc>, now: DateTime<Utc>) -> Result<OAuthClient, ClientError> {
+/// The client a metadata document fetched at `now` describes, or what is
+/// wrong with it.
+fn metadata_client(client_id: &str, bytes: &[u8], now: DateTime<Utc>) -> Result<OAuthClient, ClientError> {
     let invalid = |m: &str| ClientError::InvalidMetadata(format!("the client's metadata document {m}"));
     let doc = match serde_json::from_slice::<Value>(bytes) {
         Ok(Value::Object(doc)) => doc,
@@ -134,11 +141,24 @@ fn metadata_client(client_id: &str, bytes: &[u8], created_at: DateTime<Utc>, now
     }
     let redirect_uris = redirect_uris(&doc).map_err(|e| invalid(&format!("is invalid: {e}")))?;
     match doc.get("token_endpoint_auth_method").and_then(Value::as_str) {
-        None | Some("none") | Some("private_key_jwt") => {}
+        None | Some("none") => {}
+        // A confidential client (CIMD §6.2): it signs with keys it publishes.
+        Some("private_key_jwt") => {
+            let https_keys = doc.get("jwks_uri").and_then(Value::as_str).is_some_and(|uri| reqwest::Url::parse(uri).is_ok_and(|u| u.scheme() == "https"));
+            if !https_keys && !doc.get("jwks").is_some_and(Value::is_object) {
+                return Err(invalid("asks for private_key_jwt but publishes no keys: it needs an https jwks_uri or a jwks"));
+            }
+        }
         Some(other) => return Err(invalid(&format!("asks for token_endpoint_auth_method '{other}'; LiteGen supports none and private_key_jwt"))),
     }
     if doc.contains_key("client_secret") {
         return Err(invalid("carries a client_secret, which a public document must not"));
+    }
+    if let Some(types) = doc.get("grant_types") {
+        let listed = types.as_array().is_some_and(|types| types.iter().any(|t| t.as_str() == Some("authorization_code")));
+        if !listed {
+            return Err(invalid("lists grant_types without authorization_code, the only way to sign in to LiteGen"));
+        }
     }
     let host = reqwest::Url::parse(client_id).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
     Ok(OAuthClient {
@@ -149,8 +169,9 @@ fn metadata_client(client_id: &str, bytes: &[u8], created_at: DateTime<Utc>, now
         logo_uri: https_uri(&doc, "logo_uri"),
         client_uri: https_uri(&doc, "client_uri"),
         metadata: Value::Object(doc),
-        created_at,
+        created_at: now,
         refreshed_at: now,
+        last_used_at: None,
     })
 }
 
@@ -221,27 +242,47 @@ fn https_uri(meta: &Map<String, Value>, key: &str) -> Option<String> {
     reqwest::Url::parse(uri).ok().filter(|u| u.scheme() == "https").map(|_| uri.to_string())
 }
 
-/// `key`'s list of strings, `default` when absent; every entry must be in
-/// `allowed`.
-fn string_list(meta: &Map<String, Value>, key: &str, default: &[&str], allowed: &[&str]) -> Result<Vec<String>, String> {
-    let Some(value) = meta.get(key) else { return Ok(default.iter().map(|s| s.to_string()).collect()) };
-    let list = value.as_array().ok_or_else(|| format!("{key} must be a list"))?;
-    list.iter()
-        .map(|v| match v.as_str() {
-            Some(s) if allowed.contains(&s) => Ok(s.to_string()),
-            _ => Err(format!("{key} may contain only {}", allowed.join(", "))),
-        })
-        .collect()
+/// The values of `key`'s list that LiteGen supports, in order, once each
+/// (all of `supported` when absent); `required` must be among them. RFC 7591
+/// lets a server register other values than a client asked for, and its
+/// answer says which.
+fn supported_list(meta: &Map<String, Value>, key: &str, supported: &[&str], required: &str) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    match meta.get(key) {
+        None => out.extend(supported.iter().map(|s| s.to_string())),
+        Some(Value::Array(list)) => {
+            for value in list.iter().filter_map(Value::as_str).filter(|v| supported.contains(v)) {
+                if !out.iter().any(|o| o == value) {
+                    out.push(value.to_string());
+                }
+            }
+        }
+        Some(_) => return Err(format!("{key} must be a list")),
+    }
+    if !out.iter().any(|v| v == required) {
+        return Err(format!("{key} must include {required}: LiteGen supports {}", supported.join(", ")));
+    }
+    Ok(out)
+}
+
+/// Whether a client takes refresh tokens: its registration or document
+/// lists the refresh_token grant, or lists no grant types at all.
+pub fn uses_refresh_tokens(client: &OAuthClient) -> bool {
+    match client.metadata.get("grant_types").and_then(Value::as_array) {
+        Some(types) => types.iter().any(|t| t.as_str() == Some("refresh_token")),
+        None => true,
+    }
 }
 
 /// `POST /oauth/register` (RFC 7591): a public client declares its redirect
-/// URIs and gets a `client_id`. Only what LiteGen supports is accepted: no
-/// client secret, the authorization-code flow, refresh tokens.
+/// URIs and gets a `client_id`. LiteGen registers what it supports of what
+/// the client asks for: no client secret, the authorization-code flow and
+/// (unless the client leaves it out) refresh tokens.
 pub async fn register(State(shared): State<Arc<OAuthShared>>, body: Bytes) -> Response {
     let Some(store) = shared.state.db.mcp_oauth() else {
         return registration_error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable", "OAuth is not available");
     };
-    let meta = match serde_json::from_slice::<Value>(&body) {
+    let mut meta = match serde_json::from_slice::<Value>(&body) {
         Ok(Value::Object(meta)) => meta,
         _ => return registration_error(StatusCode::BAD_REQUEST, "invalid_client_metadata", "the body must be a JSON object"),
     };
@@ -256,12 +297,15 @@ pub async fn register(State(shared): State<Arc<OAuthShared>>, body: Bytes) -> Re
             "token_endpoint_auth_method must be \"none\": LiteGen's clients are public and use PKCE",
         );
     }
-    let grant_types = string_list(&meta, "grant_types", &["authorization_code"], &["authorization_code", "refresh_token"]);
-    let response_types = string_list(&meta, "response_types", &["code"], &["code"]);
+    let grant_types = supported_list(&meta, "grant_types", &["authorization_code", "refresh_token"], "authorization_code");
+    let response_types = supported_list(&meta, "response_types", &["code"], "code");
     let (grant_types, response_types) = match (grant_types, response_types) {
         (Ok(g), Ok(r)) => (g, r),
         (Err(e), _) | (_, Err(e)) => return registration_error(StatusCode::BAD_REQUEST, "invalid_client_metadata", &e),
     };
+    // Kept as registered: the token endpoint reads the grant types from it.
+    meta.insert("grant_types".into(), json!(grant_types));
+    meta.insert("response_types".into(), json!(response_types));
 
     let now = Utc::now();
     let name = client_name(&meta);
@@ -275,6 +319,7 @@ pub async fn register(State(shared): State<Arc<OAuthShared>>, body: Bytes) -> Re
         metadata: Value::Object(meta),
         created_at: now,
         refreshed_at: now,
+        last_used_at: None,
     };
     if let Err(e) = store.upsert_client(&client).await {
         tracing::error!(error = %e, "OAuth client registration failed");

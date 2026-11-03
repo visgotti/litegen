@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS mcp_oauth_clients (
     client_uri TEXT NULL,
     metadata_json TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
-    refreshed_at TIMESTAMPTZ NOT NULL
+    refreshed_at TIMESTAMPTZ NOT NULL,
+    last_used_at TIMESTAMPTZ NULL          -- the last code redeemed or token refreshed
 );
 
 CREATE TABLE IF NOT EXISTS mcp_oauth_requests (
@@ -52,6 +53,10 @@ CREATE TABLE IF NOT EXISTS mcp_oauth_grants (
 
 CREATE INDEX IF NOT EXISTS idx_mcp_oauth_grants_user ON mcp_oauth_grants(user_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_oauth_grants_client_user ON mcp_oauth_grants(client_id, user_id);
+-- One unrevoked grant per client, person, org, app and endpoint, even when
+-- two first sign-ins race.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_oauth_grants_live
+    ON mcp_oauth_grants(client_id, user_id, org_id, (COALESCE(app_id, '')), surface) WHERE revoked_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS mcp_oauth_tokens (
     token_hash TEXT PRIMARY KEY,
@@ -65,3 +70,14 @@ CREATE TABLE IF NOT EXISTS mcp_oauth_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_mcp_oauth_tokens_grant ON mcp_oauth_tokens(grant_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_oauth_tokens_expires_at ON mcp_oauth_tokens(expires_at);
+
+-- The `jti` of every private_key_jwt client assertion, until it expires:
+-- each assertion is accepted once.
+CREATE TABLE IF NOT EXISTS mcp_oauth_assertions (
+    client_id TEXT NOT NULL,
+    jti TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (client_id, jti)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_assertions_expires_at ON mcp_oauth_assertions(expires_at);

@@ -80,7 +80,8 @@ async fn authorization_server_document() {
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
-        "token_endpoint_auth_methods_supported": ["none"],
+        "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+        "token_endpoint_auth_signing_alg_values_supported": ["RS256", "PS256", "ES256", "EdDSA"],
         "revocation_endpoint_auth_methods_supported": ["none"],
         "scopes_supported": ["ai:generate", "ai:read", "admin:read", "admin:write"],
         "client_id_metadata_document_supported": true,
@@ -180,6 +181,40 @@ async fn dcr_registers_public_client() {
     assert_eq!(err["error"], "invalid_client_metadata", "{err}");
     let (_, err) = refused(Value::String("not an object".into())).await;
     assert_eq!(err["error"], "invalid_client_metadata", "{err}");
+}
+
+#[tokio::test]
+async fn dcr_registers_what_litegen_supports() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let registered = |body: Value| {
+        let app = app.clone();
+        async move { post_json(&app, "/oauth/register", body).await }
+    };
+    // No grant types: both of LiteGen's, and the answer says so.
+    let (status, client) = registered(json!({ "redirect_uris": [REGISTERED] })).await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    assert_eq!(client["grant_types"], json!(["authorization_code", "refresh_token"]));
+    assert_eq!(client["response_types"], json!(["code"]));
+    // Types LiteGen does not offer are left out, not refused: VS Code asks
+    // for device_code when the server lists no grant types.
+    let (status, client) = registered(json!({
+        "redirect_uris": [REGISTERED],
+        "grant_types": ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"],
+        "response_types": ["code", "token"],
+    }))
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    assert_eq!(client["grant_types"], json!(["authorization_code", "refresh_token"]));
+    assert_eq!(client["response_types"], json!(["code"]));
+
+    // At most ten redirect URIs, names cut to 200 characters, bodies to 16 KiB.
+    let eleven: Vec<String> = (0..11).map(|i| format!("http://127.0.0.1/cb{i}")).collect();
+    let (status, err) = registered(json!({ "redirect_uris": eleven })).await;
+    assert_eq!((status, err["error"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid_redirect_uri")), "{err}");
+    let (_, client) = registered(json!({ "redirect_uris": [REGISTERED], "client_name": "n".repeat(300) })).await;
+    assert_eq!(client["client_name"].as_str().map(|n| n.chars().count()), Some(200), "{client}");
+    let (status, _) = registered(json!({ "redirect_uris": [REGISTERED], "client_uri": format!("https://example.com/{}", "x".repeat(17 * 1024)) })).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
 }
 
 // ─── Task 4: authorization and consent ────────────────────────────────────────
@@ -360,6 +395,56 @@ async fn mixed_scopes_are_invalid_scope() {
 }
 
 #[tokio::test]
+async fn unknown_scopes_are_ignored() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let client = register(&app).await;
+    let session = mcp_support::oauth_session(&app).await;
+    // Kiro asks for `openid email profile offline_access` unless told
+    // otherwise: none is LiteGen's, so the request is for all of /mcp's.
+    for (asked, requested) in [
+        ("openid email profile offline_access", json!(["ai:generate", "ai:read"])),
+        ("openid ai:read offline_access", json!(["ai:read"])),
+    ] {
+        let id = request_id(&app, &with(authorize_query(&client), "scope", Some(asked))).await;
+        let (_, view) = consent(&app, &session, "GET", &format!("/v1/oauth/requests/{id}"), None).await;
+        assert_eq!(view["surface"], "ai", "{asked}: {view}");
+        assert_eq!(view["requested_scopes"], requested, "{asked}: {view}");
+    }
+}
+
+#[tokio::test]
+async fn repeated_authorize_parameters() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let client = register(&app).await;
+    let repeated = |key: &str| {
+        let mut query = authorize_query(&client);
+        let value = query.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()).unwrap();
+        query.push((key.to_string(), value));
+        query
+    };
+    // A second client_id or redirect_uri: LiteGen can't tell where to
+    // answer, so it says so on a page.
+    for key in ["client_id", "redirect_uri"] {
+        let (status, location, body) = authorize(&app, &repeated(key)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{key}");
+        assert!(location.is_none(), "{key}");
+        assert!(body.contains("sign-in link is invalid") && body.contains("more than once"), "{key}: {body}");
+    }
+    // Any other parameter twice goes back to the app (RFC 6749 §3.1).
+    let (status, location, body) = authorize(&app, &repeated("scope")).await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let params = query_of(&location.unwrap());
+    assert_eq!(params["error"], "invalid_request");
+    assert!(params["error_description"].contains("scope"), "{params:?}");
+    assert_eq!(params["iss"], BASE);
+    // Two resources: a sign-in is for one endpoint (RFC 8707).
+    let mut two = with(authorize_query(&client), "resource", Some(&format!("{BASE}/mcp")));
+    two.push(("resource".into(), format!("{BASE}/admin/mcp")));
+    let (_, location, _) = authorize(&app, &two).await;
+    assert_eq!(query_of(&location.unwrap())["error"], "invalid_target");
+}
+
+#[tokio::test]
 async fn member_cannot_approve_admin() {
     let (app, db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
     let owner = mcp_support::oauth_session(&app).await;
@@ -385,6 +470,32 @@ async fn member_cannot_approve_admin() {
     let stranger = mcp_support::oauth_session(&app).await;
     let (status, err) = consent(&app, &stranger, "POST", &format!("/v1/oauth/requests/{id}/approve"), Some(json!({ "org_id": org, "scopes": ["admin:read"] }))).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{err}");
+}
+
+#[tokio::test]
+async fn viewer_can_approve_generation() {
+    let (app, db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let owner = mcp_support::oauth_session(&app).await;
+    let org = own_org(&app, &owner).await;
+    let viewer = mcp_support::oauth_session(&app).await;
+    let (viewer_id, _) = whoami(&app, &viewer).await;
+    use litegen::db::DatabaseStore;
+    db.add_org_member(&org, &viewer_id, litegen::types::Role::Viewer).await.unwrap();
+
+    // A viewer may generate on the dashboard, so they may let an app do it.
+    let client = register(&app).await;
+    let id = request_id(&app, &authorize_query(&client)).await;
+    let (_, view) = consent(&app, &viewer, "GET", &format!("/v1/oauth/requests/{id}"), None).await;
+    let theirs = view["orgs"].as_array().unwrap().iter().find(|o| o["id"] == org.as_str()).expect("the org they joined").clone();
+    assert_eq!(theirs["role"], "viewer");
+    assert_eq!(theirs["grantable_scopes"], json!(["ai:generate", "ai:read"]), "{view}");
+    let (status, answer) = consent(&app, &viewer, "POST", &format!("/v1/oauth/requests/{id}/approve"), Some(json!({ "org_id": org, "scopes": ["ai:generate"] }))).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+
+    // But not management writes.
+    let id = request_id(&app, &with(authorize_query(&client), "scope", Some("admin:read admin:write"))).await;
+    let (status, err) = consent(&app, &viewer, "POST", &format!("/v1/oauth/requests/{id}/approve"), Some(json!({ "org_id": org, "scopes": ["admin:write"] }))).await;
+    assert_eq!((status, err["error"]["code"].as_str()), (StatusCode::FORBIDDEN, Some("scope_not_grantable")), "{err}");
 }
 
 #[tokio::test]
@@ -553,6 +664,7 @@ async fn code_exchange_issues_tokens() {
     assert!(store.get_token(access).await.unwrap().is_none(), "a token itself is never stored");
     assert!(store.get_token(&hashed(access)).await.unwrap().is_some());
     assert!(store.get_token(&hashed(refresh)).await.unwrap().is_some());
+    assert!(store.get_client(&flow.client).await.unwrap().unwrap().last_used_at.is_some(), "the client is marked used");
 }
 
 #[tokio::test]
@@ -705,6 +817,130 @@ async fn token_endpoint_errors() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+async fn client_without_refresh_grant_gets_no_refresh_token() {
+    let (app, db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let (_, registered) = post_json(&app, "/oauth/register", json!({ "redirect_uris": [REGISTERED], "grant_types": ["authorization_code"] })).await;
+    assert_eq!(registered["grant_types"], json!(["authorization_code"]), "{registered}");
+    let client = registered["client_id"].as_str().unwrap().to_string();
+    let session = mcp_support::oauth_session(&app).await;
+    let org = own_org(&app, &session).await;
+    let flow = Flow { client: client.clone(), session, org };
+    let code = flow.code(&app, &authorize_query(&client), &["ai:read"]).await;
+    let (status, _, tokens) = form_post(&app, "/oauth/token", &exchange(&client, &code)).await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    assert!(tokens["access_token"].is_string());
+    assert!(tokens.get("refresh_token").is_none(), "it registered without the refresh_token grant: {tokens}");
+
+    // A refresh token it holds anyway is refused for it (RFC 6749 §5.2).
+    use litegen::db::DatabaseStore;
+    use litegen::mcp::oauth::store::{TokenKind, TokenRow};
+    let store = db.mcp_oauth().unwrap();
+    let grant_id = store.get_token(&hashed(tokens["access_token"].as_str().unwrap())).await.unwrap().unwrap().grant_id;
+    let now = chrono::Utc::now();
+    let smuggled = "lgrt_smuggled-refresh-token-0000000000000000000";
+    let row = TokenRow { token_hash: hashed(smuggled), grant_id, kind: TokenKind::Refresh, created_at: now, expires_at: now + chrono::Duration::days(1), rotated_at: None, revoked_at: None };
+    store.insert_token(&row).await.unwrap();
+    let (status, _, body) = form_post(&app, "/oauth/token", &refresh_with(&client, smuggled)).await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::BAD_REQUEST, Some("unauthorized_client")), "{body}");
+}
+
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// A client that authenticates the way ChatGPT's metadata document says it
+/// does: `private_key_jwt`, RS256.
+struct Signer(aws_lc_rs::rsa::KeyPair);
+
+impl Signer {
+    fn new() -> Signer {
+        Signer(aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap())
+    }
+
+    fn jwks(&self) -> Value {
+        use aws_lc_rs::signature::KeyPair as _;
+        let key = aws_lc_rs::signature::RsaPublicKeyComponents::<Vec<u8>>::from(self.0.public_key());
+        json!({ "keys": [{ "kty": "RSA", "kid": "k1", "alg": "RS256", "use": "sig", "n": b64(&key.n), "e": b64(&key.e) }] })
+    }
+
+    fn assertion(&self, client_id: &str, aud: &str) -> String {
+        let now = chrono::Utc::now().timestamp();
+        let header = json!({ "alg": "RS256", "kid": "k1", "typ": "JWT" });
+        let claims = json!({ "iss": client_id, "sub": client_id, "aud": aud, "iat": now, "exp": now + 300, "jti": uuid::Uuid::new_v4().to_string() });
+        let input = format!("{}.{}", b64(header.to_string().as_bytes()), b64(claims.to_string().as_bytes()));
+        let mut signature = vec![0; self.0.public_modulus_len()];
+        let rng = aws_lc_rs::rand::SystemRandom::new();
+        self.0.sign(&aws_lc_rs::signature::RSA_PKCS1_SHA256, &rng, input.as_bytes(), &mut signature).unwrap();
+        format!("{input}.{}", b64(&signature))
+    }
+}
+
+#[tokio::test]
+async fn private_key_jwt_client_must_sign() {
+    use litegen::db::DatabaseStore;
+    use litegen::mcp::oauth::store::{OAuthClient, Registration};
+    let (app, db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    // A client known by its metadata document, which publishes its key; the
+    // copy is fresh, so LiteGen does not fetch it again.
+    let signer = Signer::new();
+    let client = "https://client.example.com/oauth/client.json";
+    let now = chrono::Utc::now();
+    let metadata = json!({ "client_id": client, "redirect_uris": [REGISTERED], "token_endpoint_auth_method": "private_key_jwt", "jwks": signer.jwks() });
+    db.mcp_oauth()
+        .unwrap()
+        .upsert_client(&OAuthClient {
+            client_id: client.into(),
+            registration: Registration::Cimd,
+            client_name: "Signed client".into(),
+            redirect_uris: vec![REGISTERED.into()],
+            logo_uri: None,
+            client_uri: None,
+            metadata,
+            created_at: now,
+            refreshed_at: now,
+            last_used_at: None,
+        })
+        .await
+        .unwrap();
+    let session = mcp_support::oauth_session(&app).await;
+    let org = own_org(&app, &session).await;
+    let flow = Flow { client: client.into(), session, org };
+    let code = flow.code(&app, &authorize_query(client), &["ai:read"]).await;
+    let invalid_client = |(status, _, body): (StatusCode, axum::http::HeaderMap, Value)| {
+        assert_eq!((status, body["error"].as_str()), (StatusCode::UNAUTHORIZED, Some("invalid_client")), "{body}");
+    };
+
+    // No assertion, or another key's: invalid_client, and the code is not spent.
+    invalid_client(signed_token_request(&app, &exchange(client, &code), None).await);
+    invalid_client(signed_token_request(&app, &exchange(client, &code), Some(&Signer::new().assertion(client, BASE))).await);
+
+    // Its own: tokens.
+    let assertion = signer.assertion(client, BASE);
+    let (status, _, tokens) = signed_token_request(&app, &exchange(client, &code), Some(&assertion)).await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    let refresh = tokens["refresh_token"].as_str().unwrap().to_string();
+
+    // Each request needs a new assertion. The token endpoint may be the
+    // audience, and the client may leave client_id out.
+    invalid_client(signed_token_request(&app, &refresh_with(client, &refresh), Some(&assertion)).await);
+    let fresh = signer.assertion(client, &format!("{BASE}/oauth/token"));
+    let without_id = [("grant_type", "refresh_token"), ("refresh_token", refresh.as_str())];
+    let (status, _, body) = signed_token_request(&app, &without_id, Some(&fresh)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// A token request with `form` and, if given, a client assertion.
+async fn signed_token_request(app: &axum::Router, form: &[(&str, &str)], assertion: Option<&str>) -> (StatusCode, axum::http::HeaderMap, Value) {
+    let mut pairs = form.to_vec();
+    if let Some(assertion) = assertion {
+        pairs.push(("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"));
+        pairs.push(("client_assertion", assertion));
+    }
+    form_post(app, "/oauth/token", &pairs).await
+}
+
 // ─── Task 6: OAuth callers on the MCP endpoints ───────────────────────────────
 
 fn is_error(result: &Value) -> bool {
@@ -819,6 +1055,66 @@ async fn removed_member_stops_working() {
     let (status, _) = consent(&app, &owner.session, "DELETE", &format!("/v1/orgs/{}/members/{member_id}", owner.org), None).await;
     assert!(status.is_success(), "the owner removes the member: {status}");
     assert_eq!(mcp.rpc("tools/list", json!({})).await.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn deactivated_person_access_token_is_refused() {
+    let (app, db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let (access, _) = flow.tokens(&app, &["ai:read"]).await;
+    let mcp = Mcp::new(&app, "/mcp").bearer(&access);
+    assert_eq!(mcp.rpc("tools/list", json!({})).await.status, StatusCode::OK);
+
+    let (user_id, _) = whoami(&app, &flow.session).await;
+    use litegen::db::DatabaseStore;
+    db.update_user(&user_id, None, Some(false), None).await.unwrap();
+    let rpc = mcp.rpc("tools/list", json!({})).await;
+    assert_eq!(rpc.status, StatusCode::UNAUTHORIZED, "{}", rpc.body);
+    assert!(www_authenticate(&rpc).contains(r#"error="invalid_token""#));
+    assert!(rpc.body.contains("can no longer act in its organization"), "{}", rpc.body);
+}
+
+#[tokio::test]
+async fn deleted_app_ends_the_sign_in() {
+    let (app, db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    // A second app in the org, picked on the consent page.
+    use litegen::db::DatabaseStore;
+    let now = chrono::Utc::now();
+    let app_id = uuid::Uuid::new_v4().to_string();
+    let doomed = litegen::types::Application {
+        id: app_id.clone(),
+        org_id: flow.org.clone(),
+        name: "Doomed".into(),
+        slug: app_id.clone(),
+        status: "active".into(),
+        created_at: now,
+        updated_at: now,
+    };
+    db.create_application(&doomed).await.unwrap();
+    let id = request_id(&app, &authorize_query(&flow.client)).await;
+    let approve = json!({ "org_id": flow.org, "app_id": app_id, "scopes": ["ai:read"] });
+    let (status, answer) = consent(&app, &flow.session, "POST", &format!("/v1/oauth/requests/{id}/approve"), Some(approve)).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let code = query_of(answer["redirect_to"].as_str().unwrap())["code"].clone();
+    let (_, _, tokens) = form_post(&app, "/oauth/token", &exchange(&flow.client, &code)).await;
+    let (access, refresh) = (tokens["access_token"].as_str().unwrap(), tokens["refresh_token"].as_str().unwrap());
+    let mcp = Mcp::new(&app, "/mcp").bearer(access);
+    assert_eq!(mcp.rpc("tools/list", json!({})).await.status, StatusCode::OK);
+
+    assert!(db.delete_application(&app_id).await.unwrap());
+    let rpc = mcp.rpc("tools/list", json!({})).await;
+    assert_eq!(rpc.status, StatusCode::UNAUTHORIZED, "{}", rpc.body);
+    assert!(rpc.body.contains("no longer exists"), "{}", rpc.body);
+
+    // Refreshing ends the sign-in instead of handing out a token that would
+    // be refused.
+    let (status, _, body) = form_post(&app, "/oauth/token", &refresh_with(&flow.client, refresh)).await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid_grant")), "{body}");
+    assert!(body["error_description"].as_str().unwrap_or("").contains("no longer exists"), "{body}");
+    let store = db.mcp_oauth().unwrap();
+    let grant_id = store.get_token(&hashed(access)).await.unwrap().unwrap().grant_id;
+    assert!(store.get_grant(&grant_id).await.unwrap().unwrap().revoked_at.is_some(), "the grant is revoked");
 }
 
 #[tokio::test]

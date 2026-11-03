@@ -3,9 +3,21 @@
 //! Tokens and codes are stored as SHA-256 hashes only.
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 
 use crate::mcp::Surface;
+
+/// How long spent rows are kept: requests and tokens after they expire or
+/// are revoked, grants after they are revoked, assertion ids after their
+/// assertion expires. A replayed code or refresh token is still recognized
+/// for that long.
+pub const KEEP_SPENT: Duration = Duration::days(1);
+/// A dynamically registered client that never completed a sign-in is
+/// deleted this long after it registered.
+pub const UNUSED_CLIENT: Duration = Duration::days(30);
+/// A dynamically registered client that no grant refers to any more is
+/// deleted this long after it was last used.
+pub const IDLE_CLIENT: Duration = Duration::days(365);
 
 /// How a client registered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,11 +53,13 @@ pub struct OAuthClient {
     pub redirect_uris: Vec<String>,
     pub logo_uri: Option<String>,
     pub client_uri: Option<String>,
-    /// The metadata as the client sent it (DCR) or published it (CIMD).
+    /// The metadata as registered (DCR) or published (CIMD).
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
     /// When a CIMD document was last fetched; for DCR, when it registered.
     pub refreshed_at: DateTime<Utc>,
+    /// When the client last redeemed a code or refreshed a token.
+    pub last_used_at: Option<DateTime<Utc>>,
 }
 
 /// An authorization request: pending until a person decides it, then (if
@@ -165,8 +179,10 @@ pub enum RotateOutcome {
 
 #[async_trait]
 pub trait McpOAuthStore: Send + Sync {
+    /// Store a client; an update keeps when it registered and was last used.
     async fn upsert_client(&self, client: &OAuthClient) -> Result<(), sqlx::Error>;
     async fn get_client(&self, client_id: &str) -> Result<Option<OAuthClient>, sqlx::Error>;
+    async fn touch_client(&self, client_id: &str, at: DateTime<Utc>) -> Result<(), sqlx::Error>;
 
     async fn insert_request(&self, request: &AuthRequest) -> Result<(), sqlx::Error>;
     async fn get_request(&self, id: &str) -> Result<Option<AuthRequest>, sqlx::Error>;
@@ -175,7 +191,13 @@ pub trait McpOAuthStore: Send + Sync {
     /// Redeem a code once.
     async fn consume_code(&self, code_hash: &str, now: DateTime<Utc>) -> Result<ConsumeOutcome, sqlx::Error>;
 
+    /// Insert a grant. The database holds one unrevoked grant per client,
+    /// person, org, app and endpoint, and refuses a second.
     async fn insert_grant(&self, grant: &Grant) -> Result<(), sqlx::Error>;
+    /// The unrevoked grant for `grant`'s client, person, org, app and
+    /// endpoint, now holding `grant`'s scopes: the one there already, else
+    /// `grant` itself, inserted. Two claims at once end with one grant.
+    async fn claim_grant(&self, grant: &Grant) -> Result<Grant, sqlx::Error>;
     async fn get_grant(&self, id: &str) -> Result<Option<Grant>, sqlx::Error>;
     /// The unrevoked grant for this client, person, tenant and endpoint.
     async fn find_active_grant(
@@ -205,8 +227,15 @@ pub trait McpOAuthStore: Send + Sync {
     ) -> Result<RotateOutcome, sqlx::Error>;
     async fn revoke_token(&self, token_hash: &str, at: DateTime<Utc>) -> Result<(), sqlx::Error>;
 
-    /// Delete requests that expired before `before`, tokens that expired or
-    /// were revoked before it, and grants revoked before it with no tokens
-    /// left; returns how many rows went.
-    async fn purge_expired(&self, before: DateTime<Utc>) -> Result<u64, sqlx::Error>;
+    /// Remember a client assertion's `jti` until `expires_at`; false when the
+    /// client presented it before.
+    async fn record_assertion(&self, client_id: &str, jti: &str, expires_at: DateTime<Utc>) -> Result<bool, sqlx::Error>;
+
+    /// Delete what OAuth no longer needs as of `now`, and return how many
+    /// rows went: spent rows older than [`KEEP_SPENT`]; grants (with their
+    /// tokens) whose org or app was deleted; dynamically registered clients
+    /// never used within [`UNUSED_CLIENT`] or, with no grant left, idle for
+    /// [`IDLE_CLIENT`]; and copies of metadata documents nothing refers to,
+    /// once stale.
+    async fn purge_expired(&self, now: DateTime<Utc>) -> Result<u64, sqlx::Error>;
 }

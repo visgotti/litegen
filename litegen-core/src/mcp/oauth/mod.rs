@@ -4,6 +4,7 @@
 //! on one endpoint only. ChatGPT and most claude.ai users cannot send an API
 //! key, so for them this is the only way in.
 
+pub mod assertion;
 pub mod authorize;
 pub mod clients;
 pub mod crypto;
@@ -32,8 +33,10 @@ use clients::{MetadataFetcher, PublicFetcher};
 /// What the OAuth endpoints share.
 pub struct OAuthShared {
     pub state: Arc<AppState>,
-    /// Fetches clients' metadata documents.
+    /// Fetches clients' metadata documents and key sets.
     pub fetcher: Arc<dyn MetadataFetcher>,
+    /// The key sets of clients that sign their token requests.
+    pub keys: assertion::KeyCache,
 }
 
 /// Whether this deployment offers OAuth: switched on, and its database has
@@ -45,7 +48,7 @@ pub fn available(state: &AppState) -> bool {
 /// The discovery documents and the authorization server's endpoints, all
 /// outside MCP's authentication.
 pub fn routes(state: Arc<AppState>) -> Router {
-    let shared = Arc::new(OAuthShared { state: state.clone(), fetcher: Arc::new(PublicFetcher) });
+    let shared = Arc::new(OAuthShared { state: state.clone(), fetcher: Arc::new(PublicFetcher), keys: Default::default() });
     Router::new()
         .route("/oauth/register", post(clients::register).layer(DefaultBodyLimit::max(clients::REGISTER_MAX_BYTES)))
         .route("/oauth/authorize", get(authorize::authorize))
@@ -55,10 +58,9 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .merge(discovery::routes(state))
 }
 
-/// Every hour, delete what OAuth no longer needs: requests and tokens that
-/// expired (or tokens revoked) more than a day ago, and revoked grants with
-/// no tokens left. The day keeps a replayed code or refresh token
-/// recognizable after it expires.
+/// Every hour, delete what OAuth no longer needs (see
+/// [`store::McpOAuthStore::purge_expired`]). Spent codes and tokens stay a
+/// day, so a replay is still recognized after they expire.
 pub fn spawn_purger(db: Arc<dyn DatabaseStore>, shutdown: impl Future<Output = ()> + Send + 'static) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
@@ -67,7 +69,7 @@ pub fn spawn_purger(db: Arc<dyn DatabaseStore>, shutdown: impl Future<Output = (
             tokio::select! {
                 _ = tick.tick() => {
                     let Some(store) = db.mcp_oauth() else { return };
-                    match store.purge_expired(chrono::Utc::now() - chrono::Duration::days(1)).await {
+                    match store.purge_expired(chrono::Utc::now()).await {
                         Ok(0) => {}
                         Ok(removed) => tracing::info!(removed, "purged expired MCP OAuth rows"),
                         Err(e) => tracing::warn!(error = %e, "MCP OAuth purge failed"),

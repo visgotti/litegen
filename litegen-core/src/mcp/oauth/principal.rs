@@ -72,7 +72,7 @@ pub async fn resolve_access_token(state: &AppState, token: &str, surface: Surfac
 
 /// The app a grant acts in: the one approved, which must still be the org's;
 /// else the org's first app, as a dashboard session picks it.
-async fn grant_app(state: &AppState, grant: &Grant) -> Result<String, AccessError> {
+pub(super) async fn grant_app(state: &AppState, grant: &Grant) -> Result<String, AccessError> {
     if let Some(app_id) = &grant.app_id {
         return match state.db.get_application(app_id).await? {
             Some(app) if app.org_id == grant.org_id => Ok(app.id),
