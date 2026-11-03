@@ -853,6 +853,23 @@ async fn oauth_token_is_confined_to_its_org() {
     assert_eq!(listed, vec![flow.org.clone()], "only the grant's org: {orgs}");
 }
 
+#[tokio::test]
+async fn get_current_user_shows_only_the_grants_org() {
+    let (app, db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    // The same person owns a second org, which the grant is not for.
+    let elsewhere = Flow::new(&app).await;
+    let (user_id, _) = whoami(&app, &flow.session).await;
+    use litegen::db::DatabaseStore;
+    db.add_org_member(&elsewhere.org, &user_id, litegen::types::Role::Owner).await.unwrap();
+
+    let (access, _) = flow.tokens(&app, &["ai:read"]).await;
+    let me = Mcp::new(&app, "/mcp").bearer(&access).call("get_current_user", json!({})).await;
+    assert!(!is_error(&me), "{me}");
+    let listed: Vec<&str> = me["structuredContent"]["orgs"].as_array().into_iter().flatten().filter_map(|o| o["id"].as_str()).collect();
+    assert_eq!(listed, vec![flow.org.as_str()], "the app learns nothing of the person's other orgs: {me}");
+}
+
 // ─── Task 7: connected apps ───────────────────────────────────────────────────
 
 /// A master-key call: the status and the JSON body.

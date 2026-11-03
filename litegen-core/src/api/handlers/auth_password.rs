@@ -9,7 +9,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::api::middleware::{
-    create_session_cookies, make_clear_session_cookies, AppState, KeyContext, DEFAULT_ORG_ID,
+    create_session_cookies, make_clear_session_cookies, within_grant, AppState, KeyContext, DEFAULT_ORG_ID,
 };
 use crate::auth::lockout::{is_locked_out, retry_after_seconds};
 use crate::auth::password::{
@@ -478,16 +478,18 @@ pub async fn me(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<KeyContext>,
 ) -> Response {
-    let Some(u) = ctx.user else {
+    let Some(u) = ctx.user.clone() else {
         return error_resp(StatusCode::UNAUTHORIZED, "not_authenticated", "Not logged in");
     };
 
+    // An app signed in through OAuth sees only the org its grant is for.
     let orgs: Vec<serde_json::Value> = state
         .db
         .list_orgs_for_user(&u.user_id)
         .await
         .unwrap_or_default()
         .into_iter()
+        .filter(|(org, _)| within_grant(&ctx, &org.id))
         .map(|(org, role)| {
             json!({ "id": org.id, "name": org.name, "role": role.as_str() })
         })
