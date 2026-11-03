@@ -53,7 +53,7 @@ pub fn surfaces(state: &AppState) -> Vec<Surface> {
 /// the client called (RFC 9728 §3.3). Without OAuth, a plain Bearer challenge.
 pub fn challenge_header(state: &AppState, path: &str, error: Option<&str>) -> String {
     match Surface::from_path(path) {
-        Some(surface) if state.router.config.mcp.oauth.enabled => {
+        Some(surface) if super::available(state) => {
             let mut value = format!(
                 r#"Bearer resource_metadata="{}/.well-known/oauth-protected-resource{path}", scope="{}""#,
                 issuer(state),

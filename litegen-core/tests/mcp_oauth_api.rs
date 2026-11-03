@@ -27,6 +27,14 @@ async fn get_json(app: &axum::Router, path: &str) -> (StatusCode, Value) {
     (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 }
 
+async fn post_json(app: &axum::Router, path: &str, body: Value) -> (StatusCode, Value) {
+    let req = Request::post(path).header("content-type", "application/json").body(Body::from(body.to_string())).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
 fn www_authenticate(rpc: &mcp_support::Rpc) -> String {
     rpc.headers.get("www-authenticate").and_then(|v| v.to_str().ok()).unwrap_or("").to_string()
 }
@@ -131,4 +139,45 @@ async fn admin_endpoint_off_has_no_admin_document() {
     assert_eq!(get_json(&app, "/.well-known/oauth-protected-resource/api/admin/mcp").await.0, StatusCode::NOT_FOUND);
     let (_, doc) = get_json(&app, "/.well-known/oauth-authorization-server").await;
     assert_eq!(doc["scopes_supported"], json!(["ai:generate", "ai:read"]), "only the scopes of endpoints that exist");
+}
+
+// ─── Task 3: client registration ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn dcr_registers_public_client() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let (status, client) = post_json(
+        &app,
+        "/oauth/register",
+        json!({ "redirect_uris": ["http://127.0.0.1/callback"], "client_name": "Test client", "grant_types": ["authorization_code", "refresh_token"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    let id = client["client_id"].as_str().unwrap();
+    assert!(id.starts_with("lgc_") && id.len() == 26, "{id}");
+    assert!(id[4..].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'), "base64url: {id}");
+    assert!(client["client_id_issued_at"].as_i64().is_some(), "{client}");
+    assert_eq!(client["token_endpoint_auth_method"], "none");
+    assert_eq!(client["redirect_uris"], json!(["http://127.0.0.1/callback"]));
+    assert_eq!(client["client_name"], "Test client");
+    assert_eq!(client["grant_types"], json!(["authorization_code", "refresh_token"]));
+
+    let refused = |body: Value| {
+        let app = app.clone();
+        async move { post_json(&app, "/oauth/register", body).await }
+    };
+    let (status, err) = refused(json!({ "redirect_uris": ["http://127.0.0.1/cb"], "token_endpoint_auth_method": "client_secret_basic" })).await;
+    assert_eq!((status, err["error"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid_client_metadata")), "{err}");
+    let (status, err) = refused(json!({ "redirect_uris": ["http://example.com/cb"] })).await;
+    assert_eq!((status, err["error"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid_redirect_uri")), "{err}");
+    let (_, err) = refused(json!({ "client_name": "no redirect" })).await;
+    assert_eq!(err["error"], "invalid_redirect_uri", "{err}");
+    let (_, err) = refused(json!({ "redirect_uris": ["https://ok.example/cb#frag"] })).await;
+    assert_eq!(err["error"], "invalid_redirect_uri", "a fragment is not allowed: {err}");
+    let (_, err) = refused(json!({ "redirect_uris": ["http://127.0.0.1/cb"], "grant_types": ["client_credentials"] })).await;
+    assert_eq!(err["error"], "invalid_client_metadata", "{err}");
+    let (_, err) = refused(json!({ "redirect_uris": ["http://127.0.0.1/cb"], "response_types": ["token"] })).await;
+    assert_eq!(err["error"], "invalid_client_metadata", "{err}");
+    let (_, err) = refused(Value::String("not an object".into())).await;
+    assert_eq!(err["error"], "invalid_client_metadata", "{err}");
 }

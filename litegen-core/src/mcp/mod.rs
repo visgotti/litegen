@@ -158,8 +158,8 @@ pub fn router(state: Arc<AppState>, api: axum::Router) -> axum::Router {
     }
     let state = shared.state.clone();
     let routes = routes.layer(axum::middleware::from_fn_with_state(shared, auth::mcp_auth));
-    if config.mcp.oauth.enabled {
-        routes.merge(oauth::discovery::routes(state))
+    if oauth::available(&state) {
+        routes.merge(oauth::routes(state))
     } else {
         routes
     }

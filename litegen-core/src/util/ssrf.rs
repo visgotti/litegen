@@ -92,6 +92,27 @@ pub async fn validate_public_url(url: &str) -> Result<(), String> {
 }
 
 pub async fn check_public_url(url: &str) -> Result<(), UrlCheckError> {
+    public_addrs(url).await.map(|_| ())
+}
+
+/// A client for fetching `url` that cannot be steered inside the deployment:
+/// it follows no redirects, and its host is pinned to the public addresses
+/// [`check_public_url`]'s check approved, which closes the DNS-rebinding
+/// window described above. For URLs anyone may make LiteGen fetch, such as
+/// an OAuth client's metadata document.
+pub async fn pinned_public_client(url: &str, timeout: std::time::Duration) -> Result<reqwest::Client, UrlCheckError> {
+    let (host, addrs) = public_addrs(url).await?;
+    let builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(timeout)
+        .connect_timeout(CONNECT_TIMEOUT);
+    let builder = if addrs.is_empty() { builder } else { builder.resolve_to_addrs(&host, &addrs) };
+    builder.build().map_err(|e| UrlCheckError::Refused(format!("http client: {e}")))
+}
+
+/// The URL's host and the addresses it resolves to, all public (none for an
+/// IP literal, which is checked as written), or why it may not be fetched.
+async fn public_addrs(url: &str) -> Result<(String, Vec<std::net::SocketAddr>), UrlCheckError> {
     let parsed = reqwest::Url::parse(url).map_err(|e| UrlCheckError::Refused(format!("invalid url: {e}")))?;
 
     match parsed.scheme() {
@@ -114,24 +135,21 @@ pub async fn check_public_url(url: &str) -> Result<(), UrlCheckError> {
         if is_disallowed_ip(ip) {
             return Err(UrlCheckError::Refused("url targets a disallowed (private/loopback/link-local) address".to_string()));
         }
-        return Ok(());
+        return Ok((host.to_string(), Vec::new()));
     }
 
     // Otherwise it's a hostname: resolve it and check every address it maps to.
-    let mut any = false;
-    let addrs = tokio::net::lookup_host((host, port))
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
         .await
-        .map_err(|e| UrlCheckError::Lookup(format!("dns resolution failed: {e}")))?;
-    for addr in addrs {
-        any = true;
-        if is_disallowed_ip(addr.ip()) {
-            return Err(UrlCheckError::Refused("url resolves to a disallowed (private/loopback/link-local) address".to_string()));
-        }
+        .map_err(|e| UrlCheckError::Lookup(format!("dns resolution failed: {e}")))?
+        .collect();
+    if addrs.iter().any(|addr| is_disallowed_ip(addr.ip())) {
+        return Err(UrlCheckError::Refused("url resolves to a disallowed (private/loopback/link-local) address".to_string()));
     }
-    if !any {
+    if addrs.is_empty() {
         return Err(UrlCheckError::Lookup("host did not resolve".to_string()));
     }
-    Ok(())
+    Ok((host.to_string(), addrs))
 }
 
 /// Build a `reqwest::Client` hardened for server-side fetches of user-supplied
@@ -382,5 +400,13 @@ mod tests {
         assert!(validate_public_url("http://[::1]/").await.is_err());
         assert!(validate_public_url("http://[fc00::1]/").await.is_err());
         assert!(validate_public_url("http://[fe80::1]/").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_pinned_client_is_built_only_for_public_targets() {
+        for url in ["https://127.0.0.1/x", "https://10.0.0.1/x", "https://[::1]/x", "ftp://example.com/x", "https://localhost/x"] {
+            assert!(matches!(pinned_public_client(url, std::time::Duration::from_secs(1)).await, Err(UrlCheckError::Refused(_))), "{url}");
+        }
+        assert!(pinned_public_client("https://93.184.216.34/x", std::time::Duration::from_secs(1)).await.is_ok(), "a public literal needs no lookup");
     }
 }
