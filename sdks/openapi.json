@@ -4356,6 +4356,106 @@
                 }
             }
         },
+        "/v1/oauth/grants": {
+            "get": {
+                "tags": [
+                    "OAuth"
+                ],
+                "summary": "GET /v1/oauth/grants \u2014 The apps a person has connected through OAuth.",
+                "operationId": "list_grants",
+                "parameters": [
+                    {
+                        "name": "user_id",
+                        "in": "query",
+                        "description": "Platform admin only: whose connected apps to list.",
+                        "required": false,
+                        "schema": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The person's connected apps, newest first",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/ConnectedApp"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "The platform admin named no `user_id`",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Not a person (an API key), or `user_id` from anyone but the platform admin",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/oauth/grants/{id}": {
+            "delete": {
+                "tags": [
+                    "OAuth"
+                ],
+                "summary": "DELETE /v1/oauth/grants/{id} \u2014 Disconnect an app.",
+                "operationId": "revoke_grant",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "The connected app's grant id",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Revoked: its tokens stop working at once",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RevokedGrant"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "No such connected app of yours",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v1/oauth/requests/{id}": {
             "get": {
                 "tags": [
@@ -7800,6 +7900,62 @@
                             "$ref": "#/components/schemas/PriceRule"
                         },
                         "description": "How the price follows the request (3D doc \u00a73G, L14): rules applied in\norder to a running price that starts at `base_cost_usd`. The quote,\nthe quota reservation and the charge all come from them."
+                    }
+                }
+            },
+            "ConnectedApp": {
+                "type": "object",
+                "description": "An app a person signed in to LiteGen with, and what it may do.",
+                "required": [
+                    "id",
+                    "client_id",
+                    "client_name",
+                    "surface",
+                    "scopes",
+                    "org_id",
+                    "created_at"
+                ],
+                "properties": {
+                    "app_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "client_id": {
+                        "type": "string"
+                    },
+                    "client_name": {
+                        "type": "string"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "id": {
+                        "type": "string",
+                        "description": "The grant's id: revoke the app with it."
+                    },
+                    "last_used_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time",
+                        "description": "When it last called LiteGen (recorded at most once a minute)."
+                    },
+                    "org_id": {
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "surface": {
+                        "type": "string",
+                        "description": "The endpoint it may use: `ai` (`/mcp`) or `admin` (`/admin/mcp`)."
                     }
                 }
             },
@@ -13539,6 +13695,17 @@
             "RevokeKeyResponse": {
                 "type": "object",
                 "description": "Response for `DELETE /v1/keys/{id}` and similar revocation endpoints.",
+                "required": [
+                    "revoked"
+                ],
+                "properties": {
+                    "revoked": {
+                        "type": "boolean"
+                    }
+                }
+            },
+            "RevokedGrant": {
+                "type": "object",
                 "required": [
                     "revoked"
                 ],

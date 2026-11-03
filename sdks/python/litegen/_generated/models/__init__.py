@@ -29,6 +29,7 @@ from .cancel_generation_body import CancelGenerationBody
 from .cancelled_generation import CancelledGeneration
 from .capability_media_type import CapabilityMediaType
 from .capability_model_pricing import CapabilityModelPricing
+from .connected_app import ConnectedApp
 from .cost_estimate import CostEstimate
 from .cost_source import CostSource
 from .create_api_key_request import CreateApiKeyRequest
@@ -205,6 +206,7 @@ from .region_input import RegionInput
 from .request_artifact import RequestArtifact
 from .request_log import RequestLog
 from .revoke_key_response import RevokeKeyResponse
+from .revoked_grant import RevokedGrant
 from .role import Role
 from .rotated_key_response import RotatedKeyResponse
 from .route_deployment import RouteDeployment
@@ -293,6 +295,7 @@ __all__ = (
     "CancelledGeneration",
     "CapabilityMediaType",
     "CapabilityModelPricing",
+    "ConnectedApp",
     "CostEstimate",
     "CostSource",
     "CreateApiKeyRequest",
@@ -452,6 +455,7 @@ __all__ = (
     "RegionInput",
     "RequestArtifact",
     "RequestLog",
+    "RevokedGrant",
     "RevokeKeyResponse",
     "Role",
     "RotatedKeyResponse",

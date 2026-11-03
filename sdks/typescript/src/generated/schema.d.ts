@@ -1237,6 +1237,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/oauth/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /v1/oauth/grants — The apps a person has connected through OAuth. */
+        get: operations["list_grants"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/oauth/grants/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /v1/oauth/grants/{id} — Disconnect an app. */
+        delete: operations["revoke_grant"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/oauth/requests/{id}": {
         parameters: {
             query?: never;
@@ -2092,6 +2126,25 @@ export interface components {
              *     the quota reservation and the charge all come from them.
              */
             variable_pricing?: components["schemas"]["PriceRule"][];
+        };
+        /** @description An app a person signed in to LiteGen with, and what it may do. */
+        ConnectedApp: {
+            app_id?: string | null;
+            client_id: string;
+            client_name: string;
+            /** Format: date-time */
+            created_at: string;
+            /** @description The grant's id: revoke the app with it. */
+            id: string;
+            /**
+             * Format: date-time
+             * @description When it last called LiteGen (recorded at most once a minute).
+             */
+            last_used_at?: string | null;
+            org_id: string;
+            scopes: string[];
+            /** @description The endpoint it may use: `ai` (`/mcp`) or `admin` (`/admin/mcp`). */
+            surface: string;
         };
         /** @description Cost estimate returned before generation. */
         CostEstimate: {
@@ -4320,6 +4373,9 @@ export interface components {
         };
         /** @description Response for `DELETE /v1/keys/{id}` and similar revocation endpoints. */
         RevokeKeyResponse: {
+            revoked: boolean;
+        };
+        RevokedGrant: {
             revoked: boolean;
         };
         /** @enum {string} */
@@ -8221,6 +8277,79 @@ export interface operations {
                 };
             };
             /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_grants: {
+        parameters: {
+            query?: {
+                /** @description Platform admin only: whose connected apps to list. */
+                user_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The person's connected apps, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectedApp"][];
+                };
+            };
+            /** @description The platform admin named no `user_id` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not a person (an API key), or `user_id` from anyone but the platform admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    revoke_grant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The connected app's grant id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked: its tokens stop working at once */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevokedGrant"];
+                };
+            };
+            /** @description No such connected app of yours */
             404: {
                 headers: {
                     [name: string]: unknown;

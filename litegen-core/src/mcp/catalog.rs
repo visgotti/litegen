@@ -1323,6 +1323,30 @@ pub static TOOLS: &[ToolDef] = &[
         description: None,
         catch_all: None,
     },
+    ToolDef {
+        name: "list_connected_apps",
+        method: Http::Get,
+        path: "/v1/oauth/grants",
+        surfaces: Surfaces::Admin,
+        toolset: "oauth",
+        gate: Gate::User,
+        title: "List connected apps",
+        description: Some(
+            "The apps you signed in to LiteGen with OAuth (Claude, ChatGPT and others): the endpoint and scopes each may use, and when it last called.",
+        ),
+        catch_all: None,
+    },
+    ToolDef {
+        name: "revoke_connected_app",
+        method: Http::Delete,
+        path: "/v1/oauth/grants/{id}",
+        surfaces: Surfaces::Admin,
+        toolset: "oauth",
+        gate: Gate::User,
+        title: "Revoke connected app",
+        description: Some("Disconnect an app you signed in with OAuth: its tokens stop working at once. Revoking the app you are using ends this session."),
+        catch_all: None,
+    },
 ];
 
 pub static EXCLUDED: &[Excluded] = &[

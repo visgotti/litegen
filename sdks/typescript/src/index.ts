@@ -39,6 +39,8 @@ export {
   type OAuthRequestView,
   type ApproveOAuthRequest,
   type OAuthRedirect,
+  type ConnectedApp,
+  type RevokedGrant,
   type CredentialFieldSpec,
   type ProviderCatalogEntry,
   type OrgAllowedModels,

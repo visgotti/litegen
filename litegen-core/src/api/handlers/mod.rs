@@ -3952,6 +3952,9 @@ pub fn create_router(state: Arc<AppState>) -> axum::Router {
         .route("/v1/oauth/requests/{id}", get(crate::mcp::oauth::authorize::get_request))
         .route("/v1/oauth/requests/{id}/approve", post(crate::mcp::oauth::authorize::approve_request))
         .route("/v1/oauth/requests/{id}/deny", post(crate::mcp::oauth::authorize::deny_request))
+        // The apps a person has connected through OAuth.
+        .route("/v1/oauth/grants", get(crate::mcp::oauth::grants::list_grants))
+        .route("/v1/oauth/grants/{id}", delete(crate::mcp::oauth::grants::revoke_grant))
         .layer(middleware::from_fn_with_state(
             csrf_state.clone(),
             csrf_middleware,

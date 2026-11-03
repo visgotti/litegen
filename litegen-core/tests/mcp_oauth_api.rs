@@ -852,3 +852,96 @@ async fn oauth_token_is_confined_to_its_org() {
         .collect();
     assert_eq!(listed, vec![flow.org.clone()], "only the grant's org: {orgs}");
 }
+
+// ─── Task 7: connected apps ───────────────────────────────────────────────────
+
+/// A master-key call: the status and the JSON body.
+async fn as_master(app: &axum::Router, method: &str, path: &str) -> (StatusCode, Value) {
+    let req = Request::builder().method(method).uri(path).header("authorization", format!("Bearer {}", mcp_support::MASTER_KEY)).body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn grants_list_and_revoke() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let (access, _) = flow.tokens(&app, &["ai:generate", "ai:read"]).await;
+
+    let (status, grants) = consent(&app, &flow.session, "GET", "/v1/oauth/grants", None).await;
+    assert_eq!(status, StatusCode::OK, "{grants}");
+    let grants = grants.as_array().expect("a list").clone();
+    assert_eq!(grants.len(), 1, "{grants:?}");
+    let grant = &grants[0];
+    assert_eq!(grant["client_id"], flow.client.as_str());
+    assert_eq!(grant["client_name"], "Test client");
+    assert_eq!(grant["surface"], "ai");
+    assert_eq!(grant["scopes"], json!(["ai:generate", "ai:read"]));
+    assert_eq!(grant["org_id"], flow.org.as_str());
+    assert!(grant["created_at"].is_string(), "{grant}");
+
+    // Using the token records when.
+    assert_eq!(Mcp::new(&app, "/mcp").bearer(&access).rpc("tools/list", json!({})).await.status, StatusCode::OK);
+    let (_, grants) = consent(&app, &flow.session, "GET", "/v1/oauth/grants", None).await;
+    assert!(grants[0]["last_used_at"].is_string(), "{grants}");
+
+    let id = grant["id"].as_str().unwrap();
+    let (status, revoked) = consent(&app, &flow.session, "DELETE", &format!("/v1/oauth/grants/{id}"), None).await;
+    assert_eq!((status, &revoked), (StatusCode::OK, &json!({ "revoked": true })));
+    assert_eq!(Mcp::new(&app, "/mcp").bearer(&access).rpc("tools/list", json!({})).await.status, StatusCode::UNAUTHORIZED);
+    let (_, grants) = consent(&app, &flow.session, "GET", "/v1/oauth/grants", None).await;
+    assert_eq!(grants, json!([]));
+    assert_eq!(consent(&app, &flow.session, "DELETE", &format!("/v1/oauth/grants/{id}"), None).await.0, StatusCode::NOT_FOUND, "already gone");
+}
+
+#[tokio::test]
+async fn grant_of_another_user_is_404() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    flow.tokens(&app, &["ai:read"]).await;
+    let (_, grants) = consent(&app, &flow.session, "GET", "/v1/oauth/grants", None).await;
+    let id = grants[0]["id"].as_str().unwrap().to_string();
+
+    let stranger = mcp_support::oauth_session(&app).await;
+    assert_eq!(consent(&app, &stranger, "GET", "/v1/oauth/grants", None).await.1, json!([]));
+    assert_eq!(consent(&app, &stranger, "DELETE", &format!("/v1/oauth/grants/{id}"), None).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(consent(&app, &stranger, "GET", &format!("/v1/oauth/grants?user_id={id}"), None).await.0, StatusCode::FORBIDDEN, "only the platform admin names a user");
+
+    // The platform admin can see and revoke anyone's, naming the person.
+    let (user_id, _) = whoami(&app, &flow.session).await;
+    assert_eq!(as_master(&app, "GET", "/v1/oauth/grants").await.0, StatusCode::BAD_REQUEST, "user_id is required");
+    let (status, listed) = as_master(&app, "GET", &format!("/v1/oauth/grants?user_id={user_id}")).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed[0]["id"], id.as_str());
+    assert_eq!(as_master(&app, "DELETE", &format!("/v1/oauth/grants/{id}")).await.0, StatusCode::OK);
+
+    // An API key has no connected apps of its own.
+    let key = mcp_support::org_key(&app, "generate,read,admin").await;
+    let req = Request::get("/v1/oauth/grants").header("authorization", format!("Bearer {key}")).body(Body::empty()).unwrap();
+    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn management_tool_lists_connected_apps() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let (reader, _) = flow.admin_tokens(&app, &["admin:read"]).await;
+    let mcp = Mcp::new(&app, "/admin/mcp").bearer(&reader);
+    let names = mcp.tool_names().await;
+    assert!(names.iter().any(|n| n == "list_connected_apps"), "{names:?}");
+    assert!(!names.iter().any(|n| n == "revoke_connected_app"), "revoking needs admin:write: {names:?}");
+    let listed = mcp.call("list_connected_apps", json!({})).await;
+    assert!(!is_error(&listed), "{listed}");
+    assert!(text_of(&listed).contains(&flow.client), "its own grant is listed: {listed}");
+
+    let (writer, _) = flow.admin_tokens(&app, &["admin:read", "admin:write"]).await;
+    let mcp = Mcp::new(&app, "/admin/mcp").bearer(&writer);
+    assert!(mcp.tool_names().await.iter().any(|n| n == "revoke_connected_app"));
+    let (_, grants) = consent(&app, &flow.session, "GET", "/v1/oauth/grants", None).await;
+    let id = grants[0]["id"].as_str().unwrap();
+    let revoked = mcp.call("revoke_connected_app", json!({ "id": id })).await;
+    assert!(!is_error(&revoked), "an app may disconnect itself: {revoked}");
+    assert_eq!(mcp.rpc("tools/list", json!({})).await.status, StatusCode::UNAUTHORIZED);
+}

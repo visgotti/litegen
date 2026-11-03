@@ -56,7 +56,7 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 | [`get_current_user`](#get_current_user) | Get current user | `GET /v1/auth/me` | a signed-in user | yes | no |
 | [`get_my_limits`](#get_my_limits) | Get my limits | `GET /v1/limits/me` | any credential | yes | no |
 
-## `/admin/mcp`: the management API (92 tools)
+## `/admin/mcp`: the management API (94 tools)
 
 ### Toolset `keys`
 
@@ -214,6 +214,13 @@ Generated from LiteGen's tool registry by `cargo run --example mcp_tools_doc` (r
 |---|---|---|---|---|---|
 | [`get_current_user`](#get_current_user) | Get current user | `GET /v1/auth/me` | a signed-in user | yes | no |
 | [`get_my_limits`](#get_my_limits) | Get my limits | `GET /v1/limits/me` | any credential | yes | no |
+
+### Toolset `oauth`
+
+| Tool | What it does | API operation | Needs | Read-only | Destructive |
+|---|---|---|---|---|---|
+| [`list_connected_apps`](#list_connected_apps) | List connected apps | `GET /v1/oauth/grants` | a signed-in user | yes | no |
+| [`revoke_connected_app`](#revoke_connected_app) | Revoke connected app | `DELETE /v1/oauth/grants/{id}` | a signed-in user | no | yes |
 
 ## Tools
 
@@ -1633,6 +1640,26 @@ Update user role or active status (requires user:write:any).
 | `id` | string | yes | User ID |
 | `is_active` | boolean | no |  |
 | `role` | one of `owner`, `admin`, `member`, `viewer` | no |  |
+
+### `list_connected_apps`
+
+The apps you signed in to LiteGen with OAuth (Claude, ChatGPT and others): the endpoint and scopes each may use, and when it last called.
+
+`GET /v1/oauth/grants` · on `/admin/mcp` · needs a signed-in user
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `user_id` | string | no | Platform admin only: whose connected apps to list. |
+
+### `revoke_connected_app`
+
+Disconnect an app you signed in with OAuth: its tokens stop working at once. Revoking the app you are using ends this session.
+
+`DELETE /v1/oauth/grants/{id}` · on `/admin/mcp` · needs a signed-in user
+
+| Argument | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | The connected app's grant id |
 
 ### `wait_for_generation`
 

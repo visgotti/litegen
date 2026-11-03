@@ -106,6 +106,9 @@ CASES: list[Case] = [
         "POST", "/v1/oauth/requests/r1/approve", {}, {"org_id": "o1", "app_id": "a1", "scopes": ["ai:generate", "ai:read"]},
     ),
     (lambda c: c.oauth.deny_request("r1"), "POST", "/v1/oauth/requests/r1/deny", {}, None),
+    (lambda c: c.oauth.list_grants(), "GET", "/v1/oauth/grants", {}, None),
+    (lambda c: c.oauth.list_grants(user_id="u1"), "GET", "/v1/oauth/grants", {"user_id": "u1"}, None),
+    (lambda c: c.oauth.revoke_grant("g/1"), "DELETE", "/v1/oauth/grants/g%2F1", {}, None),
 ]
 
 # Every response carries a `data` list so the unwrapping methods have one.

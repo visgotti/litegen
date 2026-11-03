@@ -156,6 +156,8 @@ use utoipa::OpenApi;
         crate::mcp::oauth::authorize::get_request,
         crate::mcp::oauth::authorize::approve_request,
         crate::mcp::oauth::authorize::deny_request,
+        crate::mcp::oauth::grants::list_grants,
+        crate::mcp::oauth::grants::revoke_grant,
     ),
     components(schemas(
         // Request / response types (from `types`)
@@ -367,6 +369,8 @@ use utoipa::OpenApi;
         crate::mcp::oauth::authorize::OAuthAppChoice,
         crate::mcp::oauth::authorize::ApproveOAuthRequest,
         crate::mcp::oauth::authorize::OAuthRedirect,
+        crate::mcp::oauth::grants::ConnectedApp,
+        crate::mcp::oauth::grants::RevokedGrant,
     )),
     tags(
         (name = "Images", description = "Image generation endpoints"),

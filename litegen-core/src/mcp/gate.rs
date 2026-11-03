@@ -53,7 +53,9 @@ fn passes(def: &ToolDef, ctx: &KeyContext, state: &AppState) -> bool {
             Mode::SingleTenant => ctx.permissions.contains(&perm) && may(method_scope),
         },
         Gate::GatewayAdmin => require_gateway_admin(state, ctx).is_ok(),
-        Gate::User => ctx.user.is_some(),
+        // A person's own things: reading needs no particular scope (it is
+        // their account), changing needs `admin`.
+        Gate::User => ctx.user.is_some() && (def.method == Http::Get || may(Scope::Admin)),
         Gate::Any => true,
     }
 }

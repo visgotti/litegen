@@ -43,6 +43,24 @@ describe("LiteGenClient.oauth (the MCP consent page's API)", () => {
     });
   });
 
+  it("lists connected apps, the platform admin naming whose", async () => {
+    const seen: Captured[] = [];
+    const apps = [{ id: "g1", client_name: "Claude", surface: "ai" }];
+    const c = client(apps, seen);
+    expect(await c.oauth.listGrants()).toEqual(apps);
+    await c.oauth.listGrants({ userId: "u 1" });
+    const urls = seen.map((s) => new URL(s.url));
+    expect(urls.map((u) => u.pathname)).toEqual(["/api/v1/oauth/grants", "/api/v1/oauth/grants"]);
+    expect(urls.map((u) => u.searchParams.get("user_id"))).toEqual([null, "u 1"]);
+  });
+
+  it("revokes a connected app", async () => {
+    const seen: Captured[] = [];
+    const got = await client({ revoked: true }, seen).oauth.revokeGrant("g/1");
+    expect(got.revoked).toBe(true);
+    expect(seen[0]).toMatchObject({ method: "DELETE", url: "https://h/api/v1/oauth/grants/g%2F1" });
+  });
+
   it("denies", async () => {
     const seen: Captured[] = [];
     const got = await client({ redirect_to: "http://127.0.0.1:5/cb?error=access_denied" }, seen).oauth.denyRequest("r1");

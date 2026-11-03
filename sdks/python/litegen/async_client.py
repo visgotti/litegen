@@ -891,9 +891,10 @@ class _AsyncAdmin:
 
 
 class _AsyncOAuth:
-    """The MCP OAuth consent page's API, for a signed-in dashboard session: read
-    a sign-in request, then approve or deny it and send the browser to the
-    returned ``redirect_to``."""
+    """Sign-in for MCP clients. The consent page's API, for a signed-in
+    dashboard session: read a sign-in request, then approve or deny it and send
+    the browser to the returned ``redirect_to``. And the apps a person has
+    connected."""
 
     def __init__(self, client: AsyncLiteGenClient) -> None:
         self._c = client
@@ -907,3 +908,11 @@ class _AsyncOAuth:
 
     async def deny_request(self, request_id: str) -> Any:
         return await self._c._request("POST", f"/v1/oauth/requests/{_q(request_id)}/deny")
+
+    async def list_grants(self, *, user_id: str | None = None) -> list[Any]:
+        """The caller's connected apps; the platform admin names whose with ``user_id``."""
+        return await self._c._request("GET", "/v1/oauth/grants", params=_drop_none({"user_id": user_id}))
+
+    async def revoke_grant(self, grant_id: str) -> Any:
+        """Disconnect an app: its tokens stop working at once."""
+        return await self._c._request("DELETE", f"/v1/oauth/grants/{_q(grant_id)}")

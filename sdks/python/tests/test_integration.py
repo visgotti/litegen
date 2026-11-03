@@ -1283,22 +1283,32 @@ def test_gateway_admin(master_client, owner, base_url):
 # =============================================================================
 from urllib.parse import parse_qs, urlsplit  # noqa: E402
 
-from litegen._generated.api.o_auth import approve_request, deny_request, get_request  # noqa: E402
+from litegen._generated.api.o_auth import (  # noqa: E402
+    approve_request,
+    deny_request,
+    get_request,
+    list_grants,
+    revoke_grant,
+)
 from litegen._generated.models import ApproveOAuthRequest  # noqa: E402
 
+OAUTH_VERIFIER = "an-integration-test-pkce-code-verifier-0123456789"
+OAUTH_REDIRECT = "http://127.0.0.1:5555/callback"
 
-def _oauth_request(base_url: str) -> str:
-    """Register an MCP client and start its sign-in; returns the pending request id."""
+
+def _oauth_request(base_url: str) -> tuple[str, str]:
+    """Register an MCP client and start its sign-in; returns the pending request id and the client id."""
     with httpx.Client(base_url=base_url, follow_redirects=False, timeout=30) as hc:
         reg = hc.post("/oauth/register", json={"redirect_uris": ["http://127.0.0.1/callback"], "client_name": "IT client"})
         assert reg.status_code == 201, reg.text
-        challenge = base64.urlsafe_b64encode(hashlib.sha256(b"an-integration-test-code-verifier").digest()).rstrip(b"=").decode()
+        client_id = reg.json()["client_id"]
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(OAUTH_VERIFIER.encode()).digest()).rstrip(b"=").decode()
         r = hc.get(
             "/oauth/authorize",
             params={
                 "response_type": "code",
-                "client_id": reg.json()["client_id"],
-                "redirect_uri": "http://127.0.0.1:5555/callback",
+                "client_id": client_id,
+                "redirect_uri": OAUTH_REDIRECT,
                 "code_challenge": challenge,
                 "code_challenge_method": "S256",
                 "state": "it",
@@ -1306,11 +1316,11 @@ def _oauth_request(base_url: str) -> str:
             },
         )
     assert r.status_code == 302, r.text
-    return parse_qs(urlsplit(r.headers["location"]).query)["request"][0]
+    return parse_qs(urlsplit(r.headers["location"]).query)["request"][0], client_id
 
 
 def test_oauth_consent(base_url, owner):
-    request_id = _oauth_request(base_url)
+    request_id, client_id = _oauth_request(base_url)
     view = _ok(get_request.sync_detailed(id=request_id, client=owner.session), 200)
     EXERCISED.add("get_request")
     assert view.parsed.surface == "ai"
@@ -1323,9 +1333,23 @@ def test_oauth_consent(base_url, owner):
         200,
     )
     EXERCISED.add("approve_request")
-    assert parse_qs(urlsplit(approved.parsed.redirect_to).query)["code"]
+    code = parse_qs(urlsplit(approved.parsed.redirect_to).query)["code"][0]
 
-    denied = _ok(deny_request.sync_detailed(id=_oauth_request(base_url), client=owner.session), 200)
+    # The code becomes a grant: a connected app, listed and revoked.
+    tokens = httpx.post(
+        f"{base_url}/oauth/token",
+        data={"grant_type": "authorization_code", "code": code, "redirect_uri": OAUTH_REDIRECT, "client_id": client_id, "code_verifier": OAUTH_VERIFIER},
+    )
+    assert tokens.status_code == 200, tokens.text
+    listed = _ok(list_grants.sync_detailed(client=owner.session), 200)
+    EXERCISED.add("list_grants")
+    assert [g.client_id for g in listed.parsed] == [client_id]
+    revoked = _ok(revoke_grant.sync_detailed(id=listed.parsed[0].id, client=owner.session), 200)
+    EXERCISED.add("revoke_grant")
+    assert revoked.parsed.revoked is True
+    assert _ok(list_grants.sync_detailed(client=owner.session), 200).parsed == []
+
+    denied = _ok(deny_request.sync_detailed(id=_oauth_request(base_url)[0], client=owner.session), 200)
     EXERCISED.add("deny_request")
     assert parse_qs(urlsplit(denied.parsed.redirect_to).query)["error"] == ["access_denied"]
 
@@ -1360,9 +1384,9 @@ def test_every_generated_endpoint_is_covered(base_url):
 
     Compares EXERCISED (populated by every other test) against the discovered
     universe of endpoint module names, and independently asserts the raw module
-    file count is 135. Both `transfer_owner` modules are exercised
+    file count is 137. Both `transfer_owner` modules are exercised
     (organizations + users); they share a bare name, so the deduped name set has
-    134 entries while the file count is 135.
+    136 entries while the file count is 137.
 
     Takes `base_url` only so it skips with the rest of the suite when the binary
     isn't built: without the binary nothing populates EXERCISED, and this would
@@ -1376,6 +1400,6 @@ def test_every_generated_endpoint_is_covered(base_url):
     unexpected = EXERCISED - discovered
     assert not missing, f"{len(missing)} endpoint(s) never exercised: {sorted(missing)}"
     assert not unexpected, f"recorded names not found in generated API: {sorted(unexpected)}"
-    # 135 endpoint module files in total (134 unique names + duplicate transfer_owner).
-    assert file_count == 135, f"expected 135 endpoint module files, found {file_count}"
-    assert len(discovered) == 134, f"expected 134 unique names, found {len(discovered)}"
+    # 137 endpoint module files in total (136 unique names + duplicate transfer_owner).
+    assert file_count == 137, f"expected 137 endpoint module files, found {file_count}"
+    assert len(discovered) == 136, f"expected 136 unique names, found {len(discovered)}"

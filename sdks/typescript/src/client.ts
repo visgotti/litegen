@@ -59,6 +59,8 @@ type SessionInfo = Schemas["SessionInfo"];
 export type OAuthRequestView = Schemas["OAuthRequestView"];
 export type ApproveOAuthRequest = Schemas["ApproveOAuthRequest"];
 export type OAuthRedirect = Schemas["OAuthRedirect"];
+export type ConnectedApp = Schemas["ConnectedApp"];
+export type RevokedGrant = Schemas["RevokedGrant"];
 // Tenancy (orgs / apps / members / provider credentials)
 type OrgView = Schemas["OrgView"];
 type OrgSummary = Schemas["OrgSummary"];
@@ -1407,12 +1409,23 @@ class AccountNamespace {
 }
 
 /**
- * The MCP OAuth consent page's API, for a signed-in dashboard session: read a
- * sign-in request, then approve or deny it and send the browser to the
- * returned `redirect_to`.
+ * Sign-in for MCP clients. The consent page's API, for a signed-in dashboard
+ * session: read a sign-in request, then approve or deny it and send the
+ * browser to the returned `redirect_to`. And the apps a person has connected.
  */
 class OAuthNamespace {
   constructor(private readonly client: LiteGenClient) {}
+
+  /** The caller's connected apps; the platform admin names whose with `userId`. */
+  listGrants(opts: { userId?: string } = {}, signal?: AbortSignal): Promise<ConnectedApp[]> {
+    const params = new URLSearchParams();
+    if (opts.userId) params.set("user_id", opts.userId);
+    return this.client.request("GET", `/v1/oauth/grants?${params.toString()}`, undefined, signal);
+  }
+  /** Disconnect an app: its tokens stop working at once. */
+  revokeGrant(id: string, signal?: AbortSignal): Promise<RevokedGrant> {
+    return this.client.request("DELETE", `/v1/oauth/grants/${encodeURIComponent(id)}`, undefined, signal);
+  }
 
   getRequest(id: string, signal?: AbortSignal): Promise<OAuthRequestView> {
     return this.client.request("GET", `/v1/oauth/requests/${encodeURIComponent(id)}`, undefined, signal);

@@ -46,7 +46,7 @@ fn every_openapi_operation_is_a_tool_or_excluded() {
     let mut stale: Vec<_> = listed.difference(&ops).collect();
     stale.sort();
     assert!(stale.is_empty(), "catalog rows naming operations the API does not have: {stale:?}");
-    assert_eq!(TOOLS.len(), 111);
+    assert_eq!(TOOLS.len(), 113);
     assert_eq!(EXCLUDED.len(), 24);
 }
 
@@ -181,11 +181,14 @@ async fn oauth_principals_see_what_their_grant_allows() {
     }
     assert!(sees(&reader, &single, "list_users"), "a global read");
     assert!(!sees(&reader, &single, "delete_user"), "a global write needs admin:write");
+    assert!(sees(&reader, &hosted, "list_connected_apps"));
+    assert!(!sees(&reader, &hosted, "revoke_connected_app"), "a change to their own things needs admin:write");
 
     let writer = admin(oauth(Role::Owner, &[Scope::Admin]));
     assert!(sees(&writer, &hosted, "get_org"), "admin covers reads, as the API's role checks have it");
     assert!(sees(&writer, &hosted, "update_org"));
     assert!(sees(&writer, &single, "delete_user"));
+    assert!(sees(&writer, &hosted, "revoke_connected_app"));
 
     let member = admin(oauth(Role::Member, &[Scope::Read, Scope::Admin]));
     assert!(!sees(&member, &hosted, "update_org"), "the role still decides");

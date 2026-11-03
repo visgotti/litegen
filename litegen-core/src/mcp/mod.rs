@@ -85,7 +85,7 @@ impl Surface {
             Surface::Ai => &["images", "videos", "models3d", "catalog", "generations", "account"],
             Surface::Admin => &[
                 "keys", "budgets", "end_users", "spend", "logs", "audit", "orgs", "members", "apps", "users",
-                "gateway", "system", "account",
+                "gateway", "system", "account", "oauth",
             ],
         }
     }
