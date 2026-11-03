@@ -27,6 +27,10 @@ app.litegen.ai {
         reverse_proxy litegen:4000
     }
     handle {
+        # The MCP OAuth consent page grants apps access: no other site may frame it.
+        @consent path /oauth/consent
+        header @consent Content-Security-Policy "frame-ancestors 'none'"
+        header @consent X-Frame-Options "DENY"
         root * /srv/app
         try_files {path} /index.html
         file_server

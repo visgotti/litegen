@@ -1,0 +1,129 @@
+/* The OAuth consent page: the sign-in card, a little wider for the scope list. */
+
+.consent-card {
+  width: 460px;
+}
+
+.consent-client {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 8px;
+}
+
+.consent-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  object-fit: contain;
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+}
+
+.consent-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-strong);
+}
+
+.consent-sub {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.consent-sub strong {
+  color: var(--text-soft);
+  font-weight: 600;
+}
+
+.consent-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.consent-field .input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.consent-scopes {
+  list-style: none;
+  margin: 4px 0 20px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.consent-scope {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+  align-items: flex-start;
+}
+
+.consent-scope + .consent-scope {
+  border-top: 1px solid var(--border);
+}
+
+.consent-scope input {
+  margin-top: 3px;
+}
+
+.consent-scope label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+}
+
+.consent-scope.disabled label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.consent-scope-desc {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.consent-scope-code {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.consent-scope-hint {
+  color: var(--warning);
+  font-size: 12px;
+}
+
+.consent-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.consent-notice {
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning);
+  color: var(--text);
+}
+
+.consent-notice.error {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger);
+  margin-bottom: 16px;
+}

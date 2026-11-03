@@ -12,6 +12,7 @@ import Audit from './pages/Audit';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import AcceptInvite from './pages/AcceptInvite';
+import OAuthConsent from './pages/OAuthConsent';
 import Account from './pages/Account';
 import Users from './pages/Users';
 import Organization from './pages/Organization';
@@ -164,6 +165,12 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/invite/:token" element={<AcceptInvite />} />
+          {/* An MCP client's OAuth sign-in: a session is needed, the app shell is not. */}
+          <Route path="/oauth/consent" element={
+            <RequireAuth>
+              <OAuthConsent />
+            </RequireAuth>
+          } />
 
           {/* Everything else requires a session and renders the full app shell. */}
           <Route path="*" element={

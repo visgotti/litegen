@@ -40,6 +40,10 @@ export default defineConfig({
       env: {
         LITEGEN__SERVER__HOST: '127.0.0.1',
         LITEGEN__SERVER__PORT: '5199',
+        // As in production, the public URL is the dashboard's origin + /api
+        // (vite proxies /api like Caddy does): the MCP OAuth issuer, and the
+        // origin of the consent page /oauth/consent.
+        LITEGEN__SERVER__PUBLIC_BASE_URL: 'http://127.0.0.1:5274/api',
         LITEGEN__DATABASE_URL: `sqlite://${DB_PATH}?mode=rwc`,
         LITEGEN__MODE: 'hosted',
         LITEGEN__MASTER_KEY: 'mt-master-key',
