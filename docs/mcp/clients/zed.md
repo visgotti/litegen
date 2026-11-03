@@ -86,8 +86,23 @@ its tools.
 
 ## OAuth
 
-Coming with OAuth support. Zed starts the MCP sign-in flow for a remote
-server that has no `Authorization` header.
+Instead of a key, Zed can sign in with your LiteGen account. Leave out the
+`Authorization` header:
+
+```json
+{
+  "context_servers": {
+    "litegen": {
+      "url": "https://app.litegen.ai/api/mcp"
+    }
+  }
+}
+```
+
+Zed then starts the MCP sign-in for the server and opens LiteGen's sign-in
+page in your browser: pick the organization, the app and the scopes, and
+approve. To cut Zed off on LiteGen's side, revoke it under **Connected
+apps** on the dashboard's Connect AI tools page.
 
 ## Troubleshooting
 

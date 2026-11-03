@@ -560,3 +560,61 @@ directory:
 | GitHub Copilot CLI (scratch `HOME`) | 1.0.105 | `copilot mcp add --transport http --timeout 600000 --header '…'` writes `type`, `url`, `headers`, `tools: ["*"]`, `timeout`; single-quoted `${VAR}` kept as written; `mcp list`/`mcp get` read config only |
 
 Claude Code's real `~/.claude.json` was unchanged (same mtime and size).
+
+## Re-check for the OAuth guides (2026-11-03)
+
+- **ChatGPT** (<https://developers.openai.com/plugins/deploy/connect-chatgpt.md>,
+  <https://developers.openai.com/plugins/build/auth.md>): unchanged in
+  substance. chatgpt.com/plugins → + → **Add custom MCP server** → name and
+  description → **Connection**: the public URL (with `/mcp`) or, new on the
+  page, **Tunnel** (OpenAI's Secure MCP Tunnel, for a server not exposed to
+  the internet: <https://developers.openai.com/api/docs/guides/secure-mcp-tunnels>)
+  → authentication → **I understand and want to continue** → **Create as a
+  plugin** → review the tools; install, then `@` it in a new conversation.
+  **Refresh** on the plugin after tool or auth changes. Still "nor can it
+  present custom API keys"; CIMD preferred (the builder may pick DCR), PKCE
+  S256, `iss` on every authorization response, `resource` = the origin on
+  both requests. Egress: <https://developers.openai.com/api/docs/guides/ip-addresses>.
+- **Claude** (<https://claude.com/docs/connectors/custom/add-unlisted.md>,
+  <https://claude.com/docs/connectors/building/authentication.md>): unchanged
+  in substance; one correction: a connector's **name and URL can be edited**
+  (Customize → Connectors, or Organization settings → Connectors); its
+  authentication (OAuth client, request headers) cannot, so change those by
+  removing and re-adding. Per-tool permissions (Blocked) are set there.
+  Egress `160.79.104.0/21`; the authorization server's discovery must also
+  be reachable from it. Claude Code needs port-agnostic loopback matching for
+  both `localhost` and `127.0.0.1`.
+- **Claude Code** (checked by hand, 2.1.317): `claude mcp login <name>`
+  (`--no-browser` prints the URL and takes the redirect URL back on a
+  terminal) and `claude mcp logout <name>`. Its authorization request carried
+  `client_id=https://claude.ai/oauth/claude-code-client-metadata`,
+  `redirect_uri=http://localhost:<port>/callback`, the challenge's scopes and
+  `resource`; it accepted `iss`; `claude mcp list` then showed `✔ Connected`.
+- **MCP Inspector 2.x** (`docs/cli-smoke-testing.md`, `docs/test-servers.md`):
+  no 1.x "Auth Settings" panel. The web UI signs in from **Connect**;
+  **Clear OAuth state and disconnect** (Server Settings → Authorization)
+  revokes the refresh token at the `revocation_endpoint` while **Revoke
+  tokens on clear** is checked. The CLI and TUI sign in interactively (browser,
+  loopback `http://127.0.0.1:6276/oauth/callback`, up to 15 minutes); with no
+  TTY, or `--stored-auth-only`, they exit `3` (`auth_required`) instead.
+  Web redirect: `<web origin>/oauth/callback`.
+- **Cline** (`docs.cline.bot/mcp/mcp-overview.md`): `cline mcp` → **Authorize
+  OAuth** ("Run or rerun browser authorization for a remote server"); the
+  IDE section documents no sign-in.
+- **Goose** (`using-extensions.md`): CIMD or DCR automatically for
+  `streamable_http`; `client_id` / `client_secret_key` / `scopes` only for
+  pre-registered clients; callback on `127.0.0.1`, ephemeral port
+  (`GOOSE_OAUTH_CALLBACK_PORT`).
+- **Kiro** (`kiro.dev/docs/mcp/configuration/`): browser flow on connect, DCR
+  by default, `oauth.clientId` / `clientMetadataUrl` / `redirectUri`; with no
+  `oauthScopes` it asks for `openid email profile offline_access` (LiteGen
+  ignores unknown scopes and offers the endpoint's own); issuer compared
+  character for character; CLI `/mcp auth`, `/mcp cancel-auth`, `/mcp logout`.
+- **GitHub Copilot**: the cloud agent does not support OAuth remote servers
+  (repository settings or agent profiles). Copilot CLI documents sign-in only
+  for GitHub's **Connectors** view of `/mcp`, not for added servers.
+- **mcp-remote** (README): OAuth when no `--header`; callback
+  `http://localhost:<port>/oauth/callback`, the port derived from the server
+  URL (3335–49150); tokens in `~/.mcp-auth` (`MCP_REMOTE_CONFIG_DIR`);
+  `--auth-timeout` defaults to 30 seconds; `--resource`, CIMD with
+  `--client-metadata-url`.

@@ -111,7 +111,19 @@ so on. Ask: **"List LiteGen's image models."**
 
 ## OAuth
 
-Coming with OAuth support.
+Instead of a key, Gemini CLI can sign in with your LiteGen account. Add the
+server with no header:
+
+```bash
+gemini mcp add --scope user --transport http litegen https://app.litegen.ai/api/mcp
+```
+
+In a session, run `/mcp auth litegen`. Gemini CLI opens LiteGen's sign-in
+page in your browser: pick the organization, the app and the scopes, and
+approve. It listens for the answer on `localhost`, checks it comes from
+LiteGen (`iss`), and keeps the tokens in `~/.gemini/mcp-oauth-tokens.json`.
+To cut it off on LiteGen's side, revoke it under **Connected apps** on the
+dashboard's Connect AI tools page.
 
 ## Troubleshooting
 

@@ -16,11 +16,16 @@ mcp:
   admin_enabled: true    # also serve /admin/mcp (the management API)
   allowed_hosts: []      # extra Host values to accept (see below); ["*"] turns the check off
   allowed_origins: []    # extra browser Origins to accept (see below)
+  oauth:
+    enabled: true        # let clients sign in instead of sending a key (see OAuth below)
+    consent_url: null    # default: the origin of public_base_url + /oauth/consent
+    access_token_ttl_secs: 3600
+    refresh_token_ttl_days: 30
 ```
 
-`server.public_base_url` matters to MCP in three ways: it is the host MCP
-accepts in the `Host` header, an `Origin` MCP accepts from browsers, and the
-base of the file URLs tools return.
+`server.public_base_url` matters to MCP in four ways: it is the host MCP
+accepts in the `Host` header, an `Origin` MCP accepts from browsers, the
+base of the file URLs tools return, and the OAuth issuer.
 
 The endpoints are `{public_base_url}/mcp` and `{public_base_url}/admin/mcp`.
 
@@ -45,6 +50,9 @@ Caddy, as LiteGen's own deployment uses (`deploy/Caddyfile`):
 
 ```caddyfile
 app.example.com {
+    handle /.well-known/oauth-* {
+        reverse_proxy litegen:4000    # OAuth discovery, at the root and not stripped (see OAuth)
+    }
     handle_path /api/* {
         reverse_proxy litegen:4000    # Caddy keeps Host and streams responses by default
     }
@@ -60,6 +68,11 @@ location /api/ {
     proxy_buffering off;
     proxy_read_timeout 300s;
     client_max_body_size 16m;
+}
+
+location /.well-known/oauth- {
+    proxy_pass http://litegen:4000;    # no trailing slash: the path goes through whole
+    proxy_set_header Host $host;
 }
 ```
 
@@ -80,12 +93,85 @@ origin; don't use that on a deployment reachable from the internet.
 ## Authentication
 
 - With a master key configured, every MCP request needs credentials: an API
-  key or the master key as `Authorization: Bearer …`. Without them MCP
-  answers 401 with a `WWW-Authenticate` header.
+  key, the master key, or an OAuth access token, as
+  `Authorization: Bearer …`. Without them MCP answers 401 with a
+  `WWW-Authenticate` header that points clients at the OAuth discovery
+  documents.
+- OAuth access tokens work only on the MCP endpoint they were issued for,
+  never on the HTTP API.
 - Session cookies are never accepted on the MCP endpoints, so a web page
   cannot drive a signed-in browser through them.
 - In single-tenant mode with no master key (local development), MCP is open,
   like the rest of the API. Don't expose that to a network.
+
+## OAuth
+
+LiteGen is its own OAuth 2.1 authorization server, so clients can sign in
+with a LiteGen account instead of sending an API key; ChatGPT and Claude
+need this. It is on by default (`mcp.oauth.enabled`), and needs four things
+from the deployment.
+
+**A public HTTPS `server.public_base_url`.** It is the issuer, and each
+endpoint's resource URL is built on it; clients check both against the URL
+they connected to. Left unset, the issuer is `http://<host>:<port>`, which
+only clients on the same machine can use. ChatGPT and Claude call LiteGen
+from their own servers. If a firewall limits who reaches LiteGen, let their
+egress ranges ([ChatGPT](clients/chatgpt.md), [Claude](clients/claude-apps.md))
+reach the MCP endpoints, the discovery documents and `/oauth/*`.
+
+**The discovery documents at the root of the domain.** Clients find the
+authorization server from the endpoint's URL (RFC 9728 and RFC 8414), and
+for a `public_base_url` with a path, the documents' URLs start at the
+domain's root. With `public_base_url: https://app.example.com/api`, they are
+`https://app.example.com/.well-known/oauth-protected-resource/api/mcp` and
+`https://app.example.com/.well-known/oauth-authorization-server/api`. Route
+`/.well-known/oauth-*` to LiteGen without stripping it, as the
+[proxy examples](#behind-a-reverse-proxy) do. LiteGen answers at every path
+a client may derive, so the same documents also work under `/api`.
+
+**People who can sign in to the dashboard.** The sign-in page is the
+dashboard's: whoever approves a client signs in there, with a password or a
+social login. A deployment where nobody can sign in has nobody to approve.
+
+**The consent page.** LiteGen sends people to `/oauth/consent` on the
+origin of `public_base_url`. If the dashboard is served from another origin,
+set `mcp.oauth.consent_url` to its consent page. The page grants access, so
+no other site may frame it: serve it with
+`Content-Security-Policy: frame-ancestors 'none'`, as `deploy/Caddyfile`
+does.
+
+### What clients do
+
+- **Register on their own**, with dynamic client registration
+  (`/oauth/register`) or a client ID metadata document: an HTTPS URL used as
+  the client ID, which LiteGen fetches and keeps for a day. LiteGen fetches
+  those documents only from public addresses, so the server needs outbound
+  HTTPS to the clients' hosts (`claude.ai` and `chatgpt.com` among them).
+- **Use PKCE (S256)**, with redirect URIs on HTTPS, or HTTP on `localhost`,
+  `127.0.0.1` or `[::1]`, where any port matches.
+- **Call from browsers.** The discovery documents, `/oauth/register`,
+  `/oauth/token` and `/oauth/revoke` answer CORS from any origin, so a client
+  running in a browser (the MCP Inspector) can sign in. None of them reads
+  a cookie.
+
+LiteGen does not rate-limit `/oauth/register` or `/oauth/authorize` by
+address. On a server open to the internet, limit them at your proxy.
+
+### Tokens and revoking
+
+- Access tokens last `access_token_ttl_secs` (an hour) and refresh tokens
+  `refresh_token_ttl_days` (30 days). Every refresh replaces the refresh
+  token, and a replaced one presented again ends the sign-in. Authorization
+  codes last a minute and work once; an unanswered sign-in expires after ten
+  minutes.
+- LiteGen stores only hashes of codes and tokens, and deletes them a day
+  after they expire.
+- People revoke their own sign-ins under **Connected apps** on the
+  dashboard's Connect AI tools page. The master key can list anyone's with
+  `GET /v1/oauth/grants?user_id=…` and revoke any with
+  `DELETE /v1/oauth/grants/{id}`.
+- `mcp.oauth.enabled: false` turns sign-in off and stops every OAuth token
+  at once. API keys keep working.
 
 ## Turning endpoints off
 

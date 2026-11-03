@@ -56,7 +56,7 @@ server on your machine.
 
 ## Pick toolsets
 
-`/admin/mcp` can list up to 93 tools. Ask LiteGen for just the
+`/admin/mcp` can list up to 94 tools. Ask LiteGen for just the
 [toolsets](../README.md#toolsets) you use, and switch off single tools from
 **Customize** in the sidebar:
 
@@ -80,7 +80,24 @@ with small previews, which Cursor attaches to the chat.
 
 ## OAuth
 
-Coming with OAuth support.
+Instead of a key, Cursor can sign in with your LiteGen account. Leave out
+`headers`:
+
+```json
+{
+  "mcpServers": {
+    "litegen": {
+      "url": "https://app.litegen.ai/api/mcp"
+    }
+  }
+}
+```
+
+Cursor shows that the server needs you to log in; choose it in
+**Customize** and log in. Cursor registers itself with LiteGen and opens
+LiteGen's sign-in page in your browser: pick the organization, the app and
+the scopes, and approve. To cut Cursor off on LiteGen's side, revoke it
+under **Connected apps** on the dashboard's Connect AI tools page.
 
 ## Troubleshooting
 

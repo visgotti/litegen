@@ -14,8 +14,8 @@ endpoints over Streamable HTTP, on the same paths LiteLLM uses:
 | `/admin/mcp` | `https://app.litegen.ai/api/admin/mcp` | `{public_base_url}/admin/mcp` | The management API: API keys, budgets and limits, end users, spend, request logs, audit log, organizations, apps, members and gateway configuration |
 
 Every tool is one LiteGen API operation, and a tool call runs as that API
-request with your own credentials. So MCP can do exactly what your API key
-(or your account) can do over HTTP, and nothing more. See
+request, as you. So MCP can do exactly what your API key (or your account,
+when a client signs in) can do over HTTP, and nothing more. See
 [permissions](permissions.md).
 
 ## Quick start
@@ -57,6 +57,15 @@ tool_timeout_sec = 600
 
 Then ask: "List LiteGen's image models." Every other client is below.
 
+**Or sign in instead of making a key.** Add the server with no
+`Authorization` header, and a client that supports OAuth opens LiteGen's
+sign-in page. In Claude Code:
+
+```bash
+claude mcp add --transport http --scope user litegen https://app.litegen.ai/api/mcp
+claude mcp login litegen
+```
+
 ## Connect a client
 
 | Client | Page | API key | Sign-in (OAuth) |
@@ -75,8 +84,18 @@ Then ask: "List LiteGen's image models." Every other client is below.
 | OpenAI Responses API and Agents SDK, Anthropic Messages API and Claude Agent SDK, MCP SDKs | [apis-and-sdks.md](clients/apis-and-sdks.md) | Yes | Bring your own token |
 | MCP Inspector (testing) | [mcp-inspector.md](clients/mcp-inspector.md) | Yes | Yes |
 
-The sign-in column needs LiteGen's OAuth support. Until that ships, connect
-with an API key.
+### Signing in with OAuth
+
+A client that signs in acts as you, with no key to create or paste. On
+LiteGen's sign-in page you pick the organization it may act in, the app its
+generations count against, and the scopes it gets. Each sign-in is for one
+endpoint, and your role still applies: see [permissions](permissions.md#oauth).
+The dashboard's **Connect AI tools** page lists every app you signed in
+with under **Connected apps**, where you can revoke it.
+
+ChatGPT, and Claude without the request-headers beta, can only sign in.
+A self-hosted deployment needs a public HTTPS address for it: see
+[self-hosting](self-hosting.md#oauth).
 
 ## How the tools work
 
@@ -104,7 +123,7 @@ with an API key.
 
 ### Toolsets
 
-`/mcp` has up to 22 tools and `/admin/mcp` up to 93; each caller sees the
+`/mcp` has up to 22 tools and `/admin/mcp` up to 94; each caller sees the
 ones their credential can use. Clients that cap tool counts, or that work
 better with fewer tools, can ask for groups with `?toolsets=`:
 
@@ -116,7 +135,7 @@ https://app.litegen.ai/api/admin/mcp?toolsets=keys,budgets,spend
 | Endpoint | Toolsets |
 |---|---|
 | `/mcp` | `images`, `videos`, `models3d`, `catalog`, `generations`, `account` |
-| `/admin/mcp` | `keys`, `budgets`, `end_users`, `spend`, `logs`, `audit`, `orgs`, `members`, `apps`, `users`, `gateway`, `system`, `account` |
+| `/admin/mcp` | `keys`, `budgets`, `end_users`, `spend`, `logs`, `audit`, `orgs`, `members`, `apps`, `users`, `gateway`, `system`, `account`, `oauth` |
 
 Each tool's toolset is in the [tool reference](tools.md). An unknown toolset
 name is refused with the list of valid ones.
@@ -149,9 +168,10 @@ with each publish.
 
 ## More
 
-- [Permissions](permissions.md): what each key and role can do through MCP.
+- [Permissions](permissions.md): what each key, role and sign-in can do
+  through MCP.
 - [Tool reference](tools.md): every tool, its arguments and what it needs.
-- [Self-hosting](self-hosting.md): configuration and reverse proxies.
+- [Self-hosting](self-hosting.md): configuration, reverse proxies and OAuth.
 - [Troubleshooting](troubleshooting.md).
 - [`scripts/mcp-smoke`](../../scripts/mcp-smoke/README.md): a smoke test for
   a deployment's endpoints.

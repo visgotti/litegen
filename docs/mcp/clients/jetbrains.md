@@ -57,8 +57,12 @@ LiteGen's image models."**
 
 ### OAuth
 
-Coming with OAuth support. Junie signs in to OAuth servers from `/mcp` →
-the server → **Authorize**.
+Instead of a key, Junie can sign in with your LiteGen account. Add the
+server with no `headers`, then in Junie run `/mcp`, choose `litegen` and
+**Authorize**. LiteGen's sign-in page opens in your browser: pick the
+organization, the app and the scopes, and approve. To cut Junie off on
+LiteGen's side, revoke it under **Connected apps** on the dashboard's
+Connect AI tools page.
 
 ## AI Assistant
 

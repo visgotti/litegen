@@ -124,7 +124,26 @@ asks to run `list_models`; allow it.
 
 ### OAuth
 
-Coming with OAuth support.
+Instead of a key, VS Code can sign in with your LiteGen account. Leave out
+`headers`:
+
+```json
+{
+  "servers": {
+    "litegen": {
+      "type": "http",
+      "url": "https://app.litegen.ai/api/mcp"
+    }
+  }
+}
+```
+
+When the server starts, VS Code finds LiteGen's sign-in from the server's
+answer, registers itself and opens LiteGen's sign-in page in your browser:
+pick the organization, the app and the scopes, and approve. VS Code keeps
+the tokens in its secret storage and renews them. To cut it off on
+LiteGen's side, revoke it under **Connected apps** on the dashboard's
+Connect AI tools page.
 
 ### Troubleshooting
 
@@ -179,8 +198,10 @@ choose **Allow**.
 
 ### OAuth
 
-Coming with OAuth support. Visual Studio signs in to MCP servers from the
-**Manage Authentication** CodeLens in `.mcp.json`.
+Instead of a key, Visual Studio can sign in with your LiteGen account: add
+the server to `.mcp.json` with no `headers`, then sign in from the **Manage
+Authentication** CodeLens above the entry. LiteGen's sign-in page opens:
+pick the organization, the app and the scopes, and approve.
 
 ## Checked against
 

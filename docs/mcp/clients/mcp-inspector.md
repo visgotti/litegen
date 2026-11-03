@@ -88,8 +88,19 @@ see [`scripts/mcp-smoke`](../../../scripts/mcp-smoke/README.md).
 
 ## OAuth
 
-Coming with OAuth support. Today a 401 makes the Inspector try to sign in,
-and the CLI exits `3` with `auth_required`; for an API key, check the key.
+Instead of a key, the Inspector can sign in with your LiteGen account.
+
+**Web UI.** Add LiteGen's URL with no `Authorization` header and click
+**Connect**. LiteGen's sign-in page opens: pick the organization, the app
+and the scopes, and approve. **Clear OAuth state and disconnect** (Server
+Settings → Authorization) also revokes the sign-in on LiteGen's side, as
+long as **Revoke tokens on clear** stays checked.
+
+**CLI.** With no `--header`, a 401 starts the same sign-in from a terminal:
+the Inspector opens your browser and waits for the answer on
+`http://127.0.0.1:6276/oauth/callback`. Without a terminal, as in CI, it
+exits `3` with `auth_required` instead of waiting; `--stored-auth-only`
+makes that explicit. Jobs that run unattended should send an API key.
 
 ## Troubleshooting
 
@@ -107,4 +118,9 @@ and the CLI exits `3` with `auth_required`; for an API key, check the key.
 `docs/cli-smoke-testing.md`) on 2026-11-02, and with Inspector 2.13.0
 against a local LiteGen server: the `tools/list`, `tools/call` and
 `initialize` commands above, `--strict` (no errors on either endpoint), and a
-wrong key (exit `3`).
+wrong key (exit `3`). The OAuth section was checked against
+`docs/cli-smoke-testing.md` and `docs/test-servers.md` on 2026-11-03; the
+Inspector's sign-in was not run against LiteGen, but it uses the MCP
+TypeScript SDK's OAuth client, which
+[`scripts/mcp-smoke/oauth-e2e.mjs`](../../../scripts/mcp-smoke/README.md)
+runs against LiteGen end to end.

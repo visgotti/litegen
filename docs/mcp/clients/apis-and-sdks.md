@@ -2,7 +2,8 @@
 
 Use LiteGen's MCP server from code: OpenAI's Responses API and Agents SDK,
 Anthropic's Messages API and Claude Agent SDK, and the official MCP SDKs.
-Each one sends LiteGen API keys as `Authorization: Bearer …`.
+Each one sends LiteGen API keys as `Authorization: Bearer …`. To act for
+the people using your app instead, see [OAuth](#act-for-a-signed-in-user-oauth).
 
 Every example reads the key from `LITEGEN_API_KEY`, a key with the **AI**
 preset from the dashboard's **Keys** page. For the management tools, point
@@ -288,6 +289,50 @@ asyncio.run(main())
 `call_tool` takes `read_timeout_seconds=` for a slow generation, and
 `progress_callback=` to follow `wait_for_generation`'s progress.
 
+## Act for a signed-in user (OAuth)
+
+An API key acts as itself. To act for each person using your app, with
+their own organization and role, have them sign in to LiteGen with OAuth
+and send their access token where the examples above send the key. What a
+sign-in may do is in [permissions](../permissions.md#oauth).
+
+LiteGen is an OAuth 2.1 authorization server. Its metadata lists every
+endpoint: `https://app.litegen.ai/.well-known/oauth-authorization-server/api`
+for the hosted service, `{origin}/.well-known/oauth-authorization-server`
+for a self-hosted one at the root of its domain. Your app needs:
+
+- **A client ID.** Register through dynamic client registration (the
+  metadata's `registration_endpoint`), or use the HTTPS URL of a client ID
+  metadata document you host.
+- **Redirect URIs** on HTTPS, or HTTP on `localhost`, `127.0.0.1` or `[::1]`,
+  where any port matches.
+- **PKCE with S256.**
+- **`resource`** set to the endpoint URL (`https://app.litegen.ai/api/mcp`
+  or `https://app.litegen.ai/api/admin/mcp`): one sign-in is for one
+  endpoint. Ask for that endpoint's scopes: `ai:generate` and `ai:read`, or
+  `admin:read` and `admin:write`.
+
+Access tokens (`lgat_…`) last an hour. Refresh them with the refresh token
+(`lgrt_…`), which every refresh replaces; keep the new one.
+
+**The MCP SDKs** run the whole flow when LiteGen answers 401. In TypeScript,
+give `StreamableHTTPClientTransport` an `authProvider`: an
+`OAuthClientProvider` that keeps the client registration, the PKCE verifier
+and the tokens. Its `redirectToAuthorization(url)` sends the person to
+LiteGen; when your redirect URI receives the code, `transport.finishAuth(code)`
+completes the sign-in, and the SDK refreshes tokens from then on.
+[`scripts/mcp-smoke/oauth-e2e.mjs`](../../../scripts/mcp-smoke/oauth-e2e.mjs)
+runs the flow against LiteGen, refresh and revocation included. In Python,
+`mcp.client.auth.OAuthClientProvider` (with a `TokenStorage`, a
+`redirect_handler` and a `callback_handler`) is the `auth` of the
+`httpx2.AsyncClient`.
+
+**OpenAI's and Anthropic's APIs** take a token but neither sign in nor
+refresh: get the token with an OAuth library (or the MCP SDKs' OAuth
+client), pass it as `authorization` in the Responses API's `mcp` tool or as
+`authorization_token` in Anthropic's MCP connector, and refresh it before
+it expires.
+
 ## Checked against
 
 On 2026-11-02:
@@ -301,4 +346,6 @@ and the MCP SDKs' own source. The MCP TypeScript SDK (1.32.2) and Python
 SDK (2.3.0) examples were run against a local LiteGen server: both listed
 21 tools and 99 image models with an AI key. The OpenAI and Anthropic
 examples were checked against docs only; their servers cannot reach a local
-LiteGen.
+LiteGen. The OAuth section was checked on 2026-11-03: the TypeScript flow by
+`scripts/mcp-smoke/oauth-e2e.mjs` with SDK 1.32.2 against a local LiteGen,
+and the Python SDK's `OAuthClientProvider` against its 2.3.0 source.

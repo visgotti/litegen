@@ -12,6 +12,8 @@ The request had no usable credentials.
   variable named in `bearer_token_env_var` from its own environment, so an
   IDE launched from the dock may not see a variable exported in your shell.
 - The key may be revoked, expired or blocked. Check the Keys page.
+- With no header at all, a client that supports OAuth offers to sign in
+  instead; see [OAuth](#oauth).
 
 **402 with `quota_exceeded` when connecting.** The key's lifetime quota is
 spent. Raise or remove it on the Keys page.
@@ -40,6 +42,75 @@ endpoint's toolsets. The error lists the valid names.
 or `mcp.admin_enabled`), or the URL is missing the `/api` prefix your
 deployment serves the API under.
 
+## OAuth
+
+**The client never offers to sign in, or says the server has no OAuth.** It
+found no discovery documents.
+- On a self-hosted server behind a path prefix, route the root
+  `/.well-known/oauth-*` to LiteGen; see [self-hosting](self-hosting.md#oauth).
+  `curl https://app.example.com/.well-known/oauth-protected-resource/api/mcp`
+  should print JSON.
+- `mcp.oauth.enabled` is `false`: the 401 then says only
+  `Bearer realm="litegen"`.
+
+**The client says the issuer or the resource doesn't match.**
+`server.public_base_url` is not the address the client connected to. Set it
+to the public HTTPS URL, prefix included (`https://app.example.com/api`).
+
+**"Can't sign in to LiteGen: This app's sign-in link is invalid".** LiteGen
+could not trust the request enough to send you back to the app: it doesn't
+know the client, the client's metadata document could not be fetched, or the
+redirect URI is not one the client declared. Connect again from the app. If
+it repeats, remove LiteGen from the app and add it again, so the app
+registers afresh. A self-hosted server must be able to reach the client's
+metadata URL over HTTPS (on `claude.ai` or `chatgpt.com`, for example).
+
+**"This sign-in request has expired. Go back to the app and connect
+again."** A sign-in must be answered within ten minutes, and only once.
+Start it again from the app.
+
+**"Your role in your organizations can't grant what this app asks for."**
+The app asked only for scopes your role can't approve, such as `admin:write`
+as a member. Ask an owner or admin to connect it, or have the app ask for
+`admin:read`.
+
+**The app reports `access_denied`.** Someone chose **Deny** on the sign-in
+page. Connect again to approve.
+
+**The app reports `invalid_target`.** It asked to sign in for a `resource`
+that is not one of LiteGen's MCP endpoints, usually because
+`server.public_base_url` differs from the URL the app uses.
+
+**The app reports `invalid_scope`.** It asked for `ai:` and `admin:` scopes
+at once (one sign-in is for one endpoint: connect each endpoint on its own),
+for `admin:` scopes on a server without `/admin/mcp`, or, when refreshing,
+for more than you approved.
+
+**401 `invalid_token` after signing in.** LiteGen no longer accepts the
+access token. The client should refresh it or sign in again; the message
+says why:
+- "the access token is unknown, expired or revoked": access tokens last an
+  hour, and clients refresh them on their own.
+- "this sign-in is for the other MCP endpoint": a `/mcp` sign-in was used on
+  `/admin/mcp`, or the other way round. Sign in to each endpoint.
+- "the app's access was revoked": someone revoked it under **Connected
+  apps**, or a used refresh token was sent again.
+- "the person who approved this app can no longer act in its organization":
+  you left the organization, or your account was deactivated.
+- "the app this sign-in was approved for no longer exists": the app picked on
+  the sign-in page was deleted. Sign in again and pick another.
+
+**The client keeps asking to sign in again (`invalid_grant` on refresh).**
+The refresh token stopped working: it expired (after 30 days by default),
+the app's access was revoked, you left the organization or were deactivated,
+or a refresh token was used twice, which makes LiteGen revoke the sign-in
+in case the token was stolen.
+
+**Signed in, but a tool is missing.** The scopes you approved don't open it
+(`ai:read` alone can't generate, `admin:read` can't change anything), or
+your role can't use it. Sign in again and approve other scopes; see
+[permissions](permissions.md#oauth).
+
 ## Tools
 
 **A tool I expected is missing.**
@@ -49,6 +120,8 @@ deployment serves the API under.
   `/admin/mcp`.
 - `?toolsets=` in the URL leaves it out.
 - Organization, app and member tools need a signed-in user, never a key.
+- Signed in with OAuth: the scopes you approved leave it out (see
+  [OAuth](#oauth)).
 - The hosted master key belongs to no organization, so on `/mcp` it sees
   only the model catalog.
 - The client lists only a subset (Claude Code's tool search loads tools on

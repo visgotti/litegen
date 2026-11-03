@@ -83,7 +83,24 @@ Ask Cascade: **"List LiteGen's image models."** It calls `list_models` with
 
 ## OAuth
 
-Coming with OAuth support.
+Instead of a key, Windsurf can sign in with your LiteGen account. Leave out
+`headers`:
+
+```json
+{
+  "mcpServers": {
+    "litegen": {
+      "serverUrl": "https://app.litegen.ai/api/mcp"
+    }
+  }
+}
+```
+
+After you refresh, Windsurf finds LiteGen's sign-in from the server's
+answer and opens LiteGen's sign-in page in your browser: pick the
+organization, the app and the scopes, and approve. To cut Windsurf off on
+LiteGen's side, revoke it under **Connected apps** on the dashboard's
+Connect AI tools page.
 
 ## Troubleshooting
 

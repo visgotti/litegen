@@ -100,7 +100,21 @@ image models."** Codex calls `list_models` with `media_type: image`.
 
 ## OAuth
 
-Coming with OAuth support.
+Instead of a key, Codex can sign in with your LiteGen account. Add the
+server with no token, then log in:
+
+```bash
+codex mcp add litegen --url https://app.litegen.ai/api/mcp
+codex mcp login litegen
+```
+
+Codex opens LiteGen's sign-in page in your browser: pick the organization,
+the app and the scopes, and approve. Codex identifies itself with a client
+metadata document when LiteGen offers it, as LiteGen does, and listens for
+the answer on `127.0.0.1`; it checks that the answer comes from LiteGen
+(`iss`). `codex mcp logout litegen` forgets the tokens. To cut Codex off on
+LiteGen's side, revoke it under **Connected apps** on the dashboard's
+Connect AI tools page.
 
 ## Troubleshooting
 

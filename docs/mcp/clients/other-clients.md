@@ -61,7 +61,18 @@ cline mcp add litegen https://app.litegen.ai/api/mcp --transport http \
 
 ### OAuth
 
-Coming with OAuth support.
+Instead of a key, the Cline CLI can sign in with your LiteGen account. Add
+the server with no header:
+
+```bash
+cline mcp add litegen https://app.litegen.ai/api/mcp --transport http --yes
+```
+
+Then run `cline mcp`, choose **Authorize OAuth** and pick `litegen`.
+LiteGen's sign-in page opens in your browser: pick the organization, the app
+and the scopes, and approve. Cline's documentation describes this sign-in
+for the CLI; if your IDE extension offers no sign-in for `litegen`, use an
+API key there.
 
 ## Continue
 
@@ -99,6 +110,8 @@ environment.
   Continue documents no tool-call timeout.
 - **"MCP Server has unresolved secrets"**: the secret is in none of the
   `.env` files above.
+- **OAuth**: Continue signs in with OAuth only to SSE servers, and LiteGen
+  serves Streamable HTTP, so use an API key.
 
 ## Goose
 
@@ -133,7 +146,24 @@ Extension (Streamable HTTP)** walks through the same fields.
 
 ### OAuth
 
-Coming with OAuth support.
+Instead of a key, Goose can sign in with your LiteGen account. Leave out
+`headers` and `env_keys`:
+
+```yaml
+extensions:
+  litegen:
+    type: streamable_http
+    name: litegen
+    enabled: true
+    uri: https://app.litegen.ai/api/mcp
+    timeout: 600
+```
+
+When the extension starts, Goose sets up its OAuth client with LiteGen by
+itself and opens LiteGen's sign-in page in your browser: pick the
+organization, the app and the scopes, and approve. The answer comes back to
+Goose on `127.0.0.1`. Leave `client_id` unset; it is for servers that need
+a client registered in advance, and LiteGen does not.
 
 ## GitHub Copilot cloud agent
 
@@ -199,7 +229,9 @@ admin endpoint as `litegen-admin`. Ask LiteGen for
 
 ### OAuth
 
-Coming with OAuth support.
+GitHub's documentation for Copilot CLI covers signing in only to GitHub's
+own connectors (the **Connectors** view of `/mcp`), not to a server you add,
+so use an API key.
 
 ## Kiro
 
@@ -226,7 +258,25 @@ setting. Hide tools with `disabledTools`, or ask LiteGen for
 
 ### OAuth
 
-Coming with OAuth support.
+Instead of a key, Kiro can sign in with your LiteGen account. Leave out
+`headers`:
+
+```json
+{
+  "mcpServers": {
+    "litegen": {
+      "url": "https://app.litegen.ai/api/mcp"
+    }
+  }
+}
+```
+
+When it connects, Kiro registers itself with LiteGen and opens LiteGen's
+sign-in page in your browser: pick the organization, the app and the
+scopes, and approve. Unless you set `oauthScopes`, Kiro asks for `openid`,
+`email`, `profile` and `offline_access`; LiteGen ignores scopes it doesn't
+know, so the sign-in page offers all of the endpoint's own. In the Kiro
+CLI, `/mcp auth` signs in again and `/mcp logout` signs out.
 
 ## Clients that only start local servers
 
@@ -249,6 +299,16 @@ needs Node.js:
 Write the header as `Authorization:${…}` with no space: some clients split
 arguments at spaces. `--header-file <path>` keeps the key out of the process
 list.
+
+Without `--header`, `mcp-remote` signs in with your LiteGen account instead:
+it opens LiteGen's sign-in page in your browser and keeps the tokens in
+`~/.mcp-auth`. It waits 30 seconds for the sign-in by default, which is
+short if you also have to sign in to LiteGen; `--auth-timeout 300` gives you
+five minutes:
+
+```json
+"args": ["-y", "mcp-remote", "https://app.litegen.ai/api/mcp", "--auth-timeout", "300"]
+```
 
 ## Troubleshooting
 
@@ -277,3 +337,8 @@ GitHub Copilot CLI 1.0.105 wrote the `mcp-config.json` entry above; `copilot
 mcp list` and `copilot mcp get` read it back. They don't connect, and a
 session needs a GitHub sign-in, so the connection itself was not checked.
 The other clients were checked against docs only.
+
+The OAuth sections were checked on 2026-11-03 against the same Cline, Goose,
+Copilot and Kiro pages and mcp-remote's README; Continue's OAuth note comes
+from its `core/context/mcp/MCPConnection.ts`, read on 2026-11-02. None of
+these clients' sign-ins was run against LiteGen.

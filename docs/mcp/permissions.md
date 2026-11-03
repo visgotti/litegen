@@ -1,7 +1,7 @@
 # MCP permissions
 
 LiteGen's MCP server has no permission system of its own. A tool call runs
-as the HTTP API request it wraps, with the caller's own credentials, through
+as the HTTP API request it wraps, as the caller, through
 the same authentication, scope checks, tenant checks, budgets, rate limits,
 idempotency and audit log as a direct API call. MCP only decides which tools
 to list: a caller sees exactly the tools its credential could call. Calling
@@ -33,25 +33,65 @@ organization's data. Only owners and admins (or an `admin`-scope key) can
 give a key the `admin` scope; LiteGen checks that when a key is created and
 when its scopes are edited.
 
-## Signed-in users
+## OAuth
 
-When OAuth support ships, a client that signs in (ChatGPT, claude.ai,
-Claude Desktop, and any client that prefers it) acts as the person who
-approved it, with their role in the organization they picked, narrowed to
-the scopes they approved:
+A client that signs in with OAuth (ChatGPT, Claude, Claude Code, VS Code,
+Cursor and [others](README.md#connect-a-client)) acts as the person who
+approved it. On LiteGen's sign-in page the person picks:
 
-| OAuth scope | Endpoint | Acts like |
+- **An organization.** The sign-in acts only there: `list_orgs` shows that
+  one organization, and `create_org` is not offered.
+- **An app** in it. Generations are recorded against that app, as for a key
+  bound to it.
+- **The scopes**, from those the client asked for:
+
+| OAuth scope | Endpoint | Acts like the key scope |
 |---|---|---|
-| `ai:generate` | `/mcp` | the `generate` key scope |
-| `ai:read` | `/mcp` | the `read` key scope |
-| `admin:read` | `/admin/mcp` | the `read` key scope |
-| `admin:write` | `/admin/mcp` | the `admin` key scope |
+| `ai:generate` | `/mcp` | `generate` |
+| `ai:read` | `/mcp` | `read` |
+| `admin:read` | `/admin/mcp` | `read` |
+| `admin:write` | `/admin/mcp` | `admin` |
 
-A signed-in user can also use the organization, app and member tools
+One sign-in is for one endpoint: a sign-in for `/mcp` is refused on
+`/admin/mcp`, and the other way round. To use both, the client signs in to
+each.
+
+The person's role still applies, read again on every call: a sign-in may do
+what both its scopes and the person's current role allow. Owners and admins
+can approve every scope; members and viewers, every scope but `admin:write`.
+A person moved to a smaller role loses what the new role does not allow at
+once.
+
+Signed-in users also reach the organization, app and member tools
 (`list_orgs`, `invite_member`, `set_app_allowed_models`, …), which API keys
-never can, because those routes act on a person's membership. Their role
-decides as it does on the dashboard: an owner can transfer the org, a member
-cannot invite.
+never can, because those routes act on a person's membership. Reading them
+needs `admin:read`, changing them `admin:write`, and the role decides as it
+does on the dashboard: an owner can transfer the org, a member cannot
+invite.
+
+**Ending a sign-in.** Its tokens stop working at once when:
+
+- the person revokes it under **Connected apps** on the dashboard's Connect
+  AI tools page, or with `revoke_connected_app` (`DELETE
+  /v1/oauth/grants/{id}`); the organization's audit log records it;
+- the client revokes its refresh token at LiteGen's revocation endpoint
+  (RFC 7009);
+- the person leaves the organization or their account is deactivated, or
+  the app they picked is deleted.
+
+People list and revoke only their own sign-ins; the master key can do it
+for anyone through the HTTP API (`GET /v1/oauth/grants?user_id=…`). An
+organization's owners and admins cannot revoke a member's sign-in, but
+removing the member ends it.
+
+Access tokens last an hour and refresh tokens 30 days; a deployment can
+[change both](self-hosting.md#oauth). Each refresh replaces the refresh
+token, and presenting a replaced one again ends the sign-in, in case it was
+stolen.
+
+**Keys outlive sign-ins.** An API key created through a sign-in (with
+`admin:write`) is an ordinary key of the organization: revoking the sign-in
+leaves it working. Revoke it on the **Keys** page.
 
 ## The master key
 
