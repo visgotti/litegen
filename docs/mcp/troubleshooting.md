@@ -90,21 +90,26 @@ for more than you approved.
 access token. The client should refresh it or sign in again; the message
 says why:
 - "the access token is unknown, expired or revoked": access tokens last an
-  hour, and clients refresh them on their own.
+  hour, and clients refresh them on their own. When the refresh fails too,
+  the sign-in itself has ended; see the next entry.
 - "this sign-in is for the other MCP endpoint": a `/mcp` sign-in was used on
   `/admin/mcp`, or the other way round. Sign in to each endpoint.
-- "the app's access was revoked": someone revoked it under **Connected
-  apps**, or a used refresh token was sent again.
 - "the person who approved this app can no longer act in its organization":
   you left the organization, or your account was deactivated.
 - "the app this sign-in was approved for no longer exists": the app picked on
   the sign-in page was deleted. Sign in again and pick another.
 
 **The client keeps asking to sign in again (`invalid_grant` on refresh).**
-The refresh token stopped working: it expired (after 30 days by default),
-the app's access was revoked, you left the organization or were deactivated,
-or a refresh token was used twice, which makes LiteGen revoke the sign-in
-in case the token was stolen.
+The refresh token stopped working. The message says why:
+- "the app's access was revoked": someone revoked it under **Connected
+  apps**, or the app revoked it itself.
+- "the person who approved this app can no longer use LiteGen there": you
+  left the organization, or your account was deactivated.
+- "the refresh token is expired or revoked": refresh tokens last 30 days by
+  default.
+- "the refresh token was used before; the app's access is revoked": a
+  refresh token was used twice, so LiteGen ended the sign-in in case the
+  token was stolen.
 
 **Signed in, but a tool is missing.** The scopes you approved don't open it
 (`ai:read` alone can't generate, `admin:read` can't change anything), or
