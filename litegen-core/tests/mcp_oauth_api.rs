@@ -457,3 +457,238 @@ async fn consent_api_needs_a_browser_session() {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "an API key cannot approve sign-ins");
 }
+
+// ─── Task 5: tokens and revocation ────────────────────────────────────────────
+
+/// A registered client and the owner who approves its requests.
+struct Flow {
+    client: String,
+    session: (String, String),
+    org: String,
+}
+
+impl Flow {
+    async fn new(app: &axum::Router) -> Flow {
+        let client = register(app).await;
+        let session = mcp_support::oauth_session(app).await;
+        let org = own_org(app, &session).await;
+        Flow { client, session, org }
+    }
+
+    /// The authorization code for an approved request.
+    async fn code(&self, app: &axum::Router, query: &[(String, String)], scopes: &[&str]) -> String {
+        let id = request_id(app, query).await;
+        let approve = json!({ "org_id": self.org, "scopes": scopes });
+        let (status, answer) = consent(app, &self.session, "POST", &format!("/v1/oauth/requests/{id}/approve"), Some(approve)).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        query_of(answer["redirect_to"].as_str().unwrap())["code"].clone()
+    }
+
+    /// Access and refresh tokens for an approved AI request.
+    async fn tokens(&self, app: &axum::Router, scopes: &[&str]) -> (String, String) {
+        let code = self.code(app, &authorize_query(&self.client), scopes).await;
+        let (status, _, body) = form_post(app, "/oauth/token", &exchange(&self.client, &code)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        (body["access_token"].as_str().unwrap().to_string(), body["refresh_token"].as_str().unwrap().to_string())
+    }
+}
+
+/// A form POST: the status, the headers and the JSON body.
+async fn form_post(app: &axum::Router, path: &str, form: &[(&str, &str)]) -> (StatusCode, axum::http::HeaderMap, Value) {
+    let body: Vec<String> = form.iter().map(|(k, v)| format!("{k}={}", urlencoding::encode(v))).collect();
+    let req = Request::post(path).header("content-type", "application/x-www-form-urlencoded").body(Body::from(body.join("&"))).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    (status, headers, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+/// The form that redeems `code`.
+fn exchange<'a>(client: &'a str, code: &'a str) -> Vec<(&'a str, &'a str)> {
+    vec![("grant_type", "authorization_code"), ("code", code), ("redirect_uri", REDIRECT), ("client_id", client), ("code_verifier", VERIFIER)]
+}
+
+/// `form` with `key` set to `value`, or removed when `None`.
+fn set<'a>(mut form: Vec<(&'a str, &'a str)>, key: &'a str, value: Option<&'a str>) -> Vec<(&'a str, &'a str)> {
+    form.retain(|(k, _)| *k != key);
+    if let Some(value) = value {
+        form.push((key, value));
+    }
+    form
+}
+
+fn hashed(token: &str) -> String {
+    litegen::mcp::oauth::crypto::sha256_hex(token)
+}
+
+#[tokio::test]
+async fn code_exchange_issues_tokens() {
+    let (app, db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let code = flow.code(&app, &authorize_query(&flow.client), &["ai:generate", "ai:read"]).await;
+    let (status, headers, body) = form_post(&app, "/oauth/token", &exchange(&flow.client, &code)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let access = body["access_token"].as_str().unwrap();
+    let refresh = body["refresh_token"].as_str().unwrap();
+    assert!(access.starts_with("lgat_") && access.len() == 48, "{access}");
+    assert!(refresh.starts_with("lgrt_") && refresh.len() == 48, "{refresh}");
+    assert_eq!(body["token_type"], "Bearer");
+    assert_eq!(body["expires_in"], 3600);
+    assert_eq!(body["scope"], "ai:generate ai:read");
+    assert_eq!(headers.get("cache-control").and_then(|v| v.to_str().ok()), Some("no-store"));
+
+    use litegen::db::DatabaseStore;
+    let store = db.mcp_oauth().unwrap();
+    assert!(store.get_token(access).await.unwrap().is_none(), "a token itself is never stored");
+    assert!(store.get_token(&hashed(access)).await.unwrap().is_some());
+    assert!(store.get_token(&hashed(refresh)).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn wrong_verifier_is_invalid_grant() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let code = flow.code(&app, &authorize_query(&flow.client), &["ai:read"]).await;
+    let wrong = "another-verifier-of-the-right-length-0123456789-abc";
+    let (status, _, body) = form_post(&app, "/oauth/token", &set(exchange(&flow.client, &code), "code_verifier", Some(wrong))).await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid_grant")), "{body}");
+    let (_, _, body) = form_post(&app, "/oauth/token", &exchange(&flow.client, &code)).await;
+    assert_eq!(body["error"], "invalid_grant", "a code presented once is spent: {body}");
+}
+
+#[tokio::test]
+async fn wrong_redirect_uri_is_invalid_grant() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let code = flow.code(&app, &authorize_query(&flow.client), &["ai:read"]).await;
+    let (status, _, body) = form_post(&app, "/oauth/token", &set(exchange(&flow.client, &code), "redirect_uri", Some("http://127.0.0.1:1/callback"))).await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid_grant")), "{body}");
+}
+
+#[tokio::test]
+async fn code_reuse_revokes_grant() {
+    let (app, db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let code = flow.code(&app, &authorize_query(&flow.client), &["ai:read"]).await;
+    let (status, _, first) = form_post(&app, "/oauth/token", &exchange(&flow.client, &code)).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let (_, _, second) = form_post(&app, "/oauth/token", &exchange(&flow.client, &code)).await;
+    assert_eq!(second["error"], "invalid_grant", "{second}");
+
+    use litegen::db::DatabaseStore;
+    let store = db.mcp_oauth().unwrap();
+    let access = store.get_token(&hashed(first["access_token"].as_str().unwrap())).await.unwrap().unwrap();
+    assert!(access.revoked_at.is_some(), "a replayed code revokes what it issued");
+    assert!(store.get_grant(&access.grant_id).await.unwrap().unwrap().revoked_at.is_some());
+}
+
+#[tokio::test]
+async fn refresh_rotates() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let (access, refresh) = flow.tokens(&app, &["ai:generate", "ai:read"]).await;
+    let (status, _, renewed) = form_post(&app, "/oauth/token", &refresh_with(&flow.client, &refresh)).await;
+    assert_eq!(status, StatusCode::OK, "{renewed}");
+    let (access2, refresh2) = (renewed["access_token"].as_str().unwrap(), renewed["refresh_token"].as_str().unwrap());
+    assert!(access2.starts_with("lgat_") && access2 != access);
+    assert!(refresh2.starts_with("lgrt_") && refresh2 != refresh);
+    assert_eq!(renewed["scope"], "ai:generate ai:read");
+
+    // A narrower scope is fine, a wider one is not.
+    let wider = [refresh_with(&flow.client, refresh2), vec![("scope", "admin:write")]].concat();
+    assert_eq!(form_post(&app, "/oauth/token", &wider).await.2["error"], "invalid_scope");
+    let narrower = [refresh_with(&flow.client, refresh2), vec![("scope", "ai:read")]].concat();
+    let (status, _, renewed2) = form_post(&app, "/oauth/token", &narrower).await;
+    assert_eq!(status, StatusCode::OK, "{renewed2}");
+
+    // The rotated-out token again: a replay. The grant goes, and with it the newest pair.
+    let (_, _, replay) = form_post(&app, "/oauth/token", &refresh_with(&flow.client, &refresh)).await;
+    assert_eq!(replay["error"], "invalid_grant", "{replay}");
+    let newest = refresh_with(&flow.client, renewed2["refresh_token"].as_str().unwrap());
+    assert_eq!(form_post(&app, "/oauth/token", &newest).await.2["error"], "invalid_grant", "the grant was revoked");
+}
+
+/// The form that renews `client`'s tokens with `token`.
+fn refresh_with<'a>(client: &'a str, token: &'a str) -> Vec<(&'a str, &'a str)> {
+    vec![("grant_type", "refresh_token"), ("refresh_token", token), ("client_id", client)]
+}
+
+#[tokio::test]
+async fn refresh_needs_a_live_membership() {
+    let (app, db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let (_, refresh) = flow.tokens(&app, &["ai:read"]).await;
+    let (_, me) = consent(&app, &flow.session, "GET", "/v1/auth/me", None).await;
+    let user_id = me["id"].as_str().or_else(|| me["user"]["id"].as_str()).unwrap().to_string();
+    use litegen::db::DatabaseStore;
+    db.update_user(&user_id, None, Some(false), None).await.unwrap();
+    let (status, _, body) = form_post(&app, "/oauth/token", &refresh_with(&flow.client, &refresh)).await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid_grant")), "a deactivated user's grant is dead: {body}");
+}
+
+#[tokio::test]
+async fn resource_origin_is_accepted_and_foreign_is_invalid_target() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let code = flow.code(&app, &authorize_query(&flow.client), &["ai:read"]).await;
+    let (status, _, body) = form_post(&app, "/oauth/token", &set(exchange(&flow.client, &code), "resource", Some("https://app.example.com"))).await;
+    assert_eq!(status, StatusCode::OK, "the origin leads to the endpoint: {body}");
+
+    for foreign in ["https://evil.example/mcp", "https://app.example.com/api/admin/mcp"] {
+        let code = flow.code(&app, &authorize_query(&flow.client), &["ai:read"]).await;
+        let (status, _, body) = form_post(&app, "/oauth/token", &set(exchange(&flow.client, &code), "resource", Some(foreign))).await;
+        assert_eq!((status, body["error"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid_target")), "{foreign}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn revoke_endpoint_is_always_200() {
+    let (app, db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    assert_eq!(form_post(&app, "/oauth/revoke", &[("token", "lgat_not-a-token")]).await.0, StatusCode::OK);
+    assert_eq!(form_post(&app, "/oauth/revoke", &[]).await.0, StatusCode::OK, "even with no token");
+
+    use litegen::db::DatabaseStore;
+    let store = db.mcp_oauth().unwrap();
+    let (access, refresh) = flow.tokens(&app, &["ai:read"]).await;
+    assert_eq!(form_post(&app, "/oauth/revoke", &[("token", access.as_str()), ("token_type_hint", "access_token")]).await.0, StatusCode::OK);
+    let access_row = store.get_token(&hashed(&access)).await.unwrap().unwrap();
+    assert!(access_row.revoked_at.is_some());
+    assert!(store.get_grant(&access_row.grant_id).await.unwrap().unwrap().revoked_at.is_none(), "an access token goes alone");
+
+    assert_eq!(form_post(&app, "/oauth/revoke", &[("token", refresh.as_str())]).await.0, StatusCode::OK);
+    assert!(store.get_grant(&access_row.grant_id).await.unwrap().unwrap().revoked_at.is_some(), "a refresh token takes its grant");
+}
+
+#[tokio::test]
+async fn token_endpoint_errors() {
+    let (app, _db, _dir) = mcp_support::secured_app_with(Mode::Hosted, public).await;
+    let flow = Flow::new(&app).await;
+    let error = |(status, headers, body): (StatusCode, axum::http::HeaderMap, Value)| {
+        assert_eq!(headers.get("cache-control").and_then(|v| v.to_str().ok()), Some("no-store"), "{body}");
+        (status, body["error"].as_str().unwrap_or("").to_string())
+    };
+    let bad = |e: &str| (StatusCode::BAD_REQUEST, e.to_string());
+
+    assert_eq!(error(form_post(&app, "/oauth/token", &[("grant_type", "client_credentials"), ("client_id", &flow.client)]).await), bad("unsupported_grant_type"));
+    assert_eq!(error(form_post(&app, "/oauth/token", &[("grant_type", "authorization_code"), ("client_id", &flow.client)]).await), bad("invalid_request"));
+    assert_eq!(error(form_post(&app, "/oauth/token", &[("client_id", &flow.client)]).await), bad("invalid_request"));
+    let code = flow.code(&app, &authorize_query(&flow.client), &["ai:read"]).await;
+    assert_eq!(
+        error(form_post(&app, "/oauth/token", &set(exchange(&flow.client, &code), "client_id", Some("lgc_no_such_client_000000"))).await),
+        (StatusCode::UNAUTHORIZED, "invalid_client".to_string())
+    );
+    let duplicate = [exchange(&flow.client, &code), vec![("code", "another")]].concat();
+    assert_eq!(error(form_post(&app, "/oauth/token", &duplicate).await), bad("invalid_request"));
+
+    // Another registered client cannot redeem this client's code.
+    let other = register(&app).await;
+    let code = flow.code(&app, &authorize_query(&flow.client), &["ai:read"]).await;
+    assert_eq!(error(form_post(&app, "/oauth/token", &set(exchange(&flow.client, &code), "client_id", Some(&other))).await), bad("invalid_grant"));
+
+    // The form encoding is required (RFC 6749 §3.2).
+    let req = Request::post("/oauth/token").header("content-type", "application/json").body(Body::from(r#"{"grant_type":"refresh_token"}"#)).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

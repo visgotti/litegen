@@ -210,6 +210,15 @@ async fn main() -> anyhow::Result<()> {
         poller_shutdown,
     );
 
+    // MCP OAuth keeps short-lived rows (sign-in requests, codes, tokens):
+    // clear out the expired ones hourly.
+    if config.mcp.enabled && config.mcp.oauth.enabled {
+        let mut rx = shutdown_rx.clone();
+        litegen::mcp::oauth::spawn_purger(db.clone(), async move {
+            let _ = rx.changed().await;
+        });
+    }
+
     // The local backend keeps assets on disk for the configured retention
     // (never under 7 days); S3 retention is the bucket's lifecycle policy.
     if config.image_storage.backend != "s3" {

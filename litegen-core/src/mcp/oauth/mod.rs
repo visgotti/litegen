@@ -14,7 +14,9 @@ pub mod store;
 mod store_tests;
 #[cfg(test)]
 mod tests;
+pub mod token;
 
+use std::future::Future;
 use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
@@ -22,6 +24,7 @@ use axum::routing::{get, post};
 use axum::Router;
 
 use crate::api::middleware::AppState;
+use crate::db::DatabaseStore;
 use clients::{MetadataFetcher, PublicFetcher};
 
 /// What the OAuth endpoints share.
@@ -44,8 +47,34 @@ pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/oauth/register", post(clients::register).layer(DefaultBodyLimit::max(clients::REGISTER_MAX_BYTES)))
         .route("/oauth/authorize", get(authorize::authorize))
+        .route("/oauth/token", post(token::token).layer(DefaultBodyLimit::max(token::FORM_MAX_BYTES)))
+        .route("/oauth/revoke", post(token::revoke).layer(DefaultBodyLimit::max(token::FORM_MAX_BYTES)))
         .with_state(shared)
         .merge(discovery::routes(state))
+}
+
+/// Every hour, delete what OAuth no longer needs: requests and tokens that
+/// expired (or tokens revoked) more than a day ago, and revoked grants with
+/// no tokens left. The day keeps a replayed code or refresh token
+/// recognizable after it expires.
+pub fn spawn_purger(db: Arc<dyn DatabaseStore>, shutdown: impl Future<Output = ()> + Send + 'static) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+        tokio::pin!(shutdown);
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {
+                    let Some(store) = db.mcp_oauth() else { return };
+                    match store.purge_expired(chrono::Utc::now() - chrono::Duration::days(1)).await {
+                        Ok(0) => {}
+                        Ok(removed) => tracing::info!(removed, "purged expired MCP OAuth rows"),
+                        Err(e) => tracing::warn!(error = %e, "MCP OAuth purge failed"),
+                    }
+                }
+                _ = &mut shutdown => return,
+            }
+        }
+    })
 }
 
 /// The OAuth paths any browser origin may call: the discovery documents and

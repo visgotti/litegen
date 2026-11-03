@@ -1,0 +1,327 @@
+//! The token endpoint (RFC 6749 §3.2) and revocation (RFC 7009).
+//!
+//! A code is redeemed once, with its PKCE verifier, by the client and
+//! redirect URI it was issued to; a refresh token is exchanged once for a new
+//! pair. A second use of either is a replay, and revokes the grant. Tokens are
+//! opaque (`lgat_…` access, `lgrt_…` refresh), stored only as SHA-256 hashes,
+//! and work only on their grant's MCP endpoint. Every answer is `no-store`.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use axum::extract::rejection::FormRejection;
+use axum::extract::{Form, State};
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::Json;
+use chrono::{DateTime, Duration, Utc};
+use serde::Serialize;
+use serde_json::json;
+
+use super::crypto::{random_token, s256_challenge, sha256_hex};
+use super::discovery::resource_allows;
+use super::store::{AuthRequest, ConsumeOutcome, Grant, McpOAuthStore, RotateOutcome, TokenKind, TokenRow};
+use super::OAuthShared;
+use crate::api::middleware::AppState;
+
+/// The largest token or revocation request.
+pub const FORM_MAX_BYTES: usize = 16 * 1024;
+
+#[derive(Debug, Serialize)]
+struct TokenAnswer {
+    access_token: String,
+    token_type: &'static str,
+    expires_in: i64,
+    refresh_token: String,
+    scope: String,
+}
+
+/// `POST /oauth/token`.
+pub async fn token(State(shared): State<Arc<OAuthShared>>, form: Result<Form<Vec<(String, String)>>, FormRejection>) -> Response {
+    let state = &shared.state;
+    let Some(store) = state.db.mcp_oauth() else {
+        return TokenError::new(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable", "OAuth is not available").into_response();
+    };
+    let answer = match Params::parse(form) {
+        Ok(params) => match params.get("grant_type") {
+            Some("authorization_code") => redeem_code(state, store, &params).await,
+            Some("refresh_token") => refresh(state, store, &params).await,
+            Some(_) => Err(TokenError::bad("unsupported_grant_type", "grant_type must be authorization_code or refresh_token")),
+            None => Err(TokenError::request("grant_type is required")),
+        },
+        Err(e) => Err(e),
+    };
+    match answer {
+        Ok(answer) => (StatusCode::OK, [(header::CACHE_CONTROL, "no-store"), (header::PRAGMA, "no-cache")], Json(answer)).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// `grant_type=authorization_code`.
+async fn redeem_code(state: &AppState, store: &dyn McpOAuthStore, params: &Params) -> Result<TokenAnswer, TokenError> {
+    let code = params.require("code")?;
+    let redirect_uri = params.require("redirect_uri")?;
+    let client_id = params.require("client_id")?;
+    let verifier = params.require("code_verifier")?;
+    if store.get_client(client_id).await?.is_none() {
+        return Err(TokenError::client());
+    }
+
+    // The code is spent by its first presentation, right or wrong: a stolen
+    // code cannot be tried against verifiers.
+    let now = Utc::now();
+    let request = match store.consume_code(&sha256_hex(code), now).await? {
+        ConsumeOutcome::Consumed(request) => request,
+        ConsumeOutcome::AlreadyUsed(request) => {
+            revoke_issued(store, &request, now).await?;
+            return Err(TokenError::grant("the code was used before; the access it gave is revoked"));
+        }
+        ConsumeOutcome::Missing => return Err(TokenError::grant("the code is unknown or expired")),
+    };
+    if request.client_id != client_id {
+        return Err(TokenError::grant("the code was issued to another client"));
+    }
+    if request.redirect_uri != redirect_uri {
+        return Err(TokenError::grant("redirect_uri is not the one the code was issued for"));
+    }
+    if !valid_verifier(verifier) || s256_challenge(verifier) != request.code_challenge {
+        return Err(TokenError::grant("code_verifier does not match the code_challenge"));
+    }
+    if let Some(resource) = params.get("resource") {
+        if !resource_allows(state, request.surface, resource) {
+            return Err(TokenError::bad("invalid_target", "resource is not the endpoint this sign-in was for"));
+        }
+    }
+    let (Some(user_id), Some(org_id), Some(scopes)) = (request.user_id, request.org_id, request.granted_scopes) else {
+        return Err(TokenError::grant("the code was never approved"));
+    };
+
+    // One grant per client, person, tenant and endpoint: signing in again
+    // updates it instead of piling up grants.
+    let grant = match store.find_active_grant(client_id, &user_id, &org_id, request.app_id.as_deref(), request.surface).await? {
+        Some(grant) => {
+            store.update_grant_scopes(&grant.id, &scopes).await?;
+            Grant { scopes, ..grant }
+        }
+        None => {
+            let grant = Grant {
+                id: uuid::Uuid::new_v4().to_string(),
+                client_id: client_id.to_string(),
+                user_id,
+                org_id,
+                app_id: request.app_id,
+                surface: request.surface,
+                scopes,
+                created_at: now,
+                last_used_at: None,
+                revoked_at: None,
+            };
+            store.insert_grant(&grant).await?;
+            grant
+        }
+    };
+    let (access, access_row) = mint(&grant.id, TokenKind::Access, now, access_ttl(state));
+    let (refresh, refresh_row) = mint(&grant.id, TokenKind::Refresh, now, refresh_ttl(state));
+    store.insert_token(&access_row).await?;
+    store.insert_token(&refresh_row).await?;
+    Ok(answer(state, access, refresh, &grant.scopes))
+}
+
+/// `grant_type=refresh_token`.
+async fn refresh(state: &AppState, store: &dyn McpOAuthStore, params: &Params) -> Result<TokenAnswer, TokenError> {
+    let token = params.require("refresh_token")?;
+    let client_id = params.require("client_id")?;
+    if store.get_client(client_id).await?.is_none() {
+        return Err(TokenError::client());
+    }
+    let row = store
+        .get_token(&sha256_hex(token))
+        .await?
+        .filter(|t| t.kind == TokenKind::Refresh)
+        .ok_or_else(|| TokenError::grant("the refresh token is unknown"))?;
+    let grant = store
+        .get_grant(&row.grant_id)
+        .await?
+        .filter(|g| g.revoked_at.is_none())
+        .ok_or_else(|| TokenError::grant("the app's access was revoked"))?;
+    if grant.client_id != client_id {
+        return Err(TokenError::grant("the refresh token was issued to another client"));
+    }
+    if let Some(scope) = params.get("scope") {
+        if scope.split_whitespace().any(|s| !grant.scopes.iter().any(|g| g == s)) {
+            return Err(TokenError::bad("invalid_scope", "scope asks for more than was granted"));
+        }
+    }
+    let now = Utc::now();
+    if !grant_is_live(state, &grant).await? {
+        store.revoke_grant(&grant.id, now).await?;
+        return Err(TokenError::grant("the person who approved this app can no longer use LiteGen there"));
+    }
+
+    let (access, access_row) = mint(&grant.id, TokenKind::Access, now, access_ttl(state));
+    let (refresh, refresh_row) = mint(&grant.id, TokenKind::Refresh, now, refresh_ttl(state));
+    match store.rotate_refresh(&row.token_hash, &access_row, &refresh_row, now).await? {
+        RotateOutcome::Rotated => Ok(answer(state, access, refresh, &grant.scopes)),
+        RotateOutcome::Reused { grant_id } => {
+            store.revoke_grant(&grant_id, now).await?;
+            Err(TokenError::grant("the refresh token was used before; the app's access is revoked"))
+        }
+        RotateOutcome::Missing => Err(TokenError::grant("the refresh token is expired or revoked")),
+    }
+}
+
+/// Whether a grant still speaks for its person: unrevoked, the person
+/// active, and still a member of the grant's org.
+pub async fn grant_is_live(state: &AppState, grant: &Grant) -> Result<bool, sqlx::Error> {
+    if grant.revoked_at.is_some() {
+        return Ok(false);
+    }
+    let active = state.db.get_user_by_id(&grant.user_id).await?.is_some_and(|u| u.is_active);
+    Ok(active && state.db.get_membership(&grant.org_id, &grant.user_id).await?.is_some())
+}
+
+/// Revoke the grant a replayed code's request led to, with its tokens.
+async fn revoke_issued(store: &dyn McpOAuthStore, request: &AuthRequest, now: DateTime<Utc>) -> Result<(), sqlx::Error> {
+    if let (Some(user_id), Some(org_id)) = (&request.user_id, &request.org_id) {
+        if let Some(grant) = store.find_active_grant(&request.client_id, user_id, org_id, request.app_id.as_deref(), request.surface).await? {
+            store.revoke_grant(&grant.id, now).await?;
+        }
+    }
+    Ok(())
+}
+
+/// A new token for `grant_id` and the row that stores its hash.
+fn mint(grant_id: &str, kind: TokenKind, now: DateTime<Utc>, ttl: Duration) -> (String, TokenRow) {
+    let prefix = match kind {
+        TokenKind::Access => "lgat_",
+        TokenKind::Refresh => "lgrt_",
+    };
+    let token = random_token(prefix, 32);
+    let row = TokenRow {
+        token_hash: sha256_hex(&token),
+        grant_id: grant_id.to_string(),
+        kind,
+        created_at: now,
+        expires_at: now + ttl,
+        rotated_at: None,
+        revoked_at: None,
+    };
+    (token, row)
+}
+
+fn answer(state: &AppState, access: String, refresh: String, scopes: &[String]) -> TokenAnswer {
+    TokenAnswer {
+        access_token: access,
+        token_type: "Bearer",
+        expires_in: access_ttl(state).num_seconds(),
+        refresh_token: refresh,
+        scope: scopes.join(" "),
+    }
+}
+
+fn access_ttl(state: &AppState) -> Duration {
+    Duration::seconds(state.router.config.mcp.oauth.access_token_ttl_secs.min(i64::MAX as u64) as i64)
+}
+
+fn refresh_ttl(state: &AppState) -> Duration {
+    Duration::days(state.router.config.mcp.oauth.refresh_token_ttl_days.min(36_500) as i64)
+}
+
+/// A PKCE verifier: 43 to 128 unreserved characters (RFC 7636 §4.1).
+fn valid_verifier(verifier: &str) -> bool {
+    (43..=128).contains(&verifier.len()) && verifier.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'))
+}
+
+/// `POST /oauth/revoke`: always 200, as RFC 7009 asks, so a client cannot
+/// probe which tokens exist. A refresh token revokes its whole grant; an
+/// access token, only itself.
+pub async fn revoke(State(shared): State<Arc<OAuthShared>>, form: Result<Form<Vec<(String, String)>>, FormRejection>) -> Response {
+    let token = form.ok().and_then(|Form(pairs)| pairs.into_iter().find(|(k, _)| k == "token").map(|(_, v)| v));
+    if let (Some(store), Some(token)) = (shared.state.db.mcp_oauth(), token) {
+        if let Err(e) = revoke_token(store, &token).await {
+            tracing::error!(error = %e, "OAuth token revocation failed");
+            return TokenError::new(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable", "try again").into_response();
+        }
+    }
+    (StatusCode::OK, [(header::CACHE_CONTROL, "no-store")]).into_response()
+}
+
+async fn revoke_token(store: &dyn McpOAuthStore, token: &str) -> Result<(), sqlx::Error> {
+    let Some(row) = store.get_token(&sha256_hex(token)).await? else { return Ok(()) };
+    let now = Utc::now();
+    match row.kind {
+        TokenKind::Refresh => store.revoke_grant(&row.grant_id, now).await.map(|_| ()),
+        TokenKind::Access => store.revoke_token(&row.token_hash, now).await,
+    }
+}
+
+/// A token request's form fields; RFC 6749 §3.2 allows each once.
+struct Params(HashMap<String, String>);
+
+impl Params {
+    fn parse(form: Result<Form<Vec<(String, String)>>, FormRejection>) -> Result<Params, TokenError> {
+        let Ok(Form(pairs)) = form else {
+            return Err(TokenError::request("send the fields as application/x-www-form-urlencoded"));
+        };
+        let mut fields = HashMap::new();
+        for (key, value) in pairs {
+            if fields.contains_key(&key) {
+                return Err(TokenError::request(&format!("{key} is given more than once")));
+            }
+            fields.insert(key, value);
+        }
+        Ok(Params(fields))
+    }
+
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).map(String::as_str).filter(|v| !v.is_empty())
+    }
+
+    fn require(&self, key: &str) -> Result<&str, TokenError> {
+        self.get(key).ok_or_else(|| TokenError::request(&format!("{key} is required")))
+    }
+}
+
+/// An RFC 6749 §5.2 error answer.
+#[derive(Debug)]
+struct TokenError {
+    status: StatusCode,
+    error: &'static str,
+    description: String,
+}
+
+impl TokenError {
+    fn new(status: StatusCode, error: &'static str, description: &str) -> Self {
+        TokenError { status, error, description: description.to_string() }
+    }
+
+    fn bad(error: &'static str, description: &str) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, error, description)
+    }
+
+    fn request(description: &str) -> Self {
+        Self::bad("invalid_request", description)
+    }
+
+    fn grant(description: &str) -> Self {
+        Self::bad("invalid_grant", description)
+    }
+
+    fn client() -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, "invalid_client", "LiteGen has no client with this client_id")
+    }
+}
+
+impl From<sqlx::Error> for TokenError {
+    fn from(e: sqlx::Error) -> Self {
+        tracing::error!(error = %e, "OAuth token endpoint failed");
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "server_error", "the request could not be completed")
+    }
+}
+
+impl IntoResponse for TokenError {
+    fn into_response(self) -> Response {
+        let body = json!({ "error": self.error, "error_description": self.description });
+        (self.status, [(header::CACHE_CONTROL, "no-store"), (header::PRAGMA, "no-cache")], Json(body)).into_response()
+    }
+}
