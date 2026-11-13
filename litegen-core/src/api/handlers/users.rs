@@ -9,7 +9,7 @@ use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::api::middleware::{acts_in_default_org, is_platform_admin, AppState, KeyContext, DEFAULT_ORG_ID};
+use crate::api::middleware::{is_platform_admin, person_holds, AppState, KeyContext, DEFAULT_ORG_ID};
 use crate::auth::permissions::Permission;
 use crate::auth::tokens::generate_session_token;
 use crate::config::Mode;
@@ -79,11 +79,13 @@ fn authorize_global_user_admin(
 }
 
 /// Whether [`authorize_global_user_admin`] lets `ctx` through with `perm`;
-/// the MCP tools for these endpoints are shown by the same rule.
+/// the MCP tools for these endpoints are shown by the same rule. Each `perm`
+/// is a deployment permission, which a person holds only from the default
+/// org (`person_holds`, what `GET /v1/auth/me` serves).
 pub(crate) fn may_manage_users(state: &AppState, ctx: &KeyContext, perm: Permission) -> bool {
     match state.mode {
         Mode::Hosted => is_platform_admin(ctx),
-        Mode::SingleTenant => acts_in_default_org(ctx) && ctx.permissions.contains(&perm),
+        Mode::SingleTenant => person_holds(state.mode, ctx, perm),
     }
 }
 
@@ -209,6 +211,16 @@ pub async fn invite_user(
     Extension(ctx): Extension<KeyContext>,
     Json(body): Json<InviteRequest>,
 ) -> Response {
+    // The invitation is into the org the caller acts in, so the invitee joins
+    // it on accept. With none, a single-tenant caller acts for the deployment,
+    // whose org is the default one; in hosted mode the default org is the
+    // operator's, never a fallback, and acting in no org there is nowhere to
+    // invite to (FU-NOORG).
+    let org_id = match (ctx.org_id.clone(), state.mode) {
+        (Some(org_id), _) => org_id,
+        (None, Mode::SingleTenant) => DEFAULT_ORG_ID.to_string(),
+        (None, Mode::Hosted) => return crate::api::middleware::no_active_org_response(),
+    };
     if !ctx.permissions.contains(&Permission::InvitationSend) {
         return forbidden_perm("invitation:send");
     }
@@ -222,12 +234,6 @@ pub async fn invite_user(
 
     let email = body.email.trim().to_lowercase();
     let token = generate_session_token();
-    // Scope the invitation to the caller's active org so the invitee joins it
-    // on accept. Falls back to the single-tenant default org.
-    let org_id = ctx
-        .org_id
-        .clone()
-        .unwrap_or_else(|| crate::api::middleware::DEFAULT_ORG_ID.to_string());
     let inv = Invitation {
         id: Uuid::new_v4().to_string(),
         email: email.clone(),

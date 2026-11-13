@@ -256,18 +256,19 @@ pub async fn generate_image(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    // No per-app credential AND no registered platform default → the provider is
-    // unusable for this app. (When `app_creds` is Some, BYO works even with no
-    // global instance, so we skip the check.)
-    if app_creds.is_none() && !state.router.has_image_provider(&validated.schema.provider).await {
-        return provider_not_configured_response(&validated.schema.provider);
-    }
     // A model route's deployments get the org's credential for their own
     // providers, looked up the same way (BYO-ROUTE).
     let org_creds = match org_credentials_for(&state, &key_ctx, &validated.schema, app_creds.clone()).await {
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    // No vendor would be reached: refused before anything is reserved. A
+    // model route in effect decides by its deployments; otherwise the
+    // model's own provider needs the org's credential or the gateway's
+    // (FU-ROUTE).
+    if let Err(resp) = refuse_unserved(&state, &validated.schema, &org_creds).await {
+        return resp;
+    }
 
     // Keeping nothing (docs/storage-access.md): the image comes back inline,
     // and no store, cache or history copy sees it.
@@ -625,10 +626,15 @@ pub async fn estimate_image_cost(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    if app_creds.is_none() && !state.router.has_image_provider(&validated.schema.provider).await {
-        return provider_not_configured_response(&validated.schema.provider);
+    // Served exactly where the generation is (FU-ROUTE).
+    let org_creds = match org_credentials_for(&state, &key_ctx, &validated.schema, app_creds).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = refuse_unserved(&state, &validated.schema, &org_creds).await {
+        return resp;
     }
-    match state.router.estimate_image_cost(&validated.schema, &validated.request, app_creds).await {
+    match state.router.estimate_image_cost(&validated.schema, &validated.request, &org_creds).await {
         Ok(estimate) => with_dropped((StatusCode::OK, Json(serde_json::to_value(estimate).unwrap())).into_response(), &validated.dropped),
         Err(e) => {
             generation_error_response(&e)
@@ -657,6 +663,7 @@ pub async fn estimate_image_cost(
         (status = 404, description = "`model_not_found`", body = ErrorResponse),
         (status = 410, description = "`model_retired`: the model is past its retirement; `replaced_by` names its successor", body = ErrorResponse),
         (status = 422, description = "A `source_video` or reference generation litegen can't use: unreadable, too large, or a format the model doesn't take.", body = ErrorResponse),
+        (status = 502, description = "Provider error. `vendor_error`: the vendor failed (its 5xx, or no answer at all); the body's `provider_error` holds the vendor's own status, code and message, `vendor_job_id` the job it had taken, and `retryable` says whether the same request may work later (never once the vendor took the job). `provider_error`: on a model route, no deployment's vendor was called, since some were skipped (a circuit breaker open, a provider not configured) and the rest refused the request; the message names why each did not serve it, and `retryable` is true.", body = ErrorResponse),
         (status = 409, description = "`idempotency_key_reused`: the Idempotency-Key was used for a different request. `idempotency_request_in_progress`: a request with this key is still running (`Retry-After` is set).", body = ErrorResponse),
         (status = 504, description = "`vendor_timeout`: the vendor did not answer in time. Never re-sent, since the vendor may still run and bill the job; `vendor_job_id` names it when the vendor had accepted one.", body = ErrorResponse),
         (status = 500, description = "`generation_record_failed`: the vendor accepted the job but litegen could not record it, so it has no id to poll; `vendor_job_id` names the vendor's job. A retry with the same `Idempotency-Key` gets this answer, not a second job.", body = ErrorResponse),
@@ -712,26 +719,22 @@ pub async fn generate_video(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    if app_creds.is_none() && !state.router.has_video_provider(&validated.schema.provider).await {
-        return provider_not_configured_response(&validated.schema.provider);
-    }
     // A model route's deployments get the org's credential for their own
     // providers, looked up the same way (BYO-ROUTE).
     let org_creds = match org_credentials_for(&state, &key_ctx, &validated.schema, app_creds.clone()).await {
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    // No vendor would be reached: refused before anything is reserved, as
+    // for images (FU-ROUTE).
+    if let Err(resp) = refuse_unserved(&state, &validated.schema, &org_creds).await {
+        return resp;
+    }
     // Keeping nothing hands out the vendor's own link: a model whose vendor
     // returns only bytes (or a link only it can read) has none, so the
-    // request is refused now, before the vendor runs and bills it.
-    if !keep
-        && state
-            .router
-            .registry
-            .video_provider_for_request(&validated.schema.provider, app_creds.clone())
-            .await
-            .is_some_and(|p| !p.hands_out_links(&validated.schema))
-    {
+    // request is refused now, before the vendor runs and bills it. On a
+    // model route, every deployment that may take the job is asked.
+    if !keep && !state.router.video_hands_out_links(&validated.schema, &org_creds).await {
         return validation_rejection_with_code(
             "keep_outputs_unsupported",
             &format!(
@@ -2045,10 +2048,15 @@ pub async fn estimate_video_cost(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    if app_creds.is_none() && !state.router.has_video_provider(&validated.schema.provider).await {
-        return provider_not_configured_response(&validated.schema.provider);
+    // Served exactly where the generation is (FU-ROUTE).
+    let org_creds = match org_credentials_for(&state, &key_ctx, &validated.schema, app_creds).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    if let Err(resp) = refuse_unserved(&state, &validated.schema, &org_creds).await {
+        return resp;
     }
-    match state.router.estimate_video_cost(&validated.schema, &validated.request, app_creds).await {
+    match state.router.estimate_video_cost(&validated.schema, &validated.request, &org_creds).await {
         Ok(estimate) => with_dropped((StatusCode::OK, Json(serde_json::to_value(estimate).unwrap())).into_response(), &validated.dropped),
         Err(e) => {
             generation_error_response(&e)
@@ -2840,10 +2848,11 @@ pub async fn list_models(
     };
     let mut served = state.registry.served();
     served.sort_by(|a, b| a.id.cmp(&b.id));
-    // Available means a generation would reach the vendor (L14): the caller's
-    // org stored its own credential for the provider, or litegen holds a
-    // platform default for the model's medium — the test a generation makes
-    // before it answers provider_not_configured.
+    // Available means a generation would reach a vendor (L14): the test the
+    // generation and quote routes make before they answer
+    // provider_not_configured (`Reach`), with the providers the caller's org
+    // stored its own credential for and the gateway's instances. A model
+    // route in effect decides by its deployments (FU-ROUTE).
     let own: std::collections::HashSet<String> = match (key_ctx.as_ref().and_then(|c| c.org_id.as_deref()), state.secrets_key) {
         (Some(org), Some(_)) => match state.db.list_org_provider_credentials(org).await {
             Ok(creds) => creds.into_iter().map(|c| c.provider).collect(),
@@ -2854,33 +2863,21 @@ pub async fn list_models(
         },
         _ => Default::default(),
     };
-    let mut platform: std::collections::HashMap<(String, &'static str), bool> = std::collections::HashMap::new();
-    for m in &served {
-        let key = (m.provider.clone(), m.media_type.as_str());
-        if platform.contains_key(&key) {
-            continue;
-        }
-        let has = match m.media_type {
-            crate::capabilities::MediaType::Image => state.router.has_image_provider(&m.provider).await,
-            crate::capabilities::MediaType::Video => state.router.has_video_provider(&m.provider).await,
-            crate::capabilities::MediaType::Model3d => state.router.has_model3d_provider(&m.provider).await,
-        };
-        platform.insert(key, has);
-    }
-    let models: Vec<ModelInfo> = served.iter()
-        .filter(|m| q.all || allowed.as_ref().is_none_or(|set| set.contains(&m.id)))
-        .map(|m| ModelInfo {
-            is_available: own.contains(&m.provider) || platform[&(m.provider.clone(), m.media_type.as_str())],
-            ..project_model_info(m)
-        })
-        .filter(|m| match q.media_type.as_deref() {
+    let mut reach = crate::proxy::router::Reach::new(&state.router, |p: &str| own.contains(p));
+    let mut models: Vec<ModelInfo> = Vec::new();
+    for m in served.iter().filter(|m| q.all || allowed.as_ref().is_none_or(|set| set.contains(&m.id))) {
+        let info = project_model_info(m);
+        let wanted = match q.media_type.as_deref() {
             None | Some("") => true,
-            Some(want) => serde_json::to_value(m.media_type)
+            Some(want) => serde_json::to_value(info.media_type)
                 .ok()
                 .and_then(|v| v.as_str().map(|s| s == want))
                 .unwrap_or(false),
-        })
-        .collect();
+        };
+        if wanted {
+            models.push(ModelInfo { is_available: reach.serves(m).await.is_ok(), ..info });
+        }
+    }
     Json(ModelListResponse { object: "list".to_string(), data: models, catalog_version: state.registry.catalog_version() }).into_response()
 }
 
@@ -4774,24 +4771,23 @@ pub async fn clear_cache(
     // (A scoped per-tenant clear is a follow-up; keys are hashed so a prefix sweep
     // isn't available today.)
     if let Some(ctx) = key_ctx.as_ref() {
-        match state.mode {
-            crate::config::Mode::Hosted => {
-                if ctx.user.is_some() || ctx.key_id.is_some() {
-                    return forbidden_perm_resp("cache:clear");
+        let allowed = if ctx.user.is_some() {
+            // A person holds cache:clear as `person_holds` judges it, which
+            // `GET /v1/auth/me` serves: from the single-tenant deployment's
+            // own org, never in hosted mode.
+            crate::api::middleware::person_holds(state.mode, ctx, crate::auth::permissions::Permission::CacheClear)
+        } else {
+            match state.mode {
+                crate::config::Mode::Hosted => ctx.key_id.is_none(),
+                // The cache is the deployment's: cleared from the default
+                // org, by one of its admin-scope keys or the master key.
+                crate::config::Mode::SingleTenant => {
+                    crate::api::middleware::acts_in_default_org(ctx) || crate::api::middleware::is_platform_admin(ctx)
                 }
             }
-            // The cache is the deployment's: cleared from the default org,
-            // by a role holding cache:clear or one of its admin-scope keys.
-            crate::config::Mode::SingleTenant => {
-                let from_deployment = crate::api::middleware::acts_in_default_org(ctx)
-                    || crate::api::middleware::is_platform_admin(ctx);
-                if !from_deployment
-                    || (ctx.user.is_some()
-                        && !ctx.permissions.contains(&crate::auth::permissions::Permission::CacheClear))
-                {
-                    return forbidden_perm_resp("cache:clear");
-                }
-            }
+        };
+        if !allowed {
+            return forbidden_perm_resp("cache:clear");
         }
     }
     // Clear, then tell the other replicas to empty their local tiers (without
@@ -4890,8 +4886,9 @@ pub fn create_router_with_hooks(state: Arc<AppState>, hooks: Option<Arc<crate::h
         // Behind Generate rather than Read because it is CPU work on
         // caller-supplied bytes, not a lookup.
         .route("/v1/utils/models3d/convert", post(convert::convert_model3d))
-        // A person needs an org and `generation:create` (runs after the scope check).
-        .layer(middleware::from_fn(check_generation_principal))
+        // An org to act in (a person's; in hosted mode every caller's) and a
+        // person's `generation:create` (runs after the scope check).
+        .layer(middleware::from_fn_with_state(state.mode, check_generation_principal))
         .layer(middleware::from_fn(|req: axum::extract::Request, next: middleware::Next| async {
             check_scope(Scope::Generate, req, next).await
         }))
@@ -4930,7 +4927,7 @@ pub fn create_router_with_hooks(state: Arc<AppState>, hooks: Option<Arc<crate::h
     let generation_change_routes = axum::Router::new()
         .route("/v1/generations/{id}/revoke-links", post(revoke_generation_links))
         .route("/v1/generations/{id}", delete(delete_generation).patch(cancel_generation))
-        .layer(middleware::from_fn(check_generation_principal))
+        .layer(middleware::from_fn_with_state(state.mode, check_generation_principal))
         .layer(middleware::from_fn(|req: axum::extract::Request, next: middleware::Next| async {
             check_scope(Scope::Generate, req, next).await
         }))
@@ -5937,9 +5934,11 @@ fn cache_scope_for(ctx: &KeyContext, policy: crate::access::AccessPolicy) -> Str
 
 /// Cache scope for the process-global generation cache. Distinct principals must
 /// never collide: prefer org+app, fall back to org, and when no tenant context
-/// is resolved (e.g. the hosted master key or a session with no active org) scope
-/// to the principal itself rather than a shared global bucket — otherwise one
-/// caller could receive another's cached image for an identical request.
+/// is resolved scope to the principal itself rather than a shared global bucket
+/// — otherwise one caller could receive another's cached image for an identical
+/// request. (The generation routes refuse a person with no org, and in hosted
+/// mode every caller with none, so only a single-tenant key with no org could
+/// come here without one: none is made today.)
 fn cache_scope(ctx: &KeyContext) -> String {
     match (ctx.org_id.as_deref(), ctx.app_id.as_deref()) {
         (Some(org), Some(app)) => format!("o:{org}/a:{app}"),
@@ -6831,6 +6830,21 @@ async fn resolve_org_provider_credential(
         )
             .into_response()),
     }
+}
+
+/// The 400 `provider_not_configured` a generation of `schema` answers before
+/// anything is reserved when it would reach no vendor for a caller whose org
+/// holds `org` (L14, FU-ROUTE): [`Reach::serves`](crate::proxy::router::Reach::serves),
+/// the test `GET /v1/models` reports as `is_available`.
+async fn refuse_unserved(
+    state: &AppState,
+    schema: &crate::capabilities::ModelSchema,
+    org: &crate::proxy::router::OrgCredentials,
+) -> Result<(), axum::response::Response> {
+    crate::proxy::router::Reach::new(&state.router, |p: &str| org.has(p))
+        .serves(schema)
+        .await
+        .map_err(|e| generation_error_response(&e))
 }
 
 /// The calling org's own credentials for every provider a request may reach:

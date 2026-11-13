@@ -519,6 +519,10 @@ pub(crate) mod tests {
         let Err(error) = serde_json::from_slice::<Entry>(value.as_bytes()) else { panic!("a type mismatch was expected") };
         assert!(error.to_string().contains(secret), "this value is one serde would echo: {error}");
 
+        // `an_unreadable_entry_reads_as_a_miss_not_an_error` reaches the same
+        // warning on its own thread: without this, it could leave it off here
+        // (FU-SPANFLAKE).
+        crate::util::test_logs::hold_process_subscriber();
         let logs = Logs::default();
         let subscriber = tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).with_max_level(tracing::Level::TRACE).finish();
         let guard = tracing::subscriber::set_default(subscriber);

@@ -49,6 +49,14 @@ ends. Where it may point:
   delivery: a demoted or departed Admin's key stops reaching inside at once.
   Set `webhooks.internal_targets: everyone` (`LITEGEN__WEBHOOKS__INTERNAL_TARGETS=everyone`)
   to let any key's webhook reach inside, as before.
+- **At startup**, a single-tenant deployment names in its log each active key
+  whose stored webhook now gets no deliveries: a `SECURITY` warning per key,
+  with the key's id and prefix, its owner and the URL's host (never the rest
+  of the URL), then one that counts them (`refused_keys`). It uses the check
+  every delivery makes, so nothing is logged with `internal_targets:
+  everyone` or when no key is affected. The check runs in the background and
+  waits at most 5 seconds for each host's name, so startup never waits for
+  it, and a host whose name doesn't resolve then isn't named.
 
 A delivery keeps the first 16 KiB of the endpoint's reply
 (`GET /v1/keys/{id}/webhook-deliveries`).

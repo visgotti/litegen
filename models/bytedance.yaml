@@ -290,7 +290,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: "Two image_url objects must be provided" (bytedance.rs refuses one alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # Extras are merged into the request body, where the documented field is
     # `camera_fixed` (`camerafixed` was the legacy `--camerafixed` prompt flag).
     # @see https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
@@ -418,7 +419,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: "Two image_url objects must be provided" (bytedance.rs refuses one alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # generate_audio (default true) is a 2.5 / 2.0 series / 1.5 pro body field.
     # @see https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api
     extra_allowlist: [watermark]

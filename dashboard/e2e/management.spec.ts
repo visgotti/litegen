@@ -202,3 +202,21 @@ test('management pages drive budgets, end users, spend and gateway config', asyn
   await request.delete(`${API_BASE}/v1/keys/${keyId}`, { headers: auth });
   await request.delete(`${API_BASE}/v1/end-users/${END_USER}`, { headers: auth });
 });
+
+test("opening the Users page keeps the master key's login", async ({ page }) => {
+  // The master key holds no session, so /v1/auth/me answers it 401, which
+  // signs the dashboard out: no page asks it in the API-key flow. What
+  // /v1/users answers the master key is the server's to say.
+  await page.goto('/');
+  await page.evaluate(key => localStorage.setItem('litegen_api_key', key), MASTER_KEY);
+  const asked: string[] = [];
+  page.on('request', r => asked.push(new URL(r.url()).pathname));
+  const listed = nextCall(page, 'GET', /^\/v1\/users$/);
+  await page.goto('/users');
+  await listed;
+  await page.waitForLoadState('networkidle');
+  await expect(page).toHaveURL(/\/users$/);
+  await expect(page.getByTestId('users-invite-btn')).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('litegen_api_key')), 'the key is still the login').toBe(MASTER_KEY);
+  expect(asked.filter(p => p === '/v1/auth/me'), 'nothing asks /v1/auth/me with the master key').toEqual([]);
+});

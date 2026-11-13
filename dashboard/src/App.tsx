@@ -23,12 +23,14 @@ import Budgets from './pages/Budgets';
 import Spend from './pages/Spend';
 import EndUsers from './pages/EndUsers';
 import Gateway from './pages/Gateway';
+import NoOrganization from './pages/NoOrganization';
 import UserMenu from './components/UserMenu';
 import RequirePermission from './components/RequirePermission';
 import { useCan } from './components/useCan';
 import RequireAuth from './components/RequireAuth';
 import ToastContainer from './components/Toast';
 import { TenantProvider } from './context/TenantContext';
+import { useTenant } from './context/tenant';
 import { client, getApiKey } from './sdk-client';
 import './App.css';
 
@@ -51,8 +53,7 @@ const BASE_NAV_ITEMS = [
   { to: '/gateway', icon: SlidersHorizontal, label: 'Gateway', testid: 'nav-gateway' },
 ];
 
-function useMe() {
-  const [role, setRole] = useState<string | null>(null);
+function useHosted() {
   // hosted (multi-tenant) mode. The global Users admin page is single-tenant
   // only; in hosted mode members are managed per-org via the Members page.
   // `null` = not yet resolved: we only expose the Users route/link once we have
@@ -65,29 +66,46 @@ function useMe() {
     client.auth.config()
       .then(cfg => setHosted(!!(cfg as { signup_open?: boolean }).signup_open))
       .catch(() => setHosted(null));
-
-    // Don't call me() if using the API key flow — it would return 401 and clear the key.
-    if (getApiKey()) return;
-    client.auth.me()
-      .then(resp => {
-        const r = resp as { user?: { role?: string } };
-        setRole(r?.user?.role ?? null);
-      })
-      .catch(() => setRole(null));
   }, []);
 
-  return { role, hosted };
+  return hosted;
 }
 
 /** The authenticated application shell: sidebar + header + the app routes. */
 function AppShell() {
-  const { role, hosted } = useMe();
+  const hosted = useHosted();
   const can = useCan();
+  const { orgs, activePermissions } = useTenant();
+
+  // A session in no organization (removed from its only one, or its org
+  // deleted) can act nowhere: it gets a screen to make an org or join one by
+  // an invitation, and its account. The API-key login is the master key.
+  if (!getApiKey() && orgs.length === 0) {
+    return (
+      <div className="app">
+        <nav className="sidebar">
+          <div className="sidebar-header">
+            <h1><img className="brand-mark" src="/litegen-logo.png" alt="" /> LiteGen</h1>
+            <span className="subtitle">Proxy Dashboard</span>
+          </div>
+        </nav>
+        <main className="content">
+          <UserMenu />
+          <Routes>
+            <Route path="/account" element={<Account />} />
+            <Route path="*" element={<NoOrganization />} />
+          </Routes>
+        </main>
+      </div>
+    );
+  }
 
   // The global Users page operates on the platform-wide users table and is
   // restricted to single-tenant deployments (the backend rejects tenant
   // principals in hosted mode). Hosted tenants use the per-org Members page.
-  const canSeeUsers = (role === 'owner' || role === 'admin') && hosted === false;
+  // Offered to a session whose active org's served permissions hold
+  // user:read:any; the master key's login has no link, as before.
+  const canSeeUsers = hosted === false && activePermissions.includes('user:read:any');
 
   const navItems = [
     // A Viewer makes no generations: no Playground (its page says so if visited).
@@ -137,16 +155,16 @@ function AppShell() {
           <Route path="/budgets" element={<Budgets />} />
           <Route path="/spend" element={<Spend />} />
           <Route path="/end-users" element={<EndUsers />} />
-          {/* Gateway admin: owner/admin in single-tenant mode, the master key in
-              hosted mode (the server enforces the latter and the page shows its 403). */}
+          {/* Gateway admin: a session holding system:config in the org it
+              acts in, as /v1/auth/me serves it, and the master key. */}
           <Route path="/gateway" element={
             <RequirePermission perm="system:config">
               <Gateway />
             </RequirePermission>
           } />
           {/* The global Users page exists only in single-tenant mode. The nav
-              link is further gated to owner/admin (canSeeUsers); a non-admin who
-              navigates here directly still gets RequirePermission's 403. In
+              link is further gated on user:read:any (canSeeUsers); anyone else
+              who navigates here directly still gets RequirePermission's 403. In
               hosted mode the route is absent entirely (members are managed per-org). */}
           {hosted === false && (
             <Route path="/users" element={

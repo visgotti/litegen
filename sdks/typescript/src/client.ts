@@ -38,6 +38,7 @@ type CacheClearedResponse = Schemas["CacheClearedResponse"];
 type SignupRequest = Schemas["SignupRequest"];
 type LoginRequest = Schemas["LoginRequest"];
 type AuthResponse = Schemas["AuthResponse"];
+type MeResponse = Schemas["MeResponse"];
 type CsrfResponse = Schemas["CsrfResponse"];
 /** Public auth-method discovery (`GET /v1/auth/config`). */
 export type AuthConfigResponse = Schemas["AuthConfigResponse"];
@@ -1592,7 +1593,15 @@ class AuthNamespace {
   logout(signal?: AbortSignal): Promise<void> {
     return this.client.request("POST", "/v1/auth/logout", undefined, signal);
   }
-  me(signal?: AbortSignal): Promise<unknown> {
+  /**
+   * GET /v1/auth/me — the signed-in person: each organization they belong to
+   * with their `role` there and the `permissions` it holds, worked out as the
+   * server checks every request (the deployment's own, such as
+   * `system:config`, only in a single-tenant deployment's default
+   * organization), and the `active_org` and `active_app` the request acts in.
+   * Offer what `permissions` lists; the server still checks each call.
+   */
+  me(signal?: AbortSignal): Promise<MeResponse> {
     return this.client.request("GET", "/v1/auth/me", undefined, signal);
   }
   csrf(signal?: AbortSignal): Promise<CsrfResponse> {

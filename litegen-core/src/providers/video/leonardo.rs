@@ -42,8 +42,8 @@ pub struct LeonardoVideoProvider {
 }
 
 /// What litegen itself sends to `POST /generations-image-to-video`; `extra`
-/// cannot replace it (`imageId` and `imageType` in `extra` name the start
-/// frame instead of an uploaded reference).
+/// cannot replace it. `imageId` and `imageType` name the start frame litegen
+/// uploaded from the request, never one `extra` names (FU-LEO2).
 const OWNED_FIELDS: &[&str] = &["prompt", "imageId", "imageType", "model", "resolution", "duration", "seed", "negativePrompt"];
 
 impl LeonardoVideoProvider {
@@ -160,26 +160,17 @@ impl VideoProvider for LeonardoVideoProvider {
         let creds = self.creds()?;
         let leo_model = Self::resolve_model(&model.id).ok_or_else(|| ProviderError::ModelNotSupported { model: model.id.clone(), provider: "leonardo".into() })?;
 
-        // A start-frame image is required for image-to-video.
+        // The start frame is the request's own image, uploaded here; nothing
+        // else names one. An image id from `extra` would animate any image on
+        // the gateway's Leonardo account (FU-LEO2), and the loader refuses a
+        // row that allowlists one.
         let mut image_id: Option<String> = None;
-        let mut image_type = "UPLOADED";
         for r in &materialized.refs {
             if let MaterializedRefForm::MultipartField { bytes, .. } = &r.form {
                 image_id = Some(
                     upload_init_image(&self.client, &self.upload_client, self.public_assets_only, self.api_base(), &self.auth, &creds, bytes).await?,
                 );
                 break;
-            }
-        }
-        // Allow passing a pre-existing generated/uploaded image id via extra.
-        if image_id.is_none() {
-            if let Some(Value::Object(map)) = &extras.extra {
-                if let Some(id) = map.get("imageId").and_then(|v| v.as_str()) {
-                    image_id = Some(id.to_string());
-                    if let Some(t) = map.get("imageType").and_then(|v| v.as_str()) {
-                        image_type = if t == "GENERATED" { "GENERATED" } else { "UPLOADED" };
-                    }
-                }
             }
         }
         let image_id = image_id.ok_or_else(|| {
@@ -189,7 +180,7 @@ impl VideoProvider for LeonardoVideoProvider {
         let mut body = json!({
             "prompt": base.prompt,
             "imageId": image_id,
-            "imageType": image_type,
+            "imageType": "UPLOADED",
             "model": crate::providers::wire_model(self.config.as_ref(), &model.id, leo_model),
             "resolution": Self::resolve_resolution(leo_model, extras.resolution.as_deref()),
         });
@@ -379,17 +370,48 @@ mod tests {
         }
     }
 
-    fn extras_with_image_id() -> VideoExtras {
+    fn extras() -> VideoExtras {
         VideoExtras {
             duration_seconds: 8.0,
             aspect_ratio: None,
             resolution: Some("720p".to_string()),
             fps: None,
-            // Provide a pre-existing imageId so the test skips the upload step.
-            extra: Some(json!({ "imageId": "init-123", "imageType": "UPLOADED" })),
+            extra: None,
             camera: None, audio: None, r#loop: None,
             source: None, direction: None, time_range: None, replace: None,
         }
+    }
+
+    /// Leonardo taking a start frame's upload (`POST /init-image`, id
+    /// `init-1`, then the presigned `POST /upload` on the same server) and
+    /// answering the create with `create`; and a provider on it whose
+    /// uploads may go to loopback (the mock storage's address).
+    async fn leonardo(create: ResponseTemplate) -> (MockServer, LeonardoVideoProvider) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/init-image"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "uploadInitImage": { "id": "init-1", "url": format!("{}/upload", server.uri()), "fields": "{\"key\":\"k\"}" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST")).and(path("/upload")).respond_with(ResponseTemplate::new(204)).mount(&server).await;
+        Mock::given(method("POST")).and(path("/generations-image-to-video")).respond_with(create).mount(&server).await;
+        let mut provider = make_provider(&server.uri());
+        provider.public_assets_only = false;
+        (server, provider)
+    }
+
+    /// A create Leonardo accepts as `id`.
+    fn accepted(id: &str) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({ "motionVideoGenerationJob": { "generationId": id } }))
+    }
+
+    /// The body of the create `server` got.
+    async fn created(server: &MockServer) -> Value {
+        let received = server.received_requests().await.unwrap();
+        let create = received.iter().find(|r| r.url.path() == "/generations-image-to-video").expect("a create was sent");
+        serde_json::from_slice(&create.body).unwrap()
     }
 
     /// Veo 3.1 is `VEO3_1`; without its arm the id fell through to MOTION2
@@ -417,27 +439,16 @@ mod tests {
     /// @see <https://docs.leonardo.ai/v1.0/docs/veo-31> (2026-09-11)
     #[tokio::test]
     async fn veo3_1_fast_submits_veo3_1fast_with_duration() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/generations-image-to-video"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "motionVideoGenerationJob": { "generationId": "leo-vid-5" }
-            })))
-            .mount(&server)
-            .await;
-
-        let provider = make_provider(&server.uri());
+        let (server, provider) = leonardo(accepted("leo-vid-5")).await;
         let schema = ref_schema("leonardo/veo3.1-fast");
         let base = make_base("a hummingbird hovering over a flower", "leonardo/veo3.1-fast");
-        let mut extras = extras_with_image_id();
+        let mut extras = extras();
         extras.duration_seconds = 6.0;
-        let materialized = MaterializedRequest { refs: vec![] as Vec<MaterializedRef>, cleanup: Cleanup::empty() };
 
-        let handle = provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
+        let handle = provider.generate(&schema, &base, &extras, &one_start_frame()).await.unwrap();
         assert_eq!(handle.provider_job_id, "leo-vid-5");
 
-        let received = server.received_requests().await.unwrap();
-        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        let body = created(&server).await;
         assert_eq!(body["model"], "VEO3_1FAST");
         assert_eq!(body["resolution"], "RESOLUTION_720");
         assert_eq!(body["duration"], 6);
@@ -445,14 +456,10 @@ mod tests {
 
     #[tokio::test]
     async fn submits_image_to_video_and_polls() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/generations-image-to-video"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "motionVideoGenerationJob": { "generationId": "leo-vid-1", "apiCreditCost": 2500 }
-            })))
-            .mount(&server)
-            .await;
+        let (server, provider) = leonardo(
+            ResponseTemplate::new(200).set_body_json(json!({ "motionVideoGenerationJob": { "generationId": "leo-vid-1", "apiCreditCost": 2500 } })),
+        )
+        .await;
         Mock::given(method("GET"))
             .and(path_regex(r"/generations/leo-vid-1"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -462,19 +469,15 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider = make_provider(&server.uri());
         let schema = ref_schema("leonardo/veo3.1");
         let base = make_base("a slow zoom over mountains", "leonardo/veo3.1");
-        let extras = extras_with_image_id();
-        let materialized = MaterializedRequest { refs: vec![] as Vec<MaterializedRef>, cleanup: Cleanup::empty() };
 
-        let handle = provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
+        let handle = provider.generate(&schema, &base, &extras(), &one_start_frame()).await.unwrap();
         assert_eq!(handle.provider_job_id, "leo-vid-1");
 
-        let received = server.received_requests().await.unwrap();
-        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        let body = created(&server).await;
         assert_eq!(body["model"], "VEO3_1");
-        assert_eq!(body["imageId"], "init-123");
+        assert_eq!((body["imageId"].as_str(), body["imageType"].as_str()), (Some("init-1"), Some("UPLOADED")), "the uploaded start frame: {body}");
         assert_eq!(body["resolution"], "RESOLUTION_720");
         assert_eq!(body["duration"], 8);
 
@@ -530,10 +533,8 @@ mod tests {
     #[tokio::test]
     async fn a_start_frame_is_never_uploaded_to_an_internal_address() {
         let (server, s3) = leonardo_with_a_redirecting_upload().await;
-        let mut extras = extras_with_image_id();
-        extras.extra = None;
         let got = make_provider(&server.uri())
-            .generate(&ref_schema("leonardo/veo3.1"), &make_base("x", "leonardo/veo3.1"), &extras, &one_start_frame())
+            .generate(&ref_schema("leonardo/veo3.1"), &make_base("x", "leonardo/veo3.1"), &extras(), &one_start_frame())
             .await;
         let seen: Vec<String> = s3.received_requests().await.unwrap().iter().map(|r| format!("{} {}", r.method, r.url.path())).collect();
         assert!(seen.is_empty(), "the start frame went to an internal address: {seen:?}");
@@ -554,9 +555,7 @@ mod tests {
         let (server, s3) = leonardo_with_a_redirecting_upload().await;
         let mut provider = make_provider(&server.uri());
         provider.public_assets_only = false;
-        let mut extras = extras_with_image_id();
-        extras.extra = None;
-        let got = provider.generate(&ref_schema("leonardo/veo3.1"), &make_base("x", "leonardo/veo3.1"), &extras, &one_start_frame()).await;
+        let got = provider.generate(&ref_schema("leonardo/veo3.1"), &make_base("x", "leonardo/veo3.1"), &extras(), &one_start_frame()).await;
         let seen: Vec<String> = s3.received_requests().await.unwrap().iter().map(|r| format!("{} {}", r.method, r.url.path())).collect();
         assert_eq!(seen, vec!["POST /upload".to_string()], "the redirect was followed");
         assert!(matches!(got, Err(ProviderError::RequestFailed { status_code: Some(302), retryable: false, .. })), "{got:?}");
@@ -570,27 +569,16 @@ mod tests {
     /// @see <https://docs.leonardo.ai/v1.0/docs/kling-2-5-turbo>
     #[tokio::test]
     async fn kling_without_a_resolution_sends_1080() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/generations-image-to-video"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "motionVideoGenerationJob": { "generationId": "leo-vid-2" }
-            })))
-            .mount(&server)
-            .await;
-
-        let provider = make_provider(&server.uri());
+        let (server, provider) = leonardo(accepted("leo-vid-2")).await;
         let schema = ref_schema("leonardo/kling2.5");
         let base = make_base("a paper boat on a river", "leonardo/kling2.5");
-        let mut extras = extras_with_image_id();
+        let mut extras = extras();
         extras.resolution = None;
         extras.duration_seconds = 5.0;
-        let materialized = MaterializedRequest { refs: vec![] as Vec<MaterializedRef>, cleanup: Cleanup::empty() };
 
-        provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
+        provider.generate(&schema, &base, &extras, &one_start_frame()).await.unwrap();
 
-        let received = server.received_requests().await.unwrap();
-        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        let body = created(&server).await;
         assert_eq!(body["model"], "KLING2_5");
         assert_eq!(body["resolution"], "RESOLUTION_1080");
         assert_eq!(body["duration"], 5);
@@ -601,26 +589,15 @@ mod tests {
     /// @see <https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration>
     #[tokio::test]
     async fn motion2_sends_no_duration() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/generations-image-to-video"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "motionVideoGenerationJob": { "generationId": "leo-vid-3" }
-            })))
-            .mount(&server)
-            .await;
-
-        let provider = make_provider(&server.uri());
+        let (server, provider) = leonardo(accepted("leo-vid-3")).await;
         let schema = ref_schema("leonardo/motion2");
         let base = make_base("leaves drifting in the wind", "leonardo/motion2");
-        let mut extras = extras_with_image_id();
+        let mut extras = extras();
         extras.duration_seconds = 5.0;
-        let materialized = MaterializedRequest { refs: vec![] as Vec<MaterializedRef>, cleanup: Cleanup::empty() };
 
-        provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
+        provider.generate(&schema, &base, &extras, &one_start_frame()).await.unwrap();
 
-        let received = server.received_requests().await.unwrap();
-        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        let body = created(&server).await;
         assert_eq!(body["model"], "MOTION2");
         assert!(body.get("duration").is_none(), "Motion 2.0 got a duration: {body}");
     }
@@ -632,25 +609,14 @@ mod tests {
     /// @see <https://docs.leonardo.ai/v1.0/reference/createimagetovideogeneration> (2026-11-03)
     #[tokio::test]
     async fn motion2_sends_its_seed_and_negative_prompt() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/generations-image-to-video"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "motionVideoGenerationJob": { "generationId": "leo-vid-4" }
-            })))
-            .mount(&server)
-            .await;
+        let (server, provider) = leonardo(accepted("leo-vid-4")).await;
         let mut base = make_base("leaves drifting in the wind", "leonardo/motion2");
         base.seed = Some(77);
         base.negative_prompt = Some("blur".into());
-        let mut extras = extras_with_image_id();
-        if let Some(Value::Object(map)) = extras.extra.as_mut() {
-            map.insert("seed".into(), json!(1));
-            map.insert("negativePrompt".into(), json!("other"));
-        }
-        let materialized = MaterializedRequest { refs: vec![] as Vec<MaterializedRef>, cleanup: Cleanup::empty() };
-        make_provider(&server.uri()).generate(&ref_schema("leonardo/motion2"), &base, &extras, &materialized).await.unwrap();
-        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        let mut extras = extras();
+        extras.extra = Some(json!({ "seed": 1, "negativePrompt": "other" }));
+        provider.generate(&ref_schema("leonardo/motion2"), &base, &extras, &one_start_frame()).await.unwrap();
+        let body = created(&server).await;
         assert_eq!((body["seed"].as_i64(), body["negativePrompt"].as_str()), (Some(77), Some("blur")), "{body}");
     }
 
@@ -659,27 +625,16 @@ mod tests {
     /// @see <https://docs.leonardo.ai/v1.0/docs/kling-2-5-turbo>
     #[tokio::test]
     async fn kling2_5_sends_kling2_5_at_1080() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/generations-image-to-video"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "motionVideoGenerationJob": { "generationId": "leo-vid-4" }
-            })))
-            .mount(&server)
-            .await;
-
-        let provider = make_provider(&server.uri());
+        let (server, provider) = leonardo(accepted("leo-vid-4")).await;
         let schema = ref_schema("leonardo/kling2.5");
         let base = make_base("a lantern floating over a lake", "leonardo/kling2.5");
-        let mut extras = extras_with_image_id();
+        let mut extras = extras();
         extras.resolution = None;
         extras.duration_seconds = 10.0;
-        let materialized = MaterializedRequest { refs: vec![] as Vec<MaterializedRef>, cleanup: Cleanup::empty() };
 
-        provider.generate(&schema, &base, &extras, &materialized).await.unwrap();
+        provider.generate(&schema, &base, &extras, &one_start_frame()).await.unwrap();
 
-        let received = server.received_requests().await.unwrap();
-        let body: Value = serde_json::from_slice(&received[0].body).unwrap();
+        let body = created(&server).await;
         assert_eq!(body["model"], "KLING2_5");
         assert_eq!(body["resolution"], "RESOLUTION_1080");
         assert_eq!(body["duration"], 10);
@@ -691,34 +646,51 @@ mod tests {
         MaterializedRequest { refs: vec![], cleanup: Cleanup::empty() }
     }
 
-    /// #16: `extra` passes a start frame by `imageId` and Leonardo's own
-    /// knobs, but never replaces the model litegen bills or anything else it
-    /// sends. E4a: nor does it publish the clip (`isPublic`); the account's
-    /// own default applies.
+    /// #16: `extra` passes Leonardo's own knobs, but never replaces the start
+    /// frame litegen uploaded (FU-LEO2: an `imageId` there names none), the
+    /// model litegen bills or anything else it sends. E4a: nor does it
+    /// publish the clip (`isPublic`); the account's own default applies.
     #[tokio::test]
     async fn extra_cannot_replace_what_litegen_sends() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "error": "stop" })))
-            .mount(&server)
-            .await;
-        let mut extras = extras_with_image_id();
+        let (server, provider) = leonardo(ResponseTemplate::new(400).set_body_json(json!({ "error": "stop" }))).await;
+        let mut extras = extras();
         extras.duration_seconds = 8.0;
         extras.extra = Some(json!({
-            "imageId": "img-1", "model": "MOTION2", "prompt": "other", "resolution": "RESOLUTION_480",
+            "imageId": "img-1", "imageType": "GENERATED", "model": "MOTION2", "prompt": "other", "resolution": "RESOLUTION_480",
             "duration": 4, "isPublic": true, "promptEnhance": true
         }));
-        let _ = make_provider(&server.uri())
-            .generate(&ref_schema("leonardo/veo3.1"), &make_base("a fox runs", "leonardo/veo3.1"), &extras, &no_refs())
+        let _ = provider
+            .generate(&ref_schema("leonardo/veo3.1"), &make_base("a fox runs", "leonardo/veo3.1"), &extras, &one_start_frame())
             .await;
-        let body: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        let body = created(&server).await;
         assert_eq!(body["model"], "VEO3_1");
         assert_eq!(body["prompt"], "a fox runs");
         assert_eq!(body["resolution"], "RESOLUTION_720");
         assert_eq!(body["duration"], 8);
-        assert_eq!(body["imageId"], "img-1");
+        assert_eq!((body["imageId"].as_str(), body["imageType"].as_str()), (Some("init-1"), Some("UPLOADED")), "the uploaded start frame: {body}");
         assert_eq!(body["promptEnhance"], true);
         assert!(body.get("isPublic").is_none(), "{body}");
+    }
+
+    /// FU-LEO2: the start frame is the request's own image, which litegen
+    /// uploads. An `imageId` in `extra` names none: with no image the request
+    /// is refused before anything is sent, so no tenant can animate an image
+    /// on the gateway's Leonardo account by its id.
+    #[tokio::test]
+    async fn an_image_id_in_extra_is_no_start_frame() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "motionVideoGenerationJob": { "generationId": "leo-vid-9" } })))
+            .mount(&server)
+            .await;
+        let mut extras = extras();
+        extras.extra = Some(json!({ "imageId": "img-on-the-gateways-account", "imageType": "GENERATED" }));
+        let got = make_provider(&server.uri())
+            .generate(&ref_schema("leonardo/motion2"), &make_base("a fox runs", "leonardo/motion2"), &extras, &no_refs())
+            .await;
+        let sent: Vec<String> = server.received_requests().await.unwrap().iter().map(|r| String::from_utf8_lossy(&r.body).into_owned()).collect();
+        assert!(matches!(got, Err(ProviderError::InvalidRequest(_))), "{got:?}; sent {sent:?}");
+        assert!(sent.is_empty(), "nothing reaches Leonardo: {sent:?}");
     }
 
     /// #17, #19: a create Leonardo turned away says so, with its status, and
@@ -729,25 +701,17 @@ mod tests {
         let schema = ref_schema("leonardo/motion2");
         let base = make_base("x", "leonardo/motion2");
         for (status, retryable) in [(429, true), (502, true), (400, false)] {
-            let server = MockServer::start().await;
-            Mock::given(method("POST"))
-                .respond_with(ResponseTemplate::new(status).set_body_json(json!({ "error": "no" })))
-                .mount(&server)
-                .await;
-            let err = make_provider(&server.uri()).generate(&schema, &base, &extras_with_image_id(), &no_refs()).await.unwrap_err();
+            let (_server, provider) = leonardo(ResponseTemplate::new(status).set_body_json(json!({ "error": "no" }))).await;
+            let err = provider.generate(&schema, &base, &extras(), &one_start_frame()).await.unwrap_err();
             assert!(
                 matches!(err, ProviderError::RequestFailed { status_code: Some(s), retryable: r, .. } if s == status && r == retryable),
                 "{status}: {err:?}"
             );
         }
-        let slow = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})).set_delay(std::time::Duration::from_secs(5)))
-            .mount(&slow)
-            .await;
-        let mut p = make_provider(&slow.uri());
+        // Only the create is slow: the upload before it answers at once.
+        let (_slow, mut p) = leonardo(ResponseTemplate::new(200).set_body_json(json!({})).set_delay(std::time::Duration::from_secs(5))).await;
         p.client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(100)).build().unwrap();
-        let err = p.generate(&schema, &base, &extras_with_image_id(), &no_refs()).await.unwrap_err();
+        let err = p.generate(&schema, &base, &extras(), &one_start_frame()).await.unwrap_err();
         assert!(matches!(err, ProviderError::RequestFailed { retryable: false, .. }), "{err:?}");
     }
 

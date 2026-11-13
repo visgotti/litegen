@@ -212,7 +212,7 @@ pub async fn idempotency_middleware(State(state): State<Arc<AppState>>, req: Req
     // billing) again.
     run_to_completion(async move {
         let resp = next.run(body.into_request(parts)).await;
-        settle(&state, &scope, &key, resp).await
+        settle(&*state.db, &scope, &key, resp).await
     })
     .await
 }
@@ -239,9 +239,9 @@ async fn run_to_completion(fut: impl std::future::Future<Output = Response> + Se
 
 /// Record `resp` under its key — or free the key when no vendor was called —
 /// and hand it back.
-async fn settle(state: &AppState, scope: &str, key: &str, resp: Response) -> Response {
+async fn settle(db: &dyn crate::db::DatabaseStore, scope: &str, key: &str, resp: Response) -> Response {
     if resp.extensions().get::<VendorAttempted>().is_none() {
-        if let Err(e) = state.db.idempotency_release(scope, key).await {
+        if let Err(e) = db.idempotency_release(scope, key).await {
             tracing::warn!(error = %e, "failed to release an unspent idempotency key");
         }
         return resp;
@@ -252,7 +252,8 @@ async fn settle(state: &AppState, scope: &str, key: &str, resp: Response) -> Res
         Ok(b) => b,
         Err(e) => {
             tracing::error!(error = %e, "response too large to record for its Idempotency-Key");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "response too large to record").into_response();
+            // The JSON `internal_error` every other 500 has (FU-IDEM).
+            return super::internal_error_response("response too large to record");
         }
     };
     let stored = StoredResponse {
@@ -265,7 +266,7 @@ async fn settle(state: &AppState, scope: &str, key: &str, resp: Response) -> Res
             .collect(),
         body: rbytes.to_vec(),
     };
-    if let Err(e) = state.db.idempotency_complete(scope, key, &stored).await {
+    if let Err(e) = db.idempotency_complete(scope, key, &stored).await {
         // The vendor was called and this response is the only record of it;
         // answer it anyway. A retry with the key finds the run in progress
         // until it goes stale.
@@ -354,6 +355,37 @@ mod tests {
             String::from_utf8_lossy(&bytes)
         );
         assert_eq!(body["error"]["message"], "internal server error", "{body}");
+    }
+
+    /// FU-IDEM (follow-ups 2026-11-13): a vendor's answer too large to record
+    /// under its Idempotency-Key answers the JSON `internal_error` body every
+    /// other 500 has. It answered `text/plain` "response too large to
+    /// record", which a client that reads `error.code` can't parse. The body
+    /// is a MiB over the limit, sent a MiB at a time from one static buffer,
+    /// so the test copies none of it.
+    #[tokio::test]
+    async fn a_response_too_large_to_record_answers_the_json_internal_error() {
+        static MIB: [u8; 1 << 20] = [0; 1 << 20];
+        let chunks = MAX_STORED_RESPONSE / MIB.len() + 1;
+        let body = Body::from_stream(futures::stream::iter(
+            (0..chunks).map(|_| Ok::<_, std::convert::Infallible>(bytes::Bytes::from_static(&MIB))),
+        ));
+        let mut resp = Response::new(body);
+        resp.extensions_mut().insert(VendorAttempted);
+        let db = crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap();
+
+        let resp = settle(&db, "org:-|app:-|master", "too-large", resp).await;
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let content_type = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        assert_eq!(
+            (content_type.as_str(), body["error"]["code"].as_str(), body["error"]["type"].as_str()),
+            ("application/json", Some("internal_error"), Some("internal_error")),
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        assert_eq!(body["error"]["message"], "response too large to record", "{body}");
     }
 
     /// P15 (timing; run alone): hashing a maximum-size body holds no async

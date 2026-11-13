@@ -1,23 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { client, getApiKey } from '../sdk-client';
+import { client, getApiKey, sessionClient } from '../sdk-client';
 import {
   ACTIVE_ORG_KEY,
   ACTIVE_APP_KEY,
   TenantContext,
   type TenantContextValue,
-  type TenantOrg,
 } from './tenant';
-import type { Application } from '@litegen/sdk';
-
-interface MeResponse {
-  user?: { id?: string; email?: string; role?: string };
-  orgs?: TenantOrg[];
-  active_org?: string | null;
-  active_app?: string | null;
-}
+import { servedPermissions } from '../components/permissions';
+import type { Application, MeOrg } from '@litegen/sdk';
 
 export function TenantProvider({ children }: { children: ReactNode }) {
-  const [orgs, setOrgs] = useState<TenantOrg[]>([]);
+  const [orgs, setOrgs] = useState<MeOrg[]>([]);
   const [activeOrg, setActiveOrg] = useState<string | null>(
     () => localStorage.getItem(ACTIVE_ORG_KEY),
   );
@@ -67,8 +60,11 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       return;
     }
     try {
-      const resp = (await client.auth.me()) as MeResponse;
-      const fetchedOrgs = resp.orgs ?? [];
+      // Asked with no tenant headers: the answer lists every org the person
+      // belongs to, while an org this browser stored as active that the person
+      // has since left would have the request refused (403), as if signed out.
+      const resp = await sessionClient.auth.me();
+      const fetchedOrgs = resp.orgs;
       setOrgs(fetchedOrgs);
       setAuthenticated(true);
 
@@ -85,8 +81,10 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       persistOrg(orgId);
 
       if (orgId) {
-        const desiredApp = resp.active_app ?? storedApp ?? null;
-        await loadApps(orgId, desiredApp);
+        // Act in the chosen org from here on (not a stored one the person
+        // left); loadApps keeps the stored app if it is one of this org's.
+        client.setActiveTenant(orgId, undefined);
+        await loadApps(orgId, storedApp);
       } else {
         setApps([]);
         setActiveApp(null);
@@ -135,18 +133,21 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     return orgs.find(o => o.id === activeOrg)?.role ?? null;
   }, [orgs, activeOrg]);
 
+  const activePermissions = useMemo(() => servedPermissions(orgs, activeOrg), [orgs, activeOrg]);
+
   const value = useMemo<TenantContextValue>(() => ({
     orgs,
     activeOrg,
     activeApp,
     apps,
     activeOrgRole,
+    activePermissions,
     loading,
     authenticated,
     switchOrg,
     switchApp,
     refresh,
-  }), [orgs, activeOrg, activeApp, apps, activeOrgRole, loading, authenticated, switchOrg, switchApp, refresh]);
+  }), [orgs, activeOrg, activeApp, apps, activeOrgRole, activePermissions, loading, authenticated, switchOrg, switchApp, refresh]);
 
   return <TenantContext.Provider value={value}>{children}</TenantContext.Provider>;
 }

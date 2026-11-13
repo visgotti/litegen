@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { client, quietClient } from '../sdk-client';
+import { client, readGatewayHealth } from '../sdk-client';
 import type { HealthResponse } from '@litegen/sdk';
 
 type ProbeStatus = 'unknown' | 'alive' | 'ready' | 'not_ready' | 'error';
@@ -18,7 +18,9 @@ export default function Health() {
 
   useEffect(() => {
     let current = true;
-    quietClient.health.get()
+    // A provider down is a 503 with the same body (`status: degraded`): the
+    // table shows it, in its not-healthy state. Any other failure is an error.
+    readGatewayHealth()
       .then(h => { if (current) { setHealth(h); setOperatorOnly(false); } })
       .catch(e => {
         if (!current) return;
@@ -100,7 +102,7 @@ export default function Health() {
         {probes}
         <div className="stat-card">
           <div className="label">Overall Status</div>
-          <div className={`value ${health.status === 'healthy' ? 'green' : 'red'}`}>
+          <div className={`value ${health.status === 'healthy' ? 'green' : 'red'}`} data-testid="health-overall">
             {health.status}
           </div>
         </div>

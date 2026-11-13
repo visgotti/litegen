@@ -27,7 +27,7 @@ function RoleBadge({ role }: { role: string }) {
 }
 
 export default function Members() {
-  const { activeOrg, activeOrgRole, refresh } = useTenant();
+  const { activeOrg, activePermissions, refresh } = useTenant();
 
   const [members, setMembers] = useState<MemberView[]>([]);
   const [loading, setLoading] = useState(true);
@@ -43,9 +43,12 @@ export default function Members() {
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [editRole, setEditRole] = useState('');
 
-  // Privileged controls (invite / transfer / role-edit / remove) gate on org role.
-  const canManage = activeOrgRole === 'owner' || activeOrgRole === 'admin';
-  const isOwner = activeOrgRole === 'owner';
+  // Each control is offered on the permission it takes in the active org, as
+  // /v1/auth/me serves it (the master key's login holds none here, as before).
+  const canInvite = activePermissions.includes('member:invite');
+  const canEditRoles = activePermissions.includes('member:write');
+  const canRemove = activePermissions.includes('member:remove');
+  const canTransfer = activePermissions.includes('org:transfer_owner');
 
   const fetchMembers = useCallback(async () => {
     if (!activeOrg) { setMembers([]); setLoading(false); return; }
@@ -135,7 +138,7 @@ export default function Members() {
     <div style={{ padding: '0 0 32px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <h2 style={{ margin: 0, color: '#e6edf3', fontSize: 22, fontWeight: 600 }}>Members</h2>
-        {canManage && (
+        {canInvite && (
           <button
             className="btn btn-primary"
             data-testid="members-invite-btn"
@@ -270,7 +273,7 @@ export default function Members() {
                   </td>
                   <td style={{ padding: '12px 16px' }}>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      {canManage && m.role !== 'owner' && editingUserId !== m.user_id && (
+                      {canEditRoles && m.role !== 'owner' && editingUserId !== m.user_id && (
                         <button
                           className="btn btn-secondary"
                           data-testid={`member-edit-${m.email}`}
@@ -280,7 +283,7 @@ export default function Members() {
                           Edit role
                         </button>
                       )}
-                      {isOwner && m.role !== 'owner' && (
+                      {canTransfer && m.role !== 'owner' && (
                         <button
                           className="btn btn-secondary"
                           data-testid={`member-transfer-${m.email}`}
@@ -290,7 +293,7 @@ export default function Members() {
                           Transfer owner
                         </button>
                       )}
-                      {canManage && m.role !== 'owner' && (
+                      {canRemove && m.role !== 'owner' && (
                         <button
                           className="btn btn-secondary"
                           data-testid={`member-remove-${m.email}`}

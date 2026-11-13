@@ -200,7 +200,12 @@ each try:
     - every breaker open: `503 circuit_open`, `retryable: true`, with
       `Retry-After` the seconds until the first breaker closes;
     - every provider missing: `400 provider_not_configured`, as a direct
-      request to that provider answers; a retry can't help;
+      request to that provider answers; a retry can't help. When no
+      deployment can be served at all (neither the org nor the gateway has
+      a key for its provider that makes the model's kind of output), the
+      request is refused before anything is reserved, whatever serves the
+      model's own provider: a route sends its models to its deployments
+      only;
     - any other mix, such as one breaker open and one provider missing, or
       a refusal after a skipped deployment (which may serve the request once
       its breaker closes): a `502` with `retryable: true` that names why

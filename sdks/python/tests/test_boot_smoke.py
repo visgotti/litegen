@@ -38,11 +38,17 @@ def test_boot_and_core_flow(base_url):
     assert orgs.status_code == 200, orgs.text
     assert len(orgs.json()) >= 1, "signup should create one org"
 
-    # Mock image generation via the master key (deterministic, no network).
+    # Mock image generation as the account just signed up, in its own org
+    # (deterministic, no network). The hosted master key acts in no org, so it
+    # starts no generation: 403 no_active_org.
+    r = c.post("/v1/images/generations", json={"model": "mock/image-gen", "prompt": "hello"}, timeout=30)
+    assert r.status_code == 200, r.text
+
     r = httpx.post(
         f"{base_url}/v1/images/generations",
         headers=h,
         json={"model": "mock/image-gen", "prompt": "hello"},
         timeout=30,
     )
-    assert r.status_code == 200, r.text
+    assert r.status_code == 403, r.text
+    assert r.json()["error"]["code"] == "no_active_org", r.text

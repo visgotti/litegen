@@ -196,6 +196,29 @@ _ROUTER_ANSWERS = [
         id="prompt_required",
     ),
     pytest.param(
+        # A last frame alone, to a model whose vendor ends a clip on one only
+        # after a first frame (its `last_frame` role's `needs_first_frame`).
+        "POST", "/v1/videos/cost",
+        lambda c: c.videos.estimate_cost(
+            model="runway/veo3.1", prompt="x",
+            reference_images=[{"type": "url", "value": "https://cdn.example/end.png", "role": "last_frame"}],
+        ),
+        _error(400, {"message": "'runway/veo3.1' ends a clip on a last_frame only after a first_frame; send a first_frame image too",
+                     "type": "validation_error", "code": "ref_role_required", "param": "reference_images",
+                     "model": "runway/veo3.1"}),
+        LiteGenValidationError, {"status": 400, "code": "ref_role_required", "param": "reference_images"},
+        id="ref_role_required_last_frame",
+    ),
+    pytest.param(
+        # A model route none of whose deployments' vendors was called: some
+        # were skipped. The video route documents this 502, as the image one does.
+        "POST", "/v1/videos/generations", lambda c: c.videos.generate(model="fal/ltx-2.3", prompt="x").submitted,
+        _error(502, {"message": "All deployments failed for model fal/ltx-2.3: fal: circuit open; replicate: not configured",
+                     "type": "provider_error", "code": "provider_error", "retryable": True}),
+        LiteGenAPIError, {"status": 502, "code": "provider_error", "retryable": True},
+        id="video_route_skipped_502",
+    ),
+    pytest.param(
         "GET", "/v1/generations/litegen-vid-1/assets/0", lambda c: c.generations.download_asset("litegen-vid-1", 0),
         _error(416, {"message": "the requested range lies outside the file", "type": "invalid_request_error",
                      "code": "range_not_satisfiable"}),
@@ -761,3 +784,34 @@ async def test_async_download_asset_follows_a_signed_redirect() -> None:
     )
     async with AsyncLiteGenClient(api_key="lg-secret") as client:
         assert await client.generations.download_asset("g1", 0) == b"bytes"
+
+
+# ─── health.ready() (follow-up FU-PYHEALTH) ──────────────────────────────────
+
+_READY = {"status": "ready", "checks": {"db": True, "providers": ["fal", "openai"]}}
+_NOT_READY = {"status": "not_ready", "checks": {"db": False, "providers": []}}
+
+
+@respx.mock
+def test_health_ready_reads_the_readiness_probe_and_raises_on_503() -> None:
+    route = respx.get("http://localhost:4000/health/ready").mock(
+        side_effect=[Response(200, json=_READY), Response(503, json=_NOT_READY)]
+    )
+    client = LiteGenClient()
+    assert client.health.ready() == _READY
+    with pytest.raises(LiteGenAPIError) as exc:
+        client.health.ready()
+    assert exc.value.status == 503
+    assert [call.request.url.path for call in route.calls] == ["/health/ready", "/health/ready"]
+
+
+@respx.mock
+async def test_async_health_ready_reads_the_readiness_probe_and_raises_on_503() -> None:
+    respx.get("http://localhost:4000/health/ready").mock(
+        side_effect=[Response(200, json=_READY), Response(503, json=_NOT_READY)]
+    )
+    async with AsyncLiteGenClient() as client:
+        assert await client.health.ready() == _READY
+        with pytest.raises(LiteGenAPIError) as exc:
+            await client.health.ready()
+    assert exc.value.status == 503

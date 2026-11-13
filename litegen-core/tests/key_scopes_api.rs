@@ -1,6 +1,8 @@
 //! API-key scopes over the real route table: who may grant which scope (on
 //! create and on edit), and what each scope opens. A `generate` key is an
 //! AI-only key; `read` adds the management reads; `admin` the management writes.
+//! And what a session's role opens in each organization, as `GET /v1/auth/me`
+//! serves it (section f).
 
 mod harness;
 
@@ -420,4 +422,134 @@ async fn with_internal_targets_everyone_a_members_webhook_reaches_inside_as_befo
     assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
     let tested = member.call(&app, "POST", &format!("/v1/keys/{}/test-webhook", made.body["id"].as_str().unwrap()), None).await;
     assert_eq!((tested.status, tested.body["delivered"].as_bool()), (StatusCode::OK, Some(true)), "{:?}", tested.body);
+}
+
+// ─── (f) what `GET /v1/auth/me` says a role may do (follow-up FU-ME) ─────────
+
+/// The deployment's own permissions: the gateway's settings, the users table,
+/// handing the deployment over, the cache. A role holds them only acting in
+/// a single-tenant deployment's own org; in hosted mode they are the master
+/// key's alone.
+const DEPLOYMENT: [&str; 6] = ["system:config", "user:read:any", "user:write:any", "user:delete:any", "system:transfer_owner", "cache:clear"];
+
+/// The permissions [`probe`] has a request for.
+const PROBED: [&str; 18] = [
+    "system:config", "user:read:any", "user:write:any", "user:delete:any", "system:transfer_owner", "cache:clear",
+    "audit:read", "generation:create", "invitation:send", "key:write:own", "key:write:any",
+    "org:write", "org:transfer_owner", "member:invite", "member:write", "member:remove", "app:write", "provider_cred:write",
+];
+
+/// A request the check for `perm` refuses with 403 before anything else, and
+/// otherwise answers without changing anything a later probe reads: a read,
+/// a refusal of the body (an Owner can't be invited or assigned, a blank
+/// name), or a 404 for a user or member that doesn't exist. `org` is where
+/// it acts (path, or the `x-litegen-org-id` header), `app` an app of it.
+fn probe(perm: &str, org: &str, app: &str) -> (&'static str, String, Option<Value>) {
+    match perm {
+        "system:config" => ("GET", "/v1/admin/settings".into(), None),
+        "user:read:any" => ("GET", "/v1/users".into(), None),
+        "user:write:any" => ("PATCH", "/v1/users/nobody".into(), Some(json!({ "role": "viewer" }))),
+        "user:delete:any" => ("DELETE", "/v1/users/nobody".into(), None),
+        "system:transfer_owner" => ("POST", "/v1/users/transfer-owner".into(), Some(json!({ "new_owner_id": "nobody" }))),
+        "cache:clear" => ("DELETE", "/v1/cache".into(), None),
+        "audit:read" => ("GET", "/v1/audit".into(), None),
+        "generation:create" => ("POST", "/v1/images/cost".into(), Some(json!({ "model": "mock/image-gen", "prompt": "a fox" }))),
+        "invitation:send" => ("POST", "/v1/users".into(), Some(json!({ "email": "probe@example.com", "role": "owner" }))),
+        "key:write:own" => ("POST", "/v1/keys".into(), Some(json!({ "name": "probe", "scopes": "read" }))),
+        "key:write:any" => ("POST", "/v1/keys".into(), Some(json!({ "name": "probe", "scopes": "admin" }))),
+        "org:write" => ("PATCH", format!("/v1/orgs/{org}"), Some(json!({ "name": " " }))),
+        "org:transfer_owner" => ("POST", format!("/v1/orgs/{org}/transfer-owner"), Some(json!({ "new_owner_user_id": "nobody" }))),
+        "member:invite" => ("POST", format!("/v1/orgs/{org}/members"), Some(json!({ "email": "probe@example.com", "role": "owner" }))),
+        "member:write" => ("PATCH", format!("/v1/orgs/{org}/members/nobody"), Some(json!({ "role": "owner" }))),
+        "member:remove" => ("DELETE", format!("/v1/orgs/{org}/members/nobody"), None),
+        "app:write" => ("PATCH", format!("/v1/apps/{app}"), Some(json!({ "name": " " }))),
+        "provider_cred:write" => ("POST", format!("/v1/orgs/{org}/provider-credentials"), Some(json!({ "provider": " ", "credentials": {} }))),
+        other => panic!("no probe for {other}"),
+    }
+}
+
+/// What `GET /v1/auth/me` serves `session` for `org` is what the server
+/// grants there: exactly the role's permissions (`permissions_for`, what a
+/// session acting there carries), less the deployment's own unless
+/// `deployment`; and every probed route lets the session through exactly
+/// when the list has its permission. `who` names the case in a failure.
+async fn assert_served_as_checked(app: &Router, who: &str, session: &Session, org: &str, role: litegen::types::Role, deployment: bool) {
+    use litegen::auth::permissions::permissions_for;
+    let me = session.call(app, "GET", "/v1/auth/me", None).await;
+    assert_eq!(me.status, StatusCode::OK, "{who}: {:?}", me.body);
+    let entry = me.body["orgs"]
+        .as_array()
+        .and_then(|orgs| orgs.iter().find(|o| o["id"] == org))
+        .unwrap_or_else(|| panic!("{who}: {org} is not in orgs: {:?}", me.body))
+        .clone();
+    assert_eq!(entry["role"], role.as_str(), "{who}: {entry}");
+    let served: std::collections::BTreeSet<String> = entry["permissions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{who}: no permissions served for {org}: {entry}"))
+        .iter()
+        .map(|p| p.as_str().expect("a permission name").to_string())
+        .collect();
+    let granted: std::collections::BTreeSet<String> = permissions_for(role)
+        .iter()
+        .map(|p| p.as_str().to_string())
+        .filter(|p| deployment || !DEPLOYMENT.contains(&p.as_str()))
+        .collect();
+    assert_eq!(served, granted, "{who}: served in {org}");
+    let apps = send(app, "GET", &format!("/v1/orgs/{org}/apps"), None, &[("cookie", &session.cookie)]).await;
+    let app_id = apps.body[0]["id"].as_str().unwrap_or_else(|| panic!("{who}: an app of {org}: {:?}", apps.body)).to_string();
+    for perm in PROBED {
+        let (method, path, body) = probe(perm, org, &app_id);
+        let r = send(app, method, &path, body, &[("cookie", &session.cookie), ("x-csrf-token", &session.csrf), ("x-litegen-org-id", org)]).await;
+        let let_through = r.status != StatusCode::FORBIDDEN;
+        assert_eq!(
+            let_through,
+            served.contains(perm),
+            "{who} in {org}: {perm} {} served, and {method} {path} answered {} {:?}",
+            if served.contains(perm) { "is" } else { "is not" },
+            r.status,
+            r.body
+        );
+    }
+}
+
+/// FU-ME: `GET /v1/auth/me` serves, for each org, the permissions its role
+/// holds there as the server checks them, so a client offers what will work
+/// without a copy of the role map. In a single-tenant deployment the
+/// deployment's own permissions (the gateway, the users table, the cache)
+/// come only with a role in its own org: an Owner of a side org holds none
+/// of them there.
+#[tokio::test]
+async fn me_serves_each_roles_permissions_as_the_server_checks_them() {
+    use litegen::types::Role;
+    let (app, _dir) = app().await;
+    let owner = owner(&app).await;
+    let (admin, _) = invited(&app, &owner, "perm-admin@example.com", "admin").await;
+    let (member, _) = invited(&app, &owner, "perm-member@example.com", "member").await;
+    let (viewer, _) = invited(&app, &owner, "perm-viewer@example.com", "viewer").await;
+    let org = litegen::api::middleware::DEFAULT_ORG_ID;
+    for (who, session, role) in [("owner", &owner, Role::Owner), ("admin", &admin, Role::Admin), ("member", &member, Role::Member), ("viewer", &viewer, Role::Viewer)] {
+        assert_served_as_checked(&app, who, session, org, role, true).await;
+    }
+    let side = owner.call(&app, "POST", "/v1/orgs", Some(json!({ "name": "Side" }))).await;
+    assert!(side.status.is_success(), "the deployment's owner makes a side org: {:?}", side.body);
+    let side_id = side.body["id"].as_str().expect("side org id").to_string();
+    assert_served_as_checked(&app, "the owner of a side org", &owner, &side_id, Role::Owner, false).await;
+}
+
+/// FU-ME, hosted: every org is a tenant's, so no role holds the deployment's
+/// own permissions anywhere; the rest are the role's, as in single-tenant.
+#[tokio::test]
+async fn me_serves_no_deployment_permission_to_a_hosted_role() {
+    use litegen::types::Role;
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(SqliteDatabase::connect("sqlite::memory:").await.unwrap());
+    let app = harness::app_over_with(db, dir.path(), |c| c.dev.expose_invite_tokens = true, Some(MASTER_KEY), Mode::Hosted).await;
+    let owner = owner(&app).await;
+    let org = owner.call(&app, "GET", "/v1/orgs", None).await.body[0]["id"].as_str().expect("the owner's org").to_string();
+    let (admin, _) = invited(&app, &owner, "hosted-admin@example.com", "admin").await;
+    let (member, _) = invited(&app, &owner, "hosted-member@example.com", "member").await;
+    let (viewer, _) = invited(&app, &owner, "hosted-viewer@example.com", "viewer").await;
+    for (who, session, role) in [("owner", &owner, Role::Owner), ("admin", &admin, Role::Admin), ("member", &member, Role::Member), ("viewer", &viewer, Role::Viewer)] {
+        assert_served_as_checked(&app, who, session, &org, role, false).await;
+    }
 }

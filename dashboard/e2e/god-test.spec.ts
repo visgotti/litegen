@@ -146,7 +146,31 @@ test('clicks every UI feature with real backend, full CRUD round-trip', async ({
   // Another provider's models are outside this org's pool: listed, none enabled.
   await page.getByTestId('provider-toggle-bedrock').click();
   await expect(page.getByTestId('provider-toggle-bedrock')).toContainText(/(?<!\d)0\/[1-9]\d* enabled/);
+
+  // 9c. What a session is offered is the permission list /v1/auth/me serves for
+  // the org it acts in (FU-ME), not its account role: an Admin of the
+  // deployment who owns an org of its own holds none of the deployment's own
+  // permissions while acting there.
+  await feature("Acting in an org of its own: the deployment's users and settings are not offered");
+  const served = (await (await page.request.get(`${API_BASE}/v1/auth/me`)).json()) as {
+    user: { role: string };
+    orgs: Array<{ id: string; role: string; permissions: string[] }>;
+  };
+  const sideOrg = served.orgs.find(o => o.id === poolOrg)!;
+  const deploymentOrg = served.orgs.find(o => o.id === homeOrg)!;
+  expect(served.user.role, 'the account role still says admin').toBe('admin');
+  expect(sideOrg.role).toBe('owner');
+  expect(sideOrg.permissions).not.toContain('system:config');
+  expect(sideOrg.permissions).not.toContain('user:read:any');
+  expect(deploymentOrg.permissions).toEqual(expect.arrayContaining(['system:config', 'user:read:any']));
+  await expect(page.getByRole('link', { name: 'Users', exact: true })).toHaveCount(0);
+  await page.getByRole('link', { name: 'Gateway', exact: true }).click();
+  await expect(page.getByTestId('forbidden-403')).toContainText('system:config');
+  // Back in the deployment's own org, both are offered again.
   await page.getByTestId('org-switcher').selectOption(homeOrg);
+  await expect(page.getByRole('link', { name: 'Users', exact: true })).toBeVisible();
+  await expect(page.getByTestId('forbidden-403')).toHaveCount(0);
+  await expect(page.getByTestId('gateway-tab-settings')).toBeVisible({ timeout: 10_000 });
 
   // 10. Sign out (owner is now admin)
   await page.locator('[data-testid="user-menu-toggle"]').click();

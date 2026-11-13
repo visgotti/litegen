@@ -88,6 +88,7 @@ The package follows semantic versioning, and [CHANGELOG.md](./CHANGELOG.md) list
 
 - **API key** (server-side): pass `apiKey` (a `sk_live_…` secret) — sent as `Authorization: Bearer …`.
 - **Session** (browser dashboards): omit `apiKey` and the client uses cookie-based sessions with CSRF handling.
+- **Who you are:** `client.auth.me()` returns the signed-in person (`MeResponse`): each organization they belong to with their `role` there and the `permissions` it holds (`org:write`, `generation:create`, …), worked out as the server checks every request, and the `active_org` and `active_app` the request acts in. The deployment's own permissions (`system:config`, `cache:clear`, `user:read:any`, …) are listed only for a single-tenant deployment's default organization. Offer what `permissions` lists; the server still checks each call.
 
 ## Links
 

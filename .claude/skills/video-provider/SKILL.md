@@ -163,6 +163,12 @@ specific to video.
     validator refuses a text-to-video request with an empty prompt before
     anything is quoted or reserved; keep the adapter's refusal as a
     backstop (Runway's `t2v_needs_prompt`).
+  - If the vendor ends a clip on a last frame only after a first one,
+    refuse a `last_frame` sent alone, and set `needs_first_frame: true` on
+    the row's `last_frame` role: the validator then refuses that request
+    with `ref_role_required` before anything is quoted or reserved, and
+    the adapter's refusal stays as a backstop. Don't set it where the
+    vendor takes a last frame alone (Luma, MiniMax).
 - **Order positional images yourself.** If the vendor reads an array by
   position (start, then end), sort by role rather than trusting the order
   the caller sent.

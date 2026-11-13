@@ -9,6 +9,19 @@ minor release may change behaviour, and says how here.
 
 ### Added
 
+- `auth.me()` returns `MeResponse` (it returned `unknown`), and the types
+  `MeResponse`, `MeOrg` and `MeUser`: the signed-in person, each organization
+  they belong to with their `role` and the `permissions` it holds there, as
+  the server checks them (the deployment's own, such as `system:config`, only
+  in a single-tenant deployment's default organization), and the
+  `active_org` and `active_app` (`string | null`) the request acts in.
+- `needs_first_frame` on `RefRoleSpec`: on a video model's `last_frame` role,
+  a last frame sent without a `first_frame` (or `init`) image is refused with
+  `ref_role_required` (a `LiteGenAPIError` with `param: "reference_images"`)
+  before anything is quoted or reserved.
+- The video generation route's 502 is in the generated types: `vendor_error`
+  (the vendor failed; `providerError` and `retryable` say more) and, on a
+  model route, `provider_error` (no deployment was called; `retryable`).
 - `package: "zip"` on `models3d.convert`: the answer is a zip
   (`application/zip`, `model.<to>.zip`) holding the converted file first and
   whatever goes beside it, such as an OBJ's `.mtl` and textures. The SDK hands

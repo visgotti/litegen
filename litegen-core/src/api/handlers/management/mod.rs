@@ -84,15 +84,14 @@ pub(crate) fn require_gateway_admin(state: &AppState, ctx: &KeyContext) -> Resul
     }
     // Single-tenant: the deployment's owners and admins, and its admin-scope
     // keys, act from the default org; a role or key of any other org is
-    // that org's alone.
-    if state.mode == crate::config::Mode::SingleTenant && acts_in_default_org(ctx) {
-        if ctx.user.is_some() {
-            if ctx.permissions.contains(&Permission::SystemConfig) {
-                return Ok(());
-            }
-        } else if ctx.key_id.is_some() && has_scope(ctx, Scope::Admin) {
+    // that org's alone. A person holds `system:config` as `person_holds`
+    // judges it, which is what `GET /v1/auth/me` serves.
+    if ctx.user.is_some() {
+        if crate::api::middleware::person_holds(state.mode, ctx, Permission::SystemConfig) {
             return Ok(());
         }
+    } else if state.mode == crate::config::Mode::SingleTenant && acts_in_default_org(ctx) && ctx.key_id.is_some() && has_scope(ctx, Scope::Admin) {
+        return Ok(());
     }
     Err(forbidden("gateway admin required"))
 }

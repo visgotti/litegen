@@ -156,7 +156,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: "last-frame-only video is not supported" (kling.rs refuses one alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
@@ -200,7 +201,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: "last-frame-only video is not supported" (kling.rs refuses one alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # `settings.audio` native | off (default off). Native audio is 1080p only
     # ("When generating videos with native audio, only 1080P resolution is
     # supported"), and first + last frame is 1080p silent only. Kling contradicts itself on 2.6 audio (2026-10-30): the
@@ -264,7 +266,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: "last-frame-only video is not supported" (kling.rs refuses one alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # `settings`: resolution 720p | 1080p | 4k, audio native | off (canonical
     # `audio`), duration 3-15, aspect_ratio on text-to-video, and multi_shot
     # ("Whether to generate multi-shot video", default true) — the one
@@ -394,6 +397,7 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: "last-frame-only video is not supported" (kling.rs refuses one alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: []
     tags: [text-to-video, image-to-video]

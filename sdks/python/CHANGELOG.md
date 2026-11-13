@@ -9,6 +9,18 @@ minor release may change behaviour, and says how here.
 
 ### Added
 
+- `health.ready()` on the sync and async clients: the readiness probe
+  (`GET /health/ready`, no credential needed), `{"status", "checks": {"db",
+  "providers"}}`, as the TypeScript SDK's `health.ready()`. While the server
+  is not ready, the 503 raises `LiteGenAPIError` (`status` 503) like any
+  error.
+- In the generated client: `MeResponse`, `MeOrg` and `MeUser`, so
+  `api.auth.me` parses the signed-in person (each organization with the
+  `role` and the `permissions` held there, as the server checks them;
+  `active_org` and `active_app`) instead of returning nothing; and
+  `RefRoleSpec.needs_first_frame`: on a video model's `last_frame` role, a
+  last frame sent without a `first_frame` (or `init`) image is refused with
+  `ref_role_required` (`param` `reference_images`) before anything is quoted.
 - `package="zip"` on `models3d.convert`: the answer is a zip
   (`content_type` `application/zip`, `filename` `model.<to>.zip`) holding the
   converted file first and whatever goes beside it, such as an OBJ's `.mtl`

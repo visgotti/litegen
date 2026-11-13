@@ -1691,7 +1691,9 @@ pub struct ModelInfo {
     pub provider: String,
     /// Media type this model produces.
     pub media_type: MediaType,
-    /// Whether the model's provider can serve this caller (L14).
+    /// Whether a generation with this model would reach a vendor for this
+    /// caller (L14): through a deployment of the model route that serves it,
+    /// when one does, else through the model's own provider.
     pub is_available: bool,
     /// Where the model is in its vendor's lifecycle (L14).
     pub status: crate::capabilities::ModelStatus,

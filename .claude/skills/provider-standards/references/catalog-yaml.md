@@ -70,6 +70,8 @@ following:
 - `prompt.required: true` together with `max_length: 0`;
 - `prompt.required_for_text_to_video: true` on a row that is not a video
   model with `text_to_video`;
+- `needs_first_frame: true` on a role other than a video model's
+  `last_frame`, or on a row with no `first_frame` (or `init`) role;
 - a freeform size with min > max;
 - a multipart `field_map` or `default_role` naming an undeclared role, and
   a `provider_format` with a key its `form` doesn't take
@@ -77,7 +79,9 @@ following:
 - `preserves_unmasked` on a row that is not an image model taking a `mask`
   role or a `region` param;
 - an `extra_allowlist` entry litegen owns (see
-  [extra_allowlist](#extra_allowlist-and-strict-mode));
+  [extra_allowlist](#extra_allowlist-and-strict-mode)), and `imageId` or
+  `imageType` on a Leonardo video row (its start frame is the request's own
+  image, which litegen uploads);
 - an `extra_params` entry that isn't allowlisted, isn't a plain kind, is one
   of the row's params, or has a default it doesn't take, and a price rule
   that reads an untyped `extra.<key>`;
@@ -223,6 +227,8 @@ ref_inputs:
   # provider_format: { form: multipart, field_map: { init: image, mask: mask } }
   roles:
     <role>: { required: <bool>, min_count: <n>, max_count: <n> }
+    # a video row whose vendor ends a clip on a last frame only after a first:
+    # last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
 ```
 
 **Role names carry meaning, so reuse the existing vocabulary:**
@@ -242,6 +248,19 @@ ref_inputs:
 Some older video rows use `init` for the start frame (`fal/video`,
 `fal/ltx-2.3`, `runway/gen4-turbo` and `runway/gen4.5`), so their
 `supports_first_frame` reads false. New video rows use `first_frame`.
+
+**A last frame that needs a first.** When the vendor ends a clip on a last
+frame only after a first one, so the adapter refuses a `last_frame` sent
+alone, set `needs_first_frame: true` on the row's `last_frame` role. A
+request with a `last_frame` and no `first_frame` (or `init`) image is then
+refused with `ref_role_required` before anything is quoted or reserved
+(`check_video_request`), ahead of the prompt check, since a prompt wouldn't
+help. Keep the adapter's refusal as a backstop. Today that is every row of
+BytePlus, fal's FLUX 3, Ideogram, Kling, PixVerse, Runway's resold models,
+TokenHub and Vidu. Leave it off where the vendor takes a last frame alone:
+Luma's `frame1`, Ray 2 on Bedrock, MiniMax's first-last-frame endpoint
+(`required: model, last_frame_image`). `tests/pricing_api.rs` lists each
+vendor's answer with its source and fails on a vendor it doesn't know.
 
 **How refs are materialized** (`proxy/materializer.rs`). Callers send each ref
 as a `url`, `base64` or a multipart `blob`, and the materializer converts it to

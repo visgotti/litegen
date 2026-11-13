@@ -644,7 +644,7 @@ The current state of a video job: queued, processing, completed (with video_url)
 
 ### `get_current_user`
 
-The account you are acting as, and its organizations.
+The account you are acting as, and its organizations, with your role and permissions in each.
 
 `GET /v1/auth/me` · on `/mcp` and `/admin/mcp` · needs a signed-in user
 

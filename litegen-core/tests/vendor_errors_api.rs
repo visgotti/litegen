@@ -66,6 +66,33 @@ async fn a_vendors_5xx_is_a_502_that_says_to_retry() {
     assert_eq!(e["provider_error"]["status"].as_u64(), Some(503), "{body}");
 }
 
+/// FU-502: the video route answers a vendor's 5xx with the 502 it documents
+/// (`vendor_error`, the vendor's own status, `retryable`), as the image route
+/// does. The route documented no 502 before; this pins what it answers.
+#[tokio::test]
+async fn a_video_vendors_5xx_is_the_502_the_route_documents() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(503).set_body_json(json!({ "detail": "upstream overloaded" })))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap().keep();
+    let uri = server.uri();
+    let (app, _db) = harness::app_with(&dir, move |cfg| {
+        cfg.providers.insert("fal".into(), serde_json::from_value(json!({ "enabled": true, "api_key": "k", "api_base": uri })).unwrap());
+    })
+    .await;
+    let req = Request::post("/v1/videos/generations")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({ "model": "fal/ltx-2.3", "prompt": "a wave" }).to_string()))
+        .unwrap();
+    let (status, body) = call(&app, req).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    let e = &body["error"];
+    assert_eq!((e["code"].as_str(), e["retryable"].as_bool()), (Some("vendor_error"), Some(true)), "{body}");
+    assert_eq!(e["provider_error"]["status"].as_u64(), Some(503), "{body}");
+}
+
 #[tokio::test]
 async fn every_error_code_is_a_string() {
     let (app, _db) = harness::app_with_mock_3d().await;

@@ -1795,11 +1795,23 @@ fn check_video_request(schema: &ModelSchema, req: &VideoGenerationRequest) -> Re
             Some("reference_images"),
         ));
     }
-    // N3: without a frame to start from the request is text-to-video, which
-    // this model's vendor makes only from a prompt. Refused here, before
-    // anything is quoted or reserved, not by the adapter after. Runs after
-    // `check_refs`, so a role-less image counts under its `default_role`.
+    // Both checks below run after `check_refs`, so a role-less image counts
+    // under its `default_role`, and each is refused here, before anything is
+    // quoted or reserved, not by the adapter after.
     let starts_from_a_frame = refs.iter().any(|r| matches!(r.role.as_deref(), Some("first_frame" | "init")));
+    // FU-LASTFRAME: a last frame this model's vendor ends a clip on only
+    // after a first frame (its `last_frame` role's `needs_first_frame`).
+    // Before the prompt check: adding a prompt would not make it work.
+    let last_needs_first = schema.ref_inputs.as_ref().and_then(|r| r.roles.get("last_frame")).is_some_and(|s| s.needs_first_frame);
+    if last_needs_first && !starts_from_a_frame && refs.iter().any(|r| r.role.as_deref() == Some("last_frame")) {
+        return Err(ValidationError::new(
+            "ref_role_required",
+            format!("'{}' ends a clip on a last_frame only after a first_frame; send a first_frame image too", schema.id),
+            Some("reference_images"),
+        ));
+    }
+    // N3: without a frame to start from the request is text-to-video, which
+    // this model's vendor makes only from a prompt.
     if schema.prompt.required_for_text_to_video && !starts_from_a_frame && req.base.prompt.trim().is_empty() {
         return Err(ValidationError::new(
             "prompt_required",

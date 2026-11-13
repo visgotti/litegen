@@ -464,12 +464,59 @@ pub async fn auth_config(State(state): State<Arc<AppState>>) -> Response {
 
 // ─── GET /v1/auth/me ──────────────────────────────────────────────────────────
 
+/// `GET /v1/auth/me`: the signed-in person, the organizations they belong to
+/// with their role and permissions in each, and where this request acts.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct MeResponse {
+    pub user: MeUser,
+    /// The organizations the person belongs to. A sign-in through OAuth lists
+    /// only the one its grant is for.
+    pub orgs: Vec<MeOrg>,
+    /// The organization this request acts in (`X-Litegen-Org-Id`, else the
+    /// person's first; an OAuth sign-in's own). Null when there is none.
+    #[schema(required = true)]
+    pub active_org: Option<String>,
+    /// The app this request acts in (`X-Litegen-App-Id`, else the
+    /// organization's first; an OAuth sign-in's own). Null when there is none.
+    #[schema(required = true)]
+    pub active_app: Option<String>,
+}
+
+/// The signed-in account.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct MeUser {
+    pub id: String,
+    pub email: String,
+    /// The account's own role. What the person may do in an organization is
+    /// their role there: `orgs[].role` and `orgs[].permissions`.
+    pub role: String,
+}
+
+/// One organization the person belongs to.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct MeOrg {
+    pub id: String,
+    pub name: String,
+    /// The person's role in this organization: `owner`, `admin`, `member` or
+    /// `viewer`.
+    pub role: String,
+    /// The permissions this role holds acting in this organization, as the
+    /// server checks them on every request (e.g. `org:write`,
+    /// `generation:create`), for a client to offer only what will work. The
+    /// deployment's own permissions (`system:config`, `cache:clear`,
+    /// `user:read:any`, `user:write:any`, `user:delete:any`,
+    /// `system:transfer_owner`) are listed only for the default org of a
+    /// single-tenant deployment, and in hosted mode never. A sign-in through
+    /// OAuth is also held to its scopes.
+    pub permissions: Vec<String>,
+}
+
 /// GET /v1/auth/me — Return the currently authenticated user.
 #[utoipa::path(
     get,
     path = "/v1/auth/me",
     responses(
-        (status = 200, description = "Current user info"),
+        (status = 200, description = "The signed-in person, each organization they belong to with their role and permissions there, and the organization and app this request acts in.", body = MeResponse),
         (status = 401, description = "Not authenticated", body = crate::types::ErrorResponse),
     ),
     tag = "Auth"
@@ -483,32 +530,34 @@ pub async fn me(
     };
 
     // An app signed in through OAuth sees only the org its grant is for.
-    let orgs: Vec<serde_json::Value> = state
+    // Each org's permissions are what the person holds acting there, by the
+    // rule the checks themselves use (`permissions_held_in`): the role
+    // there, the deployment's own permissions only from the default org.
+    let orgs: Vec<MeOrg> = state
         .db
         .list_orgs_for_user(&u.user_id)
         .await
         .unwrap_or_default()
         .into_iter()
         .filter(|(org, _)| within_grant(&ctx, &org.id))
-        .map(|(org, role)| {
-            json!({ "id": org.id, "name": org.name, "role": role.as_str() })
+        .map(|(org, role)| MeOrg {
+            permissions: crate::api::middleware::permissions_held_in(state.mode, &ctx, &org.id, role)
+                .iter()
+                .map(|p| p.as_str().to_string())
+                .collect(),
+            id: org.id,
+            name: org.name,
+            role: role.as_str().to_string(),
         })
         .collect();
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "user": {
-                "id": u.user_id,
-                "email": u.email,
-                "role": u.role.as_str()
-            },
-            "orgs": orgs,
-            "active_org": ctx.org_id,
-            "active_app": ctx.app_id,
-        })),
-    )
-        .into_response()
+    let body = MeResponse {
+        user: MeUser { id: u.user_id, email: u.email, role: u.role.as_str().to_string() },
+        orgs,
+        active_org: ctx.org_id.clone(),
+        active_app: ctx.app_id.clone(),
+    };
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 // ─── GET /v1/auth/csrf ────────────────────────────────────────────────────────

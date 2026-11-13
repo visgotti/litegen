@@ -607,7 +607,8 @@ models:
       provider_format: { form: multipart, field_map: { first_frame: image, last_frame: end_image } }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: "`image` is required" (ideogram.rs refuses `end_image` alone).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # shot_type "customize" | "intelligent"; cfg_scale "from 0 to 1" (a string).
     extra_allowlist: [shot_type, cfg_scale]
     extra_params:
@@ -663,7 +664,8 @@ models:
       provider_format: { form: multipart, field_map: { first_frame: image, last_frame: end_image, reference: reference_images } }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: "`image` is required" (ideogram.rs refuses `end_image` alone).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 9 }
     # prompt_expansion_mode "disabled" | "fast" | "balanced" | "quality": on
     # reference to video only (refused on the other two).
@@ -707,7 +709,8 @@ models:
       provider_format: { form: multipart, field_map: { first_frame: image, last_frame: end_image, reference: reference_images } }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: "`image` is required" (ideogram.rs refuses `end_image` alone).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 9 }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
@@ -749,7 +752,8 @@ models:
       provider_format: { form: multipart, field_map: { first_frame: image, last_frame: end_image, reference: reference_images } }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: "`image` is required" (ideogram.rs refuses `end_image` alone).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 9 }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]

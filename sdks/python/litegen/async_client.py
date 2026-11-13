@@ -660,6 +660,11 @@ class _AsyncHealth:
     async def live(self) -> Any:
         return await self._c._request("GET", "/health/live")
 
+    async def ready(self) -> Any:
+        """The readiness probe; a 503 (not ready) raises like any error. See
+        :meth:`litegen.client._HealthNamespace.ready`."""
+        return await self._c._request("GET", "/health/ready")
+
 
 class _AsyncStats:
     def __init__(self, c: AsyncLiteGenClient) -> None:

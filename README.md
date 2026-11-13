@@ -363,7 +363,8 @@ curl --data-binary @fox.glb "http://localhost:4000/v1/utils/models3d/convert?fro
 curl http://localhost:4000/v1/models
 ```
 
-Each model says whether its provider can serve you (`is_available`), where it is in its vendor's
+Each model says whether a generation with it would reach a vendor for you (`is_available`: through
+its own provider, or a deployment of the model route that serves it), where it is in its vendor's
 lifecycle (`status`: `active`, `deprecated` or `retired`, with `deprecated_at`, `retires_at` and
 `replaced_by`) and its limits (`max_reference_images`, `max_duration_seconds`). A model is no longer
 served from the day after its `retires_at`. `catalog_version` changes whenever any listed field does.
@@ -493,6 +494,14 @@ Each deployment runs on the calling org's own key for that deployment's
 provider when the org stored one, and otherwise on the gateway's key for it,
 as a direct request to that provider would. An org's key for one vendor never
 goes to another vendor's deployment.
+
+A route decides who serves its models. A routed model is served when one of
+its deployments can be, even when nothing serves the model's own provider,
+and its quotes and `is_available` in `GET /v1/models` say the same. When no
+deployment can be served, the request gets `400 provider_not_configured`,
+naming the route's providers, before anything is reserved. Routes apply to
+image generations and videos. Segmentation and 3D models always go to their
+own provider.
 
 ## Architecture
 
@@ -792,6 +801,8 @@ If `LITEGEN__OWNER_EMAIL` is set, only that email address can claim ownership on
 
 An app's settings, budgets and limits, its model access, its storage and file-access settings, and the org's vendor credentials are changed by Owners and Admins only; Members and Viewers can read them. A Viewer can't start a generation or ask for a quote, and neither can their API keys: a key acts for the person who made it, so while they're a Viewer it keeps `read` and loses `generate` (and `admin`).
 
+`GET /v1/auth/me` lists each organization you belong to with your role there and its `permissions` (`org:write`, `generation:create`, …), worked out as the server checks every request, so a client can offer only what will work. What you may do in an organization is your role there, not your account's own `user.role`. The deployment's own permissions (`system:config`, `cache:clear`, `user:read:any`, `user:write:any`, `user:delete:any`, `system:transfer_owner`) are listed only for the default organization of a single-tenant deployment; in hosted mode they are the master key's alone.
+
 ### Adding users
 
 Owners and Admins can invite new users from the dashboard:
@@ -851,7 +862,8 @@ LITEGEN__MODE=hosted          # multi-tenant SaaS: open self-serve signup
 The default is `single_tenant`; everything documented above (first-run owner signup, master-key bypass, roles, sessions) behaves exactly as before. **Hosted mode** opts into the multi-tenant platform:
 
 - `POST /v1/auth/signup` becomes **open self-serve signup**. Each new user gets their own **Organization** (plus a default Application) and becomes its Owner — signup is no longer gated by the empty-`users` check or `LITEGEN__OWNER_EMAIL`.
-- The master key is **demoted to platform-admin**: it is still a superuser for operational endpoints, but it carries **no implicit tenant access** — it is not a member of any org and cannot read tenant-scoped data by default.
+- The master key is **demoted to platform-admin**: it is still a superuser for operational endpoints, but it carries **no implicit tenant access** — it is not a member of any org and cannot read tenant-scoped data by default. A generation belongs to an organization, so it starts none either: the generation, quote and conversion routes answer `403 no_active_org`. Use an organization's API key, or sign in, to generate.
+- An account that belongs to no organization (it deleted its only one, was removed from it or left it, or its signup failed after the account was made) acts in none. It keeps its own account: its profile and password, its sessions, signing out, making a new organization and accepting an invitation. Anything that acts in an organization answers 403 (`no_active_org`, or `no active organization`); it is never the default organization instead. Its account's own `role` grants it nothing.
 
 ### The tenancy model
 
@@ -894,7 +906,7 @@ Each Application stores its **own** upstream provider credentials, encrypted at 
 LITEGEN__SECRETS_KEY=$(head -c 32 /dev/urandom | base64)
 ```
 
-At generation time (and during background video-status polling) each request is dispatched using that app's decrypted provider credentials, keeping tenants' upstream keys isolated. Resolution order per provider is: **the app's stored credential → the global env-configured credential (if any) → `400 provider_not_configured`** when neither exists. Cost-estimate endpoints follow the same rule. Decryption/parse failures surface as `500` (server misconfiguration), never a silent fallback to another key.
+At generation time (and during background video-status polling) each request is dispatched using that app's decrypted provider credentials, keeping tenants' upstream keys isolated. Resolution order per provider is: **the app's stored credential → the global env-configured credential (if any) → `400 provider_not_configured`** when neither exists. Cost-estimate endpoints follow the same rule. A model route resolves each deployment's provider this way and is refused only when none of its deployments can be served ([Model Routing](#model-routing)). Decryption/parse failures surface as `500` (server misconfiguration), never a silent fallback to another key.
 
 ### BYO object storage (per app)
 

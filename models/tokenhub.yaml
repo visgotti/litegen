@@ -142,7 +142,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # "multi_shot | 否 | 仅 V3 Omni。是否生成多镜头视频，默认 true。"
     extra_allowlist: [multi_shot]
     extra_params:
@@ -184,7 +185,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
@@ -573,7 +575,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 9 }
     # options.return_last_frame is not offered: litegen delivers one video.
     extra_allowlist: []
@@ -626,7 +629,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
@@ -664,7 +668,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # The voice / element material types need TokenHub's voice and element
     # management, which litegen does not wrap.
     extra_allowlist: []
@@ -707,7 +712,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # "multi_shot | 仅 V3 | 是否生成多镜头视频，默认 true" — sent inside `settings`.
     extra_allowlist: [multi_shot]
     extra_params:
@@ -783,7 +789,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
@@ -831,7 +838,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # prompt_optimizer ("默认值：true"), fast_pretreatment, aigc_watermark.
     extra_allowlist: [prompt_optimizer, fast_pretreatment, aigc_watermark]
     extra_params:
@@ -917,7 +925,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 9 }
     extra_allowlist: [aigc_watermark]
     extra_params:
@@ -960,7 +969,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # aigc_watermark, and prompt_expansion_mode ("仅 minimax-video-h3-max 生效 … disabled /
     # balanced / quality"), sent as extra.prompt_expansion_mode.
     extra_allowlist: [aigc_watermark, prompt_expansion_mode]
@@ -1027,7 +1037,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 7 }
     extra_allowlist: [camera_movement, generate_multi_clip_switch]
     extra_params:
@@ -1082,7 +1093,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 7 }
     extra_allowlist: [camera_movement]
     tags: [text-to-video, image-to-video, reference-to-video]
@@ -1134,7 +1146,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 7 }
     extra_allowlist: [camera_movement]
     tags: [text-to-video, image-to-video, reference-to-video]
@@ -1234,7 +1247,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
@@ -1278,7 +1292,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 3 }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
@@ -1419,7 +1434,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 3 }
     extra_allowlist: []
     tags: [image-to-video, reference-to-video]
@@ -1457,7 +1473,8 @@ models:
       provider_format: { form: base64 }
       roles:
         first_frame: { required: true, min_count: 1, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: tokenhub.rs refuses one alone on every route ("a last_frame needs a first_frame").
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: []
     tags: [image-to-video]
 

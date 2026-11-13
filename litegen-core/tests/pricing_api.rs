@@ -182,6 +182,88 @@ async fn a_text_to_video_request_with_no_prompt_is_refused_before_it_is_quoted_o
     }
 }
 
+/// Whether each vendor that takes a `last_frame` ends a clip on it only after
+/// a first frame, with what says so. A vendor not listed fails the test: a
+/// new row with a `last_frame` role needs this decided.
+const LAST_FRAME_NEEDS_A_FIRST: &[(&str, bool, &str)] = &[
+    ("bytedance", true, "bytedance.rs: \"needs a first_frame to go with a last_frame\" (\"Two image_url objects must be provided\")"),
+    ("fal", true, "fal.rs `route`: \"a last frame needs a first frame\""),
+    ("ideogram", true, "ideogram.rs: \"a last frame needs a first frame (`image` is required)\""),
+    ("kling", true, "kling.rs: \"last-frame-only video is not supported\""),
+    ("pixverse", true, "pixverse.rs: \"a last_frame needs a first_frame\" (transition needs first_frame_img and last_frame_img)"),
+    ("runway", true, "runway.rs `resold_request`: \"a last frame needs a first frame\" (Veo: \"does not support generating with only a last frame\")"),
+    ("tokenhub", true, "tokenhub.rs, every body: \"a last_frame needs a first_frame\""),
+    ("vidu", true, "vidu.rs: \"needs a first_frame to go with a last_frame\" (img2video takes its image as the first frame)"),
+    ("bedrock", false, "Ray 2 on Bedrock: \"start (frame0) and/or end (frame1) keyframes\""),
+    ("luma", false, "Luma's keyframes: frame0 and frame1, each optional"),
+    ("minimax", false, "MiniMax first-last-frame: \"required: - model - last_frame_image\""),
+    ("mock", false, "the mock adapter makes either"),
+];
+
+/// FU-LASTFRAME (dashboard-server review #5): a model whose vendor ends a
+/// clip on a last frame only after a first refuses a last frame sent alone
+/// at validation, with `ref_role_required`, before it is quoted, reserved or
+/// sent. It used to be quoted and reserved, then refused by the adapter; and
+/// without a prompt it was refused for the prompt, which adding one did not
+/// fix. Every catalog row with a `last_frame` role is checked.
+#[tokio::test]
+async fn a_last_frame_without_a_first_is_refused_before_it_is_quoted_or_reserved() {
+    use base64::Engine;
+    use litegen::db::DatabaseStore;
+    let configured = ["bytedance", "fal", "ideogram", "kling", "pixverse", "runway", "tokenhub", "vidu", "luma", "minimax"];
+    let dir = tempfile::tempdir().unwrap().keep();
+    let (app, db) = harness::app_with(&dir, |cfg| {
+        for v in configured {
+            cfg.providers.insert(v.to_string(), serde_json::from_value(json!({ "enabled": true, "api_key": "k" })).unwrap());
+        }
+    })
+    .await;
+    let png = base64::engine::general_purpose::STANDARD.encode(litegen::providers::image::visual_mock::generate_visual_image_png("the end"));
+    let frame = |role: &str| json!({ "type": "base64", "value": png, "role": role });
+    let mut models_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    models_dir.pop();
+    models_dir.push("models");
+    let catalog = litegen::capabilities::CapabilityRegistry::from_dir(&models_dir).expect("models/");
+    let mut rows: Vec<(String, bool)> = catalog
+        .all()
+        .filter(|m| m.ref_inputs.as_ref().is_some_and(|r| r.roles.contains_key("last_frame")))
+        .map(|m| {
+            let needs = LAST_FRAME_NEEDS_A_FIRST
+                .iter()
+                .find(|(vendor, ..)| *vendor == m.provider)
+                .unwrap_or_else(|| panic!("{} takes a last_frame: say whether {} needs a first frame with it", m.id, m.provider));
+            (m.id.clone(), needs.1)
+        })
+        .collect();
+    rows.sort();
+    let mut wrong = Vec::new();
+    for (model, needs) in &rows {
+        let body = json!({ "model": model, "prompt": "a lighthouse at dusk", "reference_images": [frame("last_frame")] });
+        let ats: &[&str] = if *needs { &["/v1/videos/cost", "/v1/videos/generations"] } else { &["/v1/videos/cost"] };
+        for at in ats {
+            let (s, resp) = post(&app, at, body.clone()).await;
+            let got = (s, resp["error"]["code"].as_str().map(str::to_string), resp["error"]["param"].as_str().map(str::to_string));
+            let refused = got == (StatusCode::BAD_REQUEST, Some("ref_role_required".into()), Some("reference_images".into()));
+            if refused != *needs {
+                wrong.push(format!("{model} at {at}: {} {resp}", s.as_u16()));
+            }
+        }
+    }
+    // The last frame is the objection, not the prompt: a row whose text mode
+    // needs one (N3) says so for a last frame sent alone without one.
+    let (s, resp) = post(&app, "/v1/videos/cost", json!({ "model": "runway/veo3.1", "reference_images": [frame("last_frame")] })).await;
+    if resp["error"]["code"] != "ref_role_required" {
+        wrong.push(format!("runway/veo3.1 with no prompt at /v1/videos/cost: {} {resp}", s.as_u16()));
+    }
+    assert!(wrong.is_empty(), "{} of {} rows answered otherwise:\n{}", wrong.len(), rows.len(), wrong.join("\n"));
+    assert_eq!(db.get_request_logs(1, 100).await.unwrap().0.len(), 0, "nothing billed or logged as a failed generation");
+    assert_eq!(db.count_generations(None).await.unwrap(), 0, "nothing reserved or stored");
+    // Guards: a first and a last frame are quoted; a vendor that ends a clip
+    // on a last frame alone keeps it (above, every Luma, MiniMax and mock row).
+    let (s, resp) = post(&app, "/v1/videos/cost", json!({ "model": "runway/veo3.1", "prompt": "x", "reference_images": [frame("first_frame"), frame("last_frame")] })).await;
+    assert_eq!(s, StatusCode::OK, "a first and a last frame: {resp}");
+}
+
 /// One job makes one clip or one mesh, and one is billed (E3): a quote for
 /// `n: 4` used to answer the price of one.
 #[tokio::test]

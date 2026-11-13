@@ -230,6 +230,9 @@ mod tests {
     /// log says so, once.
     #[tokio::test]
     async fn the_bound_drops_only_the_client_used_longest_ago_and_says_so_once() {
+        // `a_runtime_keeps_at_most_its_bound` reaches the same warning on its
+        // own thread: without this, it could leave it off here (FU-SPANFLAKE).
+        crate::util::test_logs::hold_process_subscriber();
         let logs = Logs::default();
         let subscriber = tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).with_max_level(tracing::Level::TRACE).finish();
         let _guard = tracing::subscriber::set_default(subscriber);

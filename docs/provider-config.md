@@ -156,6 +156,11 @@ the log.
   are ignored, so `isPublic` and `CallbackUrl` count too. Remove them. The
   shipped rows dropped `callback_url` (Vidu, MiniMax, BytePlus, Luma) and
   `isPublic`, `imageId` and `imageType` (Leonardo video).
+- **A Leonardo video row can't allowlist `imageId` or `imageType`.** Leonardo
+  video starts from the request's own image, which litegen uploads; an image
+  id passed in `extra` would animate any image on the gateway's Leonardo
+  account, whoever asked. Case, `_` and `-` are ignored here too
+  (`image_id`). Remove them; send the start frame as a `first_frame` image.
 - **Unknown keys are refused.** Every catalog object rejects a key it doesn't
   name, at any depth, so a typo (`max_lenght`, `extra_alowlist`) no longer
   loads silently. Watch for a description in a `{ … }` flow mapping that

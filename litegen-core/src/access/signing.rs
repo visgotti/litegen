@@ -255,82 +255,21 @@ mod tests {
         }
     }
 
-    /// Every level, captured on this thread (a `#[tokio::test]` runs on one).
+    /// Every level, captured on this thread (a `#[tokio::test]` runs on one),
+    /// with the process-wide subscriber held first so no callsite this test
+    /// wants is off (`util::test_logs`, FU-SPANFLAKE).
     fn capture_logs() -> (Logs, tracing::subscriber::DefaultGuard) {
+        crate::util::test_logs::hold_process_subscriber();
         let logs = Logs::default();
         let subscriber = tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).with_max_level(tracing::Level::TRACE).finish();
         (logs, tracing::subscriber::set_default(subscriber))
     }
 
-    /// What sqlx logged about its statements while this lives.
-    ///
-    /// sqlx's SQLite driver logs from a worker thread of its own, which the
-    /// per-thread subscriber of [`capture_logs`] never reaches. So its
-    /// `sqlx::query` events need the process-wide one, installed once (nothing
-    /// else in the library's tests installs one). Its writer keeps text only
-    /// while a `SqlxLogs` is open, so the other tests' statements cost no memory.
-    struct SqlxLogs;
-
-    static SQLX_TEXT: Mutex<Option<Vec<u8>>> = Mutex::new(None);
-
-    struct SqlxWriter;
-
-    impl std::io::Write for SqlxWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            if let Some(text) = SQLX_TEXT.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
-                text.extend_from_slice(buf);
-            }
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SqlxWriter {
-        type Writer = SqlxWriter;
-        fn make_writer(&'a self) -> SqlxWriter {
-            SqlxWriter
-        }
-    }
-
-    impl SqlxLogs {
-        fn open() -> SqlxLogs {
-            // A process-wide tracing subscriber, installed once for the whole
-            // lib test binary (every test in it shares one process). It is
-            // global because sqlx's SQLite driver logs from a worker thread
-            // that a per-thread `set_default` never reaches. Its filter lets
-            // only `sqlx::query` through, and its writer keeps nothing unless
-            // a `SqlxLogs` is open. Any test that calls
-            // `tracing_subscriber::fmt().init()` (or any other global init)
-            // from now on would panic, because a global default is already
-            // set: use `tracing::subscriber::set_default` in a test instead.
-            static INSTALLED: std::sync::Once = std::sync::Once::new();
-            INSTALLED.call_once(|| {
-                let subscriber = tracing_subscriber::fmt()
-                    .with_writer(SqlxWriter)
-                    .with_ansi(false)
-                    .with_env_filter(tracing_subscriber::EnvFilter::new("sqlx::query=trace"))
-                    .finish();
-                // An error means a global subscriber is already there; then the
-                // test's own probe fails, and says so.
-                let _ = tracing::subscriber::set_global_default(subscriber);
-            });
-            *SQLX_TEXT.lock().unwrap_or_else(|p| p.into_inner()) = Some(Vec::new());
-            SqlxLogs
-        }
-
-        fn text(&self) -> String {
-            let text = SQLX_TEXT.lock().unwrap_or_else(|p| p.into_inner());
-            String::from_utf8_lossy(text.as_deref().unwrap_or_default()).into_owned()
-        }
-    }
-
-    impl Drop for SqlxLogs {
-        fn drop(&mut self) {
-            *SQLX_TEXT.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        }
-    }
+    // What sqlx logged about its statements while it lives, through the
+    // process-wide subscriber: sqlx's SQLite driver logs from a worker thread
+    // of its own, which the per-thread subscriber of `capture_logs` never
+    // reaches.
+    use crate::util::test_logs::SqlxLogs;
 
     #[tokio::test]
     async fn two_signers_over_one_database_agree() {

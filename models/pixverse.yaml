@@ -108,7 +108,8 @@ models:
           last_frame: image
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: transition takes first_frame_img and last_frame_img (pixverse.rs refuses one alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # No generate_audio_switch: img/ "Generate native audio with V5.5, V5.6, V6,
     # or C1." (text/ and transition/ now give it no per-model note). No
     # negative_prompt or motion_mode: text/, img/ and transition/ define neither.
@@ -393,7 +394,8 @@ models:
           last_frame: image
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: transition takes first_frame_img and last_frame_img (pixverse.rs refuses one alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # generate_audio_switch (default false; img/ "Generate native audio with
     # V5.5, V5.6, V6, or C1.") and generate_multi_clip_switch (img/ "Enable
     # multi-clip generation with V5.5 or V6. Not supported with other models or
@@ -472,7 +474,8 @@ models:
           last_frame: image
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: transition takes first_frame_img and last_frame_img (pixverse.rs refuses one alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # generate_audio_switch only: img/ "Enable multi-clip generation with V5.5
     # or V6. Not supported with other models or template_id." Audio is priced
     # by the rules above (10 credits/s at 540p).

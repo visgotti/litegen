@@ -1,6 +1,6 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import type { components } from "../src/generated/schema";
-import type { ModelCapabilities, ModelInfo, ModelSchema, ModelStatus, PromptSpec } from "../src";
+import type { ModelCapabilities, ModelInfo, ModelSchema, ModelStatus, PromptSpec, RefRoleSpec } from "../src";
 
 type ModelListResponse = components["schemas"]["ModelListResponse"];
 
@@ -22,6 +22,8 @@ describe("catalog types", () => {
     expectTypeOf<ModelSchema["extra_params"]>().toEqualTypeOf<{ [key: string]: unknown } | undefined>();
     expectTypeOf<ModelSchema["status"]>().toEqualTypeOf<ModelStatus | undefined>();
     expectTypeOf<PromptSpec["required_for_text_to_video"]>().toEqualTypeOf<boolean | undefined>();
+    // A video model's `last_frame` role says when a last frame needs a first one (FU-LASTFRAME).
+    expectTypeOf<RefRoleSpec["needs_first_frame"]>().toEqualTypeOf<boolean | undefined>();
     // On every listed model, so required in the schema: a number, never undefined.
     expectTypeOf<ModelCapabilities["max_request_bytes"]>().toEqualTypeOf<number>();
     // The server computes `litegen_params` (readOnly in the OpenAPI document).
