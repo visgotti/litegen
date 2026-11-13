@@ -1705,7 +1705,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: FLUX 3's first-last endpoint takes both (fal.rs `route` refuses one alone).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         # Each goes at time_s × 24, rounded to a frame, within the clip.
         keyframe: { required: false, min_count: 0, max_count: 10, timing: any }
     # safety_tolerance (0-4, default 2).
@@ -1750,7 +1751,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: FLUX 3's first-last endpoint takes both (fal.rs `route` refuses one alone).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         keyframe: { required: false, min_count: 0, max_count: 10, timing: any }
     extra_allowlist: [safety_tolerance]
     extra_params:
@@ -1807,7 +1809,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: FLUX 3's first-last endpoint takes both (fal.rs `route` refuses one alone).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         keyframe: { required: false, min_count: 0, max_count: 10, timing: any }
     # reasoning_level (low | high, default high).
     extra_allowlist: [reasoning_level]

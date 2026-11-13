@@ -338,6 +338,9 @@ mod tests {
     }
 
     fn capture_logs() -> (Logs, tracing::subscriber::DefaultGuard) {
+        // So no callsite this test wants is off because another test's thread
+        // reached it first (FU-SPANFLAKE).
+        crate::util::test_logs::hold_process_subscriber();
         let logs = Logs::default();
         let subscriber = tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).with_max_level(tracing::Level::TRACE).finish();
         (logs, tracing::subscriber::set_default(subscriber))

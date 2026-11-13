@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { AuthConfigResponse, ConnectedApp } from '@litegen/sdk';
-import { client, getApiKey } from '../sdk-client';
+import { client } from '../sdk-client';
 import { showToast } from '../components/toast-store';
-import { permissionsFor } from '../components/permissions';
+import { useCan } from '../components/useCan';
 import KeyCreatedBanner from '../components/KeyCreatedBanner';
-import { useTenant } from '../context/tenant';
 import {
   CLIENTS,
   cursorInstallLink,
@@ -36,9 +35,8 @@ async function copy(text: string, what: string) {
 
 /** Use LiteGen from AI tools: the MCP endpoints, each client's setup, a key for it, and the apps connected through OAuth. */
 export default function Connect() {
-  const { activeOrgRole } = useTenant();
-  // Who may mint an admin-scope key: the server's rule, as on the Keys page.
-  const canGrantAdmin = Boolean(getApiKey()) || permissionsFor(activeOrgRole ?? '').includes('key:write:any');
+  // Who may mint an admin-scope key: key:write:any in the active org, as on the Keys page.
+  const canGrantAdmin = useCan()('key:write:any');
   const presets = availablePresets(canGrantAdmin).filter((p): p is NamedPreset => p !== 'custom');
 
   // undefined while loading; null when the server has MCP turned off.

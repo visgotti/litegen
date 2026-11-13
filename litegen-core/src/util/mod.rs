@@ -3,6 +3,11 @@ pub mod content;
 pub mod http_clients;
 pub mod ssrf;
 
+/// Test only: the process-wide tracing subscriber a test that reads its own
+/// thread's log holds first (FU-SPANFLAKE).
+#[cfg(test)]
+pub(crate) mod test_logs;
+
 /// Test only: a stand-in vendor on loopback serving `app`, with its base URL
 /// and the number of TCP connections it has accepted. Every fresh HTTP
 /// client opens a connection of its own, so the count shows client reuse

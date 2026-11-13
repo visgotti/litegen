@@ -49,7 +49,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: img2video takes its one image as the first frame (vidu.rs refuses a last frame alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference:   { required: false, min_count: 0, max_count: 7 }
     # No `style` (no current page documents it) and no `off_peak`: "Tasks
     # submitted in off-peak mode will be generated within 48 hours", while
@@ -121,7 +122,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: img2video takes its one image as the first frame (vidu.rs refuses a last frame alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference:   { required: false, min_count: 0, max_count: 7 }
     # No `style`: no current page documents it (2026-11-09), and vidu2.0 has no
     # text2video, where it used to live (Model Map: "| Text-to-video | - |").
@@ -208,7 +210,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: img2video takes its one image as the first frame (vidu.rs refuses a last frame alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference:   { required: false, min_count: 0, max_count: 7 }
     # viduq2-pro's bodies (img2video, start-end2video, reference2video) have no
     # bgm or movement_amplitude; no off_peak (see viduq1).
@@ -281,7 +284,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: img2video takes its one image as the first frame (vidu.rs refuses a last frame alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # `audio`: native audio-video output, default true on q3. No bgm ("Does not
     # take effect for the q3 model") or movement_amplitude ("This parameter
     # does not take effect when using the q2 & q3 model"), both Q1
@@ -358,7 +362,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: img2video takes its one image as the first frame (vidu.rs refuses a last frame alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # Same q3 field rules as viduq3-turbo.
     tags: [text-to-video, image-to-video, premium]
 
@@ -407,7 +412,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: true, min_count: 1, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: img2video takes its one image as the first frame (vidu.rs refuses a last frame alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     # No movement_amplitude: the viduq2-pro-fast start-end2video body has none,
     # and where Q1 keeps it, "This parameter does not take effect when using
     # the q2 & q3 model". No `audio` (img2video audio on q2 adds 15 credits the
@@ -665,7 +671,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: true, min_count: 1, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: img2video takes its one image as the first frame (vidu.rs refuses a last frame alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     tags: [image-to-video, fast]
 
   # viduq1-classic: img2video (1 image; prompt "maximum length is 2000
@@ -696,7 +703,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: true, min_count: 1, max_count: 1 }
-        last_frame:  { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: img2video takes its one image as the first frame (vidu.rs refuses a last frame alone).
+        last_frame:  { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: [movement_amplitude]
     extra_params:
       # From Vidu's docs (drift snapshots vidu/q1-*.txt).

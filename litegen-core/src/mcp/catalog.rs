@@ -344,7 +344,7 @@ pub static TOOLS: &[ToolDef] = &[
         toolset: "account",
         gate: Gate::User,
         title: "Get current user",
-        description: Some("The account you are acting as, and its organizations."),
+        description: Some("The account you are acting as, and its organizations, with your role and permissions in each."),
         catch_all: None,
     },
     ToolDef {

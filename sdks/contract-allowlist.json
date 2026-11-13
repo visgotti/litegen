@@ -14,7 +14,6 @@
       "DELETE /v1/orgs/{}",
       "DELETE /v1/orgs/{}/members/{}",
       "DELETE /v1/users/{}",
-      "GET /health/ready",
       "GET /v1/account",
       "GET /v1/account/sessions",
       "GET /auth/redirect",

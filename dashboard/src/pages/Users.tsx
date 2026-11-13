@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { client } from '../sdk-client';
 import { LiteGenAPIError } from '@litegen/sdk';
 import { showToast } from '../components/toast-store';
+import { useTenant } from '../context/tenant';
 
 interface PublicUser {
   id: string;
@@ -10,11 +11,6 @@ interface PublicUser {
   is_active: boolean;
   last_login_at?: string | null;
   created_at: string;
-}
-
-interface CurrentUser {
-  role: string;
-  id?: string;
 }
 
 const ROLE_OPTIONS = ['admin', 'member', 'viewer'] as const;
@@ -45,7 +41,9 @@ function RoleBadge({ role }: { role: string }) {
 export default function Users() {
   const [users, setUsers] = useState<PublicUser[]>([]);
   const [loading, setLoading] = useState(true);
-  const [me, setMe] = useState<CurrentUser | null>(null);
+  // Handing the deployment over takes system:transfer_owner in the org the
+  // session acts in, as /v1/auth/me serves it.
+  const { activePermissions, refresh } = useTenant();
 
   // Invite modal
   const [showInviteModal, setShowInviteModal] = useState(false);
@@ -74,21 +72,9 @@ export default function Users() {
     }
   }, []);
 
-  const fetchMe = useCallback(async () => {
-    try {
-      const meResp = await client.auth.me() as { user?: { role: string; id?: string } };
-      if (meResp?.user) {
-        setMe(meResp.user);
-      }
-    } catch {
-      // no session
-    }
-  }, []);
-
   useEffect(() => {
-    fetchMe();
     fetchUsers();
-  }, [fetchMe, fetchUsers]);
+  }, [fetchUsers]);
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -148,7 +134,8 @@ export default function Users() {
       await client.users.transferOwner({ new_owner_id: transferTargetId });
       setTransferTargetId(null);
       await fetchUsers();
-      await fetchMe();
+      // The served permissions moved with the ownership.
+      await refresh();
       showToast('Ownership transferred', 'info');
     } catch (err) {
       if (err instanceof LiteGenAPIError) {
@@ -157,7 +144,7 @@ export default function Users() {
     }
   };
 
-  const isOwner = me?.role === 'owner';
+  const isOwner = activePermissions.includes('system:transfer_owner');
 
   return (
     <div style={{ padding: '0 0 32px' }}>

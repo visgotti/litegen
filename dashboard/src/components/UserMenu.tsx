@@ -1,15 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import type { MeUser } from '@litegen/sdk';
 import { client, clearCsrfCache, getApiKey } from '../sdk-client';
 import { useTenant } from '../context/tenant';
 import OrgSwitcher from './OrgSwitcher';
 import AuthBar from './AuthBar';
-
-interface MeUser {
-  id?: string;
-  email: string;
-  role: string;
-}
 
 const STORAGE_KEY = 'litegen_use_api_key';
 
@@ -57,10 +52,7 @@ export default function UserMenu() {
     if (getApiKey()) return;
     client.auth.me()
       .then((resp) => {
-        const r = resp as { user?: MeUser };
-        if (r?.user) {
-          setMe(r.user);
-        }
+        setMe(resp.user);
       })
       .catch(() => {
         // 401 = no session, that's fine
@@ -153,7 +145,10 @@ export default function UserMenu() {
                 }}
               >
                 <span data-testid="user-menu-email" style={{ fontSize: 13, fontWeight: 500 }}>{me.email}</span>
-                <span data-testid="user-menu-role" style={roleBadgeStyle(activeOrgRole ?? me.role)}>{activeOrgRole ?? me.role}</span>
+                {/* The role where the session acts; with no org, none (the account's own role grants nothing). */}
+                {activeOrgRole && (
+                  <span data-testid="user-menu-role" style={roleBadgeStyle(activeOrgRole)}>{activeOrgRole}</span>
+                )}
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" style={{ color: '#8b949e', flexShrink: 0 }}>
                   <path d="M6 8L1 3h10z"/>
                 </svg>

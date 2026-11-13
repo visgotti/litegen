@@ -1531,7 +1531,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
@@ -1575,7 +1576,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: []
     tags: [text-to-video, image-to-video]
 
@@ -1661,7 +1663,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 5 }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
@@ -1709,7 +1712,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 5 }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
@@ -1751,7 +1755,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: [cfgScale]
     extra_params:
       # From a number (video/runway.rs tests send 0.3); providerSettings stays untyped.
@@ -1795,7 +1800,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: [cfgScale, providerSettings]
     extra_params:
       # From a number (video/runway.rs tests send 0.3); providerSettings stays untyped.
@@ -1839,7 +1845,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: [cfgScale, providerSettings]
     extra_params:
       # From a number (video/runway.rs tests send 0.3); providerSettings stays untyped.
@@ -1881,7 +1888,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: [cfgScale, providerSettings]
     extra_params:
       # From a number (video/runway.rs tests send 0.3); providerSettings stays untyped.
@@ -1923,7 +1931,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 7 }
     extra_allowlist: [providerSettings]
     tags: [text-to-video, image-to-video, reference-to-video]
@@ -1963,7 +1972,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 7 }
     extra_allowlist: [providerSettings]
     tags: [text-to-video, image-to-video, reference-to-video]
@@ -2003,7 +2013,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 7 }
     extra_allowlist: [providerSettings]
     tags: [text-to-video, image-to-video, reference-to-video]
@@ -2052,7 +2063,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 10 }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
@@ -2147,7 +2159,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 9 }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
@@ -2184,7 +2197,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
     extra_allowlist: [promptExpansionMode]
     tags: [text-to-video, image-to-video]
 
@@ -2232,7 +2246,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 9 }
     extra_allowlist: [bitrate]
     extra_params:
@@ -2280,7 +2295,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 9 }
     extra_allowlist: [bitrate]
     extra_params:
@@ -2328,7 +2344,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 9 }
     extra_allowlist: [bitrate]
     extra_params:
@@ -2378,7 +2395,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 30 }
     extra_allowlist: [draft]
     extra_params:
@@ -2525,7 +2543,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 10 }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]
@@ -2569,7 +2588,8 @@ models:
       provider_format: { form: url }
       roles:
         first_frame: { required: false, min_count: 0, max_count: 1 }
-        last_frame: { required: false, min_count: 0, max_count: 1 }
+        # A last frame needs a first: Veo "does not support generating with only a last frame", and every promptImage array leads with its first frame (runway.rs `resold_request`).
+        last_frame: { required: false, min_count: 0, max_count: 1, needs_first_frame: true }
         reference: { required: false, min_count: 0, max_count: 10 }
     extra_allowlist: []
     tags: [text-to-video, image-to-video, reference-to-video]

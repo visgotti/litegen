@@ -188,6 +188,23 @@ describe("router and storage answers (2026-11 review)", () => {
       want: { status: 400, type: "validation_error", retryable: false, model: "minimax/MiniMax-Hailuo-02" },
     },
     {
+      // A last frame alone, to a model whose vendor ends a clip on one only
+      // after a first frame (its `last_frame` role's `needs_first_frame`).
+      code: "ref_role_required",
+      call: (c: LiteGenClient) =>
+        c.videos.estimateCost({ model: "runway/veo3.1", prompt: "x", reference_images: [{ type: "url", value: "https://cdn.example/end.png", role: "last_frame" }] } as never),
+      res: answer(400, { message: "'runway/veo3.1' ends a clip on a last_frame only after a first_frame; send a first_frame image too", type: "validation_error", code: "ref_role_required", param: "reference_images", model: "runway/veo3.1" }),
+      want: { status: 400, type: "validation_error", param: "reference_images" },
+    },
+    {
+      // A model route none of whose deployments' vendors was called: some
+      // were skipped. The video route documents this 502, as the image one does.
+      code: "provider_error",
+      call: (c: LiteGenClient) => c.videos.generate({ model: "fal/ltx-2.3", prompt: "x" } as never).submitted,
+      res: answer(502, { message: "All deployments failed for model fal/ltx-2.3: fal: circuit open; replicate: not configured", type: "provider_error", code: "provider_error", retryable: true }),
+      want: { status: 502, type: "provider_error", retryable: true },
+    },
+    {
       code: "range_not_satisfiable",
       call: (c: LiteGenClient) => c.generations.downloadAsset("litegen-vid-1", 0),
       res: answer(416, { message: "the requested range lies outside the file", type: "invalid_request_error", code: "range_not_satisfiable" }),

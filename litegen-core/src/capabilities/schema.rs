@@ -752,6 +752,13 @@ pub struct RefRoleSpec {
     /// to bound its clip: the longest clip it makes or prices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_time_s: Option<f64>,
+    /// On a video model's `last_frame` role: its vendor ends a clip on a
+    /// last frame only when the clip starts from a first frame, so a request
+    /// with a `last_frame` and no `first_frame` (or `init`) image is refused
+    /// with `ref_role_required` before anything is quoted or reserved.
+    /// Absent (false): a last frame alone goes to the vendor.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_first_frame: bool,
 }
 
 /// Where a model's keyframes may sit in the clip.

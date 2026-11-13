@@ -9,7 +9,7 @@ import ModelDetail from '../components/ModelDetail';
 import AppModelAccessCard from '../components/AppModelAccessCard';
 
 export default function Providers() {
-  const { activeOrg, activeApp, activeOrgRole } = useTenant();
+  const { activeOrg, activeApp, activePermissions } = useTenant();
   const [catalog, setCatalog] = useState<ModelInfo[]>([]);
   const [providers, setProviders] = useState<ProviderCatalogEntry[]>([]);
   const [creds, setCreds] = useState<ProviderCredentialInfo[]>([]);
@@ -64,8 +64,10 @@ export default function Providers() {
   };
 
   if (!activeOrg) return <div style={{ padding: 24, color: '#8b949e' }}>No active organization.</div>;
-  if (activeOrgRole !== 'owner' && activeOrgRole !== 'admin')
-    return <div style={{ padding: '24px 32px', background: '#3d1a1a', border: '1px solid #f85149', borderRadius: 8, color: '#f85149', margin: 24 }}>You need admin or owner access to manage providers.</div>;
+  // The org's vendor keys are this page's: offered to whoever holds
+  // provider_cred:write in the active org, as /v1/auth/me serves it.
+  if (!activePermissions.includes('provider_cred:write'))
+    return <div data-testid="providers-forbidden" style={{ padding: '24px 32px', background: '#3d1a1a', border: '1px solid #f85149', borderRadius: 8, color: '#f85149', margin: 24 }}>You need <code>provider_cred:write</code> in this organization to manage its providers.</div>;
 
   const byProvider: Record<string, ModelInfo[]> = {};
   for (const m of catalog) (byProvider[m.provider] ??= []).push(m);

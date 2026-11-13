@@ -376,6 +376,10 @@ async fn serve(config: config::AppConfig) -> anyhow::Result<()> {
             Err(e) => tracing::warn!(error = %e, "could not check the Owner records"),
         }
     }
+    // Stored keys whose webhook goes inside the deployment get no deliveries
+    // since SEC-STWEBHOOK: named in the log, on a task of its own, so an
+    // operator upgrading sees them (docs/management-api.md, "Key webhooks").
+    litegen::proxy::webhook::spawn_refused_key_webhook_notice(db.clone(), config.mode, config.webhooks.internal_targets);
 
     // Shutdown coordination: one stop signal (SIGINT/ctrl-c, or SIGTERM on
     // unix; see `StopSignals`) fans out to the poller and to the server loop,

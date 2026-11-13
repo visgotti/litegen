@@ -1,8 +1,10 @@
 //! Runtime configuration: loading what the management API stored at boot, and
 //! the helpers that apply a change to the live gateway.
 //!
-//! - Gateway settings and model routes live on the router
-//!   ([`ProxyRouter::set_overrides`](crate::proxy::router::ProxyRouter::set_overrides)).
+//! - Gateway settings and model routes live on the router: set whole at boot
+//!   and by a refresh ([`ProxyRouter::set_overrides`](crate::proxy::router::ProxyRouter::set_overrides)),
+//!   changed one field at a time by a save
+//!   ([`ProxyRouter::update_overrides`](crate::proxy::router::ProxyRouter::update_overrides)).
 //! - Runtime models and disabled ids live on the capability registry's runtime
 //!   layer, so the validator and `/v1/models` see them immediately.
 //! - Provider configs rebuild the provider instance in the provider registry.

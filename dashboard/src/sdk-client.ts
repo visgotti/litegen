@@ -1,5 +1,6 @@
-import { LiteGenClient } from '@litegen/sdk';
+import { LiteGenClient, type LiteGenClientOptions } from '@litegen/sdk';
 import { showToast } from './components/toast-store';
+import { readHealth } from './health-read';
 
 // ─── API-key helpers (used by AuthBar and legacy code) ──────────────────────
 
@@ -65,11 +66,11 @@ export const client = new LiteGenClient({
 /**
  * The same API for reads whose refusal the page shows itself, so a 402, 403
  * or 429 raises no toast here: the Playground's pre-submit checks (E11b),
- * which ask a quote route after every edit, and the Health page's provider
- * read, which a hosted tenant is refused. It sends the main client's active
- * org and app with every request.
+ * which ask a quote route after every edit, the Health page's provider read,
+ * which a hosted tenant is refused, and the no-organization screen's create.
+ * It sends the main client's active org and app with every request.
  */
-export const quietClient = new LiteGenClient({
+const quietOptions: LiteGenClientOptions = {
   baseUrl: BASE,
   getAuthToken: () => localStorage.getItem('litegen_api_key') ?? undefined,
   credentials: 'include',
@@ -82,6 +83,26 @@ export const quietClient = new LiteGenClient({
     if (app) headers.set('X-Litegen-App-Id', app);
     return fetch(input, { ...init, headers });
   },
+  onError: onUnauthenticated,
+};
+export const quietClient = new LiteGenClient(quietOptions);
+
+/** `GET /health` as the quiet client reads it, its body on a 503 (a provider down) too: see `health-read.ts`. */
+export function readGatewayHealth(signal?: AbortSignal) {
+  return readHealth(quietOptions, signal);
+}
+
+/**
+ * The same API with no tenant headers, for `GET /v1/auth/me`: it lists every
+ * org the person belongs to, while a request naming an org the person no
+ * longer belongs to (one this browser stored as active) is refused 403, which
+ * would read as signed out.
+ */
+export const sessionClient = new LiteGenClient({
+  baseUrl: BASE,
+  getAuthToken: () => localStorage.getItem('litegen_api_key') ?? undefined,
+  credentials: 'include',
+  getCsrfToken,
   onError: onUnauthenticated,
 });
 

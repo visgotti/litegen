@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { client, getApiKey, quietClient } from '../sdk-client';
+import { client, quietClient } from '../sdk-client';
 import type { ApiKeyInfo, PatchKeyBody, WebhookDelivery } from '@litegen/sdk';
 import { showToast } from '../components/toast-store';
-import { permissionsFor } from '../components/permissions';
+import { useCan } from '../components/useCan';
 import ScopePresetPicker from '../components/ScopePresetPicker';
 import KeyCreatedBanner from '../components/KeyCreatedBanner';
 import { useTenant } from '../context/tenant';
@@ -24,10 +24,11 @@ interface WebhookResult {
 }
 
 export default function Keys() {
-  const { activeApp, activeOrgRole } = useTenant();
-  // Who may mint an admin-scope key: the server's rule (KeyWriteAny in the
-  // active org). The API-key login is the master key, which may grant anything.
-  const canGrantAdmin = Boolean(getApiKey()) || permissionsFor(activeOrgRole ?? '').includes('key:write:any');
+  const { activeApp } = useTenant();
+  // Who may mint an admin-scope key: whoever holds key:write:any in the active
+  // org, as the server serves it. The API-key login is the master key, which
+  // may grant anything.
+  const canGrantAdmin = useCan()('key:write:any');
   const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
   const [createdKey, setCreatedKey] = useState('');
   const [createdPublicId, setCreatedPublicId] = useState('');

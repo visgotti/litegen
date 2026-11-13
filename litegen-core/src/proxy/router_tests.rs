@@ -705,9 +705,7 @@ mod tests {
         });
         tokio::time::timeout(std::time::Duration::from_secs(5), reached.notified()).await.expect("the vendor has the request");
         // Turned off while the vendor works, as PUT /v1/admin/settings applies it.
-        let mut overrides = router.overrides();
-        overrides.gateway.cache_enabled = Some(false);
-        router.set_overrides(overrides);
+        router.update_overrides(|o| o.gateway.cache_enabled = Some(false));
         open.notify_one();
         generating.await.unwrap().expect("the request itself succeeds");
         assert_eq!(cache.entry_count().await, 0, "an answer that came back after the cache was turned off must not be stored");
@@ -1315,6 +1313,9 @@ mod tests {
     /// alone call, opened the span.
     #[tokio::test]
     async fn a_client_poll_runs_in_a_span_naming_its_job() {
+        // Without it, a poll another test made first could leave this span
+        // off for this test too (FU-SPANFLAKE).
+        crate::util::test_logs::hold_process_subscriber();
         let logs = Logs::default();
         let subscriber = tracing_subscriber::fmt()
             .with_writer(logs.clone())

@@ -433,6 +433,93 @@ pub async fn may_reach_inside(
     Ok(role.is_some_and(|r| role_has(r, Permission::SystemConfig) || role_has(r, Permission::KeyWriteAny)))
 }
 
+/// A stored key whose webhook deliveries are refused: what the startup notice
+/// names (FU-STWEBHOOK). Never the URL itself, which may carry a secret in its
+/// path or query: only its host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedKeyWebhook {
+    pub key_id: uuid::Uuid,
+    pub key_prefix: String,
+    pub owner: Option<String>,
+    pub host: String,
+}
+
+/// How long the startup notice waits for one webhook host's name to resolve.
+const NOTICE_LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The stored keys whose webhook deliveries are refused since SEC-STWEBHOOK,
+/// found by the check dispatch makes (`dispatch_terminal_webhook`): the key may
+/// not reach inside the deployment ([`may_reach_inside`], an owner lookup that
+/// fails counting as no, as there) and its URL is no public address
+/// (`util::ssrf::check_public_url`). Single-tenant only: hosted, nothing
+/// changed, as a tenant's webhook was always held to public addresses, at save
+/// and at dispatch. A revoked key starts no job, so it isn't named. A host
+/// whose name doesn't resolve now, or not within 5 s, says nothing either way
+/// and isn't named.
+pub async fn refused_key_webhooks(
+    db: &dyn DatabaseStore,
+    mode: crate::config::Mode,
+    internal: crate::config::InternalTargets,
+) -> Result<Vec<RefusedKeyWebhook>, sqlx::Error> {
+    if mode == crate::config::Mode::Hosted || internal == crate::config::InternalTargets::Everyone {
+        return Ok(Vec::new());
+    }
+    let mut refused = Vec::new();
+    for key in db.list_api_keys().await? {
+        let Some(url) = key.webhook_url.as_deref().filter(|_| key.is_active) else { continue };
+        if may_reach_inside(db, mode, internal, key.owner_user_id.as_deref()).await.unwrap_or(false) {
+            continue;
+        }
+        let checked = tokio::time::timeout(NOTICE_LOOKUP_TIMEOUT, crate::util::ssrf::check_public_url(url)).await;
+        if let Ok(Err(crate::util::ssrf::UrlCheckError::Refused(_))) = checked {
+            let host = reqwest::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_else(|| "-".to_string());
+            refused.push(RefusedKeyWebhook { key_id: key.id, key_prefix: key.key_prefix, owner: key.owner_user_id, host });
+        }
+    }
+    Ok(refused)
+}
+
+/// Name, in the log, each stored key whose webhook deliveries are refused
+/// ([`refused_key_webhooks`]): one warning per key, with its id and prefix,
+/// its owner and the URL's host (never the URL, whose path or query may hold
+/// a secret), and one that sums them up. Nothing when no key is named. So an
+/// operator upgrading past SEC-STWEBHOOK sees which keys lost their internal
+/// webhook (docs/management-api.md, "Key webhooks").
+pub async fn name_refused_key_webhooks(db: &dyn DatabaseStore, mode: crate::config::Mode, internal: crate::config::InternalTargets) {
+    let refused = match refused_key_webhooks(db, mode, internal).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "could not list the stored keys to check their webhooks");
+            return;
+        }
+    };
+    if refused.is_empty() {
+        return;
+    }
+    for k in &refused {
+        warn!(
+            key_id = %k.key_id,
+            key_prefix = %k.key_prefix,
+            owner = k.owner.as_deref().unwrap_or("-"),
+            host = %k.host,
+            "SECURITY: this key's webhook goes to an address inside the deployment, which only the deployment's own keys and \
+             keys of its Owners and Admins may reach; its deliveries are refused"
+        );
+    }
+    warn!(
+        refused_keys = refused.len(),
+        "SECURITY: stored keys whose webhook goes inside the deployment get no deliveries (each named above): give each a public \
+         webhook URL, have an Owner or Admin of the deployment's org make it, or set webhooks.internal_targets: everyone \
+         (docs/management-api.md, Key webhooks)"
+    );
+}
+
+/// [`name_refused_key_webhooks`] on a task of its own, so startup never waits
+/// for it (its name lookups are bounded too).
+pub fn spawn_refused_key_webhook_notice(db: Arc<dyn DatabaseStore>, mode: crate::config::Mode, internal: crate::config::InternalTargets) {
+    tokio::spawn(async move { name_refused_key_webhooks(&*db, mode, internal).await });
+}
+
 /// The most of an endpoint's reply a delivery reads and keeps: its first 16 KiB
 /// (review 2026-11-11 SEC-WHBODY). The status, known before the body, decides
 /// the delivery, so the rest is never read.
@@ -859,5 +946,133 @@ mod tests {
         assert!(left.is_empty(), "every delivery ended within the drain: {left:?}");
         let all = (arrivals(&server, "/a").await, arrivals(&server, "/b").await, arrivals(&server, "/c").await);
         assert_eq!(all, (5, 1, 1), "every delivery was sent");
+    }
+
+    // ─── the startup notice of refused key webhooks (FU-STWEBHOOK) ───────────
+
+    /// A person holding `role` in the deployment's org: their id.
+    async fn person(db: &crate::db::sqlite::SqliteDatabase, role: crate::types::Role) -> String {
+        let now = chrono::Utc::now();
+        let id = format!("u-{}", uuid::Uuid::new_v4());
+        let user = crate::types::User {
+            id: id.clone(),
+            email: format!("{id}@example.com"),
+            password_hash: None,
+            role,
+            oauth_github_id: None,
+            oauth_google_id: None,
+            created_at: now,
+            updated_at: now,
+            last_login_at: None,
+            is_active: true,
+        };
+        db.create_user(&user).await.unwrap();
+        db.add_org_member(crate::api::middleware::DEFAULT_ORG_ID, &id, role).await.unwrap();
+        id
+    }
+
+    /// A key called `name` whose webhook is `url`, owned by `owner` (none: made
+    /// with the master key).
+    async fn hooked_key(db: &crate::db::sqlite::SqliteDatabase, name: &str, owner: Option<&str>, url: &str) -> crate::types::ApiKey {
+        let key = db.create_api_key(name, &format!("hash-{name}"), &format!("lg-{name}"), None, None, "generate,read", Some(url)).await.unwrap();
+        if let Some(owner) = owner {
+            db.set_api_key_owner(&key.id, owner).await.unwrap();
+        }
+        key
+    }
+
+    /// FU-STWEBHOOK (follow-ups 2026-11-13): litegen names the stored keys
+    /// whose webhook deliveries are refused, by the check dispatch makes
+    /// (`dispatch_terminal_webhook`): a key that may not reach inside the
+    /// deployment (`may_reach_inside`) whose URL is no public address. A
+    /// Member's key with an internal webhook is named, by IP or by a name that
+    /// resolves inside; an Admin's key, a master-key key and a public URL are
+    /// not. With `internal_targets: everyone` nothing is refused, and in
+    /// hosted mode nothing changed (a tenant's webhook was always held to
+    /// public addresses, at save and at dispatch), so no key is named.
+    #[tokio::test]
+    async fn the_stored_keys_whose_internal_webhook_is_refused_are_named() {
+        use crate::config::{InternalTargets, Mode};
+        let db = crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap();
+        let member = person(&db, crate::types::Role::Member).await;
+        let admin = person(&db, crate::types::Role::Admin).await;
+        let by_ip = hooked_key(&db, "member-ip", Some(&member), "http://127.0.0.1:9/hook?token=s3cret").await;
+        let by_name = hooked_key(&db, "member-name", Some(&member), "http://localhost:9/hook").await;
+        hooked_key(&db, "admin-ip", Some(&admin), "http://10.0.0.5/hook").await;
+        hooked_key(&db, "master-ip", None, "http://127.0.0.1:9/hook").await;
+        hooked_key(&db, "member-public", Some(&member), "https://8.8.8.8/hook").await;
+
+        let mut named = refused_key_webhooks(&db, Mode::SingleTenant, InternalTargets::Admins).await.unwrap();
+        named.sort_by(|a, b| a.key_prefix.cmp(&b.key_prefix));
+        let refused = |key: &crate::types::ApiKey, host: &str| RefusedKeyWebhook {
+            key_id: key.id,
+            key_prefix: key.key_prefix.clone(),
+            owner: Some(member.clone()),
+            host: host.to_string(),
+        };
+        assert_eq!(named, vec![refused(&by_ip, "127.0.0.1"), refused(&by_name, "localhost")], "only the Member's internal webhooks");
+        let everyone = refused_key_webhooks(&db, Mode::SingleTenant, InternalTargets::Everyone).await.unwrap();
+        assert!(everyone.is_empty(), "with internal_targets: everyone dispatch refuses none: {everyone:?}");
+        let hosted = refused_key_webhooks(&db, Mode::Hosted, InternalTargets::Admins).await.unwrap();
+        assert!(hosted.is_empty(), "hosted: nothing changed, so nothing is named: {hosted:?}");
+    }
+
+    #[derive(Clone, Default)]
+    struct Logs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Logs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+        type Writer = Logs;
+        fn make_writer(&'a self) -> Logs {
+            self.clone()
+        }
+    }
+
+    /// The warnings `run` logs on this thread, one per line.
+    async fn warnings_of(run: impl std::future::Future<Output = ()>) -> Vec<String> {
+        // So no callsite is off because another test's thread reached it
+        // first (FU-SPANFLAKE).
+        crate::util::test_logs::hold_process_subscriber();
+        let logs = Logs::default();
+        let subscriber = tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).with_max_level(tracing::Level::TRACE).finish();
+        {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            run.await;
+        }
+        let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+        text.lines().filter(|l| l.contains(" WARN ")).map(str::to_string).collect()
+    }
+
+    /// FU-STWEBHOOK: the startup notice is one warning per named key, with its
+    /// id and prefix, its owner and the URL's host (never the URL's path or
+    /// query, which may hold a secret), and one that sums them up. Nothing at
+    /// all when no key is named.
+    #[tokio::test]
+    async fn the_startup_notice_names_each_refused_key_and_sums_them_up() {
+        use crate::config::{InternalTargets, Mode};
+        let db = crate::db::sqlite::SqliteDatabase::connect("sqlite::memory:").await.unwrap();
+        let member = person(&db, crate::types::Role::Member).await;
+        let admin = person(&db, crate::types::Role::Admin).await;
+        let refused = hooked_key(&db, "member-ip", Some(&member), "http://127.0.0.1:9/hook?token=s3cret").await;
+        hooked_key(&db, "admin-ip", Some(&admin), "http://10.0.0.5/hook").await;
+
+        let warned = warnings_of(name_refused_key_webhooks(&db, Mode::SingleTenant, InternalTargets::Admins)).await;
+        assert_eq!(warned.len(), 2, "one line for the key and one summing up: {warned:#?}");
+        let names = [refused.id.to_string(), refused.key_prefix.clone(), member.clone(), "127.0.0.1".to_string()];
+        assert!(names.iter().all(|n| warned[0].contains(n.as_str())), "the key's line names {names:?}: {}", warned[0]);
+        assert!(warned[1].contains("refused_keys=1"), "the summary counts the keys: {}", warned[1]);
+        assert!(warned.iter().all(|l| !l.contains("s3cret") && !l.contains("token") && !l.contains("/hook")), "no URL path or query: {warned:#?}");
+
+        let quiet = warnings_of(name_refused_key_webhooks(&db, Mode::SingleTenant, InternalTargets::Everyone)).await;
+        assert!(quiet.is_empty(), "nothing to name, nothing said: {quiet:#?}");
     }
 }

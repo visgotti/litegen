@@ -104,6 +104,9 @@ from .liveness_response import LivenessResponse
 from .login_request import LoginRequest
 from .mask_convention import MaskConvention
 from .mcp_endpoints import McpEndpoints
+from .me_org import MeOrg
+from .me_response import MeResponse
+from .me_user import MeUser
 from .media_type import MediaType
 from .member_view import MemberView
 from .model_3d_animation_preset import Model3DAnimationPreset
@@ -391,6 +394,9 @@ __all__ = (
     "McpEndpoints",
     "MediaType",
     "MemberView",
+    "MeOrg",
+    "MeResponse",
+    "MeUser",
     "Model3DAnimationPreset",
     "Model3DAsset",
     "Model3DAssetKind",

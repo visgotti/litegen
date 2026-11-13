@@ -284,6 +284,9 @@ use utoipa::OpenApi;
         crate::api::handlers::auth_password::SignupRequest,
         crate::api::handlers::auth_password::LoginRequest,
         crate::api::handlers::auth_password::CsrfResponse,
+        crate::api::handlers::auth_password::MeResponse,
+        crate::api::handlers::auth_password::MeUser,
+        crate::api::handlers::auth_password::MeOrg,
         crate::api::handlers::auth_password::PasswordResetRequestBody,
         crate::api::handlers::auth_password::PasswordResetConfirmBody,
         // Users handler schemas
@@ -1500,5 +1503,76 @@ mod tests {
         }
         let h = &d["paths"]["/v1/images/generations"]["post"]["responses"]["200"]["headers"]["X-Litegen-Cache"];
         assert!(h.is_object(), "the image answer documents X-Litegen-Cache");
+    }
+
+    /// The schema a `$ref` (or the `allOf` utoipa wraps a described `$ref`
+    /// in) names; `s` itself when it names none.
+    fn named<'a>(d: &'a Value, s: &'a Value) -> &'a Value {
+        match s["$ref"].as_str().or_else(|| s["allOf"][0]["$ref"].as_str()) {
+            Some(r) => &d["components"]["schemas"][r.trim_start_matches("#/components/schemas/")],
+            None => s,
+        }
+    }
+
+    fn required_of(s: &Value) -> Vec<Value> {
+        s["required"].as_array().cloned().unwrap_or_default()
+    }
+
+    /// FU-ME: `GET /v1/auth/me` is typed, so the SDKs get a type, and each
+    /// org it lists carries the permissions the caller holds there, so a
+    /// client offers what will work without a copy of the server's role map.
+    /// Every field it served untyped stays, always sent.
+    #[test]
+    fn the_current_user_is_typed_with_each_orgs_permissions() {
+        let d = doc();
+        let ok = &d["paths"]["/v1/auth/me"]["get"]["responses"]["200"];
+        let body = &ok["content"]["application/json"]["schema"];
+        assert!(body["$ref"].is_string(), "the 200 names no body: {ok}");
+        let me = named(&d, body);
+        for f in ["user", "orgs", "active_org", "active_app"] {
+            assert!(required_of(me).contains(&json!(f)), "{f} is always sent: {me}");
+        }
+        let user = named(&d, property(me, "user"));
+        for f in ["id", "email", "role"] {
+            assert!(required_of(user).contains(&json!(f)), "user.{f}: {user}");
+        }
+        let org = named(&d, &property(me, "orgs")["items"]);
+        for f in ["id", "name", "role", "permissions"] {
+            assert!(required_of(org).contains(&json!(f)), "orgs[].{f}: {org}");
+        }
+        let permissions = property(org, "permissions");
+        assert!(mentions(permissions, "array") && mentions(&permissions["items"], "string"), "{permissions}");
+        for needle in ["org:write", "system:config", "default org"] {
+            assert!(mentions(permissions, needle), "the description names {needle:?}: {permissions}");
+        }
+    }
+
+    /// FU-502: the video route documents the 502 it answers, as the image
+    /// route does (in its words, where they apply): a vendor's failure, and on
+    /// a model route a request none of whose deployments was called, some of
+    /// them skipped (late-a H#5). It documented no 502 at all.
+    #[test]
+    fn the_video_route_documents_its_502() {
+        let d = doc();
+        let video = &d["paths"]["/v1/videos/generations"]["post"]["responses"]["502"];
+        assert!(video.is_object(), "POST /v1/videos/generations documents no 502");
+        assert_eq!(video["content"]["application/json"]["schema"]["$ref"], json!("#/components/schemas/ErrorResponse"), "{video}");
+        let image = d["paths"]["/v1/images/generations"]["post"]["responses"]["502"]["description"].as_str().expect("the image route's 502");
+        let text = video["description"].as_str().unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(text.starts_with(image), "in the image route's words ({image:?}): {text:?}");
+        for needle in ["`vendor_error`", "`provider_error`", "`retryable`", "skipped"] {
+            assert!(text.contains(needle), "the description names {needle}: {text:?}");
+        }
+    }
+
+    /// FU-LASTFRAME: a `last_frame` role says when its vendor ends a clip on
+    /// it only after a first frame, and what refusing that looks like.
+    #[test]
+    fn a_last_frame_role_says_when_it_needs_a_first_frame() {
+        let d = doc();
+        let flag = property(&d["components"]["schemas"]["RefRoleSpec"], "needs_first_frame");
+        assert!(mentions(flag, "boolean") && mentions(flag, "ref_role_required") && mentions(flag, "first_frame"), "{flag}");
+        let required = required_of(&d["components"]["schemas"]["RefRoleSpec"]);
+        assert!(!required.contains(&json!("needs_first_frame")), "{required:?}");
     }
 }

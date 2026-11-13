@@ -3315,6 +3315,59 @@ export interface components {
             /** @description Whether clients can sign in with OAuth (ChatGPT and claude.ai need it). */
             oauth: boolean;
         };
+        /** @description One organization the person belongs to. */
+        MeOrg: {
+            id: string;
+            name: string;
+            /**
+             * @description The permissions this role holds acting in this organization, as the
+             *     server checks them on every request (e.g. `org:write`,
+             *     `generation:create`), for a client to offer only what will work. The
+             *     deployment's own permissions (`system:config`, `cache:clear`,
+             *     `user:read:any`, `user:write:any`, `user:delete:any`,
+             *     `system:transfer_owner`) are listed only for the default org of a
+             *     single-tenant deployment, and in hosted mode never. A sign-in through
+             *     OAuth is also held to its scopes.
+             */
+            permissions: string[];
+            /**
+             * @description The person's role in this organization: `owner`, `admin`, `member` or
+             *     `viewer`.
+             */
+            role: string;
+        };
+        /**
+         * @description `GET /v1/auth/me`: the signed-in person, the organizations they belong to
+         *     with their role and permissions in each, and where this request acts.
+         */
+        MeResponse: {
+            /**
+             * @description The app this request acts in (`X-Litegen-App-Id`, else the
+             *     organization's first; an OAuth sign-in's own). Null when there is none.
+             */
+            active_app: string | null;
+            /**
+             * @description The organization this request acts in (`X-Litegen-Org-Id`, else the
+             *     person's first; an OAuth sign-in's own). Null when there is none.
+             */
+            active_org: string | null;
+            /**
+             * @description The organizations the person belongs to. A sign-in through OAuth lists
+             *     only the one its grant is for.
+             */
+            orgs: components["schemas"]["MeOrg"][];
+            user: components["schemas"]["MeUser"];
+        };
+        /** @description The signed-in account. */
+        MeUser: {
+            email: string;
+            id: string;
+            /**
+             * @description The account's own role. What the person may do in an organization is
+             *     their role there: `orgs[].role` and `orgs[].permissions`.
+             */
+            role: string;
+        };
         /** @enum {string} */
         MediaType: "image" | "video" | "model3d";
         MemberView: {
@@ -3837,7 +3890,11 @@ export interface components {
             description?: string;
             /** @description Unique model ID (e.g. "openai/dall-e-3"). */
             id: string;
-            /** @description Whether the model's provider can serve this caller (L14). */
+            /**
+             * @description Whether a generation with this model would reach a vendor for this
+             *     caller (L14): through a deployment of the model route that serves it,
+             *     when one does, else through the model's own provider.
+             */
             is_available: boolean;
             /** @description Media type this model produces. */
             media_type: components["schemas"]["MediaType"];
@@ -4957,6 +5014,14 @@ export interface components {
              *     `mask_grow_px` goes to it, explicitly, instead of litegen dilating.
              */
             native_grow?: boolean;
+            /**
+             * @description On a video model's `last_frame` role: its vendor ends a clip on a
+             *     last frame only when the clip starts from a first frame, so a request
+             *     with a `last_frame` and no `first_frame` (or `init`) image is refused
+             *     with `ref_role_required` before anything is quoted or reserved.
+             *     Absent (false): a last frame alone goes to the vendor.
+             */
+            needs_first_frame?: boolean;
             required?: boolean;
             /**
              * Format: double
@@ -7307,12 +7372,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Current user info */
+            /** @description The signed-in person, each organization they belong to with their role and permissions there, and the organization and app this request acts in. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["MeResponse"];
+                };
             };
             /** @description Not authenticated */
             401: {
@@ -11500,6 +11567,15 @@ export interface operations {
             };
             /** @description `generation_record_failed`: the vendor accepted the job but litegen could not record it, so it has no id to poll; `vendor_job_id` names the vendor's job. A retry with the same `Idempotency-Key` gets this answer, not a second job. */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Provider error. `vendor_error`: the vendor failed (its 5xx, or no answer at all); the body's `provider_error` holds the vendor's own status, code and message, `vendor_job_id` the job it had taken, and `retryable` says whether the same request may work later (never once the vendor took the job). `provider_error`: on a model route, no deployment's vendor was called, since some were skipped (a circuit breaker open, a provider not configured) and the rest refused the request; the message names why each did not serve it, and `retryable` is true. */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

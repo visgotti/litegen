@@ -1533,6 +1533,180 @@ async fn a_routed_video_job_records_the_account_its_deployment_ran_on() {
     );
 }
 
+// ─── FU-ROUTE (follow-ups 2026-11-13): a model route decides who serves ──────
+// A model route sends its models to its deployments only, so whether a
+// generation reaches a vendor is the deployments' to decide: served when one
+// of them can be (the org's key for its provider, or the gateway's), refused
+// with `provider_not_configured` before anything is reserved only when none
+// can. The handlers asked the model's own vendor first, and refused a routed
+// model nobody served that vendor for even when its route could serve it.
+
+/// A route sending `model` to the one deployment `provider`.
+fn one_deployment(model: &str, provider: &str) -> litegen::config::ModelRouteConfig {
+    litegen::config::ModelRouteConfig {
+        model: model.into(),
+        deployments: vec![litegen::config::DeploymentConfig { provider: provider.into(), weight: 1, max_retries: 0, timeout_seconds: 30, rpm_limit: 0 }],
+        strategy: None,
+        cache: None,
+    }
+}
+
+/// `id`'s `is_available` in a `GET /v1/models` answer.
+fn listed_available(list: &Value, id: &str) -> Option<bool> {
+    list["data"].as_array()?.iter().find(|m| m["id"] == id)?["is_available"].as_bool()
+}
+
+#[tokio::test]
+async fn a_route_serves_its_model_when_a_deployment_can_though_nothing_serves_its_own_vendor() {
+    // Nothing serves fal or luma here (no org key, no gateway key); the
+    // gateway's mock serves both routes.
+    let app = spawn_app_cfg_with(&[], Some([7u8; 32]), |c| {
+        c.model_routes = vec![one_deployment("fal/flux-schnell", "mock"), one_deployment("luma/ray-2", "mock")];
+    })
+    .await;
+    let mut c = Client::new(&app.base);
+    let (_app_id, secret) = signup_app_and_key(&mut c, "routed-served").await;
+    let mut bearer = Client::new(&app.base);
+    let auth = format!("Bearer {secret}");
+    let h = [("authorization", auth.as_str())];
+
+    let image = bearer.post_with("/v1/images/generations", json!({ "model": "fal/flux-schnell", "prompt": "x", "response_format": "b64_json" }), &h).await;
+    assert_eq!((image.status, image.body["provider"].as_str()), (200, Some("mock")), "the route's deployment makes the image: {:?}", image.body);
+    let quote = bearer.post_with("/v1/images/cost", json!({ "model": "fal/flux-schnell", "prompt": "x" }), &h).await;
+    assert_eq!(quote.status, 200, "and quotes it, as the generation is served: {:?}", quote.body);
+    let video = bearer.post_with("/v1/videos/generations", json!({ "model": "luma/ray-2", "prompt": "a lighthouse" }), &h).await;
+    assert_eq!((video.status, video.body["provider"].as_str()), (200, Some("mock")), "the route's deployment takes the video: {:?}", video.body);
+    let quote = bearer.post_with("/v1/videos/cost", json!({ "model": "luma/ray-2", "prompt": "a lighthouse" }), &h).await;
+    assert_eq!(quote.status, 200, "and quotes it: {:?}", quote.body);
+
+    // The listing agrees with what a generation does (L14).
+    let list = bearer.get_with("/v1/models", &h).await;
+    assert_eq!(list.status, 200, "{:?}", list.body);
+    assert_eq!(listed_available(&list.body, "fal/flux-schnell"), Some(true), "its route serves it");
+    assert_eq!(listed_available(&list.body, "luma/ray-2"), Some(true), "its route serves it");
+    assert_eq!(listed_available(&list.body, "fal/flux-dev"), Some(false), "an unrouted fal model: nothing serves fal");
+    let direct = bearer.post_with("/v1/images/generations", json!({ "model": "fal/flux-dev", "prompt": "x" }), &h).await;
+    assert_eq!((direct.status, direct.body["error"]["code"].as_str()), (400, Some("provider_not_configured")), "{:?}", direct.body);
+}
+
+#[tokio::test]
+async fn a_route_none_of_whose_deployments_can_be_served_refuses_its_models() {
+    // The gateway's mock serves the mock models' own vendor, but the route
+    // sends them to Stability, which nothing serves here. Segmentation and 3D
+    // are never routed, so the route doesn't touch those.
+    let app = spawn_app_cfg_with(&[], Some([7u8; 32]), |c| {
+        c.model_routes = vec![one_deployment("mock/*", "stability")];
+    })
+    .await;
+    let mut c = Client::new(&app.base);
+    let (_app_id, secret) = signup_app_and_key(&mut c, "routed-unserved").await;
+    let mut bearer = Client::new(&app.base);
+    let auth = format!("Bearer {secret}");
+    let h = [("authorization", auth.as_str())];
+
+    let list = bearer.get_with("/v1/models", &h).await;
+    assert_eq!(list.status, 200, "{:?}", list.body);
+    assert_eq!(listed_available(&list.body, "mock/image-gen"), Some(false), "no deployment of its route can be served");
+    assert_eq!(listed_available(&list.body, "mock/video-gen"), Some(false), "no deployment of its route can be served");
+    assert_eq!(listed_available(&list.body, "mock/segment-image"), Some(true), "segmentation is never routed: its own vendor serves it");
+    assert_eq!(listed_available(&list.body, "mock/mesh-3d"), Some(true), "3D is never routed: its own vendor serves it");
+
+    for (path, model) in [("/v1/images/generations", "mock/image-gen"), ("/v1/images/cost", "mock/image-gen"), ("/v1/videos/generations", "mock/video-gen"), ("/v1/videos/cost", "mock/video-gen")] {
+        let r = bearer.post_with(path, json!({ "model": model, "prompt": "x" }), &h).await;
+        assert_eq!(
+            (r.status, r.body["error"]["code"].as_str()),
+            (400, Some("provider_not_configured")),
+            "{path} {model}: refused, as its route's deployment can't be served: {:?}",
+            r.body
+        );
+        assert!(r.body["error"]["message"].as_str().unwrap_or_default().contains("'stability'"), "names the route's provider: {:?}", r.body);
+    }
+}
+
+/// A route's deployment is served on the org's own key for its provider when
+/// the org stored one, as dispatch sends it (BYO-ROUTE), and only where that
+/// provider makes the model's medium: an image-only provider's key builds no
+/// video adapter, so it serves no video route. No vendor is called here: a
+/// quote asks the adapter for no more than the catalog's price.
+#[tokio::test]
+async fn a_routes_deployment_is_served_on_the_orgs_own_key_for_its_provider() {
+    let app = spawn_app_cfg_with(&[], Some([7u8; 32]), |c| {
+        c.model_routes = vec![one_deployment("fal/flux-schnell", "openai"), one_deployment("luma/ray-2", "stability")];
+    })
+    .await;
+    let mut c = Client::new(&app.base);
+    let (_app_id, secret) = signup_app_and_key(&mut c, "routed-byo").await;
+    let org_id = first_org_id(&mut c).await;
+    for provider in ["openai", "stability"] {
+        let csrf = c.csrf().await;
+        let stored = c
+            .post_with(
+                &format!("/v1/orgs/{org_id}/provider-credentials"),
+                json!({ "provider": provider, "credentials": { "api_key": "ORG_KEY" } }),
+                &[("x-csrf-token", &csrf)],
+            )
+            .await;
+        assert_eq!(stored.status, 200, "store the org's {provider} key: {:?}", stored.body);
+    }
+    let mut bearer = Client::new(&app.base);
+    let auth = format!("Bearer {secret}");
+    let h = [("authorization", auth.as_str())];
+
+    let quote = bearer.post_with("/v1/images/cost", json!({ "model": "fal/flux-schnell", "prompt": "x" }), &h).await;
+    assert_eq!(quote.status, 200, "nothing serves fal, but the org's OpenAI key serves the route's deployment: {:?}", quote.body);
+    let refused = bearer.post_with("/v1/videos/cost", json!({ "model": "luma/ray-2", "prompt": "a lighthouse" }), &h).await;
+    assert_eq!(
+        (refused.status, refused.body["error"]["code"].as_str()),
+        (400, Some("provider_not_configured")),
+        "Stability makes no video, so the org's key for it serves no video route: {:?}",
+        refused.body
+    );
+    assert!(refused.body["error"]["message"].as_str().unwrap_or_default().contains("'stability'"), "names the route's provider: {:?}", refused.body);
+
+    let list = bearer.get_with("/v1/models", &h).await;
+    assert_eq!(listed_available(&list.body, "fal/flux-schnell"), Some(true), "the org's OpenAI key serves its route");
+    assert_eq!(listed_available(&list.body, "luma/ray-2"), Some(false), "the org's Stability key makes no video");
+}
+
+#[tokio::test]
+async fn keeping_nothing_on_a_route_asks_the_deployments_that_would_take_the_job() {
+    use wiremock::matchers::any;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // Veo (Google) hands a video over as bytes, with no link to hand out.
+    let veo = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "name": "models/veo/operations/op1" })))
+        .mount(&veo)
+        .await;
+    let google = json!({ "enabled": true, "api_key": "PLATFORM_GOOGLE_KEY", "api_base": veo.uri() });
+    let app = spawn_app_cfg_with(&[("google", google)], Some([7u8; 32]), |c| {
+        c.model_routes = vec![one_deployment("mock/video-gen", "google"), one_deployment("luma/ray-2", "google")];
+    })
+    .await;
+    let mut c = Client::new(&app.base);
+    let (_app_id, secret) = signup_app_and_key(&mut c, "routed-keep").await;
+    let mut bearer = Client::new(&app.base);
+    let auth = format!("Bearer {secret}");
+    let keep_nothing = [("authorization", auth.as_str()), ("x-litegen-keep-outputs", "false")];
+
+    // mock's own vendor hands out links, but the route sends the job to Veo;
+    // luma's own vendor isn't served at all.
+    for model in ["mock/video-gen", "luma/ray-2"] {
+        let r = bearer.post_with("/v1/videos/generations", json!({ "model": model, "prompt": "a lighthouse" }), &keep_nothing).await;
+        assert_eq!(
+            (r.status, r.body["error"]["code"].as_str()),
+            (400, Some("keep_outputs_unsupported")),
+            "{model}: keeping nothing is refused up front, as its route's deployment hands out no link: {:?}",
+            r.body
+        );
+        assert!(veo.received_requests().await.unwrap_or_default().is_empty(), "{model}: the request reached the vendor");
+    }
+    // Keeping, the route's deployment takes it.
+    let kept = bearer.post_with("/v1/videos/generations", json!({ "model": "luma/ray-2", "prompt": "a lighthouse" }), &[("authorization", auth.as_str())]).await;
+    assert_eq!((kept.status, kept.body["provider"].as_str()), (200, Some("google")), "{:?}", kept.body);
+}
+
 // ─── Test: provider catalog drives the dashboard credential form ───────────────
 #[tokio::test]
 async fn provider_catalog_lists_bearer_and_signing_field_shapes() {
@@ -2752,4 +2926,301 @@ async fn a_failed_job_is_refunded_and_a_vendor_without_a_cancel_says_so() {
         "the mock 3D vendor has no cancel; the job is refunded all the same: {:?}", cancelled.body
     );
     assert_eq!(tokens_used(&mut owner, &key_id).await, 0.0);
+}
+
+// ─── FU-NOORG: a hosted account in no org (2026-11-13) ─────────────────────────
+//
+// A hosted account comes to belong to no organization in each of the ways below
+// and stays signed in. It then acts in no org (`active_org: null`), and nothing
+// it does may land in or act on the deployment's default org, which is the
+// operator's: in hosted mode no org is not the default org.
+
+/// The ways a hosted account comes to belong to no organization.
+const INTO_NO_ORG: [&str; 5] = [
+    "deleted its only org",
+    "was removed from its only org",
+    "left its only org (an admin removing themself)",
+    "handed its org over, then was removed",
+    "signed up, but its org was never made",
+];
+
+/// A second connection to the server's database file.
+async fn db_file(app: &TestApp) -> sqlx::sqlite::SqlitePool {
+    let url = format!("sqlite://{}?mode=rwc", app.db_path().display());
+    sqlx::sqlite::SqlitePool::connect(&url).await.expect("open sqlite")
+}
+
+async fn user_id_of(c: &mut Client) -> String {
+    let me = c.get("/v1/auth/me").await;
+    assert_eq!(me.status, 200, "{:?}", me.body);
+    me.body["user"]["id"].as_str().expect("user id").to_string()
+}
+
+/// A new account invited by `inviter` into `org` with `role`, signed in, and its email.
+async fn join(app: &TestApp, inviter: &mut Client, org: &str, role: &str) -> (Client, String) {
+    let email = unique_email(role);
+    let csrf = inviter.csrf().await;
+    let invite = inviter.post_with(&format!("/v1/orgs/{org}/members"), json!({ "email": email, "role": role }), &[("x-csrf-token", &csrf)]).await;
+    assert_eq!(invite.status, 200, "invite: {:?}", invite.body);
+    let token = invite.body["_dev_token"].as_str().expect("dev invite token").to_string();
+    let mut joined = Client::new(&app.base);
+    let accept = joined.post(&format!("/v1/auth/invitations/{token}/accept"), json!({ "password": PASSWORD })).await;
+    assert_eq!(accept.status, 200, "accept: {:?}", accept.body);
+    (joined, email)
+}
+
+async fn remove_member(by: &mut Client, org: &str, user_id: &str) {
+    let csrf = by.csrf().await;
+    let r = by.delete(&format!("/v1/orgs/{org}/members/{user_id}"), &[("x-csrf-token", &csrf)]).await;
+    assert_eq!(r.status, 204, "remove {user_id} from {org}: {:?}", r.body);
+}
+
+/// A signed-in account that came to belong to no org the way `how` says, and its email.
+async fn in_no_org(app: &TestApp, how: &str) -> (Client, String) {
+    let mut owner = Client::new(&app.base);
+    let owner_email = unique_email("owner");
+    let (c, email) = match how {
+        "deleted its only org" => {
+            assert_eq!(signup(&mut owner, &owner_email, "Deleted Org").await.status, 200);
+            let org = first_org_id(&mut owner).await;
+            let csrf = owner.csrf().await;
+            let deleted = owner.delete(&format!("/v1/orgs/{org}"), &[("x-csrf-token", &csrf)]).await;
+            assert_eq!(deleted.status, 204, "{:?}", deleted.body);
+            (owner, owner_email)
+        }
+        "was removed from its only org" => {
+            assert_eq!(signup(&mut owner, &owner_email, "Removing Org").await.status, 200);
+            let org = first_org_id(&mut owner).await;
+            let (mut admin, email) = join(app, &mut owner, &org, "admin").await;
+            let id = user_id_of(&mut admin).await;
+            remove_member(&mut owner, &org, &id).await;
+            (admin, email)
+        }
+        "left its only org (an admin removing themself)" => {
+            assert_eq!(signup(&mut owner, &owner_email, "Left Org").await.status, 200);
+            let org = first_org_id(&mut owner).await;
+            let (mut admin, email) = join(app, &mut owner, &org, "admin").await;
+            let id = user_id_of(&mut admin).await;
+            remove_member(&mut admin, &org, &id).await;
+            (admin, email)
+        }
+        "handed its org over, then was removed" => {
+            assert_eq!(signup(&mut owner, &owner_email, "Handed Org").await.status, 200);
+            let org = first_org_id(&mut owner).await;
+            let (mut admin, _) = join(app, &mut owner, &org, "admin").await;
+            let (admin_id, owner_id) = (user_id_of(&mut admin).await, user_id_of(&mut owner).await);
+            let csrf = owner.csrf().await;
+            let handed = owner.post_with(&format!("/v1/orgs/{org}/transfer-owner"), json!({ "new_owner_user_id": admin_id }), &[("x-csrf-token", &csrf)]).await;
+            assert_eq!(handed.status, 204, "{:?}", handed.body);
+            remove_member(&mut admin, &org, &owner_id).await;
+            (owner, owner_email)
+        }
+        "signed up, but its org was never made" => {
+            // Signup makes the account, then its org: an org that fails to be
+            // made (a broken table here; two signups racing for one slug in
+            // life) answers 500 and leaves the account.
+            let pool = db_file(app).await;
+            sqlx::query("ALTER TABLE organizations RENAME TO organizations_away").execute(&pool).await.expect("hide the table");
+            let failed = signup(&mut owner, &owner_email, "Never Made").await;
+            sqlx::query("ALTER TABLE organizations_away RENAME TO organizations").execute(&pool).await.expect("bring it back");
+            pool.close().await;
+            assert_eq!(failed.status, 500, "the org could not be made: {:?}", failed.body);
+            let mut c = Client::new(&app.base);
+            let login = c.post("/v1/auth/login", json!({ "email": owner_email, "password": PASSWORD })).await;
+            assert_eq!(login.status, 200, "the account was made all the same: {:?}", login.body);
+            (c, owner_email)
+        }
+        other => panic!("no such way into no org: {other}"),
+    };
+    let mut c = c;
+    let me = c.get("/v1/auth/me").await;
+    assert_eq!((me.status, me.body["orgs"].clone(), me.body["active_org"].clone()), (200, json!([]), Value::Null), "{how}: the account should act in no org: {:?}", me.body);
+    (c, email)
+}
+
+/// At most `n` characters of `v`, for a failure message.
+fn cut(v: &Value, n: usize) -> String {
+    v.to_string().chars().take(n).collect()
+}
+
+/// FU-NOORG: an account in no org has no org to invite anyone into. `POST
+/// /v1/users` scoped its invitation to the active org "or the default org", so
+/// each of these accounts (account role owner, or admin for the invited ones)
+/// invited anyone, as Admin, into the deployment's default org, and the
+/// invitee joined it: its members, keys, generations and settings.
+#[tokio::test]
+async fn a_hosted_account_in_no_org_invites_no_one_into_the_default_org() {
+    let app = spawn_app().await;
+    let default_org = litegen::api::middleware::DEFAULT_ORG_ID;
+    let mut answered = Vec::new();
+    for how in INTO_NO_ORG {
+        let (mut c, _) = in_no_org(&app, how).await;
+        let csrf = c.csrf().await;
+        let invite = c.post_with("/v1/users", json!({ "email": unique_email("invitee"), "role": "admin" }), &[("x-csrf-token", &csrf)]).await;
+        if (invite.status, invite.body["error"]["code"].as_str()) != (403, Some("no_active_org")) {
+            // What the invitee could do with it.
+            let accepted = match invite.body["_dev_token"].as_str() {
+                Some(token) => Client::new(&app.base).post(&format!("/v1/auth/invitations/{token}/accept"), json!({ "password": PASSWORD })).await.status,
+                None => 0,
+            };
+            answered.push(format!("{how}: {} {}; its invitee's accept: {accepted}", invite.status, cut(&invite.body, 160)));
+        }
+    }
+    let pool = db_file(&app).await;
+    let (invitations,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM invitations WHERE org_id = ?").bind(default_org).fetch_one(&pool).await.expect("count");
+    pool.close().await;
+    let members = Client::new(&app.base).get_with(&format!("/v1/orgs/{default_org}/members"), &[("authorization", &format!("Bearer {MASTER_KEY}"))]).await;
+    assert_eq!(members.status, 200, "{:?}", members.body);
+    assert!(
+        answered.is_empty() && invitations == 0 && members.body == json!([]),
+        "{} of {} ways into no org still invite into the default org:\n{}\ninvitations into it: {invitations}; its members now: {}",
+        answered.len(),
+        INTO_NO_ORG.len(),
+        answered.join("\n"),
+        members.body
+    );
+}
+
+/// FU-NOORG guard: what an account in no org needs keeps working, whichever
+/// way it got there: it reads and changes itself, sees and ends its sessions,
+/// lists its (no) orgs and connected apps, and signs out. Catches a fix that
+/// leaves it nothing at all, as a single-tenant member who was removed has.
+#[tokio::test]
+async fn a_hosted_account_in_no_org_keeps_its_own_account() {
+    let app = spawn_app().await;
+    for how in INTO_NO_ORG {
+        let (mut c, email) = in_no_org(&app, how).await;
+        let account = c.get("/v1/account").await;
+        assert_eq!((account.status, account.body["email"].as_str()), (200, Some(email.as_str())), "{how}: {:?}", account.body);
+        let orgs = c.get("/v1/orgs").await;
+        assert_eq!((orgs.status, orgs.body.clone()), (200, json!([])), "{how}");
+        let grants = c.get("/v1/oauth/grants").await;
+        assert_eq!((grants.status, grants.body.clone()), (200, json!([])), "{how}");
+
+        // A second sign-in, seen and ended from the first.
+        let mut other = Client::new(&app.base);
+        let login = other.post("/v1/auth/login", json!({ "email": email, "password": PASSWORD })).await;
+        assert_eq!(login.status, 200, "{how}: {:?}", login.body);
+        let sessions = c.get("/v1/account/sessions").await;
+        assert_eq!(sessions.status, 200, "{how}: {:?}", sessions.body);
+        let mine = litegen::auth::secrets::sha256_hex(&c.cookies["litegen_session"]);
+        let theirs = sessions.body.as_array().expect("sessions").iter().filter_map(|s| s["id"].as_str()).find(|id| *id != mine);
+        let theirs = theirs.unwrap_or_else(|| panic!("{how}: the other sign-in is listed: {:?}", sessions.body)).to_string();
+        let csrf = c.csrf().await;
+        let ended = c.delete(&format!("/v1/account/sessions/{theirs}"), &[("x-csrf-token", &csrf)]).await;
+        assert_eq!(ended.status, 204, "{how}: {:?}", ended.body);
+        assert_eq!(other.get("/v1/auth/me").await.status, 401, "{how}: the other sign-in ended");
+
+        let csrf = c.csrf().await;
+        let changed = c.patch_with("/v1/account", json!({ "current_password": PASSWORD, "new_password": format!("{PASSWORD}-new") }), &[("x-csrf-token", &csrf)]).await;
+        assert_eq!(changed.status, 200, "{how}: a new password: {:?}", changed.body);
+
+        let csrf = c.csrf().await;
+        let out = c.post_with("/v1/auth/logout", json!({}), &[("x-csrf-token", &csrf)]).await;
+        assert_eq!(out.status, 204, "{how}: {:?}", out.body);
+        assert_eq!(c.get("/v1/auth/me").await.status, 401, "{how}: signed out");
+    }
+}
+
+/// FU-NOORG guard: an account in no org starts over. It makes an org and acts
+/// there as its Owner (an invitation it sends goes into that org), or it
+/// accepts an invitation into someone else's.
+#[tokio::test]
+async fn a_hosted_account_in_no_org_can_make_an_org_or_accept_an_invitation() {
+    let app = spawn_app().await;
+    let mut inviter = Client::new(&app.base);
+    assert_eq!(signup(&mut inviter, &unique_email("inviter"), "Inviting Org").await.status, 200);
+    let inviting = first_org_id(&mut inviter).await;
+    for how in INTO_NO_ORG {
+        let (mut c, _) = in_no_org(&app, how).await;
+        let csrf = c.csrf().await;
+        let made = c.post_with("/v1/orgs", json!({ "name": "Starting Over" }), &[("x-csrf-token", &csrf)]).await;
+        assert_eq!(made.status, 200, "{how}: {:?}", made.body);
+        let org = made.body["id"].as_str().expect("org id").to_string();
+        let me = c.get("/v1/auth/me").await;
+        assert_eq!((me.body["active_org"].as_str(), me.body["orgs"][0]["role"].as_str()), (Some(org.as_str()), Some("owner")), "{how}: {:?}", me.body);
+        let csrf = c.csrf().await;
+        let invite = c.post_with("/v1/users", json!({ "email": unique_email("new-member"), "role": "member" }), &[("x-csrf-token", &csrf)]).await;
+        assert_eq!(invite.status, 200, "{how}: {:?}", invite.body);
+        let pool = db_file(&app).await;
+        let (into,): (String,) =
+            sqlx::query_as("SELECT org_id FROM invitations WHERE id = ?").bind(invite.body["id"].as_str().unwrap()).fetch_one(&pool).await.expect("the invitation");
+        pool.close().await;
+        assert_eq!(into, org, "{how}: the invitation goes into its new org");
+
+        let (mut c, email) = in_no_org(&app, how).await;
+        let csrf = inviter.csrf().await;
+        let invited = inviter.post_with(&format!("/v1/orgs/{inviting}/members"), json!({ "email": email, "role": "member" }), &[("x-csrf-token", &csrf)]).await;
+        assert_eq!(invited.status, 200, "{how}: {:?}", invited.body);
+        let token = invited.body["_dev_token"].as_str().expect("dev invite token").to_string();
+        let accepted = Client::new(&app.base).post(&format!("/v1/auth/invitations/{token}/accept"), json!({ "password": PASSWORD })).await;
+        assert_eq!(accepted.status, 200, "{how}: {:?}", accepted.body);
+        let orgs = c.get("/v1/orgs").await;
+        assert_eq!((orgs.body[0]["id"].as_str(), orgs.body[0]["role"].as_str()), (Some(inviting.as_str()), Some("member")), "{how}: {:?}", orgs.body);
+    }
+}
+
+/// FU-NOORG: the hosted master key belongs to no org, so on the generation
+/// routes it starts, quotes and converts nothing, as `/mcp` already has it
+/// (docs/mcp/permissions.md: every AI tool but the catalog acts inside an
+/// org). Its generations used to land in the default org's default app (a
+/// row's org and app default to them), which it could not even read back and
+/// whose members could.
+#[tokio::test]
+async fn the_hosted_master_key_starts_no_generation_outside_an_org() {
+    use base64::Engine;
+    let app = spawn_app().await;
+    let master = format!("Bearer {MASTER_KEY}");
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(16, 16, image::Rgba([90, 120, 200, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("png");
+    let photo = base64::engine::general_purpose::STANDARD.encode(&png);
+    let mut c = Client::new(&app.base);
+    let mut answered = Vec::new();
+    for (path, body) in [
+        ("/v1/images/generations", json!({ "model": MOCK_MODEL, "prompt": "a lighthouse" })),
+        ("/v1/images/segmentations", json!({ "model": "mock/segment-image", "image": photo, "prompts": [{ "type": "box", "x": 2, "y": 2, "w": 8, "h": 8 }] })),
+        ("/v1/videos/generations", json!({ "model": "mock/video-gen", "prompt": "a wave" })),
+        ("/v1/models3d/generations", json!({ "model": "mock/mesh-3d", "prompt": "a chair" })),
+        ("/v1/images/cost", json!({ "model": MOCK_MODEL, "prompt": "a lighthouse" })),
+        ("/v1/videos/cost", json!({ "model": "mock/video-gen", "prompt": "a wave" })),
+        ("/v1/models3d/cost", json!({ "model": "mock/mesh-3d", "prompt": "a chair" })),
+    ] {
+        let r = c.post_with(path, body, &[("authorization", &master)]).await;
+        if (r.status, r.body["error"]["code"].as_str()) != (403, Some("no_active_org")) {
+            answered.push(format!("{path}: {} {}", r.status, cut(&r.body, 160)));
+        }
+    }
+    let converted = reqwest::Client::new()
+        .post(format!("{}/v1/utils/models3d/convert?from=glb&to=obj", app.base))
+        .header("authorization", master.as_str())
+        .header("content-type", "application/octet-stream")
+        .body(litegen::providers::model3d::glb::generate_cube_glb("a cube"))
+        .send()
+        .await
+        .expect("convert");
+    let status = converted.status().as_u16();
+    let body: Value = serde_json::from_str(&converted.text().await.unwrap_or_default()).unwrap_or(Value::Null);
+    if (status, body["error"]["code"].as_str()) != (403, Some("no_active_org")) {
+        answered.push(format!("/v1/utils/models3d/convert: {status} {}", cut(&body, 160)));
+    }
+
+    let pool = db_file(&app).await;
+    let mut landed = Vec::new();
+    for table in ["generations", "request_logs"] {
+        let rows: Vec<(Option<String>, Option<String>)> =
+            sqlx::query_as(&format!("SELECT org_id, app_id FROM {table}")).fetch_all(&pool).await.expect("rows");
+        if !rows.is_empty() {
+            landed.push(format!("{table}: {rows:?}"));
+        }
+    }
+    pool.close().await;
+    assert!(
+        answered.is_empty() && landed.is_empty(),
+        "the hosted master key acted outside an org:\n{}\nrows that landed (org, app): {}",
+        answered.join("\n"),
+        landed.join("; ")
+    );
 }

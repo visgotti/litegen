@@ -347,6 +347,21 @@ export type LivenessResponse = components["schemas"]["LivenessResponse"];
 // Tenancy (orgs / apps / members / provider credentials).
 export type OrgView = components["schemas"]["OrgView"];
 export type OrgSummary = components["schemas"]["OrgSummary"];
+/**
+ * The signed-in person (`auth.me()`): each organization they belong to with
+ * their `role` and the `permissions` it holds there, as the server checks
+ * them, and the organization and app the request acts in.
+ */
+export type MeResponse = components["schemas"]["MeResponse"];
+/**
+ * One organization in `auth.me()`: the person's `role` there and its
+ * `permissions` (`org:write`, `generation:create`, ...). The deployment's own
+ * (`system:config`, `cache:clear`, `user:read:any`, ...) are listed only for a
+ * single-tenant deployment's default organization.
+ */
+export type MeOrg = components["schemas"]["MeOrg"];
+/** The account in `auth.me()`; its `role` is the account's own, not what it may do in an organization. */
+export type MeUser = components["schemas"]["MeUser"];
 export type MemberView = components["schemas"]["MemberView"];
 export type Organization = components["schemas"]["Organization"];
 export type Application = components["schemas"]["Application"];
@@ -385,6 +400,12 @@ export type SizeSpec = components["schemas"]["SizeSpec"];
 export type SizeSpecFreeform = components["schemas"]["SizeSpecFreeform"];
 export type SizeSpecEnum = components["schemas"]["SizeSpecEnum"];
 export type RefInputSpec = components["schemas"]["RefInputSpec"];
+/**
+ * One reference role of a model. On a video model's `last_frame` role,
+ * `needs_first_frame`: its vendor ends a clip on a last frame only after a
+ * first one, so a `last_frame` without a `first_frame` (or `init`) image is
+ * refused with `ref_role_required` before anything is quoted.
+ */
 export type RefRoleSpec = components["schemas"]["RefRoleSpec"];
 export type RefProviderFormat = components["schemas"]["RefProviderFormat"];
 export type RefProviderFormatMultipart = components["schemas"]["RefProviderFormatMultipart"];

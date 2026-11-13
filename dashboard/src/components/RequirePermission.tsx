@@ -1,34 +1,19 @@
-import { type ReactNode, useEffect, useState } from 'react';
-import { Navigate } from 'react-router-dom';
-import { client, getApiKey } from '../sdk-client';
-import { permissionsFor } from './permissions';
+import type { ReactNode } from 'react';
+import { useCan } from './useCan';
 
 interface Props {
   perm: string;
   children: ReactNode;
 }
 
+/**
+ * A page only a holder of `perm` can use. The API-key flow is the master key,
+ * granted outright; a session holds what `/v1/auth/me` serves for its active
+ * org (RequireAuth has already resolved it), so switching orgs re-decides.
+ */
 export default function RequirePermission({ perm, children }: Props) {
-  // The API-key flow is granted access outright (master key = owner-level
-  // access); a session asks the server.
-  const [status, setStatus] = useState<'loading' | 'ok' | 'unauth' | 'forbidden'>(() => (getApiKey() ? 'ok' : 'loading'));
-
-  useEffect(() => {
-    if (getApiKey()) return;
-    client.auth.me()
-      .then(me => {
-        const r = me as { user?: { role?: string } };
-        const role = r.user?.role;
-        if (!role) { setStatus('unauth'); return; }
-        const allowed = permissionsFor(role).includes(perm);
-        setStatus(allowed ? 'ok' : 'forbidden');
-      })
-      .catch(() => setStatus('unauth'));
-  }, [perm]);
-
-  if (status === 'loading') return <div className="loading">Checking permissions…</div>;
-  if (status === 'unauth') return <Navigate to="/login" replace />;
-  if (status === 'forbidden') return (
+  const can = useCan();
+  if (!can(perm)) return (
     <div data-testid="forbidden-403" className="alert alert-error" style={{
       padding: '24px 32px',
       background: '#3d1a1a',

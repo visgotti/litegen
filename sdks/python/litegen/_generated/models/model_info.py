@@ -31,7 +31,9 @@ class ModelInfo:
     Attributes:
         capabilities (ModelCapabilities):
         id (str): Unique model ID (e.g. "openai/dall-e-3").
-        is_available (bool): Whether the model's provider can serve this caller (L14).
+        is_available (bool): Whether a generation with this model would reach a vendor for this
+            caller (L14): through a deployment of the model route that serves it,
+            when one does, else through the model's own provider.
         media_type (MediaType):
         name (str): Human-readable name.
         provider (str): Provider name.

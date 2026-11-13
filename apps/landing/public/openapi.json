@@ -2077,7 +2077,14 @@
                 "operationId": "me",
                 "responses": {
                     "200": {
-                        "description": "Current user info"
+                        "description": "The signed-in person, each organization they belong to with their role and permissions there, and the organization and app this request acts in.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MeResponse"
+                                }
+                            }
+                        }
                     },
                     "401": {
                         "description": "Not authenticated",
@@ -8008,6 +8015,16 @@
                             }
                         }
                     },
+                    "502": {
+                        "description": "Provider error. `vendor_error`: the vendor failed (its 5xx, or no answer at all); the body's `provider_error` holds the vendor's own status, code and message, `vendor_job_id` the job it had taken, and `retryable` says whether the same request may work later (never once the vendor took the job). `provider_error`: on a model route, no deployment's vendor was called, since some were skipped (a circuit breaker open, a provider not configured) and the rest refused the request; the message names why each did not serve it, and `retryable` is true.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        }
+                    },
                     "503": {
                         "description": "`server_at_capacity`: litegen is running as many requests as it may (`backpressure.max_in_flight`), or holds as many request bodies as it may; retry shortly (`Retry-After` is set). `circuit_open`: on a model route, every deployment's circuit breaker is open, so no vendor was called; retry once the first one closes (`Retry-After` says when).",
                         "content": {
@@ -11363,6 +11380,92 @@
                     }
                 }
             },
+            "MeOrg": {
+                "type": "object",
+                "description": "One organization the person belongs to.",
+                "required": [
+                    "id",
+                    "name",
+                    "role",
+                    "permissions"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "permissions": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "The permissions this role holds acting in this organization, as the\nserver checks them on every request (e.g. `org:write`,\n`generation:create`), for a client to offer only what will work. The\ndeployment's own permissions (`system:config`, `cache:clear`,\n`user:read:any`, `user:write:any`, `user:delete:any`,\n`system:transfer_owner`) are listed only for the default org of a\nsingle-tenant deployment, and in hosted mode never. A sign-in through\nOAuth is also held to its scopes."
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "The person's role in this organization: `owner`, `admin`, `member` or\n`viewer`."
+                    }
+                }
+            },
+            "MeResponse": {
+                "type": "object",
+                "description": "`GET /v1/auth/me`: the signed-in person, the organizations they belong to\nwith their role and permissions in each, and where this request acts.",
+                "required": [
+                    "user",
+                    "orgs",
+                    "active_org",
+                    "active_app"
+                ],
+                "properties": {
+                    "active_app": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The app this request acts in (`X-Litegen-App-Id`, else the\norganization's first; an OAuth sign-in's own). Null when there is none."
+                    },
+                    "active_org": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "The organization this request acts in (`X-Litegen-Org-Id`, else the\nperson's first; an OAuth sign-in's own). Null when there is none."
+                    },
+                    "orgs": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/MeOrg"
+                        },
+                        "description": "The organizations the person belongs to. A sign-in through OAuth lists\nonly the one its grant is for."
+                    },
+                    "user": {
+                        "$ref": "#/components/schemas/MeUser"
+                    }
+                }
+            },
+            "MeUser": {
+                "type": "object",
+                "description": "The signed-in account.",
+                "required": [
+                    "id",
+                    "email",
+                    "role"
+                ],
+                "properties": {
+                    "email": {
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "The account's own role. What the person may do in an organization is\ntheir role there: `orgs[].role` and `orgs[].permissions`."
+                    }
+                }
+            },
             "MediaType": {
                 "type": "string",
                 "enum": [
@@ -12405,7 +12508,7 @@
                     },
                     "is_available": {
                         "type": "boolean",
-                        "description": "Whether the model's provider can serve this caller (L14)."
+                        "description": "Whether a generation with this model would reach a vendor for this\ncaller (L14): through a deployment of the model route that serves it,\nwhen one does, else through the model's own provider."
                     },
                     "media_type": {
                         "$ref": "#/components/schemas/MediaType",
@@ -15530,6 +15633,10 @@
                     "native_grow": {
                         "type": "boolean",
                         "description": "The mask role's vendor grows masks itself (Stability's `grow_mask`):\n`mask_grow_px` goes to it, explicitly, instead of litegen dilating."
+                    },
+                    "needs_first_frame": {
+                        "type": "boolean",
+                        "description": "On a video model's `last_frame` role: its vendor ends a clip on a\nlast frame only when the clip starts from a first frame, so a request\nwith a `last_frame` and no `first_frame` (or `init`) image is refused\nwith `ref_role_required` before anything is quoted or reserved.\nAbsent (false): a last frame alone goes to the vendor."
                     },
                     "required": {
                         "type": "boolean"

@@ -185,6 +185,27 @@ pub(crate) fn acts_in_default_org(ctx: &KeyContext) -> bool {
     ctx.org_id.as_deref() == Some(DEFAULT_ORG_ID)
 }
 
+/// Whether a signed-in person acting as `ctx` holds `perm`: their role where
+/// they act has it (`ctx.permissions`, as [`auth_middleware`] sets it from
+/// the membership, never from the account's own role), and a deployment
+/// permission ([`Permission::is_deployment_wide`]) counts only in
+/// single-tenant mode, acting in the default org; in hosted mode those are
+/// the platform admin's alone. Every check of a deployment permission asks
+/// this (the gateway, the users table, the cache), and `GET /v1/auth/me`
+/// serves what it answers for each org ([`permissions_held_in`]).
+pub(crate) fn person_holds(mode: Mode, ctx: &KeyContext, perm: Permission) -> bool {
+    ctx.permissions.contains(&perm) && (!perm.is_deployment_wide() || (mode == Mode::SingleTenant && acts_in_default_org(ctx)))
+}
+
+/// What a person holds acting in `org_id`, where their role is `role`: the
+/// context a session acting there carries (its role's permissions, that org;
+/// [`auth_middleware`]), each permission kept as [`person_holds`] judges it.
+/// What `GET /v1/auth/me` serves, so it can't drift from the checks.
+pub(crate) fn permissions_held_in(mode: Mode, ctx: &KeyContext, org_id: &str, role: Role) -> Vec<Permission> {
+    let acting = KeyContext { org_id: Some(org_id.to_string()), permissions: permissions_for(role).to_vec(), ..ctx.clone() };
+    permissions_for(role).iter().copied().filter(|&p| person_holds(mode, &acting, p)).collect()
+}
+
 /// The maximal set of scopes `ctx` is permitted to grant to a newly created API
 /// key. A key must never carry more privilege than the principal that mints it:
 /// the `admin` scope bypasses permission gates on the Bearer auth path, so it
@@ -373,8 +394,10 @@ pub async fn auth_middleware(
                             let (org, role) = v.remove(0);
                             (Some(org.id), Some(role))
                         }
-                        // No membership: hosted users make an org of their
-                        // own; in single-tenant mode every account joins the
+                        // No membership: the person acts in no org. Hosted:
+                        // their last org was deleted, they were removed from
+                        // it or left it, or their signup failed after making
+                        // the account. Single-tenant: every account joins the
                         // default org at signup or invitation, so having none
                         // means its member was removed.
                         Ok(_) => (None, None),
@@ -410,13 +433,16 @@ pub async fn auth_middleware(
                     }
                     _ => None,
                 };
-                // Permissions: the membership role. Without one, a hosted
-                // user keeps their account's role (they act in no org); a
-                // single-tenant account removed from the default org holds
-                // nothing, or removal would leave its role in force.
+                // Permissions: the membership role where the person acts.
+                // Without one they act in no org, and their account's own
+                // role (Owner at every hosted signup) grants nothing: in
+                // hosted mode they keep only what an account with no org
+                // needs (`NO_ORG_PERMISSIONS`); a single-tenant account
+                // removed from the default org holds nothing, or removal
+                // would leave its role in force.
                 let perms = match (membership_role, state.mode) {
                     (Some(role), _) => permissions_for(role).to_vec(),
-                    (None, Mode::Hosted) => permissions_for(user.role).to_vec(),
+                    (None, Mode::Hosted) => NO_ORG_PERMISSIONS.to_vec(),
                     (None, Mode::SingleTenant) => Vec::new(),
                 };
 
@@ -455,6 +481,14 @@ pub async fn auth_middleware(
 
     missing_credentials_response()
 }
+
+/// What a hosted person who belongs to no org holds (FU-NOORG): their own
+/// account (`GET`/`PATCH /v1/account`) and their own sessions (`GET`/`DELETE
+/// /v1/account/sessions`). Signing out, `GET /v1/auth/me`, listing and making
+/// orgs and accepting an invitation check no permission. Anything that acts in
+/// an org needs one: in hosted mode no org is not the default org, which is
+/// the operator's.
+const NO_ORG_PERMISSIONS: [Permission; 2] = [Permission::UserReadSelf, Permission::SessionRevokeOwn];
 
 /// The 401 for a request that brought no credentials at all.
 pub(crate) fn missing_credentials_response() -> Response {
@@ -768,28 +802,38 @@ async fn run_rate_limited(ctx: KeyContext, state: Arc<AppState>, mut request: Re
 
 // ─── Scope middleware ─────────────────────────────────────────────────────────
 
-/// For the routes that start or change generations, on top of their scope:
-/// a person (a dashboard session or an OAuth grant) needs an organization to
-/// act in and `generation:create` there. A session keeps every scope
-/// whatever its role, so without this a single-tenant account removed from
-/// the default org, which holds no org and no permission, would still
-/// generate. It would do so on the deployment's own vendor keys, outside
-/// every budget, model allowlist and rate cap, since those hang off the org.
-/// API keys and the master key are bound to their app already.
-pub async fn check_generation_principal(request: Request, next: Next) -> Response {
+/// For the routes that start or change generations, on top of their scope
+/// (their router gives the deployment's mode as state): a generation belongs
+/// to an organization, so the caller needs one to act in, and a person (a
+/// dashboard session or an OAuth grant) needs `generation:create` there.
+/// A session keeps every scope whatever its role, so without this a person
+/// who belongs to no org would still generate, on the deployment's own vendor
+/// keys, outside every budget, model allowlist and rate cap, since those hang
+/// off the org. In hosted mode the master key acts in no org either (it is
+/// bound to no tenant), and its generations landed in the default org, the
+/// operator's, whose members read them and it could not (FU-NOORG): there
+/// every caller needs an org, as `/mcp` shows it (only the catalog). In
+/// single-tenant mode the master key and keys act in the default org already.
+pub async fn check_generation_principal(axum::extract::State(mode): axum::extract::State<Mode>, request: Request, next: Next) -> Response {
     if let Some(ctx) = request.extensions().get::<KeyContext>() {
-        if ctx.user.is_some() && ctx.key_id.is_none() {
-            if ctx.org_id.is_none() {
-                return forbidden_with("forbidden", "no_active_org", "No active organization");
-            }
-            // A Viewer lacks it (read-only), so these routes' status reads and
-            // quotes refuse them too; `GET /v1/generations/{id}` still reads.
-            if !ctx.permissions.contains(&Permission::GenerationCreate) {
-                return forbidden_with("forbidden_permission", "forbidden_permission", "Permission 'generation:create' required");
-            }
+        let person = ctx.user.is_some() && ctx.key_id.is_none();
+        if ctx.org_id.is_none() && (person || mode == Mode::Hosted) {
+            return no_active_org_response();
+        }
+        // A Viewer lacks it (read-only), so these routes' status reads and
+        // quotes refuse them too; `GET /v1/generations/{id}` still reads.
+        if person && !ctx.permissions.contains(&Permission::GenerationCreate) {
+            return forbidden_with("forbidden_permission", "forbidden_permission", "Permission 'generation:create' required");
         }
     }
     next.run(request).await
+}
+
+/// 403 `no_active_org`: the request acts in an organization and the caller
+/// acts in none (a person who belongs to no org; in hosted mode, the master
+/// key too). Never a reason to act in the default org instead.
+pub(crate) fn no_active_org_response() -> Response {
+    forbidden_with("forbidden", "no_active_org", "No active organization")
 }
 
 /// A 403 in the shape the other refusals here use.

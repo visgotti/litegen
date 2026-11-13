@@ -1,15 +1,14 @@
 import { getApiKey } from '../sdk-client';
 import { useTenant } from '../context/tenant';
-import { roleCan } from './permissions';
+import { offerFor } from './permissions';
 
 /**
  * Whether the signed-in principal holds a permission in the active org, so a
  * page offers only what it can use; the server enforces every permission. A
- * session acts by its role in the active org (as the server's does); the
- * API-key login is the master key, which may do anything.
+ * session holds what `/v1/auth/me` serves for the active org (the server's
+ * own rule); the API-key login is the master key, which may do anything.
  */
 export function useCan(): (perm: string) => boolean {
-  const { activeOrgRole } = useTenant();
-  const master = Boolean(getApiKey());
-  return perm => master || roleCan(activeOrgRole, perm);
+  const { orgs, activeOrg } = useTenant();
+  return offerFor({ master: Boolean(getApiKey()), orgs, activeOrg });
 }

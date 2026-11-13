@@ -911,6 +911,31 @@ async fn a_runtime_model_cannot_allowlist_a_field_litegen_owns() {
     assert!(b["error"]["message"].as_str().unwrap().contains("callback_url"), "{b}");
 }
 
+/// FU-LEO2: a runtime Leonardo video model cannot allowlist `imageId` or
+/// `imageType`, as a catalog row cannot: through the gateway's own key, any
+/// tenant could animate any image on its Leonardo account.
+#[tokio::test]
+async fn a_runtime_leonardo_video_model_cannot_take_an_image_id_in_extra() {
+    let fx = fixture().await;
+    let video = |id: &str, allowlist: Value| {
+        let mut m = runtime_model(id);
+        m["provider"] = json!("leonardo");
+        m["media_type"] = json!("video");
+        m["capabilities"] = json!({ "text_to_video": true });
+        m["extra_allowlist"] = allowlist;
+        m
+    };
+    let (s, b) = send(&fx.app, "POST", "/v1/admin/models", Auth::Bearer(MASTER), Some(video("leonardo/motion-2", json!(["motionStrength"]))), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "the same model with a vendor knob: {b}");
+    for key in ["imageId", "imageType"] {
+        let id = format!("leonardo/motion-2-{}", key.to_lowercase());
+        let (s, b) = send(&fx.app, "POST", "/v1/admin/models", Auth::Bearer(MASTER), Some(video(&id, json!([key]))), &[]).await;
+        assert_eq!((s, err_type(&b)), (StatusCode::BAD_REQUEST, "invalid_model"), "{key}: {b}");
+        let message = b["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains(&format!("'{id}'")) && message.contains(&format!("'{key}'")), "{key}: {b}");
+    }
+}
+
 #[tokio::test]
 async fn runtime_models_get_the_catalog_validation() {
     let fx = fixture().await;

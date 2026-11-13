@@ -943,6 +943,14 @@ class _HealthNamespace:
     def live(self) -> Any:
         return self._c._request("GET", "/health/live")
 
+    def ready(self) -> Any:
+        """The readiness probe (``GET /health/ready``, no auth): ready when the
+        database answers, as ``{"status", "checks": {"db", "providers"}}``. No
+        vendor is called; ``checks.providers`` names the providers set up with
+        the gateway's own keys, which :meth:`check` checks. Not ready is a
+        503, raised as :class:`~litegen.LiteGenAPIError` like any error."""
+        return self._c._request("GET", "/health/ready")
+
 
 class _StatsNamespace:
     def __init__(self, client: LiteGenClient) -> None:

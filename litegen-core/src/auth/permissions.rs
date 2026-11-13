@@ -98,6 +98,19 @@ impl Permission {
             Self::StorageCredDelete => "storage_cred:delete",
         }
     }
+
+    /// The deployment's own permissions rather than an organization's: the
+    /// gateway's settings, the users table, handing the deployment over and
+    /// the cache. A role holds them only where the deployment's authority
+    /// lives (`api::middleware::person_holds`): in single-tenant mode acting
+    /// in the default org, and in hosted mode nowhere (they are the master
+    /// key's).
+    pub fn is_deployment_wide(self) -> bool {
+        matches!(
+            self,
+            Self::SystemConfig | Self::SystemTransferOwner | Self::UserReadAny | Self::UserWriteAny | Self::UserDeleteAny | Self::CacheClear
+        )
+    }
 }
 
 pub fn permissions_for(role: Role) -> &'static [Permission] {
@@ -324,6 +337,17 @@ mod tests {
         for r in [Role::Owner, Role::Admin, Role::Member] {
             assert!(role_has(r, Permission::GenerationCreate), "{r:?} creates generations");
         }
+    }
+
+    /// FU-ME: the deployment's own permissions, which a role holds only from
+    /// a single-tenant deployment's default org (`person_holds`, and what
+    /// `GET /v1/auth/me` serves). Pinned, so moving one in or out is a
+    /// decision: out, and an Owner of a side org would manage the users
+    /// table; in, and every org but the default would lose it.
+    #[test]
+    fn the_deployments_own_permissions_are_the_gateway_the_users_and_the_cache() {
+        let own: Vec<&str> = permissions_for(Role::Owner).iter().filter(|p| p.is_deployment_wide()).map(|p| p.as_str()).collect();
+        assert_eq!(own, ["user:read:any", "user:write:any", "user:delete:any", "cache:clear", "system:config", "system:transfer_owner"]);
     }
 
     #[test]

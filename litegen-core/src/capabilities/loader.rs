@@ -344,6 +344,22 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         }
     }
 
+    // FU-LASTFRAME: a last frame its vendor makes only after a first frame
+    // is a video model's `last_frame` role, beside a role that starts the
+    // clip; anywhere else it would refuse what the row can never be sent, or
+    // every last frame.
+    if let Some(refs) = &m.ref_inputs {
+        let starts = refs.roles.contains_key("first_frame") || refs.roles.contains_key("init");
+        for (name, role) in &refs.roles {
+            if role.needs_first_frame && !(name == "last_frame" && m.media_type == MediaType::Video && starts) {
+                return Err(bad(format!(
+                    "model '{}' role '{name}' sets needs_first_frame, which only a video model's last_frame role takes, beside a first_frame (or init) role",
+                    m.id
+                )));
+            }
+        }
+    }
+
     // PixelGenie L10: a camera from the closed vocabulary, and a duration
     // list inside the duration range.
     if let Some(ParamSpec::String(s)) = m.params.get("camera") {
@@ -557,6 +573,20 @@ pub(crate) fn validate_model(path: &str, m: &ModelSchema) -> Result<(), LoadErro
         return Err(bad(format!(
             "model '{}' extra_allowlist names '{key}', a field litegen owns ({why}); remove it", m.id
         )));
+    }
+    // FU-LEO2: Leonardo video starts from the request's own image, which
+    // litegen uploads. A row allowlisting `imageId` or `imageType` (an older
+    // models/ did) would let a request animate any image on the gateway's
+    // Leonardo account by its id. Compared as the owned keys above are.
+    if m.provider == "leonardo" && m.media_type == MediaType::Video {
+        let norm = |k: &str| k.chars().filter(|c| !matches!(c, '_' | '-')).collect::<String>().to_lowercase();
+        if let Some(key) = m.extra_allowlist.iter().find(|k| matches!(norm(k).as_str(), "imageid" | "imagetype")) {
+            return Err(bad(format!(
+                "model '{}' extra_allowlist names '{key}': Leonardo video starts from the request's own image, and an image id in \
+                 extra would animate any image on the gateway's Leonardo account; remove it",
+                m.id
+            )));
+        }
     }
 
     for (k, spec) in &m.params {

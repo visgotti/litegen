@@ -70,6 +70,7 @@ The async client mirrors this: `await client.models3d.generate(...)`, `async for
 - **Idempotency:** `idempotency_key=` on every billed submit replays the first answer to a repeated request, billed once.
 - **Cancel** returns the row as settled (a cancelled job is refunded) with `vendor_cancelled`, whether the vendor took the cancel.
 - **Metadata:** send `metadata=` (a string map, at most 1 KB) with any generation; it is echoed on every answer, and `logs.list(metadata=...)` / `stats.get(metadata=...)` split logs and spend by it.
+- **Health:** `client.health.live()` and `client.health.ready()` are the liveness and readiness probes (no credential needed); `ready()` answers `{"status", "checks": {"db", "providers"}}` and raises `LiteGenAPIError` with `status` 503 while the server is not ready. `client.health.check()` checks the providers set up with the gateway's own keys, so it takes the master key (or, single-tenant, the `read` scope in the deployment's org).
 
 ## Versions
 

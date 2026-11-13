@@ -472,9 +472,7 @@ pub async fn put_routes(
     if let Err(e) = store.set_setting(runtime::ROUTES_KEY, &json).await {
         return internal(&e.to_string());
     }
-    let mut o = state.router.overrides();
-    o.model_routes = Some(body.routes.iter().map(runtime::route_spec_to_config).collect());
-    state.router.set_overrides(o);
+    apply_routes(&state.router, Some(body.routes.iter().map(runtime::route_spec_to_config).collect()));
     runtime::announce(&state, SharedEvent::Reload).await;
     audit(&state, &ctx, None, "routes.update", "routes", "model_routes", serde_json::to_value(&body.routes).ok());
     (StatusCode::OK, Json(routes_doc(&state))).into_response()
@@ -493,12 +491,17 @@ pub async fn delete_routes(State(state): State<Arc<AppState>>, ctx: Option<Exten
     if let Err(e) = store.delete_setting(runtime::ROUTES_KEY).await {
         return internal(&e.to_string());
     }
-    let mut o = state.router.overrides();
-    o.model_routes = None;
-    state.router.set_overrides(o);
+    apply_routes(&state.router, None);
     runtime::announce(&state, SharedEvent::Reload).await;
     audit(&state, &ctx, None, "routes.reset", "routes", "model_routes", None);
     (StatusCode::OK, Json(routes_doc(&state))).into_response()
+}
+
+/// Put `routes` in force (`None`: litegen.yaml's again) and keep every other
+/// override as it is: changed under the overrides' lock, so a settings save
+/// at the same instant on another thread isn't undone (FU-LOCK).
+fn apply_routes(router: &crate::proxy::router::ProxyRouter, routes: Option<Vec<crate::config::ModelRouteConfig>>) {
+    router.update_overrides(|o| o.model_routes = routes);
 }
 
 // ─── Gateway settings ────────────────────────────────────────────────────────
@@ -627,11 +630,74 @@ pub async fn put_settings(
     (StatusCode::OK, Json(settings_view(&state).await)).into_response()
 }
 
-/// Put `gateway` in force and keep every other override as it is now. Read
-/// just before they are replaced, never before an await: a route saved on
-/// this replica meanwhile, or applied by a refresh, must not be undone.
+/// Put `gateway` in force and keep every other override as it is: changed
+/// under the overrides' lock, so a route saved at the same instant on another
+/// thread, or applied by a refresh, isn't undone (FU-LOCK).
 fn apply_gateway_settings(router: &crate::proxy::router::ProxyRouter, gateway: GatewaySettings) {
-    let mut o = router.overrides();
-    o.gateway = gateway;
-    router.set_overrides(o);
+    router.update_overrides(|o| o.gateway = gateway);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proxy::router::ProxyRouter;
+    use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+
+    fn router() -> ProxyRouter {
+        ProxyRouter::new(
+            Arc::new(crate::proxy::registry::ProviderRegistry::new()),
+            Arc::new(crate::proxy::cache::GenerationCache::new(&crate::config::CacheGlobalConfig::default())),
+            Arc::new(crate::config::AppConfig::default()),
+            Arc::new(crate::proxy::storage::LocalStore),
+        )
+    }
+
+    /// The routes saved in round `n`: one route, for model `m{n}`.
+    fn routes(n: u32) -> Option<Vec<crate::config::ModelRouteConfig>> {
+        Some(vec![crate::config::ModelRouteConfig { model: format!("m{n}"), deployments: Vec::new(), strategy: None, cache: None }])
+    }
+
+    /// The round whose routes are in force, 0 before any.
+    fn routes_round(router: &ProxyRouter) -> u32 {
+        router.model_routes().first().and_then(|r| r.model.strip_prefix('m')?.parse().ok()).unwrap_or(0)
+    }
+
+    /// FU-LOCK (follow-ups 2026-11-13): a route save and a settings save at
+    /// the same instant, on two worker threads, both land. Each read the
+    /// overrides, changed its own field and wrote the whole back, so whichever
+    /// wrote last could put back the other's old value. Each writer here saves
+    /// its own field in rounds 1, 2, 3 and so on, and nothing else changes it,
+    /// so after its round `n` it reads `n` or more unless the other writer put
+    /// an older copy back.
+    #[test]
+    fn a_route_save_and_a_settings_save_at_once_both_land() {
+        const ROUNDS: u32 = 20_000;
+        let router = router();
+        let lost = AtomicU32::new(0);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                for n in 1..=ROUNDS {
+                    apply_routes(&router, routes(n));
+                    if routes_round(&router) < n {
+                        lost.fetch_add(1, Relaxed);
+                    }
+                }
+            });
+            s.spawn(|| {
+                for n in 1..=ROUNDS {
+                    apply_gateway_settings(&router, GatewaySettings { cost_markup_percent: Some(f64::from(n)), ..Default::default() });
+                    if router.cost_markup_percent() < f64::from(n) {
+                        lost.fetch_add(1, Relaxed);
+                    }
+                }
+            });
+        });
+        let last = (routes_round(&router), router.cost_markup_percent());
+        assert!(
+            lost.load(Relaxed) == 0 && last == (ROUNDS, f64::from(ROUNDS)),
+            "one save undid the other's: {} of {} saves seen lost, and the last left (routes round, markup) = {last:?}",
+            lost.load(Relaxed),
+            2 * ROUNDS
+        );
+    }
 }

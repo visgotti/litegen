@@ -27,6 +27,11 @@ class RefRoleSpec:
             to bound its clip: the longest clip it makes or prices.
         native_grow (Union[Unset, bool]): The mask role's vendor grows masks itself (Stability's `grow_mask`):
             `mask_grow_px` goes to it, explicitly, instead of litegen dilating.
+        needs_first_frame (Union[Unset, bool]): On a video model's `last_frame` role: its vendor ends a clip on a
+            last frame only when the clip starts from a first frame, so a request
+            with a `last_frame` and no `first_frame` (or `init`) image is refused
+            with `ref_role_required` before anything is quoted or reserved.
+            Absent (false): a last frame alone goes to the vendor.
         required (Union[Unset, bool]):
         time_step_s (Union[None, Unset, float]): The `keyframe` role's time grid, when the vendor takes only multiples
             of it (PixVerse: whole seconds). A time off it is refused.
@@ -38,6 +43,7 @@ class RefRoleSpec:
     convention: Union[MaskConvention, None, Unset] = UNSET
     max_time_s: Union[None, Unset, float] = UNSET
     native_grow: Union[Unset, bool] = UNSET
+    needs_first_frame: Union[Unset, bool] = UNSET
     required: Union[Unset, bool] = UNSET
     time_step_s: Union[None, Unset, float] = UNSET
     timing: Union[KeyframeTiming, None, Unset] = UNSET
@@ -62,6 +68,8 @@ class RefRoleSpec:
             max_time_s = self.max_time_s
 
         native_grow = self.native_grow
+
+        needs_first_frame = self.needs_first_frame
 
         required = self.required
 
@@ -92,6 +100,8 @@ class RefRoleSpec:
             field_dict["max_time_s"] = max_time_s
         if native_grow is not UNSET:
             field_dict["native_grow"] = native_grow
+        if needs_first_frame is not UNSET:
+            field_dict["needs_first_frame"] = needs_first_frame
         if required is not UNSET:
             field_dict["required"] = required
         if time_step_s is not UNSET:
@@ -136,6 +146,8 @@ class RefRoleSpec:
 
         native_grow = d.pop("native_grow", UNSET)
 
+        needs_first_frame = d.pop("needs_first_frame", UNSET)
+
         required = d.pop("required", UNSET)
 
         def _parse_time_step_s(data: object) -> Union[None, Unset, float]:
@@ -170,6 +182,7 @@ class RefRoleSpec:
             convention=convention,
             max_time_s=max_time_s,
             native_grow=native_grow,
+            needs_first_frame=needs_first_frame,
             required=required,
             time_step_s=time_step_s,
             timing=timing,

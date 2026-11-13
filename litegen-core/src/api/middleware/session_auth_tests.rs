@@ -849,4 +849,84 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
+
+    // ─── FU-NOORG: a person who belongs to no org ─────────────────────────────
+
+    /// The org a session acts in and the permissions it carries (sorted), as
+    /// `auth_middleware` builds them for a person whose account role is `role`
+    /// and who belongs to no org, in `mode`.
+    async fn context_in_no_org(mode: crate::config::Mode, role: Role) -> serde_json::Value {
+        async fn ctx_json(axum::extract::Extension(ctx): axum::extract::Extension<KeyContext>) -> axum::Json<serde_json::Value> {
+            let mut held: Vec<&str> = ctx.permissions.iter().map(|p| p.as_str()).collect();
+            held.sort_unstable();
+            axum::Json(serde_json::json!({ "org_id": ctx.org_id, "permissions": held }))
+        }
+        let db = build_test_db().await;
+        let user = User {
+            id: format!("user-{}", uuid::Uuid::new_v4()),
+            email: "no-org@example.com".to_string(),
+            password_hash: None,
+            role,
+            oauth_github_id: None,
+            oauth_google_id: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            last_login_at: None,
+            is_active: true,
+        };
+        db.create_user(&user).await.expect("create user");
+        let sess = Session {
+            id: generate_session_token(),
+            user_id: user.id.clone(),
+            created_at: chrono::Utc::now(),
+            expires_at: chrono::Utc::now() + chrono::Duration::days(7),
+            ip: None,
+            user_agent: None,
+            csrf_token: generate_csrf_token(),
+        };
+        db.create_session(&sess).await.expect("create session");
+        let state = match mode {
+            crate::config::Mode::Hosted => build_state_hosted_no_master(db).await,
+            crate::config::Mode::SingleTenant => build_state_with_db(db).await,
+        };
+        let app = Router::new().route("/ctx", get(ctx_json)).layer(middleware::from_fn(move |req: Request, next: Next| {
+            let s = state.clone();
+            async move {
+                let headers = req.headers().clone();
+                auth_middleware(headers, s, req, next).await
+            }
+        }));
+        let req = Request::builder()
+            .method("GET")
+            .uri("/ctx")
+            .header("cookie", format!("litegen_session={}", sess.id))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{mode:?}, account role {role:?}");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// FU-NOORG: a hosted person who belongs to no org (their only org
+    /// deleted, removed from it, a signup whose org was never made) acts in
+    /// none and holds only what that needs: their own account and their own
+    /// sessions. Their account role (Owner at every signup, the invited role
+    /// otherwise) used to hand them all its permissions there, `invitation:send`
+    /// among them. Single-tenant mode gives such a person nothing, as before.
+    #[tokio::test]
+    async fn a_hosted_person_in_no_org_holds_only_their_own_account() {
+        for role in [Role::Owner, Role::Admin, Role::Member, Role::Viewer] {
+            assert_eq!(
+                context_in_no_org(crate::config::Mode::Hosted, role).await,
+                serde_json::json!({ "org_id": null, "permissions": ["session:revoke:own", "user:read:self"] }),
+                "hosted, account role {role:?}"
+            );
+            assert_eq!(
+                context_in_no_org(crate::config::Mode::SingleTenant, role).await,
+                serde_json::json!({ "org_id": null, "permissions": [] }),
+                "single-tenant, account role {role:?}"
+            );
+        }
+    }
 }

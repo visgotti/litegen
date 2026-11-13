@@ -406,6 +406,64 @@ models:
     }
 
     #[test]
+    fn needs_first_frame_is_a_video_last_frame_rule() {
+        // FU-LASTFRAME: it refuses a last frame sent without a first, so it
+        // goes on a video model's `last_frame` role, beside a role that
+        // starts the clip (`first_frame`, or `init` on older rows).
+        let row = |media: &str, caps: &str, roles: &[(&str, bool)]| {
+            let mut block = String::new();
+            for (name, needs) in roles {
+                let flag = if *needs { ", needs_first_frame: true" } else { "" };
+                block.push_str(&format!("        {name}: {{ required: false, min_count: 0, max_count: 1{flag} }}\n"));
+            }
+            yaml(&format!(
+                "models:\n  - id: x/m\n    provider: x\n    media_type: {media}\n    display_name: M\n    pricing: {{ base_cost_usd: 0.01 }}\n    capabilities: {{ {caps} }}\n    prompt: {{ required: true }}\n    ref_inputs:\n      max_total: 2\n      default_role: {}\n      provider_format: {{ form: url }}\n      roles:\n{block}",
+                roles[0].0
+            ))
+        };
+        let video = "text_to_video: true, image_to_video: true";
+        for roles in [&[("first_frame", false), ("last_frame", true)][..], &[("init", false), ("last_frame", true)][..]] {
+            let ok = row("video", video, roles);
+            assert!(ok.is_ok(), "{roles:?}: {:?}", ok.err());
+        }
+        for (media, caps, roles) in [
+            ("video", video, &[("first_frame", true), ("last_frame", false)][..]),
+            ("video", video, &[("last_frame", true), ("reference", false)][..]),
+            ("image", "text_to_image: true, image_to_image: true", &[("init", false), ("last_frame", true)][..]),
+        ] {
+            let err = row(media, caps, roles).expect_err(&format!("{media} {roles:?}")).to_string();
+            assert!(err.contains("needs_first_frame") && err.contains("x/m"), "{media} {roles:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_leonardo_video_row_cannot_take_an_image_id_in_extra() {
+        // FU-LEO2: Leonardo video starts from the request's own image, which
+        // litegen uploads; an image id passed in `extra` would animate any
+        // image on the gateway's Leonardo account. A custom models folder or a
+        // runtime model may still allowlist it (an older copy of models/ did).
+        let row = |id: &str, provider: &str, key: &str| {
+            yaml(&format!(r#"
+models:
+  - id: {id}
+    provider: {provider}
+    media_type: video
+    display_name: V
+    pricing: {{ base_cost_usd: 0.5 }}
+    capabilities: {{ text_to_video: true }}
+    prompt: {{ required: true }}
+    extra_allowlist: [promptEnhance, {key}]
+"#))
+        };
+        assert!(row("leonardo/v", "leonardo", "motionStrength").is_ok(), "a vendor knob loads");
+        assert!(row("x/v", "x", "imageId").is_ok(), "another vendor's imageId is that vendor's field");
+        for key in ["imageId", "imageType", "image_id", "ImageType"] {
+            let err = row("leonardo/v", "leonardo", key).expect_err(key).to_string();
+            assert!(err.contains("'leonardo/v'") && err.contains(&format!("'{key}'")), "{key}: {err}");
+        }
+    }
+
+    #[test]
     fn litegen_params_cannot_be_set_from_yaml() {
         // E11a: the server computes them from what litegen applies itself; a
         // row that could set them would serve bounds the validator does not

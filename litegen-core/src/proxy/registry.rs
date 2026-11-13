@@ -984,6 +984,23 @@ mod tests {
         assert!(reg.video_provider_for_request("ideogram", Some(creds())).await.expect("video").is_configured());
     }
 
+    /// Each medium's list names exactly the providers its factory builds.
+    /// `router::Reach` reads the lists to tell whether an org's own key builds
+    /// a route's deployment an adapter, where dispatch calls the factory
+    /// (`*_provider_for_request`, FU-ROUTE): a provider missing from a list
+    /// would make a routed model look unservable on that key, and one listed
+    /// without an arm would look servable and then be skipped at dispatch.
+    #[test]
+    fn each_mediums_list_names_exactly_what_its_factory_builds() {
+        let default = ProviderInstanceConfig::default();
+        for entry in provider_catalog() {
+            let name = entry.name.as_str();
+            assert_eq!(build_image_provider(name, &default).is_some(), IMAGE_PROVIDERS.contains(&name), "{name}: image");
+            assert_eq!(build_video_provider(name, &default).is_some(), VIDEO_PROVIDERS.contains(&name), "{name}: video");
+            assert_eq!(build_model3d_provider(name, &default).is_some(), MODEL3D_PROVIDERS.contains(&name), "{name}: 3D");
+        }
+    }
+
     /// The catalog must cover exactly the providers the registry can build, and
     /// describe each with at least one credential field + a valid pool field.
     /// This ties the IMAGE_PROVIDERS/VIDEO_PROVIDERS lists to the build matches.

@@ -87,6 +87,85 @@ impl OrgCredentials {
     pub fn get(&self, provider: &str) -> Option<ProviderCredentials> {
         self.0.get(provider).cloned()
     }
+
+    /// Whether the org stored a credential for `provider`.
+    pub fn has(&self, provider: &str) -> bool {
+        self.0.contains_key(provider)
+    }
+}
+
+/// Which providers can serve one caller, and so whether a generation of a
+/// model would reach a vendor for them (L14; FU-ROUTE, follow-ups
+/// 2026-11-13). The generation and quote routes ask it before anything is
+/// reserved, and `GET /v1/models` serves its answer as `is_available`, so the
+/// two agree. Each provider's answer is kept per medium, so a listing asks
+/// each once.
+pub struct Reach<'a, F> {
+    router: &'a ProxyRouter,
+    /// Whether the caller's org stored its own credential for a provider.
+    org_has: F,
+    known: HashMap<(String, &'static str), bool>,
+}
+
+impl<'a, F: Fn(&str) -> bool> Reach<'a, F> {
+    pub fn new(router: &'a ProxyRouter, org_has: F) -> Self {
+        Self { router, org_has, known: HashMap::new() }
+    }
+
+    /// Ok when a generation of `schema` would reach a vendor for this caller,
+    /// else the 400 `provider_not_configured` it would answer.
+    ///
+    /// - **A model route in effect** ([`ProxyRouter::dispatch_route`]: image
+    ///   generations and videos, never segmentation or 3D): the route alone
+    ///   decides, as dispatch sends the model to its deployments only. Served
+    ///   when one of them can be; the refusal names the route's providers, as
+    ///   the router's own answer does when it finds none it can use.
+    /// - **Otherwise** the model's own provider, on the org's key or the
+    ///   gateway's instance: the test generations have always made.
+    pub async fn serves(&mut self, schema: &ModelSchema) -> Result<(), ProxyError> {
+        let Some(deployments) = self.router.dispatch_route(schema) else {
+            let own = (self.org_has)(&schema.provider) || self.router.has_provider(schema.media_type, &schema.provider).await;
+            return if own { Ok(()) } else { Err(ProxyError::not_configured(&schema.provider)) };
+        };
+        for provider in &deployments {
+            if self.can_serve(schema.media_type, provider).await {
+                return Ok(());
+            }
+        }
+        Err(not_configured_route(&schema.id, deployments.into_iter().map(|p| (p, Skip::NotConfigured(None))).collect()))
+    }
+
+    /// Whether a route's deployment on `provider` can serve a `medium` request
+    /// for this caller, as dispatch decides (`*_provider_for_request`): on the
+    /// org's key when it stored one, if the provider has an adapter for the
+    /// medium; otherwise on the gateway's instance, if it holds one.
+    async fn can_serve(&mut self, medium: crate::capabilities::MediaType, provider: &str) -> bool {
+        let key = (provider.to_string(), medium.as_str());
+        if let Some(&known) = self.known.get(&key) {
+            return known;
+        }
+        let known = if (self.org_has)(provider) {
+            adapts(medium, provider)
+        } else {
+            self.router.has_provider(medium, provider).await
+        };
+        self.known.insert(key, known);
+        known
+    }
+}
+
+/// Whether `provider` has an adapter for `medium`, which is what an org's own
+/// key builds for it (`proxy::registry::build_*_provider`, mirrored by the
+/// registry's lists).
+fn adapts(medium: crate::capabilities::MediaType, provider: &str) -> bool {
+    use crate::capabilities::MediaType as M;
+    use crate::proxy::registry::{IMAGE_PROVIDERS, MODEL3D_PROVIDERS, VIDEO_PROVIDERS};
+    match medium {
+        M::Image => IMAGE_PROVIDERS,
+        M::Video => VIDEO_PROVIDERS,
+        M::Model3d => MODEL3D_PROVIDERS,
+    }
+    .contains(&provider)
 }
 
 impl std::fmt::Debug for OrgCredentials {
@@ -306,8 +385,17 @@ impl ProxyRouter {
     }
 
     /// Replace the runtime overrides; applies to every request that follows.
+    /// A change to one of them goes through [`Self::update_overrides`].
     pub fn set_overrides(&self, overrides: RuntimeOverrides) {
-        self.apply_overrides(None, overrides);
+        self.apply_overrides(None, |current| *current = overrides);
+    }
+
+    /// Change the runtime overrides in place, for every request that follows:
+    /// `change` runs under their write lock, so two changes at once to
+    /// different fields both land (FU-LOCK). Reading them and then setting
+    /// them whole let the one that wrote last put back the other's old value.
+    pub fn update_overrides(&self, change: impl FnOnce(&mut RuntimeOverrides)) {
+        self.apply_overrides(None, change);
     }
 
     /// How many times the overrides have changed.
@@ -319,21 +407,24 @@ impl ProxyRouter {
     /// a refresh whose database read raced a save never undoes the save.
     /// Whether it applied.
     pub fn set_overrides_unless_changed(&self, version: u64, overrides: RuntimeOverrides) -> bool {
-        self.apply_overrides(Some(version), overrides)
+        self.apply_overrides(Some(version), |current| *current = overrides)
     }
 
-    fn apply_overrides(&self, expected: Option<u64>, overrides: RuntimeOverrides) -> bool {
+    /// Apply `change` to the overrides, unless they changed since version
+    /// `expected`, and put the settings it makes in force. All of it happens
+    /// under the overrides' write lock, the cache and breaker reconfiguring
+    /// included, so two changes at once neither lose a field nor leave the
+    /// cache or the breaker set by the older one.
+    fn apply_overrides(&self, expected: Option<u64>, change: impl FnOnce(&mut RuntimeOverrides)) -> bool {
         use std::sync::atomic::Ordering;
-        let settings = crate::management::settings::effective(&self.config, &overrides.gateway);
-        let previous = {
-            let mut guard = self.overrides.write().unwrap_or_else(|p| p.into_inner());
-            if expected.is_some_and(|v| v != self.overrides_version.load(Ordering::SeqCst)) {
-                return false;
-            }
-            *guard = overrides;
-            self.overrides_version.fetch_add(1, Ordering::SeqCst);
-            std::mem::replace(&mut *self.settings.write().unwrap_or_else(|p| p.into_inner()), settings)
-        };
+        let mut guard = self.overrides.write().unwrap_or_else(|p| p.into_inner());
+        if expected.is_some_and(|v| v != self.overrides_version.load(Ordering::SeqCst)) {
+            return false;
+        }
+        change(&mut guard);
+        let settings = crate::management::settings::effective(&self.config, &guard.gateway);
+        self.overrides_version.fetch_add(1, Ordering::SeqCst);
+        let previous = std::mem::replace(&mut *self.settings.write().unwrap_or_else(|p| p.into_inner()), settings);
         if settings.cache != previous.cache {
             self.cache.reconfigure(settings.cache);
         }
@@ -1748,24 +1839,32 @@ impl ProxyRouter {
 
     // ─── Cost Estimation ────────────────────────────────────────────────
 
-    /// Estimate cost for an image generation request.
-    /// Uses the provider declared in `schema.provider` from the capability registry.
+    /// Estimate cost for an image generation request: the catalog row's price,
+    /// through the adapter of the model's own provider when this caller can
+    /// be served by it, else of the first deployment of its model route that
+    /// can, in the route's order (FU-ROUTE): a quote answers wherever the
+    /// generation would be served. Each adapter gets only the org's
+    /// credential for its own provider (BYO-ROUTE).
     pub async fn estimate_image_cost(
         &self,
         schema: &ModelSchema,
         request: &ImageGenerationRequest,
-        app_creds: Option<ProviderCredentials>,
+        org: &OrgCredentials,
     ) -> Result<CostEstimate, ProxyError> {
-        let provider = self.registry
-            .image_provider_for_request(&schema.provider, app_creds)
-            .await
-            .ok_or_else(|| ProxyError::not_configured(&schema.provider))?;
+        let mut quoting = None;
+        for name in self.quoting_providers(schema) {
+            if let Some(p) = self.registry.image_provider_for_request(&name, org.get(&name)).await {
+                quoting = Some((name, p));
+                break;
+            }
+        }
+        let (name, provider) = quoting.ok_or_else(|| ProxyError::not_configured(&schema.provider))?;
 
         let mut est = provider
             .estimate_cost(schema, request)
             .await
             .map_err(|e| ProxyError::ProviderError {
-                provider: schema.provider.clone(),
+                provider: name,
                 error: e.to_string(),
                 retryable: false,
             })?;
@@ -1774,30 +1873,64 @@ impl ProxyRouter {
         Ok(est)
     }
 
-    /// Estimate cost for a video generation request.
-    /// Uses the provider declared in `schema.provider` from the capability registry.
+    /// Estimate cost for a video generation request, through the adapter
+    /// [`Self::estimate_image_cost`] would pick.
     pub async fn estimate_video_cost(
         &self,
         schema: &ModelSchema,
         request: &VideoGenerationRequest,
-        app_creds: Option<ProviderCredentials>,
+        org: &OrgCredentials,
     ) -> Result<CostEstimate, ProxyError> {
-        let provider = self.registry
-            .video_provider_for_request(&schema.provider, app_creds)
-            .await
-            .ok_or_else(|| ProxyError::not_configured(&schema.provider))?;
+        let mut quoting = None;
+        for name in self.quoting_providers(schema) {
+            if let Some(p) = self.registry.video_provider_for_request(&name, org.get(&name)).await {
+                quoting = Some((name, p));
+                break;
+            }
+        }
+        let (name, provider) = quoting.ok_or_else(|| ProxyError::not_configured(&schema.provider))?;
 
         let mut est = provider
             .estimate_cost(schema, request)
             .await
             .map_err(|e| ProxyError::ProviderError {
-                provider: schema.provider.clone(),
+                provider: name,
                 error: e.to_string(),
                 retryable: false,
             })?;
 
         price_estimate(&mut est, schema, &request.base, request, self.cost_markup_percent());
         Ok(est)
+    }
+
+    /// The providers whose adapter a quote for `schema` may go through, in
+    /// order: the model's own, then its route's deployments'.
+    fn quoting_providers(&self, schema: &ModelSchema) -> Vec<String> {
+        let mut names = vec![schema.provider.clone()];
+        for name in self.dispatch_route(schema).unwrap_or_default() {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
+    }
+
+    /// Whether every vendor a video request for `schema` may reach hands out
+    /// a link to the finished video (`VideoProvider::hands_out_links`), which
+    /// keeping nothing needs: with a model route in effect, each of its
+    /// deployments that can be served, each with the org's credential for its
+    /// own provider or the gateway's (FU-ROUTE); otherwise the model's own
+    /// provider. One that can't be served takes no job, so it isn't asked.
+    pub async fn video_hands_out_links(&self, schema: &ModelSchema, org: &OrgCredentials) -> bool {
+        let reached = self.dispatch_route(schema).unwrap_or_else(|| vec![schema.provider.clone()]);
+        for name in reached {
+            if let Some(p) = self.registry.video_provider_for_request(&name, org.get(&name)).await {
+                if !p.hands_out_links(schema) {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     // ─── Accessor helpers ───────────────────────────────────────────────
@@ -1823,6 +1956,41 @@ impl ProxyRouter {
     /// See [`has_image_provider`](Self::has_image_provider).
     pub async fn has_video_provider(&self, name: &str) -> bool {
         self.registry.video_provider_for(name).await.is_some()
+    }
+
+    /// Whether the gateway holds an instance of provider `name` for `medium`.
+    async fn has_provider(&self, medium: crate::capabilities::MediaType, name: &str) -> bool {
+        use crate::capabilities::MediaType as M;
+        match medium {
+            M::Image => self.has_image_provider(name).await,
+            M::Video => self.has_video_provider(name).await,
+            M::Model3d => self.has_model3d_provider(name).await,
+        }
+    }
+
+    /// The providers of the model route a generation of `schema` is sent
+    /// through, each once in the route's order (FU-ROUTE). `None` when the
+    /// model's own provider serves it: no route names it, the route has no
+    /// deployments (the router's own answer stands), or it is a segmentation
+    /// or 3D model, which routes never apply to (`segment_image`,
+    /// `generate_model3d`).
+    pub fn dispatch_route(&self, schema: &ModelSchema) -> Option<Vec<String>> {
+        use crate::capabilities::MediaType as M;
+        let routed = match schema.media_type {
+            M::Image => schema.task != crate::capabilities::ModelTask::Segment,
+            M::Video => true,
+            M::Model3d => false,
+        };
+        if !routed {
+            return None;
+        }
+        let mut providers: Vec<String> = Vec::new();
+        for d in self.find_model_route(&schema.id)?.deployments {
+            if !providers.contains(&d.provider) {
+                providers.push(d.provider);
+            }
+        }
+        (!providers.is_empty()).then_some(providers)
     }
 
     /// The providers of the model route that serves `model`, each once, or

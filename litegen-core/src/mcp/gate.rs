@@ -24,7 +24,8 @@ pub fn visible(def: &ToolDef, caller: &Caller, state: &AppState) -> bool {
     }
     let ctx = &caller.ctx;
     // The AI tools act inside a tenant. The hosted master key has none, so of
-    // them it can only use the catalog (`forbidden_no_org` everywhere else).
+    // them it can only use the catalog (403 everywhere else: `no_active_org`
+    // on the generation routes, `forbidden_no_org` on the generation reads).
     if caller.surface == Surface::Ai && ctx.org_id.is_none() && def.toolset != "catalog" {
         return false;
     }
